@@ -458,12 +458,17 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                                         download_url = data.get("download_url")
                                         local_blend_path = download_blend_file(download_url)
                                         if local_blend_path:
-                                            result = append_scene_from_blend(local_blend_path, new_scene_name="Appended_Scene")
-                                            if result == {'FINISHED'}:
+                                            # Call our modified append function
+                                            result, appended_scene_name = append_scene_from_blend(local_blend_path)
+                                            if result == {'FINISHED'} and appended_scene_name:
                                                 self.report({'INFO'}, "Scene appended successfully!")
-                                                # *** Now call the game modal operator ***
-                                                bpy.ops.view3d.exp_modal('INVOKE_DEFAULT')
-                                                # And cancel/close the UI modal so only one modal remains:
+                                                # Store the appended scene name and file path in custom properties.
+                                                context.scene["appended_scene_name"] = appended_scene_name
+                                                context.scene["world_blend_path"] = local_blend_path
+                                                # Start the game modal.
+                                                bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=True)
+
+                                                # Close/exit this UI operator modal.
                                                 return self.cancel(context)
                                             else:
                                                 self.report({'ERROR'}, "Failed to append scene.")
@@ -483,6 +488,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                         else:
                             self.report({'ERROR'}, "No package selected to explore or missing download code.")
                         return {'RUNNING_MODAL'}
+
 
                     else:
                         if context.scene.ui_current_mode == "BROWSE":

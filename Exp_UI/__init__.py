@@ -7,7 +7,7 @@ bl_info = {
     "version": (1, 0, 2),
 }
 
-from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, APPEND_SCENE_OT_File
+from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, DOWNLOAD_CODE_OT_File
 from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
@@ -36,7 +36,7 @@ from .cache_memory_operators import (CLEAR_ALL_DATA_OT_WebApp,
 classes = (
     LOGIN_OT_WebApp,
     LOGOUT_OT_WebApp,
-    APPEND_SCENE_OT_File,
+    DOWNLOAD_CODE_OT_File,
     LIKE_PACKAGE_OT_WebApp,
     COMMENT_PACKAGE_OT_WebApp,
     OPEN_URL_OT_WebApp,

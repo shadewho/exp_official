@@ -30,7 +30,7 @@ ARROW_LEFT_PATH  = os.path.join(os.path.dirname(__file__), "ui_templates", "arro
 ARROW_RIGHT_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "arrow_right.png")
 CLOSE_WINDOW_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "close_page.png")
 BACK_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "back_button.png")
-EXPLORE_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "explore_button.png")
+EXPLORE_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "explore_button.jpg")
 LOADING_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "loading.jpg")
 
 LAST_VIEWPORT_SIZE = {"width": 0, "height": 0}

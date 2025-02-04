@@ -170,3 +170,28 @@ def restore_user_settings(scene):
 
     # Optionally, remove the custom property after restoring settings.
     del scene["exploratory_original_settings"]
+
+
+def move_armature_and_children_to_scene(target_armature, destination_scene):
+    """
+    Moves the target armature and all objects parented (directly or indirectly)
+    to it into the destination scene's master collection.
+    Optionally, it unlinks these objects from other scenes.
+    """
+    # Build a list of objects to move: the armature plus all its children.
+    objects_to_move = [target_armature] + list(target_armature.children_recursive)
+    
+    # For each object, remove it from all scenes (if desired) and link it to the destination scene.
+    for obj in objects_to_move:
+        # Unlink from any scene that is not the destination.
+        for sc in bpy.data.scenes:
+            if sc != destination_scene:
+                try:
+                    sc.collection.objects.unlink(obj)
+                    print(f"Unlinked {obj.name} from scene {sc.name}")
+                except Exception:
+                    pass
+        # Link the object to the destination scene if it's not already there.
+        if not any(o == obj for o in destination_scene.collection.objects):
+            destination_scene.collection.objects.link(obj)
+            print(f"Linked {obj.name} to scene {destination_scene.name}")

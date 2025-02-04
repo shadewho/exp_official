@@ -55,11 +55,11 @@ class LOGOUT_OT_WebApp(bpy.types.Operator):
 
 
 # ----------------------------------------------------------------------------
-# APPEND SCENE
+# DOWNLOAD CODE
 # ----------------------------------------------------------------------------
-class APPEND_SCENE_OT_File(bpy.types.Operator):
-    bl_idname = "webapp.append_scene"
-    bl_label = "Append Scene"
+class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
+    bl_idname = "webapp.download_code"
+    bl_label = "Show World Details"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -68,13 +68,13 @@ class APPEND_SCENE_OT_File(bpy.types.Operator):
             self.report({'ERROR'}, "You must log in first.")
             return {'CANCELLED'}
 
-        # *** Now we read from context.scene.download_code
-        download_code = context.scene.download_code
-        if not download_code.strip():
+        # Read the download code from the scene.
+        download_code = context.scene.download_code.strip()
+        if not download_code:
             self.report({'ERROR'}, "Please enter a download code first.")
             return {'CANCELLED'}
 
-        # The rest is unchanged:
+        # Prepare the API call (assumes the endpoint returns package details, not a blend file)
         url = DOWNLOAD_ENDPOINT
         headers = {
             "Authorization": f"Bearer {token}",
@@ -87,29 +87,28 @@ class APPEND_SCENE_OT_File(bpy.types.Operator):
             if response.status_code == 200:
                 data = response.json()
                 if data.get("success"):
-                    download_url = data["download_url"]
-
-                    # Download the .blend file
-                    local_blend_path = download_blend_file(download_url)
-                    if not local_blend_path:
-                        self.report({'ERROR'}, "Failed to download .blend file.")
-                        return {'CANCELLED'}
-
-                    # Append the scene
-                    result = append_scene_from_blend(local_blend_path, new_scene_name="Appended_Scene")
-                    if result == {'FINISHED'}:
-                        self.report({'INFO'}, "Scene appended successfully!")
-                    else:
-                        self.report({'ERROR'}, "Failed to append scene.")
-                        return {'CANCELLED'}
-
+                    # Assume the response now includes package details.
+                    # For example, the package details might be directly in the response,
+                    # or under a key such as "package". Adjust accordingly.
+                    package_details = data.get("package", data)
+                    
+                    # Initialize the scene’s property group with the package details.
+                    context.scene.my_addon_data.init_from_package(package_details)
+                    
+                    # Set the UI mode to detail.
+                    context.scene.ui_current_mode = "DETAIL"
+                    # Optionally store the download code for reference.
+                    context.scene.download_code = download_code
+                    
+                    # Invoke the custom UI operator to show the detail view.
+                    bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
+                    self.report({'INFO'}, "Showing package details for the world.")
                 else:
-                    self.report({'ERROR'}, data.get("message", "Download failed"))
+                    self.report({'ERROR'}, data.get("message", "Download code failed."))
                     return {'CANCELLED'}
             else:
                 self.report({'ERROR'}, f"API Error {response.status_code}: {response.text}")
                 return {'CANCELLED'}
-
         except Exception as e:
             traceback.print_exc()
             self.report({'ERROR'}, f"Error: {e}")

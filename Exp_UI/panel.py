@@ -66,7 +66,7 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
         # Scene "Find Item" UI
         layout.label(text="Find Item by Download Code:")
         layout.prop(scene, "download_code", text="Code")
-        layout.operator("webapp.append_scene", text="Find Item")
+        layout.operator("webapp.download_code", text="Find Item")
 
 
 

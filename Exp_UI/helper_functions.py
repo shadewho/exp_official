@@ -73,18 +73,17 @@ def download_blend_file(url):
 # Scene Setup Helper
 # ----------------------------------------------------------------------------------
 
-def append_scene_from_blend(local_blend_path, new_scene_name="Appended_Scene"):
+def append_scene_from_blend(local_blend_path):
     """
     Appends the first scene from the given `.blend` file into the current Blender project.
     Does NOT delete the `.blend` file.
     
-    After appending, renames the appended scene to `new_scene_name` and sets it as the active scene.
-    
-    Returns {'FINISHED'} on success, {'CANCELLED'} on failure.
+    Returns:
+       A tuple: (result, appended_scene_name)
+       result is {'FINISHED'} on success, {'CANCELLED'} on failure.
+       appended_scene_name is the actual name of the scene appended, or None if failed.
     """
-
     print(f"[INFO] Appending scene from: {local_blend_path}")
-
     try:
         # Load the list of scenes from the .blend file
         with bpy.data.libraries.load(local_blend_path, link=False) as (data_from, data_to):
@@ -92,13 +91,12 @@ def append_scene_from_blend(local_blend_path, new_scene_name="Appended_Scene"):
 
         if not scene_names:
             print(f"[ERROR] No scenes found in {local_blend_path}")
-            return {'CANCELLED'}
+            return {'CANCELLED'}, None
 
         # Choose the first scene from the file
         scene_to_append = scene_names[0]
         print(f"[INFO] Appending scene: {scene_to_append}")
 
-        # Append the scene using bpy.ops.wm.append
         bpy.ops.wm.append(
             filepath=os.path.join(local_blend_path, "Scene", scene_to_append),
             directory=os.path.join(local_blend_path, "Scene"),
@@ -106,24 +104,23 @@ def append_scene_from_blend(local_blend_path, new_scene_name="Appended_Scene"):
         )
         print(f"[INFO] Scene '{scene_to_append}' appended successfully.")
 
-        # Retrieve the appended scene from bpy.data.scenes.
-        # It will have the same name as in the source blend file.
+        # Retrieve the appended scene by its name (as it comes from the file)
         appended_scene = bpy.data.scenes.get(scene_to_append)
         if appended_scene is None:
             print(f"[ERROR] Appended scene '{scene_to_append}' not found in bpy.data.scenes")
-            return {'CANCELLED'}
+            return {'CANCELLED'}, None
 
-        # Set the newly appended (and renamed) scene as the active scene in the current window.
+        # Set the appended scene as the active scene
         bpy.context.window.scene = appended_scene
         print(f"[INFO] Scene set as active: {appended_scene.name}")
-        
 
     except Exception as e:
         print(f"[ERROR] Failed to append scene: {e}")
         traceback.print_exc()
-        return {'CANCELLED'}
+        return {'CANCELLED'}, None
 
-    return {'FINISHED'}
+    return {'FINISHED'}, appended_scene.name
+
 
 
 
@@ -174,3 +171,87 @@ def download_thumbnail(url):
 def on_filter_changed(self, context):
     # Call the new operator
     bpy.ops.webapp.refresh_filters()
+
+
+#remove the world temp file and appended scene - called in game modal cancel()
+def cleanup_downloaded_worlds():
+
+    # Try to get the active scene and the stored appended scene name.
+    try:
+        scene = bpy.context.scene
+        appended_scene_name = scene.get("appended_scene_name")
+    except ReferenceError:
+        scene = None
+        appended_scene_name = None
+
+    if appended_scene_name and appended_scene_name in bpy.data.scenes:
+        appended_scene = bpy.data.scenes[appended_scene_name]
+        print(f"Found appended scene: {appended_scene_name}")
+
+        # Iterate over a copy of the appended scene's objects.
+        for obj in list(appended_scene.objects):
+            # Save the object's name before removal.
+            try:
+                obj_name = obj.name
+            except ReferenceError:
+                obj_name = "<unknown>"
+            
+            # If the object has data (e.g. mesh), store it and its name.
+            mesh_data = None
+            mesh_data_name = None
+            if hasattr(obj, "data") and obj.data is not None:
+                try:
+                    mesh_data = obj.data
+                    mesh_data_name = mesh_data.name
+                except ReferenceError:
+                    mesh_data = None
+                    mesh_data_name = "<unknown>"
+
+            # Remove the object.
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+                print(f"Removed object: {obj_name}")
+            except Exception as e:
+                print(f"Error removing object {obj_name}: {e}")
+
+            # If the object had mesh data and no one is using it, remove it.
+            if mesh_data is not None:
+                try:
+                    if mesh_data.users == 0:
+                        bpy.data.meshes.remove(mesh_data)
+                        print(f"Removed mesh data: {mesh_data_name}")
+                except Exception as e:
+                    # If the data block is already removed, we skip.
+                    print(f"Error removing mesh data {mesh_data_name}: {e}")
+
+        # Now remove the appended scene.
+        try:
+            bpy.data.scenes.remove(appended_scene)
+            print(f"Removed appended scene: {appended_scene_name}")
+        except Exception as e:
+            print(f"Error removing scene {appended_scene_name}: {e}")
+    else:
+        print("No appended scene found to remove.")
+
+    # Delete all files in the WORLD_DOWNLOADS_FOLDER.
+    if os.path.isdir(WORLD_DOWNLOADS_FOLDER):
+        for filename in os.listdir(WORLD_DOWNLOADS_FOLDER):
+            file_path = os.path.join(WORLD_DOWNLOADS_FOLDER, filename)
+            try:
+                os.remove(file_path)
+                print(f"Deleted file: {file_path}")
+            except Exception as e:
+                print(f"Error deleting {file_path}: {e}")
+    else:
+        print("WORLD_DOWNLOADS_FOLDER not found.")
+
+    # Remove the custom properties from the scene if it is still valid.
+    if scene is not None:
+        try:
+            for key in ("appended_scene_name", "world_blend_path"):
+                if key in scene:
+                    del scene[key]
+        except ReferenceError:
+            pass
+
+

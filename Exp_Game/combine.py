@@ -4,7 +4,7 @@ import os
 package_path = 'C:/Users/spenc/Desktop/Exploratory/addons/Exploratory'
 
 # Desired output path and file name
-output_path = 'C:/Users/spenc/Desktop/exploratory_conjunction_blender'
+output_path = 'C:/Users/spenc/Desktop/exploratory_combine_game'
 output_file = 'combined_package.txt'
 
 # Ensure the output directory exists

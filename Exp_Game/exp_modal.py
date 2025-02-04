@@ -12,7 +12,8 @@ from .exp_animations import AnimationStateManager, set_global_animation_manager
 from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds, 
                         get_global_audio_manager, clean_audio_temp)
 from .exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
-                          record_user_settings, apply_performance_settings, restore_user_settings)  
+                          record_user_settings, apply_performance_settings, restore_user_settings,
+                          move_armature_and_children_to_scene)  
 from ..exp_preferences import ExploratoryAddonPreferences, get_addon_path
 from .exp_custom_animations import update_all_custom_managers
 from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions
@@ -22,8 +23,8 @@ from .exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_te
 from .exp_objectives import update_all_objective_timers, reset_all_objectives
 from .exp_game_reset import capture_scene_state
 from . import exp_globals
-from .exp_globals import update_sound_tasks, stop_all_sounds
-
+from .exp_globals import stop_all_sounds, update_sound_tasks
+from ..Exp_UI.helper_functions import cleanup_downloaded_worlds
 
 class ExpModal(bpy.types.Operator):
     """A modal operator that controls third-person movement and camera,
@@ -58,6 +59,10 @@ class ExpModal(bpy.types.Operator):
         description="Default camera distance from the character"
     )
 
+    launched_from_ui: bpy.props.BoolProperty(
+        name="Launched from UI",
+        default=False,
+    )
     # ---------------------------
     # Internal State Variables
     # ---------------------------
@@ -221,6 +226,8 @@ class ExpModal(bpy.types.Operator):
             # Set up the animation manager
             self.animation_manager = AnimationStateManager()
             set_global_animation_manager(self.animation_manager)
+            move_armature_and_children_to_scene(self.target_object, context.scene)
+
 
         # 7) Hide the cursor
         context.window.cursor_modal_set('NONE')
@@ -404,7 +411,6 @@ class ExpModal(bpy.types.Operator):
         loc = self.target_object.location
         self.target_object.location = delta_mat @ loc
 
-
     def cancel(self, context):
         """Cleanup code when user cancels with ESC or Right-click."""
         context.window.cursor_modal_restore()
@@ -417,6 +423,16 @@ class ExpModal(bpy.types.Operator):
         #--------------------------------------
         restore_user_settings(context.scene)
         stop_all_sounds()
+
+        #Cleanup scene and temp blend file
+        cleanup_downloaded_worlds()
+
+        # Only re-open the UI if we launched from the UI button.
+        if self.launched_from_ui:
+            bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
+        
+        return {'CANCELLED'}
+
 
     # ---------------------------
     # Update / Logic Methods

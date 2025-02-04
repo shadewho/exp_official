@@ -279,7 +279,7 @@ def explore_package(pkg):
         # 3) If it's a world, append the scene
         if file_type == "world":
             print("[INFO] Appending scene from downloaded .blend...")
-            result = append_scene_from_blend(local_blend_path, new_scene_name="Appended_Scene")
+            result = append_scene_from_blend(local_blend_path)
             return result, "Scene appended." if result == {'FINISHED'} else "Failed to append scene."
 
         # 4) If it's a shop item, store it in the Shop Downloads folder

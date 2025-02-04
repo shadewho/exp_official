@@ -13,15 +13,17 @@ class ExploratoryPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        
+
         # Draw the mode toggle at the top:
         layout.prop(scene, "main_category", expand=True)
         
-        layout.operator("view3d.exp_modal", text="Start Exploratory Modal")
+        # Create the operator button and set the property:
+        op = layout.operator("view3d.exp_modal", text="Start Exploratory Modal")
+        op.launched_from_ui = False  # or True, as desired
+
         layout.prop(scene, "orbit_distance")
         layout.prop(scene, "zoom_factor")
         layout.prop(scene, "pitch_angle")
-
 
 # --------------------------------------------------------------------
 # NEW PANEL: Character, Actions, Audio (only visible in Explore mode)
