@@ -292,6 +292,12 @@ class PACKAGE_OT_Display(bpy.types.Operator):
     bl_label = "Show Package Thumbnails"
     bl_options = {'REGISTER'}
 
+    keep_mode: bpy.props.BoolProperty(
+        name="Keep Mode",
+        default=False,
+        description="Do not override the current UI mode"
+    )
+
     _handler = None
     _timer = None
 
@@ -306,7 +312,8 @@ class PACKAGE_OT_Display(bpy.types.Operator):
 
     def invoke(self, context, event):
         self._original_area_type = context.area.type  # record where we were invoked
-        context.scene.ui_current_mode = "BROWSE"
+        if not self.keep_mode:
+            context.scene.ui_current_mode = "BROWSE"
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
 
         self._handler = bpy.types.SpaceView3D.draw_handler_add(
@@ -529,8 +536,16 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         context.scene.ui_current_mode = "BROWSE"
         # Restore the cursor to default when canceling
         context.window.cursor_modal_restore()
+        
+        # Force an immediate redraw of the 3D Viewport:
+        if context.area:
+            context.area.tag_redraw()
+            # Optionally force a redraw via Blender’s redraw timer (ensures the update occurs immediately)
+            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        
         self.report({'INFO'}, "Package UI closed.")
         return {'CANCELLED'}
+
 
     def begin_loading_for_page(self, context, new_page):
         self._do_loading = True
@@ -611,12 +626,12 @@ class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
 
     def invoke(self, context, event):
         scene = context.scene
-        # Step A) If the UI isn't active, open it
-        if not hasattr(bpy.types.Scene, "gpu_image_buttons_data") or not bpy.types.Scene.gpu_image_buttons_data:
-            result = bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
-            if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):
-                self.report({'ERROR'}, "Failed to open Package Display UI.")
-                return {'CANCELLED'}
+        
+        # 1) Force the UI open every time
+        result = bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
+        if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):
+            self.report({'ERROR'}, "Failed to open Package Display UI.")
+            return {'CANCELLED'}
 
         # Step B) Turn on loading so user sees the 'loading' image right away
         scene.show_loading_image = True

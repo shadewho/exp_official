@@ -10,6 +10,7 @@ from .auth import load_token, save_token, clear_token
 import traceback
 from .main_config import (LOGIN_ENDPOINT, DOWNLOAD_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
 from .exp_api import login, logout
+from .helper_functions import download_thumbnail
 
 
 # ----------------------------------------------------------------------------
@@ -68,13 +69,11 @@ class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
             self.report({'ERROR'}, "You must log in first.")
             return {'CANCELLED'}
 
-        # Read the download code from the scene.
         download_code = context.scene.download_code.strip()
         if not download_code:
             self.report({'ERROR'}, "Please enter a download code first.")
             return {'CANCELLED'}
 
-        # Prepare the API call (assumes the endpoint returns package details, not a blend file)
         url = DOWNLOAD_ENDPOINT
         headers = {
             "Authorization": f"Bearer {token}",
@@ -87,21 +86,26 @@ class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
             if response.status_code == 200:
                 data = response.json()
                 if data.get("success"):
-                    # Assume the response now includes package details.
-                    # For example, the package details might be directly in the response,
-                    # or under a key such as "package". Adjust accordingly.
+                    # Inspect the package details
                     package_details = data.get("package", data)
-                    
-                    # Initialize the scene’s property group with the package details.
+                    print("Package Details:", package_details)
+
+                    # Initialize the scene property group with these details.
                     context.scene.my_addon_data.init_from_package(package_details)
-                    
-                    # Set the UI mode to detail.
+
+                    # Set UI mode to DETAIL.
                     context.scene.ui_current_mode = "DETAIL"
-                    # Optionally store the download code for reference.
                     context.scene.download_code = download_code
-                    
-                    # Invoke the custom UI operator to show the detail view.
-                    bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
+
+                    # Download thumbnail if available.
+                    thumbnail_url = package_details.get("thumbnail_url")
+                    if thumbnail_url:
+                        thumb_path = download_thumbnail(thumbnail_url)
+                        context.scene.selected_thumbnail = thumb_path
+                    else:
+                        context.scene.selected_thumbnail = ""
+
+                    bpy.ops.view3d.add_package_display('INVOKE_DEFAULT', keep_mode=True)
                     self.report({'INFO'}, "Showing package details for the world.")
                 else:
                     self.report({'ERROR'}, data.get("message", "Download code failed."))
