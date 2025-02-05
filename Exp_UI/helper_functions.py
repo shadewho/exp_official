@@ -17,6 +17,8 @@ from .image_button_UI.cache import (
     get_cached_path_if_exists,
     register_thumbnail_in_index
 )
+from bpy.app.handlers import persistent
+from .main_config import WORLD_DOWNLOADS_FOLDER  # or wherever you define it
 
 # ----------------------------------------------------------------------------------
 # Download Helper
@@ -255,3 +257,25 @@ def cleanup_downloaded_worlds():
             pass
 
 
+
+#-------------------------------------
+#clear the World Download temp folder
+#-------------------------------------
+@persistent
+def cleanup_world_downloads(dummy=None):
+    """
+    Removes all files within the World Downloads folder.
+    Called on certain Blender events (load_post, save_pre, etc.).
+    """
+    if not os.path.isdir(WORLD_DOWNLOADS_FOLDER):
+        return  # Folder doesn't even exist; nothing to do.
+
+    for filename in os.listdir(WORLD_DOWNLOADS_FOLDER):
+        file_path = os.path.join(WORLD_DOWNLOADS_FOLDER, filename)
+        if os.path.isfile(file_path):
+            try:
+                os.remove(file_path)
+                print(f"[INFO] Removed leftover file: {file_path}")
+            except OSError as e:
+                print(f"[WARNING] Could not remove {file_path}: {e}")
+        # If you expect subdirectories, handle them here too

@@ -67,12 +67,12 @@ def build_template_and_close():
                 native_aspect = native_w / native_h
 
             # We'll size the close button relative to template width, e.g. 4%
-            close_w = 0.04 * (x2 - x1)
+            close_w = 0.05 * (x2 - x1)
             close_h = close_w / native_aspect
 
             # % of template width/height:
             margin_right = 0.025 * (x2 - x1)
-            margin_top   = 0.03 * (y2 - y1)
+            margin_top   = 0.035 * (y2 - y1)
 
 
             close_x2 = x2 - margin_right
