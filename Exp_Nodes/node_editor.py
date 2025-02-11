@@ -118,7 +118,7 @@ class NODE_PT_exploratory_panel(bpy.types.Panel):
     
     def draw(self, context):
         layout = self.layout
-
+        scene = context.scene
         # --- Existing UI: Create Node Tree & instructions ---
         layout.operator("node.create_exploratory_node_tree", icon='NODETREE')
         layout.separator()
@@ -137,3 +137,126 @@ class NODE_PT_exploratory_panel(bpy.types.Panel):
                 # Delete button: when pressed, a confirmation will pop up.
                 del_op = row.operator("node.delete_exploratory_node_tree", text="", icon='TRASH')
                 del_op.tree_name = nt.name
+
+
+class NODE_PT_exploratory_proxy(bpy.types.Panel):
+    bl_label = "Proxy Meshes"
+    bl_idname = "NODE_PT_exploratory_proxy"
+    bl_space_type = 'NODE_EDITOR'  # Changed from 'VIEW_3D' to 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.main_category == 'CREATE'
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        layout.separator()
+        layout.label(text="Proxy Meshes")
+        row = layout.row()
+        row.template_list(
+            "EXPLORATORY_UL_ProxyMeshList",  # Your UIList class name
+            "",
+            scene,
+            "proxy_meshes",          # The collection property
+            scene,
+            "proxy_meshes_index",    # The integer property for the active item
+            rows=4
+        )
+
+        # The side column with add/remove operators
+        col = row.column(align=True)
+        col.operator("exploratory.add_proxy_mesh", text="", icon='ADD')
+        remove_op = col.operator("exploratory.remove_proxy_mesh", text="", icon='REMOVE')
+        remove_op.index = scene.proxy_meshes_index
+
+        layout.separator()
+
+        # Show details for the currently selected proxy mesh
+        idx = scene.proxy_meshes_index
+        if 0 <= idx < len(scene.proxy_meshes):
+            entry = scene.proxy_meshes[idx]
+            box = layout.box()
+            box.label(text="Selected Proxy Mesh Details:")
+            box.prop(entry, "name", text="Name")
+            box.prop(entry, "mesh_object", text="Mesh")
+            box.prop(entry, "is_moving", text="Is Moving?")
+
+        layout.separator()
+        layout.label(text="Spawn Object")
+        layout.prop(scene, "spawn_object", text="")
+
+
+class NODE_PT_character_actions_panel(bpy.types.Panel):
+    bl_label = "Character, Actions, and Audio"
+    bl_idname = "NODE_PT_character_actions_panel"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    @classmethod
+    def poll(cls, context):
+        # Show this panel when our custom node tree is active.
+        return context.space_data.tree_type == 'ExploratoryNodesTreeType'
+    
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        layout.separator()
+        layout.label(text="Character, Actions, and Audio:")
+
+        # Target Armature and Animation Slots
+        layout.prop(scene, "target_armature", text="Target Armature")
+        layout.label(text="Animation Slots")
+        layout.prop(scene.character_actions, "idle_action")
+        layout.prop(scene.character_actions, "walk_action")
+        layout.prop(scene.character_actions, "run_action")
+        layout.prop(scene.character_actions, "jump_action")
+        layout.prop(scene.character_actions, "fall_action")
+        layout.prop(scene.character_actions, "land_action")
+
+        layout.separator()
+        layout.label(text="Action Speeds:")
+        char_actions = scene.character_actions
+        layout.prop(char_actions, "idle_speed")
+        layout.prop(char_actions, "walk_speed")
+        layout.prop(char_actions, "run_speed")
+        layout.prop(char_actions, "jump_speed")
+        layout.prop(char_actions, "fall_speed")
+        layout.prop(char_actions, "land_speed")
+
+        layout.separator()
+        layout.label(text="Audio Control:")
+        layout.prop(scene, "enable_audio", text="Enable Audio")
+        layout.prop(scene, "audio_level", text="Master Volume")
+
+        layout.label(text="Audio Pointers:")
+        row = layout.row()
+        row.prop(scene.character_audio, "walk_sound", text="Walk Sound")
+        op = row.operator("exp_audio.test_sound_pointer", text="Test")
+        op.sound_slot = "walk_sound"
+
+        row = layout.row()
+        row.prop(scene.character_audio, "run_sound", text="Run Sound")
+        op = row.operator("exp_audio.test_sound_pointer", text="Test")
+        op.sound_slot = "run_sound"
+
+        row = layout.row()
+        row.prop(scene.character_audio, "jump_sound", text="Jump Sound")
+        op = row.operator("exp_audio.test_sound_pointer", text="Test")
+        op.sound_slot = "jump_sound"
+
+        row = layout.row()
+        row.prop(scene.character_audio, "fall_sound", text="Fall Sound")
+        op = row.operator("exp_audio.test_sound_pointer", text="Test")
+        op.sound_slot = "fall_sound"
+
+        row = layout.row()
+        row.prop(scene.character_audio, "land_sound", text="Land Sound")
+        op = row.operator("exp_audio.test_sound_pointer", text="Test")
+        op.sound_slot = "land_sound"
