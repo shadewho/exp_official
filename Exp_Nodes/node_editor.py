@@ -8,8 +8,8 @@ from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, un
 class ExploratoryNodesTree(bpy.types.NodeTree):
     """A custom node tree for the Exploratory Node Editor"""
     bl_idname = 'ExploratoryNodesTreeType'
-    bl_label = 'Exploratory Node Editor Tree'
-    bl_icon = 'NODETREE'
+    bl_label = 'Exploratory Nodes'
+    bl_icon = 'EXPERIMENTAL'
 
 # -----------------------------
 # Define a custom socket (optional)
@@ -61,22 +61,38 @@ node_categories = [
 # -----------------------------
 # Operator and Panel for the Node Editor sidebar
 # -----------------------------
+
+class NODE_OT_select_exploratory_node_tree(bpy.types.Operator):
+    """Select the specified Exploratory Node Tree"""
+    bl_idname = "node.select_exploratory_node_tree"
+    bl_label = "Select Node Tree"
+
+    tree_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        nt = bpy.data.node_groups.get(self.tree_name)
+        if nt:
+            context.space_data.node_tree = nt
+            self.report({'INFO'}, f"Selected node tree: {self.tree_name}")
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "Node tree not found")
+            return {'CANCELLED'}
+
 class NODE_OT_create_exploratory_node_tree(bpy.types.Operator):
     bl_idname = "node.create_exploratory_node_tree"
     bl_label = "Create Exploratory Node Tree"
     
     def execute(self, context):
+        # Create a new node group of our custom type.
         new_tree = bpy.data.node_groups.new("Exploratory Node Tree", 'ExploratoryNodesTreeType')
-        # Give the new node tree a fake user to prevent it from being removed automatically.
+        # IMPORTANT: Set the fake user so it is not removed when not used.
         new_tree.use_fake_user = True
-        
-        for area in context.screen.areas:
-            if area.type == 'NODE_EDITOR':
-                space = area.spaces.active
-                space.tree_type = 'ExploratoryNodesTreeType'
-                space.node_tree = new_tree
-                break
-        self.report({'INFO'}, "Exploratory Node Tree created (fake user enabled).")
+        # Optionally, assign a unique name here:
+        new_tree.name = f"Exploratory Node Tree {len(bpy.data.node_groups)}"
+        # Set the created tree as active.
+        context.space_data.node_tree = new_tree
+        self.report({'INFO'}, "Created new Exploratory Node Tree")
         return {'FINISHED'}
 
 # ----------------------------------------------------------
@@ -113,12 +129,14 @@ class NODE_PT_exploratory_panel(bpy.types.Panel):
     
     @classmethod
     def poll(cls, context):
-        # Show this panel only when the active node tree is of our custom type.
+        # Only show this panel when the active node tree is of our custom type.
         return context.space_data.tree_type == 'ExploratoryNodesTreeType'
     
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        active_tree = context.space_data.node_tree
+
         # --- Existing UI: Create Node Tree & instructions ---
         layout.operator("node.create_exploratory_node_tree", icon='NODETREE')
         layout.separator()
@@ -130,13 +148,17 @@ class NODE_PT_exploratory_panel(bpy.types.Panel):
         col = layout.column(align=True)
         for nt in bpy.data.node_groups:
             if nt.bl_idname == "ExploratoryNodesTreeType":
-                # Wrap each entry in a box so that it has a colored background.
+                # Each node tree is displayed in a box with a select button and a delete button.
                 box = col.box()
                 row = box.row(align=True)
-                row.label(text=nt.name)
-                # Delete button: when pressed, a confirmation will pop up.
-                del_op = row.operator("node.delete_exploratory_node_tree", text="", icon='TRASH')
-                del_op.tree_name = nt.name
+                # If this is the active tree, display an icon.
+                icon = 'CON_OBJECTSOLVER' if nt == active_tree else 'NONE'
+
+                select_op = row.operator("node.select_exploratory_node_tree",
+                                         text=nt.name, emboss=True, icon=icon)
+                select_op.tree_name = nt.name
+                row.operator("node.delete_exploratory_node_tree", text="", icon='TRASH').tree_name = nt.name
+
 
 
 class NODE_PT_exploratory_proxy(bpy.types.Panel):
@@ -146,9 +168,6 @@ class NODE_PT_exploratory_proxy(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
-    @classmethod
-    def poll(cls, context):
-        return context.scene.main_category == 'CREATE'
 
     def draw(self, context):
         layout = self.layout

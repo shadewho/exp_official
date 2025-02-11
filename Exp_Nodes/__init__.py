@@ -2,7 +2,7 @@ from .node_editor import (
     ExploratoryNodesTree, InteractionSocket, TriggerOutputSocket,
     NODE_OT_create_exploratory_node_tree, NODE_PT_exploratory_panel,
     NODE_OT_delete_exploratory_node_tree, node_categories, NODE_PT_character_actions_panel,
-    NODE_PT_exploratory_proxy
+    NODE_PT_exploratory_proxy, NODE_OT_select_exploratory_node_tree
 )
 from .trigger_nodes import TriggerNode
 from .reaction_nodes import ReactionNode, ReactionTriggerInputSocket, ReactionOutputSocket, NODE_OT_add_reaction_to_node
@@ -22,6 +22,7 @@ classes = [
     ReactionOutputSocket,
     NODE_OT_add_reaction_to_node,
     NODE_OT_create_exploratory_node_tree,
+    NODE_OT_select_exploratory_node_tree,
     NODE_PT_exploratory_panel,
     NODE_PT_character_actions_panel,
     NODE_PT_exploratory_proxy,
