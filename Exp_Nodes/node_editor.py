@@ -2,9 +2,6 @@
 import bpy
 from bpy.types import NodeTree, Node, NodeSocket
 from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, unregister_node_categories
-from .trigger_nodes import TriggerNode
-from .reaction_nodes import ReactionNode, ReactionTriggerInputSocket, ReactionOutputSocket, NODE_OT_add_reaction_to_node
-from .interaction_nodes import InteractionNode, NODE_OT_add_interaction_to_node, NODE_OT_remove_interaction_from_node
 # -----------------------------
 # Define the custom node tree
 # -----------------------------
@@ -56,8 +53,10 @@ node_categories = [
     NodeCategory("INTERACTIONS", "Interactions", items=[
         NodeItem("InteractionNodeType"),
     ]),
+    NodeCategory("OBJECTIVES", "Objectives", items=[
+        NodeItem("ObjectiveNodeType"),
+    ]),
 ]
-
 
 # -----------------------------
 # Operator and Panel for the Node Editor sidebar
@@ -68,61 +67,73 @@ class NODE_OT_create_exploratory_node_tree(bpy.types.Operator):
     
     def execute(self, context):
         new_tree = bpy.data.node_groups.new("Exploratory Node Tree", 'ExploratoryNodesTreeType')
+        # Give the new node tree a fake user to prevent it from being removed automatically.
+        new_tree.use_fake_user = True
+        
         for area in context.screen.areas:
             if area.type == 'NODE_EDITOR':
                 space = area.spaces.active
                 space.tree_type = 'ExploratoryNodesTreeType'
                 space.node_tree = new_tree
                 break
-        self.report({'INFO'}, "Exploratory Node Tree created.")
+        self.report({'INFO'}, "Exploratory Node Tree created (fake user enabled).")
         return {'FINISHED'}
 
+# ----------------------------------------------------------
+# Operator: Delete an Exploratory Node Tree with Confirmation
+# ----------------------------------------------------------
+class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
+    """Delete the selected Exploratory Node Tree (with confirmation)"""
+    bl_idname = "node.delete_exploratory_node_tree"
+    bl_label = "Delete Exploratory Node Tree"
+
+    tree_name: bpy.props.StringProperty()
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        node_tree = bpy.data.node_groups.get(self.tree_name)
+        if node_tree:
+            bpy.data.node_groups.remove(node_tree)
+            self.report({'INFO'}, f"Deleted node tree: {self.tree_name}")
+        else:
+            self.report({'WARNING'}, "Node tree not found")
+        return {'FINISHED'}
+
+# ----------------------------------------------------------
+# Panel: Exploratory Node Editor with Node Tree List
+# ----------------------------------------------------------
 class NODE_PT_exploratory_panel(bpy.types.Panel):
     bl_label = "Exploratory Node Editor"
+    bl_idname = "NODE_PT_exploratory_panel"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
     
     @classmethod
     def poll(cls, context):
+        # Show this panel only when the active node tree is of our custom type.
         return context.space_data.tree_type == 'ExploratoryNodesTreeType'
     
     def draw(self, context):
         layout = self.layout
+
+        # --- Existing UI: Create Node Tree & instructions ---
         layout.operator("node.create_exploratory_node_tree", icon='NODETREE')
         layout.separator()
         layout.label(text="Use Shift+A to add nodes by category.")
-
-# -----------------------------
-# Registration
-# -----------------------------
-
-classes = [
-    ExploratoryNodesTree,
-    InteractionSocket,
-    TriggerOutputSocket,
-    TriggerNode,
-    InteractionNode,
-    ReactionNode,
-    ReactionTriggerInputSocket,  # Include the custom input socket class.
-    ReactionOutputSocket,        # Include the custom output socket class.
-    NODE_OT_add_reaction_to_node,
-    NODE_OT_create_exploratory_node_tree,
-    NODE_PT_exploratory_panel,
-    NODE_OT_add_interaction_to_node,
-    NODE_OT_remove_interaction_from_node
-]
-
-
-def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
-    register_node_categories(ExploratoryNodesTree.bl_idname, node_categories)
-
-def unregister():
-    unregister_node_categories(ExploratoryNodesTree.bl_idname)
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
-
-if __name__ == "__main__":
-    register()
+        
+        # --- New Section: List all Node Trees ---
+        layout.separator()
+        layout.label(text="Existing Node Trees:")
+        col = layout.column(align=True)
+        for nt in bpy.data.node_groups:
+            if nt.bl_idname == "ExploratoryNodesTreeType":
+                # Wrap each entry in a box so that it has a colored background.
+                box = col.box()
+                row = box.row(align=True)
+                row.label(text=nt.name)
+                # Delete button: when pressed, a confirmation will pop up.
+                del_op = row.operator("node.delete_exploratory_node_tree", text="", icon='TRASH')
+                del_op.tree_name = nt.name
