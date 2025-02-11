@@ -30,58 +30,102 @@ class ReactionNode(ReactionNodeBase):
     bl_label = "Reaction Node"
     bl_icon = 'MODIFIER'
     
+    # Each Reaction Node stores its own reaction index.
+    reaction_index: bpy.props.IntProperty(name="Reaction Index", default=-1)
+
     def init(self, context):
-        # Create one input socket named "Trigger Input" using our custom blue socket.
+        # Create an input socket for receiving the trigger connection.
         self.inputs.new("ReactionTriggerInputSocketType", "Trigger Input")
-        # Create one output socket named "Output" using our custom light-green socket.
+        # Create an output socket for broadcasting reaction results.
         self.outputs.new("ReactionOutputSocketType", "Output")
         self.width = 300
-    
+
+    def update(self):
+        """
+        Called automatically when the node updates.
+        If the node is connected to a trigger and no reaction exists (reaction_index < 0),
+        automatically add a new reaction to the underlying interaction.
+        """
+        trigger_socket = self.inputs.get("Trigger Input")
+        if trigger_socket and trigger_socket.links and self.reaction_index < 0:
+            # Get the connected Trigger Node.
+            trigger_node = trigger_socket.links[0].from_node
+            if hasattr(trigger_node, "interaction_owner"):
+                owner_index = trigger_node.interaction_owner
+                scene = bpy.context.scene
+                if hasattr(scene, "custom_interactions") and 0 <= owner_index < len(scene.custom_interactions):
+                    inter = scene.custom_interactions[owner_index]
+                    new_reaction = inter.reactions.add()
+                    new_reaction.name = "Reaction_%d" % len(inter.reactions)
+                    self.reaction_index = len(inter.reactions) - 1
+                    print("Auto-added new reaction; reaction_index set to", self.reaction_index)
+
+    def copy(self, node):
+        """
+        When duplicating this node, automatically add a new reaction entry and assign
+        the new reaction index to the duplicated node.
+        """
+        try:
+            scene = bpy.context.scene
+            trigger_socket = self.inputs.get("Trigger Input")
+            if trigger_socket and trigger_socket.links:
+                trigger_node = trigger_socket.links[0].from_node
+                if hasattr(trigger_node, "interaction_owner"):
+                    owner_index = trigger_node.interaction_owner
+                    if hasattr(scene, "custom_interactions") and 0 <= owner_index < len(scene.custom_interactions):
+                        inter = scene.custom_interactions[owner_index]
+                        new_reaction = inter.reactions.add()
+                        new_reaction.name = "Reaction_%d" % len(inter.reactions)
+                        self.reaction_index = len(inter.reactions) - 1
+                    else:
+                        self.reaction_index = -1
+                else:
+                    self.reaction_index = -1
+            else:
+                self.reaction_index = -1
+        except Exception as e:
+            print("Error duplicating Reaction Node:", e)
+            self.reaction_index = -1
+
     def draw_buttons(self, context, layout):
-        # 1. Check if a trigger is connected.
+        # Force the node's UI to be active even if it isn't selected.
+        layout.active = True
+
+        # Call update() to automatically add a reaction if needed.
+        self.update()
+
+        # Verify a trigger is connected.
         trigger_socket = self.inputs.get("Trigger Input")
         if not trigger_socket or not trigger_socket.links:
             layout.label(text="No trigger connected", icon='ERROR')
             return
 
-        # 2. Get the trigger node (the first link)
+        # Get the connected trigger node to access its interaction data.
         trigger_node = trigger_socket.links[0].from_node
         if not hasattr(trigger_node, "interaction_owner"):
             layout.label(text="Trigger missing interaction data", icon='ERROR')
             return
 
-        # 3. Retrieve the owner index from the trigger node.
         owner_index = trigger_node.interaction_owner
         scene = context.scene
-
-        # 4. Validate the index against scene.custom_interactions.
         if owner_index < 0 or owner_index >= len(scene.custom_interactions):
             layout.label(text="Invalid interaction index", icon='ERROR')
             return
 
-        # 5. Get the corresponding interaction.
         inter = scene.custom_interactions[owner_index]
-        
-        # 6. Check if there are any reactions added.
-        if not inter.reactions or len(inter.reactions) == 0:
-            layout.label(text="No reactions added", icon='ERROR')
-            # Provide an operator button to add a reaction:
-            layout.operator("exploratory.add_reaction_to_interaction", text="Add Reaction", icon='ADD')
+        if self.reaction_index < 0 or self.reaction_index >= len(inter.reactions):
+            layout.label(text="No reaction selected", icon='INFO')
+            # With auto-creation in update(), this condition should rarely occur.
             return
 
-        # 7. If there is reaction data, check that the reactions_index is valid.
-        r_idx = inter.reactions_index
-        if r_idx < 0 or r_idx >= len(inter.reactions):
-            layout.label(text="Select a reaction", icon='INFO')
-            return
-
-        # 8. Get the active reaction and display its properties.
-        reaction = inter.reactions[r_idx]
+        # Retrieve the reaction corresponding to this node.
+        reaction = inter.reactions[self.reaction_index]
         box = layout.box()
         box.label(text="Current Reaction", icon='OBJECT_DATA')
         box.prop(reaction, "name", text="Name")
         box.prop(reaction, "reaction_type", text="Type")
-        
+
+
         if reaction.reaction_type == "CUSTOM_ACTION":
             box.prop(reaction, "custom_action_message", text="Notes")
             box.prop_search(reaction, "custom_action_target", bpy.context.scene, "objects", text="Object")
@@ -188,6 +232,53 @@ class ReactionNode(ReactionNodeBase):
     
     def draw_label(self):
         return "Reaction Node"
+
+
+class NODE_OT_add_reaction_to_node(bpy.types.Operator):
+    """Add a new reaction to this Reaction Node"""
+    bl_idname = "node.add_reaction_to_node"
+    bl_label = "Add Reaction to Node"
+
+    def execute(self, context):
+        node_tree = context.space_data.edit_tree
+        active_node = node_tree.nodes.active
+        if not active_node or active_node.bl_idname != "ReactionNodeType":
+            self.report({'WARNING'}, "Active node is not a Reaction Node.")
+            return {'CANCELLED'}
+        
+        # Get the linked trigger from the input socket.
+        if active_node.inputs["Trigger Input"].links:
+            trigger_node = active_node.inputs["Trigger Input"].links[0].from_node
+            if hasattr(trigger_node, "interaction_owner"):
+                owner_index = trigger_node.interaction_owner
+            else:
+                self.report({'WARNING'}, "Trigger node missing interaction data.")
+                return {'CANCELLED'}
+        else:
+            self.report({'WARNING'}, "No trigger connected.")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        if not hasattr(scene, "custom_interactions"):
+            self.report({'WARNING'}, "Scene has no custom_interactions.")
+            return {'CANCELLED'}
+        if owner_index < 0 or owner_index >= len(scene.custom_interactions):
+            self.report({'WARNING'}, "Invalid interaction index.")
+            return {'CANCELLED'}
+        inter = scene.custom_interactions[owner_index]
+        
+        # Add a new reaction entry to the interaction.
+        new_reaction = inter.reactions.add()
+        new_reaction.name = "Reaction_%d" % len(inter.reactions)
+        # Optionally, set default values for this reaction here.
+        
+        # Assign the new reaction's index to the Reaction Node.
+        active_node.reaction_index = len(inter.reactions) - 1
+        
+        self.report({'INFO'}, "New reaction added and linked to this node.")
+        return {'FINISHED'}
+
+# Make sure you register this operator.
 
 # Registration functions for this file
 def register():

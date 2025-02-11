@@ -12,7 +12,7 @@ class TriggerNode(TriggerNodeBase):
     def init(self, context):
         # Create an input socket to receive the Interaction Node’s data.
         self.inputs.new('InteractionSocketType', "Interaction")
-        # Create an output socket for the trigger signal using our purple socket.
+        # Create an output socket for the trigger signal using our custom purple socket.
         self.outputs.new('TriggerOutputSocketType', "Trigger Output")
         self.width = 300
     
@@ -34,9 +34,12 @@ class TriggerNode(TriggerNodeBase):
             print("Trigger node not connected to any Interaction Node!")
     
     def execute_trigger(self, context):
-        # Trigger execution logic goes here.
-        # (Do not perform any property writes here.)
-        print("Executing trigger node logic.")
+        # Loop through all outgoing links from the "Trigger Output" socket
+        if "Trigger Output" in self.outputs:
+            for link in self.outputs["Trigger Output"].links:
+                reaction_node = link.to_node
+                if hasattr(reaction_node, "execute_reaction"):
+                    reaction_node.execute_reaction(context)
     
     def draw_buttons(self, context, layout):
         """
