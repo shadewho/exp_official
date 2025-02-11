@@ -5,11 +5,13 @@ bl_info = {
     "description": "Explore and Create within Blender.",
     "version": (1, 0, 1),
 }
+
 import bpy
 
-
+# Import the submodules
 from . import Exp_Game
 from . import Exp_UI
+from . import Exp_Nodes
 from .exp_preferences import (
     ExploratoryAddonPreferences,
     EXPLORATORY_OT_SetKeybind,
@@ -19,21 +21,22 @@ from .exp_preferences import (
 def register():
     Exp_Game.register()
     Exp_UI.register()
-
+    Exp_Nodes.register()
     bpy.utils.register_class(ExploratoryAddonPreferences)
     bpy.utils.register_class(EXPLORATORY_OT_SetKeybind)
     bpy.utils.register_class(EXPLORATORY_OT_BuildCharacter)
-
+    
     print("Exploratory Addon registered.")
 
 def unregister():
-    Exp_Game.unregister()
-    Exp_UI.unregister()
-
     bpy.utils.unregister_class(EXPLORATORY_OT_BuildCharacter)
     bpy.utils.unregister_class(EXPLORATORY_OT_SetKeybind)
     bpy.utils.unregister_class(ExploratoryAddonPreferences)
-    print("Exploratory Addon unregistered.")
+    Exp_Nodes.unregister()
+    Exp_UI.unregister()
+    Exp_Game.unregister()
     
+    print("Exploratory Addon unregistered.")
+
 if __name__ == "__main__":
     register()
