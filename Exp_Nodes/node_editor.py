@@ -2,7 +2,9 @@
 import bpy
 from bpy.types import NodeTree, Node, NodeSocket
 from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, unregister_node_categories
-
+from .trigger_nodes import TriggerNode
+from .reaction_nodes import ReactionNode, ReactionTriggerInputSocket, ReactionOutputSocket
+from .interaction_nodes import InteractionNode, NODE_OT_add_interaction_to_node
 # -----------------------------
 # Define the custom node tree
 # -----------------------------
@@ -13,49 +15,33 @@ class ExploratoryNodesTree(bpy.types.NodeTree):
     bl_icon = 'NODETREE'
 
 # -----------------------------
-# Minimal example nodes for triggers and reactions.
-# -----------------------------
-class TriggerNode(bpy.types.Node):
-    bl_idname = 'TriggerNodeType'
-    bl_label = 'Trigger Node'
-    bl_icon = 'QUESTION'
-    
-    def init(self, context):
-        self.inputs.new('NodeSocketFloat', "Input")
-        self.outputs.new('NodeSocketFloat', "Output")
-    
-    def draw_label(self):
-        return self.bl_label
-
-class ReactionNode(bpy.types.Node):
-    bl_idname = 'ReactionNodeType'
-    bl_label = 'Reaction Node'
-    bl_icon = 'MODIFIER'
-    
-    def init(self, context):
-        self.inputs.new('NodeSocketFloat', "Input")
-        self.outputs.new('NodeSocketFloat', "Output")
-    
-    def draw_label(self):
-        return self.bl_label
-
-# -----------------------------
-# Import our new Interaction Node.
-# -----------------------------
-from .interaction_nodes import InteractionNode
-
-# -----------------------------
 # Define a custom socket (optional)
 # -----------------------------
-class ExploratorySocket(bpy.types.NodeSocket):
-    bl_idname = 'ExploratorySocketType'
-    bl_label = 'Exploratory Socket'
+
+# NEW: Custom socket for Interaction connections (blue)
+class InteractionSocket(bpy.types.NodeSocket):
+    bl_idname = 'InteractionSocketType'
+    bl_label = 'Interaction Socket'
     
     def draw(self, context, layout, node, text):
         layout.label(text=text)
     
     def draw_color(self, context, node):
-        return (0.5, 0.5, 1.0, 1.0)
+        # Blue color (you can adjust the values as you like)
+        return (0.4, 0.4, 1.0, 1.0)
+
+# NEW: Custom socket for Trigger Node outputs (purple)
+class TriggerOutputSocket(bpy.types.NodeSocket):
+    bl_idname = 'TriggerOutputSocketType'
+    bl_label = 'Trigger Output Socket'
+    
+    def draw(self, context, layout, node, text):
+        layout.label(text=text)
+    
+    def draw_color(self, context, node):
+        # Purple color (for example: 0.5 red, 0.0 green, 0.5 blue)
+        return (0.8, 0.3, 0.8, 1.0)
+
 
 # -----------------------------
 # Define Node Categories for the Shift+A menu
@@ -63,20 +49,18 @@ class ExploratorySocket(bpy.types.NodeSocket):
 node_categories = [
     NodeCategory("TRIGGERS", "Triggers", items=[
         NodeItem("TriggerNodeType"),
-        # Additional trigger nodes here.
     ]),
     NodeCategory("REACTIONS", "Reactions", items=[
         NodeItem("ReactionNodeType"),
-        # Additional reaction nodes here.
     ]),
     NodeCategory("INTERACTIONS", "Interactions", items=[
         NodeItem("InteractionNodeType"),
-        # Additional interaction nodes here.
     ]),
 ]
 
+
 # -----------------------------
-# Operator and Panel for the Node Editor sidebar.
+# Operator and Panel for the Node Editor sidebar
 # -----------------------------
 class NODE_OT_create_exploratory_node_tree(bpy.types.Operator):
     bl_idname = "node.create_exploratory_node_tree"
@@ -112,15 +96,21 @@ class NODE_PT_exploratory_panel(bpy.types.Panel):
 # -----------------------------
 # Registration
 # -----------------------------
+
 classes = [
     ExploratoryNodesTree,
+    InteractionSocket,
+    TriggerOutputSocket,
     TriggerNode,
-    ReactionNode,
     InteractionNode,
-    ExploratorySocket,
+    ReactionNode,
+    ReactionTriggerInputSocket,  # Include the custom input socket class.
+    ReactionOutputSocket,        # Include the custom output socket class.
     NODE_OT_create_exploratory_node_tree,
     NODE_PT_exploratory_panel,
+    NODE_OT_add_interaction_to_node,
 ]
+
 
 def register():
     for cls in classes:

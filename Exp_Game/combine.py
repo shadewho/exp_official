@@ -1,7 +1,7 @@
 import os
 
 # Path to your package folder
-package_path = 'C:/Users/spenc/Desktop/Exploratory/addons/Exploratory'
+package_path = 'C:/Users/spenc/Desktop/Exploratory/addons/Exploratory/Exp_Game'
 
 # Desired output path and file name
 output_path = 'C:/Users/spenc/Desktop/exploratory_combine_game'
@@ -15,7 +15,7 @@ output_file_path = os.path.join(output_path, output_file)
 
 # Configuration for filtering
 ignored_files = {'ui_backup.py','combine.py', '.gitignore', 'exp_spawn','exp_animations.py',
-                 'exp_custom_animations.py'
+                 'exp_custom_animations.py', 'exp_audio.py', 'exp_time.py', 'exp_modal.py', 'exp_startup.py', 'exp_modal.py'
                  }   # Files to exclude
 
 ignored_folders = {'__pycache__', '.git', 'exp_assets', 'Skins', 'Default_Armature', 'Exp_UI'}# Folders to exclude entirely (including .git)
