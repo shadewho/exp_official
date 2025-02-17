@@ -3,6 +3,36 @@
 import bpy
 from .auth import load_token
 
+class VIEW3D_PT_SubscriptionUsage(bpy.types.Panel):
+    bl_label = "Subscription Usage"
+    bl_idname = "VIEW3D_PT_subscription_usage"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.main_category == 'EXPLORE'
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        token = load_token()
+        
+        if not token:
+            layout.label(text="Please log in to see usage data", icon='ERROR')
+            return
+
+        addon_data = scene.my_addon_data
+        layout.label(text=f"Plan: {addon_data.subscription_tier}")
+        layout.label(text=f"Downloads: {addon_data.downloads_used} / {addon_data.downloads_limit}")
+        layout.label(text=f"Uploads: {addon_data.uploads_used}")
+        remaining = addon_data.downloads_limit - addon_data.downloads_used
+        layout.label(text=f"Remaining Downloads: {remaining}")
+
+        layout.operator("webapp.refresh_usage", text="Refresh Usage")
+
+
 class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
     bl_label = "Login / Logout"
     bl_idname = "VIEW3D_PT_package_display_login"

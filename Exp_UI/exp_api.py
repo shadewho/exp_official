@@ -12,7 +12,8 @@ from .main_config import (
     PACKAGES_ENDPOINT,
     LIKE_PACKAGE_ENDPOINT,
     COMMENT_PACKAGE_ENDPOINT,
-    SHOP_DOWNLOADS_FOLDER
+    SHOP_DOWNLOADS_FOLDER,
+    USAGE_ENDPOINT
 )
 from .helper_functions import download_blend_file, append_scene_from_blend
 import logging
@@ -334,3 +335,16 @@ def fetch_detail_for_file(file_id):
     except ValueError:
         logger.error("Received non-JSON response during fetch package details.")
         return None
+    
+
+def get_usage_data():
+    token = load_token()
+    if not token:
+        raise Exception("Not logged in")
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(USAGE_ENDPOINT, headers=headers, timeout=5)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("success"):
+        raise Exception(data.get("message", "Failed to fetch usage data"))
+    return data

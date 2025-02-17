@@ -168,7 +168,10 @@ class NODE_PT_exploratory_proxy(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
-
+    @classmethod
+    def poll(cls, context):
+        # Show this panel when our custom node tree is active.
+        return context.space_data.tree_type == 'ExploratoryNodesTreeType'
     def draw(self, context):
         layout = self.layout
         scene = context.scene

@@ -11,11 +11,12 @@ from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, DOWNLOAD_CODE_OT_File
 from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
-    VIEW3D_PT_PackageDisplay_CurrentItem
+    VIEW3D_PT_PackageDisplay_CurrentItem,
+    VIEW3D_PT_SubscriptionUsage
 )
 
 from .social_operators import (LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
-                               OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments
+                               OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp
 )
 from .addon_data import MyAddonComment, MyAddonSceneProps
 from bpy.props import PointerProperty
@@ -43,7 +44,9 @@ classes = (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
     VIEW3D_PT_PackageDisplay_CurrentItem,
+    VIEW3D_PT_SubscriptionUsage,
     EXPLORATORY_UL_Comments,
+    REFRESH_USAGE_OT_WebApp,
     FETCH_PAGE_THREADED_OT_WebApp,
     REMOVE_PACKAGE_OT_Display,
     PACKAGE_OT_Display,

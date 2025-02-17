@@ -16,14 +16,17 @@ BASE_URLS = {
 BASE_URL = BASE_URLS.get(ENVIRONMENT, BASE_URLS['development'])
 
 # Define specific endpoints
+# Define specific endpoints
 LOGIN_ENDPOINT = f"{BASE_URL}/login"
 LOGOUT_ENDPOINT = f"{BASE_URL}/logout"
 DOWNLOAD_ENDPOINT = f"{BASE_URL}/download"
 VALIDATE_TOKEN_ENDPOINT = f"{BASE_URL}/validate_token"
 PACKAGE_DETAILS_ENDPOINT = f"{BASE_URL}/package_details"
 PACKAGES_ENDPOINT = f"{BASE_URL}/packages"
-LIKE_PACKAGE_ENDPOINT = f"{BASE_URL}/like"  # Example
-COMMENT_PACKAGE_ENDPOINT = f"{BASE_URL}/comment"  # Example
+LIKE_PACKAGE_ENDPOINT = f"{BASE_URL}/like"
+COMMENT_PACKAGE_ENDPOINT = f"{BASE_URL}/comment"
+USAGE_ENDPOINT = f"{BASE_URL}/usage"
+
 
 
 

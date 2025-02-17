@@ -81,6 +81,24 @@ class MyAddonSceneProps(PropertyGroup):
         name="Active Comment Index",
         default=0
     )
+
+
+    subscription_tier: StringProperty(
+        name="Subscription Tier",
+        default="Free"
+    )
+    downloads_used: IntProperty(
+        name="Downloads Used",
+        default=0
+    )
+    downloads_limit: IntProperty(
+        name="Downloads Limit",
+        default=0
+    )
+    uploads_used: IntProperty(
+        name="Uploads Used",
+        default=0
+    )
     def init_from_package(self, pkg: dict):
         """
         A helper to initialize these props from the server's package dict (fetched_packages_data).

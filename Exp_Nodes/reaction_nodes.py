@@ -133,16 +133,19 @@ class ReactionNode(ReactionNodeBase):
             box.prop(reaction, "custom_action_loop", text="Loop?")
             if reaction.custom_action_loop:
                 box.prop(reaction, "custom_action_loop_duration", text="Loop Duration")
+
         elif reaction.reaction_type == "CHAR_ACTION":
             box.prop_search(reaction, "char_action_ref", bpy.data, "actions", text="Action")
             box.prop(reaction, "char_action_mode", text="Mode")
             if reaction.char_action_mode == 'LOOP':
                 box.prop(reaction, "char_action_loop_duration", text="Loop Duration")
+
         elif reaction.reaction_type == "OBJECTIVE_COUNTER":
             box.prop(reaction, "objective_index", text="Objective")
             box.prop(reaction, "objective_op", text="Operation")
             if reaction.objective_op in ("ADD", "SUBTRACT"):
                 box.prop(reaction, "objective_amount", text="Amount")
+
         elif reaction.reaction_type == "PROPERTY":
             box.prop(reaction, "property_data_path", text="Data Path")
             row = box.row()
@@ -164,6 +167,7 @@ class ReactionNode(ReactionNodeBase):
                 box.prop(reaction, "vector_value", text="New Vector")
             else:
                 box.label(text="No property detected or invalid path.")
+
         elif reaction.reaction_type == "TRANSFORM":
             box.prop_search(reaction, "transform_object", bpy.context.scene, "objects", text="Object")
             box.prop(reaction, "transform_mode", text="Mode")
@@ -175,6 +179,7 @@ class ReactionNode(ReactionNodeBase):
                 box.prop(reaction, "transform_scale", text="Scale")
             box.prop(reaction, "transform_duration", text="Duration")
             box.prop(reaction, "transform_distance", text="Distance")
+
         elif reaction.reaction_type == "CUSTOM_UI_TEXT":
             box.prop(reaction, "custom_text_subtype", text="Subtype")
             if reaction.custom_text_subtype == "STATIC":
@@ -187,6 +192,7 @@ class ReactionNode(ReactionNodeBase):
                 box.prop(reaction, "custom_text_margin_x", text="Margin X")
                 box.prop(reaction, "custom_text_margin_y", text="Margin Y")
                 box.prop(reaction, "custom_text_color", text="Color")
+                
             elif reaction.custom_text_subtype == "OBJECTIVE":
                 box.prop(reaction, "text_objective_index", text="Objective")
                 box.prop(reaction, "text_objective_format", text="Format")
@@ -198,6 +204,7 @@ class ReactionNode(ReactionNodeBase):
                 box.prop(reaction, "custom_text_margin_x", text="Margin X")
                 box.prop(reaction, "custom_text_margin_y", text="Margin Y")
                 box.prop(reaction, "custom_text_color", text="Color")
+
             elif reaction.custom_text_subtype == "OBJECTIVE_TIMER_DISPLAY":
                 box.prop(reaction, "text_objective_index", text="Objective")
                 box.prop(reaction, "custom_text_indefinite", text="Indefinite?")
@@ -208,14 +215,17 @@ class ReactionNode(ReactionNodeBase):
                 box.prop(reaction, "custom_text_margin_x", text="Margin X")
                 box.prop(reaction, "custom_text_margin_y", text="Margin Y")
                 box.prop(reaction, "custom_text_color", text="Color")
+                
         elif reaction.reaction_type == "OBJECTIVE_TIMER":
             box.prop(reaction, "objective_index", text="Timer Objective")
             box.prop(reaction, "objective_timer_op", text="Timer Operation")
+
         elif reaction.reaction_type == "MOBILITY_GAME":
             mg = reaction.mobility_game_settings
             box.prop(mg, "allow_movement", text="Allow Movement")
             box.prop(mg, "allow_jump", text="Allow Jump")
             box.prop(mg, "allow_sprint", text="Allow Sprint")
+            
         elif reaction.reaction_type == "SOUND":
             box.label(text="Play Packed Sound")
             box.prop(reaction, "sound_volume", text="Relative Volume")

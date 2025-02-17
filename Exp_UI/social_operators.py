@@ -1,12 +1,12 @@
 # social_operators.py
 
 from .auth import load_token
-from .main_config import LIKE_PACKAGE_ENDPOINT, COMMENT_PACKAGE_ENDPOINT
+from .main_config import LIKE_PACKAGE_ENDPOINT, COMMENT_PACKAGE_ENDPOINT, USAGE_ENDPOINT
 from .exp_api import like_package, comment_package
-import bpy
 import bpy
 import webbrowser
 from bpy.props import StringProperty
+import requests
 
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.like_package"
@@ -129,3 +129,37 @@ class EXPLORATORY_UL_Comments(bpy.types.UIList):
             # For GRID layout, just show something minimal
             layout.label(text=item.author)
 
+
+class REFRESH_USAGE_OT_WebApp(bpy.types.Operator):
+    bl_idname = "webapp.refresh_usage"
+    bl_label = "Refresh Subscription Usage"
+
+    def execute(self, context):
+        token = load_token()
+        if not token:
+            self.report({'ERROR'}, "Not logged in")
+            return {'CANCELLED'}
+
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            response = requests.get(USAGE_ENDPOINT, headers=headers, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            self.report({'ERROR'}, f"Error fetching usage: {e}")
+            return {'CANCELLED'}
+
+        if not data.get("success"):
+            self.report({'ERROR'}, data.get("message", "Usage data error"))
+            return {'CANCELLED'}
+
+        # Update scene properties with the data from the backend.
+        scene = context.scene
+        addon_data = scene.my_addon_data
+        addon_data.subscription_tier = data.get("subscription_tier", "Free")
+        addon_data.downloads_used = data.get("downloads_used", 0)
+        addon_data.downloads_limit = data.get("downloads_limit", 0)
+        addon_data.uploads_used = data.get("uploads_used", 0)
+
+        self.report({'INFO'}, "Subscription usage refreshed")
+        return {'FINISHED'}
