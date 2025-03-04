@@ -8,13 +8,18 @@ ENVIRONMENT = os.getenv('ADDON_ENV', 'development')
 
 BASE_URLS = {
     'development': 'http://127.0.0.1:5000/blender_api/api',
-    'production': 'https://exploratory.online/blender_api/api'
+    'production': 'https://exploratory.online//blender_api/api'
 }
 
+# Define a new configuration for user profiles:
+USER_PROFILE_BASE_URLS = {
+    'development': 'http://127.0.0.1:5000/user',
+    'production': 'https://exploratory.online/user'
+}
 
 # Select the appropriate base URL
 BASE_URL = BASE_URLS.get(ENVIRONMENT, BASE_URLS['development'])
-
+USER_PROFILE_BASE_URL = USER_PROFILE_BASE_URLS.get(ENVIRONMENT, USER_PROFILE_BASE_URLS['development'])
 # Define specific endpoints
 # Define specific endpoints
 LOGIN_ENDPOINT = f"{BASE_URL}/login"

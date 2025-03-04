@@ -107,14 +107,14 @@ def add_scene_properties():
 
     bpy.types.Scene.orbit_distance = bpy.props.FloatProperty(
         name="Orbit Distance",
-        default=5.0,
-        min=1.0,
+        default=3.0,
+        min=1.0,    
         max=10.0
     )
     bpy.types.Scene.zoom_factor = bpy.props.FloatProperty(
         name="Zoom Factor",
-        default=2.0,
-        min=1.0,
+        default=1.0,
+        min=0.5,
         max=15.0
     )
     bpy.types.Scene.pitch_angle = bpy.props.FloatProperty(

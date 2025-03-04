@@ -9,9 +9,12 @@ from .image_button_UI.drawing import load_image_buttons
 from .main_config import THUMBNAIL_CACHE_FOLDER
 from .image_button_UI.cache import (
     clear_image_datablocks,
-    save_thumbnail_index
+    save_thumbnail_index,
+    get_cached_metadata
 )
-from .helper_functions import download_thumbnail
+from .helper_functions import download_thumbnail, background_fetch_metadata
+from .cache_manager import cache_manager, ensure_package_data
+import time
 
 class CLEAR_ALL_DATA_OT_WebApp(bpy.types.Operator):
     """
@@ -161,3 +164,78 @@ class REFRESH_FILTERS_OT_WebApp(bpy.types.Operator):
         
         self.report({'INFO'}, "Threaded refresh started.")
         return {'FINISHED'}
+
+
+class PRELOAD_METADATA_OT_WebApp(bpy.types.Operator):
+    bl_idname = "webapp.preload_metadata"
+    bl_label = "Preload Metadata"
+    bl_description = ("Starts background threads to preload metadata (e.g. JSON and images) "
+                      "for all packages that aren’t already cached.")
+
+    def execute(self, context):
+        if not cache_manager.get_package_data():
+            if not ensure_package_data():
+                self.report({'WARNING'}, "No package data available to preload metadata.")
+                return {'CANCELLED'}
+        total_preloaded = 0
+        for page, packages in cache_manager.get_package_data().items():
+            for pkg in packages:
+                package_id = pkg.get("file_id")
+                if package_id is None:
+                    continue
+                if cache_manager.get_metadata(package_id) is None:
+                    background_fetch_metadata(package_id)
+                    total_preloaded += 1
+        self.report({'INFO'}, f"Started preloading metadata for {total_preloaded} packages.")
+        return {'FINISHED'}
+
+
+
+def preload_metadata_timer():
+    """
+    Timer callback that calls the PRELOAD_METADATA_OT_WebApp operator to preload metadata.
+    In addition, every hour, it validates and refreshes the persistent cache (thumbnails and metadata).
+    """
+    try:
+        bpy.ops.webapp.preload_metadata('INVOKE_DEFAULT')
+    except Exception as e:
+        print(f"[ERROR] Metadata preload timer: {e}")
+
+    # --- Begin merged cache validation logic ---
+    global _last_validation_time
+    current_time = time.time()
+    # Run full validation every hour (3600 seconds)
+    if current_time - _last_validation_time > 3600:
+        # Validate the persistent thumbnail JSON cache.
+        from .image_button_UI.cache import load_thumbnail_index, save_thumbnail_index
+        import os
+        index_data = load_thumbnail_index()
+        keys_to_remove = []
+        for key, entry in index_data.items():
+            file_path = entry.get("file_path")
+            last_access = entry.get("last_access", 0)
+            # Example rule: if the file is missing or hasn't been accessed in 7 days.
+            if not file_path or not os.path.exists(file_path) or (current_time - last_access > 7 * 24 * 3600):
+                print(f"[INFO] Removing stale thumbnail cache entry: {key}")
+                keys_to_remove.append(key)
+        for key in keys_to_remove:
+            index_data.pop(key, None)
+        save_thumbnail_index(index_data)
+        
+        # Validate the in-memory metadata cache.
+        from .cache_manager import cache_manager
+        for package_id, metadata in list(cache_manager.metadata_cache.items()):
+            metadata_time = metadata.get("last_access", 0)
+            # If metadata is older than 1 day, refresh it.
+            if current_time - metadata_time > 24 * 3600:
+                print(f"[INFO] Refreshing stale metadata for package {package_id}")
+                from .helper_functions import background_fetch_metadata
+                background_fetch_metadata(package_id)
+        
+        _last_validation_time = current_time
+        print("[INFO] Full cache validation completed.")
+
+    # --- End merged cache validation logic ---
+    
+    # Return the interval (in seconds) for the next call.
+    return 10.0  # This timer will run every 10 seconds.

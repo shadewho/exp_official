@@ -4,6 +4,7 @@ import os
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
+from ..helper_functions import download_thumbnail, format_relative_time
 
 from .config import (
     GRID_COLUMNS, GRID_ROWS, TEMPLATE_ASPECT_RATIO,
@@ -16,7 +17,7 @@ from .config import (
 )
 from .cache import get_or_load_image, get_or_create_texture
 from .utils import calculate_free_space, calculate_template_position
-
+from ..cache_manager import cache_manager  # Ensure the cache_manager is imported
 
 def build_template_and_close():
     """
@@ -156,7 +157,15 @@ def build_browse_content(template_item):
 
     # --- 3) Build thumbnail items ---
     for index, pkg in enumerate(visible_packages):
+        thumb_url = pkg.get("thumbnail_url")
         local_thumb_path = pkg.get("local_thumb_path")
+        
+        # If no valid local thumbnail exists, try to download it if a URL is provided.
+        if (not local_thumb_path or not os.path.exists(local_thumb_path)) and thumb_url:
+            local_thumb_path = download_thumbnail(thumb_url)
+            pkg["local_thumb_path"] = local_thumb_path
+
+        # If still missing, skip this package.
         if not local_thumb_path or not os.path.exists(local_thumb_path):
             continue
 
@@ -452,56 +461,45 @@ def build_detail_content(template_item):
 
     return data_list
 
-
 def load_image_buttons():
+    """
+    Build the entire UI data list (images + text items) for the current mode (BROWSE or DETAIL).
+    1) Grab the page's data from cache_manager, copy it into fetched_packages_data.
+    2) Build the "template" background, close icon, then either the thumbnail grid or detail view.
+    3) Return a list of draw items (for the draw callback).
+    """
     scene = bpy.context.scene
-    if not scene:
-        return []
 
-    # 1) Always build the base template + close button
-    data_list = build_template_and_close()
+    # (A) Which page are we on?
+    current_page = scene.current_thumbnail_page
 
-    # 2) Grab the 'Template' item (the background board) from data_list
-    template_item = next((b for b in data_list if b["name"] == "Template"), None)
+    # (C) Start building the draw items
+    data_list = []
 
-    # 3) Now build normal content (browse thumbnails or detail view).
-    #    We'll do this BEFORE the loading indicator so it appears behind.
+    # 1) Build the background template + close button
+    template_and_close = build_template_and_close()  # some function returning the main background + close icon
+    data_list.extend(template_and_close)
+
+    # 2) Find the template item in data_list so we know where to place content
+    template_item = next((b for b in data_list if b.get("name") == "Template"), None)
+
     if scene.ui_current_mode == "BROWSE":
-        thumbnails = build_browse_content(template_item)
-        data_list.extend(thumbnails)
+        # Build the grid of thumbnails
+        browse_content = build_browse_content(template_item)
+        data_list.extend(browse_content)
     elif scene.ui_current_mode == "DETAIL":
+        # Build a single large thumbnail + detail text + back button
         detail_content = build_detail_content(template_item)
         data_list.extend(detail_content)
 
-    # 4) If show_loading_image is True, *then* we add the loading indicator LAST,
-    #    so it draws *over* the existing content like an overlay.
+    # 3) If scene.show_loading_image is True, add the spinner
     if scene.show_loading_image and template_item:
-        loading_items = build_loading_indicator(template_item)
-        data_list.extend(loading_items)
+        loading_indicator = build_loading_indicator(template_item)
+        data_list.extend(loading_indicator)
 
     return data_list
 
-def draw_image_buttons_callback():
-    """Draw template, buttons, and text."""
-    data = bpy.types.Scene.gpu_image_buttons_data
-    if not data:
-        return
 
-    # 1) Draw all image/button items first
-    for item in data:
-        if item.get("type") != "text":
-            shader = item.get("shader")
-            batch_obj = item.get("batch")
-            gpu_texture = item.get("texture")
-            if shader and batch_obj and gpu_texture:
-                shader.bind()
-                shader.uniform_sampler("image", gpu_texture)
-                batch_obj.draw(shader)
-
-    # 2) Now draw all text items
-    for item in data:
-        if item.get("type") == "text":
-            draw_text_item(item)  # <--- Our new helper function
 
 # ------------------------------------------------------------------------
 # Text Drawing Utilities
@@ -654,6 +652,8 @@ def build_item_detail_text(data_list, template_item):
     # Heart symbol
     heart_char = "♥"
 
+    upload_date_formatted = format_relative_time(upload_date)
+
     # Add blank lines between items for spacing
     lines = [
         f"Title: {title}",
@@ -664,7 +664,7 @@ def build_item_detail_text(data_list, template_item):
         "",  # blank line
         f"Likes: {heart_char} {likes}",
         "",  # blank line
-        f"Upload Date: {upload_date}"
+        f"Uploaded: {upload_date_formatted} ago"
     ]
 
     x1, y1, x2, y2 = template_item["pos"]
@@ -823,3 +823,24 @@ def build_loading_indicator(template_item):
     })
 
     return data_list
+
+def draw_image_buttons_callback():
+    data = bpy.types.Scene.gpu_image_buttons_data
+    if not data:
+        return
+
+    # Draw non-text items first.
+    for item in data:
+        if item.get("type") != "text":
+            shader = item.get("shader")
+            batch_obj = item.get("batch")
+            gpu_texture = item.get("texture")
+            if shader and batch_obj and gpu_texture:
+                shader.bind()
+                shader.uniform_sampler("image", gpu_texture)
+                batch_obj.draw(shader)
+
+    # Then draw text items.
+    for item in data:
+        if item.get("type") == "text":
+            draw_text_item(item)

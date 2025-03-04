@@ -2,6 +2,7 @@
 
 import bpy
 from .auth import load_token
+from .helper_functions import format_relative_time
 
 class VIEW3D_PT_SubscriptionUsage(bpy.types.Panel):
     bl_label = "Subscription Usage"
@@ -98,8 +99,6 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
         layout.prop(scene, "download_code", text="Code")
         layout.operator("webapp.download_code", text="Find Item")
 
-
-
 class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
     bl_label = "Current Item"
     bl_idname = "VIEW3D_PT_package_display_current_item"
@@ -110,6 +109,7 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         return context.scene.main_category == 'EXPLORE'
+
     def draw(self, context):
         layout = self.layout
         scene = context.scene
@@ -121,49 +121,42 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
 
         addon_data = scene.my_addon_data
 
-        # Only show if we have a valid item
-        if (scene.ui_current_mode == "DETAIL" or addon_data.is_from_webapp) and addon_data.file_id > 0:
-            # 1) Author row
-            row = layout.row()
-            row.label(text=f"By {addon_data.author}")
+        # Only show details if in DETAIL mode and we have a valid file_id
+        if scene.ui_current_mode == "DETAIL" and addon_data.file_id > 0:
+            # 1) Title
+            layout.label(text=f"Title: {addon_data.package_name}")
+
+            # 2) Author
+            row = layout.row(align=True)
+            row.label(text="Author:")
             if addon_data.profile_url:
-                row.operator("webapp.open_url", text="(profile)", icon='URL').url = addon_data.profile_url
+                op = row.operator("webapp.open_url", text=addon_data.author, icon='URL')
+                op.url = addon_data.profile_url
+            else:
+                row.label(text=addon_data.author)
 
-            # 2) Item Name
-            layout.label(text=f"Item Name: {addon_data.package_name}")
-
-            # 3) Description
+            # 3) Description (one line)
             layout.label(text=f"Description: {addon_data.description}")
 
             # 4) Upload Date
-            layout.label(text=f"Upload Date: {addon_data.upload_date}")
+            layout.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
 
-            # 5) Likes
-            row_likes = layout.row()
-            row_likes.label(text=str(addon_data.likes), icon='FUND')  # Heart icon
-            row_likes.operator("webapp.like_package", text="Like")
+            # 5) Likes (heart + count)
+            row = layout.row(align=True)
+            like_op = row.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
+            like_op.skip_popup = True
 
-            # -- Comments Section --
+            # 6) Comments
             layout.label(text="Comments:")
-
-            # A) UIList for comments:
             row = layout.row()
             row.template_list(
-                "EXPLORATORY_UL_Comments",  # The UIList class
-                "",                         # list_id (not needed)
-                addon_data,                # The owner of the collection
-                "comments",                # The CollectionProperty name
-                addon_data,                # The active index owner
-                "active_comment_index",    # The name of the active index
+                "EXPLORATORY_UL_Comments", "",
+                addon_data, "comments",
+                addon_data, "active_comment_index",
                 rows=5
             )
-
-            # B) “Add Comment” operator with no text, plus icon
-            layout.operator("webapp.comment_package", text="", icon='ADD')
+            layout.operator("webapp.comment_package", text="Add Comment", icon='ADD').skip_popup = False
 
         else:
             layout.label(text="No active item to display.", icon='INFO')
-
-
-
 

@@ -46,14 +46,9 @@ class LOGOUT_OT_WebApp(bpy.types.Operator):
 
     def execute(self, context):
         clear_token()
-        # Clear cached thumbnails
-        if os.path.exists(THUMBNAIL_CACHE_FOLDER):
-            shutil.rmtree(THUMBNAIL_CACHE_FOLDER)
-        os.makedirs(THUMBNAIL_CACHE_FOLDER, exist_ok=True)
-
-        self.report({'INFO'}, "Logged out successfully, cache cleared.")
+        # Removed cache clearing code so that persistent cached data is preserved.
+        self.report({'INFO'}, "Logged out successfully. Cached data preserved.")
         return {'FINISHED'}
-
 
 # ----------------------------------------------------------------------------
 # DOWNLOAD CODE

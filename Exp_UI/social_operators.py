@@ -7,42 +7,42 @@ import bpy
 import webbrowser
 from bpy.props import StringProperty
 import requests
+from .helper_functions import format_relative_time
 
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.like_package"
     bl_label = "Like Package"
 
+    skip_popup: bpy.props.BoolProperty(default=True)
+    launched_from_persistent: bpy.props.BoolProperty(default=False)
+
     def execute(self, context):
         file_id = context.scene.my_addon_data.file_id
         try:
             data = like_package(file_id)
-            # Now we won't get an exception for HTTP 400 "Already liked"
-            # Instead, data might be { "success": false, "message": "Already liked" }
-
             if data.get("success"):
                 new_likes = data.get("likes")
                 if new_likes is not None:
                     context.scene.my_addon_data.likes = new_likes
                 self.report({'INFO'}, f"Liked item! (Total likes: {new_likes})")
-                return {'FINISHED'}
-
             else:
-                # success=False
                 msg = data.get("message", "Failed to like package.")
-                # Check if it's "Already liked"
                 if "Already liked" in msg:
                     self.report({'INFO'}, "You already liked this item.")
-                    # No red error popup. Let's just return FINISHED or CANCELLED at your preference.
                     return {'CANCELLED'}
-
-                # Some other failure scenario
                 self.report({'ERROR'}, msg)
                 return {'CANCELLED'}
-
         except Exception as e:
-            # This catches network issues, 401, etc.
             self.report({'ERROR'}, f"Like error: {e}")
             return {'CANCELLED'}
+
+        # Simply refresh the UI so the persistent popup remains visible.
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        # Since we want the operator to run immediately, no popup is needed.
+        return self.execute(context)
 
 
 
@@ -50,33 +50,61 @@ class COMMENT_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.comment_package"
     bl_label = "Comment on Item"
 
-    comment_text: bpy.props.StringProperty(name="Comment")
+    # Local property used when not in persistent mode
+    comment_text: bpy.props.StringProperty(name="Comment", default="")
+    skip_popup: bpy.props.BoolProperty(default=False)
+    launched_from_persistent: bpy.props.BoolProperty(default=False)
 
     def execute(self, context):
+        # If launched from the persistent popup, use scene.comment_text if needed
+        if self.launched_from_persistent:
+            if not self.comment_text:
+                self.comment_text = context.scene.comment_text
+
+        if not self.comment_text.strip():
+            self.report({'ERROR'}, "Comment cannot be empty")
+            return {'CANCELLED'}
+
         file_id = context.scene.my_addon_data.file_id
         try:
             data = comment_package(file_id, self.comment_text)
             if data.get("success"):
-                # The server returns {"success": True, "comment": {...}} on success
                 comment_data = data.get("comment", {})
                 new_comment = context.scene.my_addon_data.comments.add()
                 new_comment.author = comment_data.get("author", "Anonymous")
                 new_comment.text = comment_data.get("text", self.comment_text)
                 new_comment.timestamp = comment_data.get("timestamp", "")
                 self.report({'INFO'}, "Comment added!")
-                return {'FINISHED'}
+                # If in persistent mode, clear the scene property so the text field resets.
+                if self.launched_from_persistent:
+                    context.scene.comment_text = ""
+                else:
+                    self.comment_text = ""
             else:
                 self.report({'ERROR'}, data.get("message", "Failed to add comment."))
+                return {'CANCELLED'}
         except Exception as e:
             self.report({'ERROR'}, f"Connection error: {e}")
-        return {'CANCELLED'}
+            return {'CANCELLED'}
+
+        context.area.tag_redraw()
+        return {'FINISHED'}
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+        if self.launched_from_persistent or self.skip_popup:
+            # In persistent mode, execute immediately (using the scene property)
+            return self.execute(context)
+        else:
+            # In other contexts, bring up the dialog for text input.
+            return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
         layout = self.layout
-        layout.prop(self, "comment_text")
+        # Only draw the text field if NOT launched from persistent mode.
+        if not self.launched_from_persistent:
+            layout.prop(self, "comment_text")
+
+
 
 
 
@@ -163,3 +191,63 @@ class REFRESH_USAGE_OT_WebApp(bpy.types.Operator):
 
         self.report({'INFO'}, "Subscription usage refreshed")
         return {'FINISHED'}
+
+class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
+    bl_idname = "view3d.popup_social_details"
+    bl_label = "World Social Details"
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_popup(self, width=400)
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        addon_data = scene.my_addon_data
+
+        layout.label(text="World Review", icon='WORLD')
+
+        if addon_data.file_id > 0:
+            box_info = layout.box()
+            box_info.label(text=f"Title: {addon_data.package_name}", icon='BOOKMARKS')
+            box_info.label(text=f"Description: {addon_data.description}")
+            box_info.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
+
+            row_author = box_info.row(align=True)
+            row_author.label(text=f"Author: {addon_data.author}")
+            if addon_data.profile_url:
+                op = row_author.operator("webapp.open_url", text="Profile")
+                op.url = addon_data.profile_url
+
+            row_likes = layout.row(align=True)
+            row_likes.label(text=f"{addon_data.likes} Likes", icon='FUND')
+            op_like = row_likes.operator("webapp.like_package", text="Like")
+            # For persistent mode, we want immediate execution
+            op_like.skip_popup = True
+            op_like.launched_from_persistent = True
+
+            layout.separator()
+            layout.label(text="Comments:", icon='COMMUNITY')
+
+            row_comments = layout.row()
+            row_comments.template_list(
+                "EXPLORATORY_UL_Comments", "", addon_data,
+                "comments", addon_data, "active_comment_index", rows=5
+            )
+
+            layout.separator()
+            # Display an inline text field bound to the scene property.
+
+            row = layout.row(align=True)
+            row.prop(scene, "comment_text", text="", emboss=True)
+            op_comment = row.operator("webapp.comment_package", text="", icon='ADD')
+            op_comment.launched_from_persistent = True
+            op_comment.skip_popup = True
+
+        else:
+            layout.label(text="No social data available.", icon='INFO')
+
+
+

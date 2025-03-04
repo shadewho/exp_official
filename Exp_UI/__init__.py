@@ -7,6 +7,8 @@ bl_info = {
     "version": (1, 0, 2),
 }
 
+from .helper_functions import on_filter_changed
+
 from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, DOWNLOAD_CODE_OT_File
 from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
@@ -16,7 +18,8 @@ from .panel import (
 )
 
 from .social_operators import (LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
-                               OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp
+                               OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp,
+                               POPUP_SOCIAL_DETAILS_OT
 )
 from .addon_data import MyAddonComment, MyAddonSceneProps
 from bpy.props import PointerProperty
@@ -31,7 +34,9 @@ from .image_button_UI.operators import (
 
 from .cache_memory_operators import (CLEAR_ALL_DATA_OT_WebApp,
                                      CLEAR_THUMBNAILS_ONLY_OT_WebApp, 
-                                     REFRESH_FILTERS_OT_WebApp
+                                     REFRESH_FILTERS_OT_WebApp,
+                                     PRELOAD_METADATA_OT_WebApp,
+                                     preload_metadata_timer
 )
 
 classes = (
@@ -53,10 +58,13 @@ classes = (
     APPLY_FILTERS_SHOWUI_OT,
     CLEAR_THUMBNAILS_ONLY_OT_WebApp,
     CLEAR_ALL_DATA_OT_WebApp,
-    REFRESH_FILTERS_OT_WebApp
+    REFRESH_FILTERS_OT_WebApp,
+    PRELOAD_METADATA_OT_WebApp,
+    POPUP_SOCIAL_DETAILS_OT
 )
 
 def register():
+    bpy.app.timers.register(preload_metadata_timer, first_interval=5.0)
     # 1) Register your comment sub-class
     bpy.utils.register_class(MyAddonComment)
     # 2) Register your main property group
@@ -101,7 +109,8 @@ def register():
             ('world', 'World', ''),
             ('shop_item', 'Shop Item', '')
         ],
-        default='world'
+        default='world',
+        update=on_filter_changed  # Use our new callback here.
     )
 
     bpy.types.Scene.package_sort_by = bpy.props.EnumProperty(
@@ -113,20 +122,22 @@ def register():
             ('popular', 'Popular', ''),
             ('random', 'Random', '')
         ],
-        default='newest'
+        default='newest',
+        update=on_filter_changed
     )
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
         description="Filter packages by name or author",
-        default=""
+        default="",
+        update=on_filter_changed
     )
 
     #DOWNLOAD CODE
     bpy.types.Scene.download_code = bpy.props.StringProperty(
         name="Download Code",
         description="Enter the download code for the .blend item"
-)
+    )
 
     bpy.types.Scene.current_thumbnail_page = bpy.props.IntProperty(
         name="Current Thumbnail Page",
@@ -147,12 +158,19 @@ def register():
         description="Toggle the loading indicator on/off",
         default=False
     )
+
+    bpy.types.Scene.comment_text = bpy.props.StringProperty(name="Comment", default="")
+
     
     # Register other add-on classes, properties, and handlers here
 
     # Register backend, panel, and social operators
     for cls in classes:
         bpy.utils.register_class(cls)
+
+    # *** New Code: Preload in-memory thumbnails from disk cache ***
+    from .image_button_UI.cache import preload_in_memory_thumbnails
+    preload_in_memory_thumbnails()
 
 def unregister():
     # Remove properties
@@ -168,6 +186,8 @@ def unregister():
     del bpy.types.Scene.current_thumbnail_page
     del bpy.types.Scene.total_thumbnail_pages
     del bpy.types.Scene.download_code
+    del bpy.types.Scene.comment_text
+
     bpy.utils.unregister_class(MyAddonComment)
     bpy.utils.unregister_class(MyAddonSceneProps)
 

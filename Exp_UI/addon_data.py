@@ -8,6 +8,7 @@ from bpy.props import (
     StringProperty,
     CollectionProperty
 )
+from .main_config import USER_PROFILE_BASE_URL
 
 class MyAddonComment(PropertyGroup):
     """
@@ -112,4 +113,4 @@ class MyAddonSceneProps(PropertyGroup):
         self.description = pkg.get("description", "No description")
         self.upload_date = pkg.get("upload_date", "N/A")
         # Build out the profile link:
-        self.profile_url = f"http://127.0.0.1:5000/user/{self.author}"
+        self.profile_url = f"{USER_PROFILE_BASE_URL}/{self.author}"

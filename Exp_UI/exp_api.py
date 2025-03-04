@@ -18,6 +18,8 @@ from .main_config import (
 from .helper_functions import download_blend_file, append_scene_from_blend
 import logging
 from .auth import load_token, save_token, clear_token
+from .cache_manager import cache_manager
+from .main_config import (PACKAGE_DETAILS_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
 
 # Configure logging for api.py
 logger = logging.getLogger(__name__)

@@ -5,20 +5,24 @@ import requests
 import bpy
 import uuid
 import traceback
+import threading
 from urllib.parse import urlparse
 
 from .main_config import (
     DOWNLOAD_ENDPOINT, VALIDATE_TOKEN_ENDPOINT, ADDON_FOLDER,
     WORLD_DOWNLOADS_FOLDER, SHOP_DOWNLOADS_FOLDER,
-    TOKEN_FILE, THUMBNAIL_CACHE_FOLDER
+    TOKEN_FILE, THUMBNAIL_CACHE_FOLDER, PACKAGE_DETAILS_ENDPOINT
 )
 
 from .image_button_UI.cache import (
     get_cached_path_if_exists,
-    register_thumbnail_in_index
+    register_thumbnail_in_index, load_token,
+    register_metadata_in_index, get_cached_metadata
 )
 from bpy.app.handlers import persistent
-from .main_config import WORLD_DOWNLOADS_FOLDER  # or wherever you define it
+from datetime import datetime, timezone
+from .cache_manager import filter_cached_data
+
 
 # ----------------------------------------------------------------------------------
 # Download Helper
@@ -130,23 +134,24 @@ def append_scene_from_blend(local_blend_path):
 # Thumbnail Download Helper
 # ----------------------------------------------------------------------------------
 
-def download_thumbnail(url):
+def download_thumbnail(url, file_id=None):
     """
-    Download the thumbnail *immediately* on the main thread, 
-    storing it in THUMBNAIL_CACHE_FOLDER, and return local_path or None.
+    Download the thumbnail on the main thread, store it in THUMBNAIL_CACHE_FOLDER,
+    register it in the JSON index, and return the local path.
+    If file_id is provided, it will be used as the cache key.
     """
-    cached_path = get_cached_path_if_exists(url)
+    # Use file_id as key if provided; otherwise fallback to URL.
+    key = file_id if file_id is not None else url
+    cached_path = get_cached_path_if_exists(key)
     if cached_path:
-        print(f"[INFO] Thumbnail is already cached: {cached_path}")
+        print(f"[INFO] Thumbnail already cached: {cached_path}")
         return cached_path
 
-    # Build a local_path from the URL (like before)
     parsed = urlparse(url)
     base_name = os.path.basename(parsed.path) or "unknown_thumbnail.png"
     _, ext = os.path.splitext(base_name)
     if ext.lower() not in [".png", ".jpg", ".jpeg", ".gif", ".bmp"]:
         ext = ".png"
-
     local_filename = base_name
     local_path = os.path.join(THUMBNAIL_CACHE_FOLDER, local_filename)
     print(f"[INFO] Downloading thumbnail to: {local_path}")
@@ -157,13 +162,12 @@ def download_thumbnail(url):
             print(f"[ERROR] Failed to download thumbnail. HTTP {response.status_code}")
             return None
 
-        # Write the thumbnail to disk immediately
         with open(local_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-
-        # Return the local_path so calling code knows we have it
+        # Register the thumbnail in the JSON cache using the chosen key.
+        register_thumbnail_in_index(key, local_path, thumbnail_url=url)
         return local_path
     except Exception as e:
         print(f"[ERROR] Exception during thumbnail download: {e}")
@@ -279,3 +283,105 @@ def cleanup_world_downloads(dummy=None):
             except OSError as e:
                 print(f"[WARNING] Could not remove {file_path}: {e}")
         # If you expect subdirectories, handle them here too
+
+
+# -------------------------------------------------------------------
+# Background Threading for Metadata Fetching
+# -------------------------------------------------------------------
+
+def background_fetch_metadata(package_id):
+    if get_cached_metadata(package_id) is not None:
+        print(f"[INFO] Metadata for package {package_id} already cached.")
+        return  # Already cached, so skip lazy load.
+    # Otherwise, start background loading.
+    thread = threading.Thread(target=_fetch_metadata_worker, args=(package_id,), daemon=True)
+    thread.start()
+    print(f"[INFO] Started background thread to fetch metadata for package {package_id}.")
+
+
+    thread = threading.Thread(target=_fetch_metadata_worker, args=(package_id,), daemon=True)
+    thread.start()
+    print(f"[INFO] Started background thread to fetch metadata for package {package_id}.")
+
+def _fetch_metadata_worker(package_id):
+    token = load_token()
+    if not token:
+        print("[ERROR] Cannot fetch metadata; not logged in.")
+        return
+
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{PACKAGE_DETAILS_ENDPOINT}/{package_id}"
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("success"):
+            metadata = data  # Adjust this if your JSON structure differs.
+            # --- Integrate image download ---
+            thumb_url = metadata.get("thumbnail_url")
+            if thumb_url:
+                local_thumb_path = download_thumbnail(thumb_url)
+                metadata["local_thumb_path"] = local_thumb_path
+                print(f"[INFO] Downloaded thumbnail for package {package_id} to {local_thumb_path}")
+            else:
+                metadata["local_thumb_path"] = None
+
+            register_metadata_in_index(package_id, metadata)
+            print(f"[INFO] Successfully fetched and cached metadata for package {package_id}.")
+        else:
+            print(f"[ERROR] Failed to fetch metadata for package {package_id}: {data.get('message', 'Unknown error')}")
+    except Exception as e:
+        print(f"[ERROR] Exception while fetching metadata for package {package_id}: {e}")
+
+
+
+
+# -------------------------------------------------------------------
+# Time Utils
+# -------------------------------------------------------------------
+
+def format_relative_time(upload_date_str):
+    """
+    Converts an upload date string to a relative format.
+    Example outputs:
+      - "50s" for 50 seconds ago
+      - "2m" for 2 minutes ago
+      - "3h" for 3 hours ago
+      - "5d" for 5 days ago
+      - "1y" for 1 year ago
+
+    This function assumes the upload_date_str is in ISO 8601 format.
+    Adjust the parsing logic if your format differs.
+    """
+    try:
+        # Try ISO format first
+        dt = datetime.fromisoformat(upload_date_str)
+    except Exception:
+        # Fallback: try a common format (adjust as needed)
+        try:
+            dt = datetime.strptime(upload_date_str, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            # If parsing fails, return the original string
+            return upload_date_str
+
+    # Ensure dt is timezone aware (assume UTC if not provided)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    diff = now - dt
+    seconds = diff.total_seconds()
+
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        minutes = int(seconds / 60)
+        return f"{minutes}m"
+    elif seconds < 86400:
+        hours = int(seconds / 3600)
+        return f"{hours}h"
+    elif seconds < 31536000:  # less than a year
+        days = int(seconds / 86400)
+        return f"{days}d"
+    else:
+        years = int(seconds / 31536000)
+        return f"{years}y"

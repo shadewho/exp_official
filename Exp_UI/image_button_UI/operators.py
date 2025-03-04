@@ -2,20 +2,23 @@
 
 import bpy
 import math
+import os
 import requests
 from gpu_extras.batch import batch_for_shader
 from ..auth import load_token
 from .drawing import load_image_buttons, draw_image_buttons_callback
 from .utils import calculate_free_space, calculate_template_position, viewport_changed
-from .cache import get_or_load_image, get_or_create_texture, clear_image_datablocks
+from .cache import (get_or_load_image, get_or_create_texture, clear_image_datablocks,
+                     get_cached_metadata
+                )
 from .config import THUMBNAILS_PER_PAGE
-from ..helper_functions import download_thumbnail
+from ..helper_functions import download_thumbnail, background_fetch_metadata
 from ..main_config import PACKAGES_ENDPOINT
 from ..exp_api import fetch_packages, explore_package, fetch_detail_for_file
 import threading
 import queue
 from ..exp_api import download_blend_file, append_scene_from_blend
-
+from ..cache_manager import cache_manager, filter_cached_data
 # A global queue for background fetch results
 fetch_page_queue = queue.Queue()
 load_page_queue = queue.Queue()
@@ -31,11 +34,18 @@ THUMBNAILS_PER_PAGE = 8
 # ------------------------------------------------------------------------
 class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
     """
-    A single operator that fetches the specified page (including page 1) in a background thread,
-    does progressive thumbnail loading, and caches the results so we don't re-fetch next time.
+    Fetches items for the user’s current filter/search or uses cached data,
+    always paginating the final data in 8-item pages.
+    
+    Steps:
+      1) Try to retrieve cached data.
+      2) If no cache, spawn a background thread to fetch from the server.
+      3) As each package’s thumbnail download finishes, update the master list
+         (stored on the scene) and immediately re-paginate the UI.
+      4) When the full fetch is complete, finalize pagination.
     """
     bl_idname = "webapp.fetch_page"
-    bl_label = "Fetch Page (Threaded, Progressive)"
+    bl_label = "Fetch Page (Threaded, Unified Cache+Lazy)"
     bl_options = {'REGISTER'}
 
     page_number: bpy.props.IntProperty(
@@ -47,234 +57,290 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
     _timer = None
 
     def execute(self, context):
-        """
-        1) If page is cached, just use that data and return FINISHED.
-        2) Otherwise, spawn a background thread:
-           - fetches the package list for this page (offset/limit),
-           - sends "PACKAGE_LIST" to the queue,
-           - downloads thumbnails, sending "PACKAGE_READY" for each,
-           - finally sends "SUCCESS" or "ERROR".
-        3) Set up a modal timer so we can handle progressive updates in modal().
-        """
-
-        # --- A) Create the all_pages_data cache if not present
-        if not hasattr(bpy.types.Scene, "all_pages_data"):
-            bpy.types.Scene.all_pages_data = {}
-
         scene = context.scene
-        page_num = self.page_number
-
-        # --- B) Check cache
-        cached_page = bpy.types.Scene.all_pages_data.get(page_num)
-        if cached_page:
-            # Already cached -> just set fetched_packages_data
-            bpy.types.Scene.fetched_packages_data = cached_page
-            scene.current_thumbnail_page = page_num
-            self.report({'INFO'}, f"Page {page_num} is already cached. Using local data.")
-            # Optionally force UI redraw
-            if context.area:
-                context.area.tag_redraw()
-            return {'FINISHED'}
-
-        # Otherwise, we do a new fetch in background
-
-        # Check login
-        token = load_token()
-        if not token:
-            self.report({'ERROR'}, "You must log in first.")
-            return {'CANCELLED'}
-
-        # Build offset/limit
-        offset = (page_num - 1) * 8
-        limit  = 8
-
-        # Gather extra filter params from scene
-        file_type = scene.package_item_type
-        sort_by   = scene.package_sort_by
+        file_type = scene.package_item_type  # "world" or "shop_item"
+        sort_by = scene.package_sort_by        # "newest", etc.
         search_query = scene.package_search_query.strip()
+        requested_page = self.page_number
 
-        params = {
-            "file_type": file_type,
-            "sort_by":   sort_by,
-            "offset":    offset,
-            "limit":     limit
-        }
-        if search_query:
-            params["search_query"] = search_query
+        # Use the new helper to filter cached data
+        cached_filtered = filter_cached_data(file_type, search_query)
 
-        # Clear any old results from the queue
-        with fetch_page_queue.mutex:
-            fetch_page_queue.queue.clear()
+        if cached_filtered:
+            self.report({'INFO'}, f"Using cached data: {len(cached_filtered)} items found for filter '{sort_by}'.")
+            # Immediately finalize UI with available cached data
+            self._finalize_data(context, cached_filtered, requested_page, sort_by)
 
-        # Thread function
-        def _fetch_worker():
-            try:
-                data = fetch_packages(params)
-                if not data.get("success"):
-                    fetch_page_queue.put(("ERROR", data.get("message", "Unknown error")))
-                    return
+            # If cached data is insufficient for a full page, start a lazy load to fetch missing items
+            if len(cached_filtered) < THUMBNAILS_PER_PAGE:
+                self.lazy_load_missing_data(file_type, sort_by, search_query, len(cached_filtered))
+            return {'FINISHED'}
+        else:
+            self.report({'INFO'}, "No cached data found; fetching full data from server.")
+            # Proceed with the full server fetch in a background thread
+            threading.Thread(target=self._fetch_worker, args=(file_type, sort_by, search_query), daemon=True).start()
+            scene.show_loading_image = True
+            wm = context.window_manager
+            self._timer = wm.event_timer_add(0.2, window=context.window)
+            wm.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
 
-                packages = data.get("packages", [])
-                total_count = data.get("total_count", 0)
-
-                # Step 1: Send the entire list (no thumbs yet)
-                fetch_page_queue.put((
-                    "PACKAGE_LIST",
-                    {
-                        "page_num":   page_num,
-                        "packages":   packages,
-                        "total_count": total_count
-                    }
-                ))
-
-                # Step 2: Download each thumbnail in the background
-                for pkg in packages:
-                    thumb_url = pkg.get("thumbnail_url")
-                    if thumb_url:
-                        local_path = download_thumbnail(thumb_url)
-                        pkg["local_thumb_path"] = local_path
-                    else:
-                        pkg["local_thumb_path"] = None
-
-                    # Send partial update
-                    fetch_page_queue.put((
-                        "PACKAGE_READY",
-                        {
-                            "page_num": page_num,
-                            "package":  pkg
-                        }
-                    ))
-
-                # Step 3: Done
-                fetch_page_queue.put((
-                    "SUCCESS",
-                    {
-                        "page_num":   page_num,
-                        "packages":   packages,
-                        "total_count": total_count
-                    }
-                ))
-
-            except Exception as e:
-                fetch_page_queue.put(("ERROR", str(e)))
-
-        # Start the thread
-        worker = threading.Thread(target=_fetch_worker)
-        worker.start()
-
-        # Turn on a spinner if you want
-        scene.show_loading_image = True
-
-        # Start modal timer
-        wm = context.window_manager
-        self._timer = wm.event_timer_add(0.2, window=context.window)
-        wm.modal_handler_add(self)
-
-        self.report({'INFO'}, f"Fetching page {page_num} in background (progressive).")
-        return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
-        """
-        Called repeatedly to handle partial updates from the queue:
-          - "PACKAGE_LIST": init or clear scene data for this page
-          - "PACKAGE_READY": add/update one package in Scene.fetched_packages_data
-          - "SUCCESS": store final packages in cache & scene, remove timer
-          - "ERROR": show error, remove timer
-        """
-
         if event.type == 'TIMER':
+            # Process partial or final results from the background thread.
             while True:
                 try:
                     result_type, payload = fetch_page_queue.get_nowait()
 
                     if result_type == "PACKAGE_LIST":
-                        page_num    = payload["page_num"]
-                        packages    = payload["packages"]
-                        total_count = payload["total_count"]
-
-                        # Create an empty list in the cache
-                        bpy.types.Scene.all_pages_data[page_num] = []
-
-                        # Also clear Scene.fetched_packages_data
-                        bpy.types.Scene.fetched_packages_data = []
-                        context.scene.current_thumbnail_page = page_num
-                        # e.g., compute total pages
-                        if total_count > 0:
-                            context.scene.total_thumbnail_pages = max(
-                                1, math.ceil(total_count / 8)
-                            )
-
-                        self.report({'INFO'}, f"Page {page_num}: got {len(packages)} packages (no thumbs yet).")
+                        # The server returned the complete list but we haven't processed thumbnails.
+                        pass
 
                     elif result_type == "PACKAGE_READY":
-                        page_num = payload["page_num"]
-                        pkg      = payload["package"]
-                        # Insert/update in cache and scene
-                        self._insert_or_update_cache(page_num, pkg)
-                        self._insert_or_update_scene(pkg)
-                        # Rebuild UI
-                        bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-                        if context.area:
-                            context.area.tag_redraw()
+                        # Process each package as it arrives.
+                        self._handle_partial_thumb(context, payload)
 
-                    elif result_type == "SUCCESS":
-                        page_num    = payload["page_num"]
-                        packages    = payload["packages"]
-                        total_count = payload["total_count"]
+                    elif result_type == "FETCH_DONE":
+                        # Full fetch complete: finalize pagination.
+                        final_list = payload["packages"]
+                        sort_by = payload["sort_by"]
+                        self.report({'INFO'}, f"Server fetch done: {len(final_list)} items total.")
 
-                        # Store final packages in cache & scene
-                        bpy.types.Scene.all_pages_data[page_num] = packages
-                        bpy.types.Scene.fetched_packages_data   = packages
-
-                        # Turn off spinner
                         context.scene.show_loading_image = False
+                        self._finalize_data(context, final_list, self.page_number, sort_by)
 
-                        # Remove timer
                         wm = context.window_manager
                         wm.event_timer_remove(self._timer)
-
-                        self.report({'INFO'}, f"Page {page_num} => all thumbs loaded, total {total_count}.")
                         return {'FINISHED'}
 
-                    elif result_type == "ERROR":
-                        error_msg = payload
-                        self.report({'ERROR'}, f"Fetch page error: {error_msg}")
+                    elif result_type == "FETCH_ERROR":
+                        err_msg = payload["error"]
+                        self.report({'ERROR'}, f"Server fetch failed: {err_msg}")
                         context.scene.show_loading_image = False
                         wm = context.window_manager
                         wm.event_timer_remove(self._timer)
                         return {'CANCELLED'}
 
                 except queue.Empty:
-                    break  # no more items right now
+                    break
 
-        # If user presses ESC, we cancel
+            if viewport_changed() and hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
+                bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
+                if context.area:
+                    context.area.tag_redraw()
+
         if event.type == 'ESC':
             wm = context.window_manager
             wm.event_timer_remove(self._timer)
             context.scene.show_loading_image = False
-            self.report({'WARNING'}, "Page fetch canceled by user.")
+            self.report({'WARNING'}, "Fetch canceled by user.")
             return {'CANCELLED'}
 
         return {'PASS_THROUGH'}
 
-    def _insert_or_update_cache(self, page_num, pkg):
-        cache_list = bpy.types.Scene.all_pages_data.get(page_num, [])
-        pkg_id = pkg.get("file_id")
-        for i, existing in enumerate(cache_list):
-            if existing.get("file_id") == pkg_id:
-                cache_list[i] = pkg
-                return
-        cache_list.append(pkg)
+    def _fetch_worker(self, file_type, sort_by, search_query):
+        try:
+            params = {
+                "file_type": file_type,
+                "sort_by": sort_by,
+                "offset": 0,
+                "limit": 9999
+            }
+            if search_query:
+                params["search_query"] = search_query
 
-    def _insert_or_update_scene(self, pkg):
-        scene_data = bpy.types.Scene.fetched_packages_data
-        pkg_id = pkg.get("file_id")
-        for i, existing in enumerate(scene_data):
-            if existing.get("file_id") == pkg_id:
-                scene_data[i] = pkg
+            data = fetch_packages(params)
+            if not data.get("success"):
+                fetch_page_queue.put(("FETCH_ERROR", {"error": data.get("message", "Unknown error")}))
                 return
-        scene_data.append(pkg)
 
+            packages = data.get("packages", [])
+            fetch_page_queue.put(("PACKAGE_LIST", {"packages": packages}))
+
+            # Process each package progressively.
+            for pkg in packages:
+                thumb_url = pkg.get("thumbnail_url", "")
+                if thumb_url:
+                    # Check cache using file_id (assumed to be unique for each package)
+                    package_id = pkg.get("file_id")
+                    cached_thumb = cache_manager.get_thumbnail(package_id)  # Ensure cache_manager is updated to use file_id
+                    if cached_thumb and os.path.exists(cached_thumb["file_path"]):
+                        pkg["local_thumb_path"] = cached_thumb["file_path"]
+                    else:
+                        # Pass file_id into download_thumbnail for consistent caching
+                        local_path = download_thumbnail(thumb_url, file_id=package_id)
+                        pkg["local_thumb_path"] = local_path
+                else:
+                    pkg["local_thumb_path"] = None
+
+                fetch_page_queue.put(("PACKAGE_READY", {"package": pkg, "sort_by": sort_by}))
+
+            fetch_page_queue.put(("FETCH_DONE", {"packages": packages, "sort_by": sort_by}))
+        except Exception as e:
+            fetch_page_queue.put(("FETCH_ERROR", {"error": str(e)}))
+
+    def update_pagination(self, context, master_list, current_page, items_per_page=THUMBNAILS_PER_PAGE):
+        """
+        Sort the master list, chunk it into pages, and update scene properties so that
+        the UI displays only the current page.
+        """
+        sorted_list = self._sort_packages(master_list, context.scene.package_sort_by)
+        pages = [sorted_list[i:i + items_per_page] for i in range(0, len(sorted_list), items_per_page)]
+        total_pages = len(pages)
+        context.scene.total_thumbnail_pages = total_pages
+
+        if not hasattr(bpy.types.Scene, "all_pages_data"):
+            bpy.types.Scene.all_pages_data = {}
+        bpy.types.Scene.all_pages_data.clear()
+        for i, chunk in enumerate(pages, start=1):
+            bpy.types.Scene.all_pages_data[i] = chunk
+
+        # Clamp current page.
+        if current_page < 1:
+            current_page = 1
+        if current_page > total_pages:
+            current_page = total_pages
+        context.scene.current_thumbnail_page = current_page
+
+        if pages:
+            bpy.types.Scene.fetched_packages_data = pages[current_page - 1]
+        else:
+            bpy.types.Scene.fetched_packages_data = []
+        if context.area:
+            context.area.tag_redraw()
+
+    def _handle_partial_thumb(self, context, payload):
+        """
+        Called for each PACKAGE_READY event. Adds or updates the package in a master list
+        stored on the scene, then calls update_pagination so the UI reflects the current page.
+        """
+        pkg = payload["package"]
+        master_list = getattr(bpy.types.Scene, "master_package_list", None)
+        if master_list is None:
+            bpy.types.Scene.master_package_list = []
+            master_list = bpy.types.Scene.master_package_list
+
+        pkg_id = pkg.get("file_id")
+        replaced = False
+        for i, existing in enumerate(master_list):
+            if existing.get("file_id") == pkg_id:
+                master_list[i] = pkg
+                replaced = True
+                break
+        if not replaced:
+            master_list.append(pkg)
+
+        current_page = context.scene.current_thumbnail_page
+        self.update_pagination(context, master_list, current_page)
+
+    def _finalize_data(self, context, all_packages, requested_page, sort_by):
+        """
+        After the full fetch is complete, sort, chunk, and store the data into
+        scene.all_pages_data and scene.fetched_packages_data.
+        """
+        scene = context.scene
+        sorted_list = self._sort_packages(all_packages, sort_by)
+        page_chunks = []
+        for i in range(0, len(sorted_list), THUMBNAILS_PER_PAGE):
+            page_chunks.append(sorted_list[i:i + THUMBNAILS_PER_PAGE])
+        if not page_chunks:
+            page_chunks = [[]]
+
+        total_pages = len(page_chunks)
+        scene.total_thumbnail_pages = total_pages
+
+        if not hasattr(bpy.types.Scene, "all_pages_data"):
+            bpy.types.Scene.all_pages_data = {}
+        bpy.types.Scene.all_pages_data.clear()
+        for i, chunk in enumerate(page_chunks, start=1):
+            bpy.types.Scene.all_pages_data[i] = chunk
+
+        if requested_page < 1:
+            requested_page = 1
+        if requested_page > total_pages:
+            requested_page = total_pages
+        scene.current_thumbnail_page = requested_page
+
+        bpy.types.Scene.fetched_packages_data = page_chunks[requested_page - 1]
+
+        if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
+            bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
+        if context.area:
+            context.area.tag_redraw()
+
+        self.report({'INFO'}, f"Pagination done. {len(sorted_list)} items total, {total_pages} pages.")
+
+    def _sort_packages(self, pkgs, sort_by):
+        """
+        Basic sorting logic. Adjust as needed.
+        """
+        if sort_by == "newest":
+            return sorted(pkgs, key=lambda p: p.get("upload_date", ""), reverse=True)
+        elif sort_by == "oldest":
+            return sorted(pkgs, key=lambda p: p.get("upload_date", ""))
+        elif sort_by == "popular":
+            return sorted(pkgs, key=lambda p: p.get("likes", 0), reverse=True)
+        elif sort_by == "random":
+            import random
+            new_list = list(pkgs)
+            random.shuffle(new_list)
+            return new_list
+        else:
+            return pkgs
+
+    def _get_all_cached_filtered(self, file_type, sort_by, search_query):
+        """
+        Retrieve cached data from cache_manager and filter it based on file_type and search_query.
+        """
+        all_data = cache_manager.get_package_data()  # e.g., {1: [pkg1, pkg2...], 2: [...]}
+        big_list = all_data.get(1, [])
+        def matches(pkg):
+            if pkg.get("file_type") != file_type:
+                return False
+            name = pkg.get("package_name", "").lower()
+            auth = pkg.get("uploader", "").lower()
+            sq = search_query.lower()
+            if sq and (sq not in name and sq not in auth):
+                return False
+            return True
+        filtered = [p for p in big_list if matches(p)]
+        return filtered if filtered else None
+    
+    def lazy_load_missing_data(self, file_type, sort_by, search_query, current_count):
+        additional_needed = THUMBNAILS_PER_PAGE - current_count
+        threading.Thread(
+            target=self._lazy_load_worker,
+            args=(file_type, sort_by, search_query, additional_needed),
+            daemon=True
+        ).start()
+
+    def _lazy_load_worker(self, file_type, sort_by, search_query, additional_needed):
+        # Prepare parameters to fetch only the additional needed items.
+        params = {
+            "file_type": file_type,
+            "sort_by": sort_by,
+            "offset": 0,  # You might adjust the offset if you want to start after cached items
+            "limit": additional_needed
+        }
+        if search_query:
+            params["search_query"] = search_query
+        try:
+            data = fetch_packages(params)
+            if data.get("success"):
+                new_items = data.get("packages", [])
+                # Merge new items with the existing cache for page 1
+                current_cache = cache_manager.get_package_data().get(1, [])
+                updated_cache = current_cache + new_items
+                cache_manager.set_package_data({1: updated_cache})
+                # Trigger a UI refresh on the main thread
+                bpy.app.timers.register(lambda: self._finalize_data(bpy.context, 
+                                                                    filter_cached_data(file_type, search_query), 
+                                                                    self.page_number, sort_by), first_interval=0.1)
+            else:
+                print("Lazy load failed: " + data.get("message", "Unknown error"))
+        except Exception as e:
+            print("Error in lazy load: ", e)
 
 # ------------------------------------------------------------------------
 # 2) PACKAGE_OT_Display
@@ -598,19 +664,20 @@ class REMOVE_PACKAGE_OT_Display(bpy.types.Operator):
         return {'FINISHED'}
 
 
-# ------------------------------------------------------------------------
-# ) APPLY_FILTERS_SHOWUI_OT
-#    - A new operator that ensures the UI is drawn BEFORE fetching packages
-# ------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# APPLY_FILTERS_SHOWUI_OT
+#   - An operator that displays the UI first, then fetches packages if needed
+# ----------------------------------------------------------------------------
+
 class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
     """
-    This operator:
-      1) If UI isn't active, opens it
-      2) Turn ON scene.show_loading_image so the 'loading' image draws
-      3) Wait a short time so Blender can redraw
-      4) Fetch packages (unless already loaded)
-      5) Turn OFF scene.show_loading_image, rebuild UI with final thumbnails
+    1) Opens the UI if it's not already active.
+    2) Enables the scene.show_loading_image flag to display a 'loading' indicator.
+    3) Waits briefly so Blender can update the interface.
+    4) Fetches packages (only if they're not already in memory).
+    5) Disables the loading indicator and refreshes the UI with final thumbnails.
     """
+
     bl_idname = "webapp.apply_filters_showui"
     bl_label = "Apply Filters + Show UI"
     bl_options = {'REGISTER'}
@@ -626,23 +693,23 @@ class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
 
     def invoke(self, context, event):
         scene = context.scene
-        
-        # 1) Force the UI open every time
+
+        # 1) Ensure the thumbnail UI is visible.
         result = bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
         if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):
-            self.report({'ERROR'}, "Failed to open Package Display UI.")
+            self.report({'ERROR'}, "Could not open Package Display UI.")
             return {'CANCELLED'}
 
-        # Step B) Turn on loading so user sees the 'loading' image right away
+        # 2) Show the loading image immediately.
         scene.show_loading_image = True
 
-        # Rebuild the UI data so the template + loading indicator appear
+        # 3) Trigger a redraw so the loading indicator is drawn right now.
         if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
             bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
         if context.area:
             context.area.tag_redraw()
 
-        # Start a short modal so we can fetch data on the next TIMER
+        # 4) Start a short modal timer; once it ticks, we'll run the fetch logic.
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
@@ -652,53 +719,56 @@ class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
 
     def modal(self, context, event):
         if event.type == 'TIMER':
+            # We step through two phases:
+            #   _step == 0 => just let the UI finish drawing the loading image
+            #   _step == 1 => do the fetch (if needed), finalize the UI, then exit
+
             if self._step == 0:
-                # Step 0 => Just finished drawing the loading image
                 self._step = 1
                 return {'RUNNING_MODAL'}
 
             elif self._step == 1:
-                # Step 1 => Actually do the fetch (unless it's already loaded)
                 scene = context.scene
-                fetched = getattr(bpy.types.Scene, "fetched_packages_data", [])
 
-                already_loaded_this_page = (
+                # Check if the current page is already loaded
+                fetched = getattr(bpy.types.Scene, "fetched_packages_data", [])
+                cache_is_valid = (
                     fetched and scene.current_thumbnail_page == self.page_number
                 )
 
-                if already_loaded_this_page:
+                # If we have cached data for this page, skip fetching
+                if cache_is_valid:
                     self.report({'INFO'}, f"Page {self.page_number} is already in memory; no fetch needed.")
                 else:
                     self.report({'INFO'}, f"Fetching page {self.page_number} now...")
                     scene.current_thumbnail_page = self.page_number
-                    # Call the existing fetch operator
-                    result = bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=self.page_number)
 
+                    # Actually call the fetch operator
+                    result = bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=self.page_number)
                     if result in ({'FINISHED'}, {'RUNNING_MODAL'}):
-                        self.report({'INFO'}, "Fetch operator started or finished.")
+                        self.report({'INFO'}, "Fetch operator started or completed.")
                     else:
-                        self.report({'ERROR'}, "Failed to start fetch operator.")
+                        self.report({'ERROR'}, "Unable to start fetch operator.")
                         self._cleanup(context)
                         return {'CANCELLED'}
 
-
-                # Now turn OFF loading
+                # Turn off loading once we're done (fetched or not)
                 scene.show_loading_image = False
 
-                # Rebuild UI with final thumbnails
+                # Rebuild the UI with final data
                 if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
                     bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
                 if context.area:
                     context.area.tag_redraw()
 
                 self.report({'INFO'}, f"Page {self.page_number} loaded. UI updated.")
-
                 self._cleanup(context)
                 return {'FINISHED'}
 
         return {'PASS_THROUGH'}
 
     def _cleanup(self, context):
+        # Remove the timer if it exists
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
             self._timer = None
