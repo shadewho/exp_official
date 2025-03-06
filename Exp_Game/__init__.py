@@ -1,9 +1,16 @@
 
 #init.py
-     
+
 import bpy
 from .exp_modal import ExpModal
-from .exp_ui import (ExploratoryPanel
+from .exp_ui import (ExploratoryPanel,
+                    VIEW3D_PT_Exploratory_Studio, 
+                    EXPLORATORY_UL_CustomInteractions,
+                    EXPLORATORY_UL_ReactionsInInteraction,
+                    VIEW3D_PT_Objectives,
+                    EXPLORATORY_UL_Objectives,
+                    ExploratoryCharacterPanel,
+                    ExploratoryProxyMeshPanel
 )
 
 from .exp_properties import (remove_scene_properties, add_scene_properties,
@@ -66,6 +73,14 @@ def register():
 
     # 5) Then the rest (panels, UILists, etc.)
     bpy.utils.register_class(ExploratoryPanel)
+    bpy.utils.register_class(VIEW3D_PT_Exploratory_Studio)
+    bpy.utils.register_class(EXPLORATORY_UL_CustomInteractions)
+    bpy.utils.register_class(EXPLORATORY_UL_ReactionsInInteraction)
+    bpy.utils.register_class(VIEW3D_PT_Objectives)
+    bpy.utils.register_class(EXPLORATORY_UL_Objectives)
+    bpy.utils.register_class(ExploratoryCharacterPanel)
+    bpy.utils.register_class(ExploratoryProxyMeshPanel)
+
 
     bpy.utils.register_class(ExpModal)
 
@@ -84,7 +99,7 @@ def register():
     bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
     bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
-    
+
     add_scene_properties()
     print("Exploratory Add-on Registered!")
 
@@ -108,8 +123,16 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
 
     bpy.utils.unregister_class(ExpModal)
+    bpy.utils.unregister_class(EXPLORATORY_UL_ReactionsInInteraction)
+    bpy.utils.unregister_class(EXPLORATORY_UL_CustomInteractions)
+    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Studio)
     bpy.utils.unregister_class(ExploratoryPanel)
+    bpy.utils.unregister_class(VIEW3D_PT_Objectives)
+    bpy.utils.unregister_class(EXPLORATORY_UL_Objectives)
+    bpy.utils.unregister_class(ExploratoryCharacterPanel)
+    bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
     
+
 
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddReactionToInteraction)

@@ -7,8 +7,6 @@ bl_info = {
     "version": (1, 0, 2),
 }
 
-from .helper_functions import on_filter_changed
-
 from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, DOWNLOAD_CODE_OT_File
 from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
@@ -109,8 +107,7 @@ def register():
             ('world', 'World', ''),
             ('shop_item', 'Shop Item', '')
         ],
-        default='world',
-        update=on_filter_changed  # Use our new callback here.
+        default='world'
     )
 
     bpy.types.Scene.package_sort_by = bpy.props.EnumProperty(
@@ -122,22 +119,20 @@ def register():
             ('popular', 'Popular', ''),
             ('random', 'Random', '')
         ],
-        default='newest',
-        update=on_filter_changed
+        default='newest'
     )
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
         description="Filter packages by name or author",
-        default="",
-        update=on_filter_changed
+        default=""
     )
 
     #DOWNLOAD CODE
     bpy.types.Scene.download_code = bpy.props.StringProperty(
         name="Download Code",
         description="Enter the download code for the .blend item"
-    )
+)
 
     bpy.types.Scene.current_thumbnail_page = bpy.props.IntProperty(
         name="Current Thumbnail Page",

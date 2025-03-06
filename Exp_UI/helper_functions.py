@@ -173,12 +173,6 @@ def download_thumbnail(url, file_id=None):
         print(f"[ERROR] Exception during thumbnail download: {e}")
         return None
 
-
-def on_filter_changed(self, context):
-    # Call the new operator
-    bpy.ops.webapp.refresh_filters()
-
-
 #remove the world temp file and appended scene - called in game modal cancel()
 def cleanup_downloaded_worlds():
 
@@ -385,3 +379,14 @@ def format_relative_time(upload_date_str):
     else:
         years = int(seconds / 31536000)
         return f"{years}y"
+    
+
+def on_filter_changed(self, context):
+    # Attempt to remove the active modal UI (if any)
+    try:
+        bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
+        print("Active UI removed.")
+    except Exception as e:
+        print("No active UI to remove:", e)
+    # Now, call the operator to apply the filters and show a fresh UI.
+    bpy.ops.webapp.apply_filters_showui('EXEC_DEFAULT', page_number=1)

@@ -60,7 +60,7 @@ class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
 
 
 class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
-    bl_label = "Filter + Scene"
+    bl_label = "Explore and Search"
     bl_idname = "VIEW3D_PT_package_display_filter_scene"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -69,6 +69,7 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         return context.scene.main_category == 'EXPLORE'
+
     def draw(self, context):
         layout = self.layout
         scene = context.scene
@@ -77,27 +78,36 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
         if not token:
             layout.label(text="(Log in to access filters and scenes.)", icon='ERROR')
             return
-        # Two buttons: one to display the UI, one to refresh in-place
-        row = layout.row(align=True)
-        op = row.operator("webapp.apply_filters_showui", text="Display UI", icon='RESTRICT_VIEW_OFF')
+
+        # Master buttons in their own rows (stacked vertically)
+        row = layout.row()
+        op = row.operator("webapp.apply_filters_showui", text="Exploratory Menu", icon='WORLD')
         op.page_number = 1
 
-        row.operator("webapp.refresh_filters", text="Refresh UI", icon='FILE_REFRESH')
+        row = layout.row()
+        row.operator("webapp.refresh_filters", text="Refresh Menu", icon='FILE_REFRESH')
 
         layout.separator()
-        
-        # Filter UI
-        layout.label(text="Filters:")
+        layout.separator()
+
+        # Filter UI:
+        row = layout.row()
+        row.alignment = 'CENTER'
+        row.label(text="-Filters-")
         layout.prop(scene, "package_item_type", text="Item Type")
         layout.prop(scene, "package_sort_by", text="Sort By")
         layout.prop(scene, "package_search_query", text="Search")
 
         layout.separator()
 
-        # Scene "Find Item" UI
-        layout.label(text="Find Item by Download Code:")
-        layout.prop(scene, "download_code", text="Code")
-        layout.operator("webapp.download_code", text="Find Item")
+        # Scene "Find Item" UI:
+        layout.label(text="Download Code:")
+        split = layout.split(factor=0.85)
+        split.prop(scene, "download_code", text="")  # Text field with no label.
+        split.operator("webapp.download_code", text="", icon='VIEWZOOM')
+
+
+
 
 class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
     bl_label = "Current Item"
