@@ -32,7 +32,17 @@ LIKE_PACKAGE_ENDPOINT = f"{BASE_URL}/like"
 COMMENT_PACKAGE_ENDPOINT = f"{BASE_URL}/comment"
 USAGE_ENDPOINT = f"{BASE_URL}/usage"
 
-
+if ENVIRONMENT == 'development':
+    LOGIN_PAGE_ENDPOINT = "http://127.0.0.1:5000/login"
+    # This is where Blender’s callback server will redirect the browser after login.
+    BLENDER_CALLBACK_URL = "http://localhost:8000/callback"
+    # This is the success page served by your Flask app.
+    BLENDER_LOGIN_SUCCESS_ENDPOINT = "http://127.0.0.1:5000/blender_login_successful"
+else:
+    # Set production endpoints as needed.
+    LOGIN_PAGE_ENDPOINT = "https://your-production-domain.com/login"
+    BLENDER_CALLBACK_URL = "http://localhost:8000/callback"
+    BLENDER_LOGIN_SUCCESS_ENDPOINT = "https://your-production-domain.com/blender_login_successful"
 
 
 # Define the path to the addon's folder

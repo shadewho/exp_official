@@ -63,6 +63,9 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         search_query = scene.package_search_query.strip()
         requested_page = self.page_number
 
+        if sort_by == 'featured':
+            file_type = 'featured'
+            
         # Use the new helper to filter cached data
         cached_filtered = filter_cached_data(file_type, search_query)
 

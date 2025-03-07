@@ -1,13 +1,16 @@
 # backend.py
 import os
 import bpy
+from bpy.types import Operator
 import requests  # Added missing import
 import shutil
 from .helper_functions import (
  download_blend_file, append_scene_from_blend
 )
-from .auth import load_token, save_token, clear_token
+from .auth import load_token, save_token, clear_token, initiate_login, start_local_server
+
 import traceback
+import threading
 from .main_config import (LOGIN_ENDPOINT, DOWNLOAD_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
 from .exp_api import login, logout
 from .helper_functions import download_thumbnail
@@ -16,28 +19,19 @@ from .helper_functions import download_thumbnail
 # ----------------------------------------------------------------------------
 # LOGIN/LOGOUT
 # ----------------------------------------------------------------------------
+
 class LOGIN_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.login"
     bl_label = "Login to Web App"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        username = context.scene.username
-        password = context.scene.password
-
-        try:
-            data = login(username, password)
-            if data.get("success"):
-                token = data.get("token")
-                save_token(token)
-                self.report({'INFO'}, "Login successful!")
-            else:
-                self.report({'ERROR'}, "Login failed: " + data.get("message", "Unknown error"))
-        except Exception as e:
-            self.report({'ERROR'}, f"Connection error: {str(e)}")
-
+        # Start the callback server on port 8000 in a background thread
+        threading.Thread(target=start_local_server, args=(8000,), daemon=True).start()
+        # Now open the login page; this will include the callback URL as a parameter.
+        initiate_login()
+        self.report({'INFO'}, "Login page opened. Complete login in your browser.")
         return {'FINISHED'}
-
 
 class LOGOUT_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.logout"

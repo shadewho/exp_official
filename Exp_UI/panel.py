@@ -51,8 +51,6 @@ class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
 
         if not token:
             layout.label(text="Please log in:")
-            layout.prop(scene, "username")
-            layout.prop(scene, "password")
             layout.operator("webapp.login", text="Login")
         else:
             layout.label(text="You are logged in!")

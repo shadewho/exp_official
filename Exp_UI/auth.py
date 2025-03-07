@@ -2,8 +2,19 @@
 
 import os
 import requests
-from .main_config import VALIDATE_TOKEN_ENDPOINT, LOGIN_ENDPOINT, LOGOUT_ENDPOINT, TOKEN_FILE
+from .main_config import  (VALIDATE_TOKEN_ENDPOINT, LOGIN_ENDPOINT,
+                            LOGOUT_ENDPOINT, TOKEN_FILE, LOGIN_PAGE_ENDPOINT,
+                            BLENDER_LOGIN_SUCCESS_ENDPOINT, BLENDER_CALLBACK_URL
+
+)
 import logging
+import threading
+import http.server
+from http.server import BaseHTTPRequestHandler
+import socketserver
+import urllib.parse
+import webbrowser
+
 
 # Configure logging for auth.py
 logger = logging.getLogger(__name__)
@@ -58,3 +69,35 @@ def validate_token():
 def is_logged_in():
     """Check if the user is logged in by validating the token."""
     return validate_token()
+
+class CallbackHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/callback':
+            params = urllib.parse.parse_qs(parsed_path.query)
+            token = params.get("token", [None])[0]
+            if token:
+                print(f"Received token: {token}")
+                save_token(token)
+                self.send_response(302)
+                self.send_header("Location", BLENDER_LOGIN_SUCCESS_ENDPOINT)
+                self.end_headers()
+                # Schedule shutdown in a new thread to avoid blocking the current handler
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+            else:
+                self.send_error(400, "Missing token parameter.")
+        else:
+            self.send_error(404)
+
+def start_local_server(port=8000):
+    with socketserver.TCPServer(("", port), CallbackHandler) as httpd:
+        print(f"Local server running on port {port}...")
+        httpd.serve_forever()
+        print("Local server shut down.")
+
+def initiate_login():
+    import urllib.parse, webbrowser
+    callback_url = BLENDER_CALLBACK_URL
+    login_url = f"{LOGIN_PAGE_ENDPOINT}?callback={urllib.parse.quote(callback_url)}"
+    webbrowser.open(login_url)
+    print("Opened browser for login at:", login_url)

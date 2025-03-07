@@ -71,10 +71,6 @@ def register():
     # 3) Attach the property group to bpy.types.Scene
     bpy.types.Scene.my_addon_data = PointerProperty(type=MyAddonSceneProps)
 
-    # Add properties for login fields
-    bpy.types.Scene.username = bpy.props.StringProperty(name="Username")
-    bpy.types.Scene.password = bpy.props.StringProperty(name="Password", subtype='PASSWORD')
-
     # UI MODE PROPERTY
     bpy.types.Scene.ui_current_mode = bpy.props.EnumProperty(
         name="UI Current Mode",
@@ -117,10 +113,12 @@ def register():
             ('newest', 'Newest', ''),
             ('oldest', 'Oldest', ''),
             ('popular', 'Popular', ''),
-            ('random', 'Random', '')
+            ('random', 'Random', ''),
+            ('featured', 'Featured', '')
         ],
         default='newest'
     )
+
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
