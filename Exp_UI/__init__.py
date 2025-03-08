@@ -167,8 +167,6 @@ def register():
 
 def unregister():
     # Remove properties
-    del bpy.types.Scene.username
-    del bpy.types.Scene.password
     del bpy.types.Scene.show_image_buttons
     del bpy.types.Scene.ui_current_mode
     del bpy.types.Scene.selected_thumbnail

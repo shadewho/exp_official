@@ -16,6 +16,9 @@ from .helper_functions import download_thumbnail, background_fetch_metadata
 from .cache_manager import cache_manager, ensure_package_data
 import time
 
+_last_validation_time = time.time()
+
+
 class CLEAR_ALL_DATA_OT_WebApp(bpy.types.Operator):
     """
     Completely resets your add-on data and UI:

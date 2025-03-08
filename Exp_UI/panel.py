@@ -51,7 +51,7 @@ class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
 
         if not token:
             layout.label(text="Please log in:")
-            layout.operator("webapp.login", text="Login")
+            layout.operator("webapp.login", text="Login", icon='URL')
         else:
             layout.label(text="You are logged in!")
             layout.operator("webapp.logout", text="Logout")
@@ -79,11 +79,11 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
 
         # Master buttons in their own rows (stacked vertically)
         row = layout.row()
-        op = row.operator("webapp.apply_filters_showui", text="Exploratory Menu", icon='WORLD')
+        op = row.operator("webapp.apply_filters_showui", text="Exploratory Interface", icon='RESTRICT_VIEW_OFF')
         op.page_number = 1
 
         row = layout.row()
-        row.operator("webapp.refresh_filters", text="Refresh Menu", icon='FILE_REFRESH')
+        row.operator("webapp.refresh_filters", text="Refresh Interface", icon='FILE_REFRESH')
 
         layout.separator()
         layout.separator()

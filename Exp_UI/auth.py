@@ -1,6 +1,7 @@
 # auth.py
 
 import os
+import bpy
 import requests
 from .main_config import  (VALIDATE_TOKEN_ENDPOINT, LOGIN_ENDPOINT,
                             LOGOUT_ENDPOINT, TOKEN_FILE, LOGIN_PAGE_ENDPOINT,
@@ -74,6 +75,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         if parsed_path.path == '/callback':
+            params = urllib.parse.parse_qs(self.path)
             params = urllib.parse.parse_qs(parsed_path.query)
             token = params.get("token", [None])[0]
             if token:
@@ -81,13 +83,19 @@ class CallbackHandler(BaseHTTPRequestHandler):
                 save_token(token)
                 self.send_response(302)
                 self.send_header("Location", BLENDER_LOGIN_SUCCESS_ENDPOINT)
+                self.send_header("Connection", "close")
                 self.end_headers()
-                # Schedule shutdown in a new thread to avoid blocking the current handler
+                try:
+                    self.wfile.flush()
+                except Exception as e:
+                    print("Error flushing response:", e)
+                # Shutdown the server in a separate thread so the response can complete.
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             else:
                 self.send_error(400, "Missing token parameter.")
         else:
             self.send_error(404)
+
 
 def start_local_server(port=8000):
     with socketserver.TCPServer(("", port), CallbackHandler) as httpd:
