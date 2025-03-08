@@ -19,6 +19,7 @@ from .cache import get_or_load_image, get_or_create_texture
 from .utils import calculate_free_space, calculate_template_position
 from ..cache_manager import cache_manager  # Ensure the cache_manager is imported
 
+
 def build_template_and_close():
     """
     Create draw data for:
@@ -461,6 +462,66 @@ def build_detail_content(template_item):
 
     return data_list
 
+def build_loading_progress(template_item, progress):
+    """
+    Build draw items for a progress bar to show download progress.
+    
+    :param template_item: The dictionary for the main template background.
+    :param progress: A float between 0.0 and 1.0 indicating the current progress.
+    :return: A list of draw item dictionaries.
+    """
+    data_list = []
+    
+    # Use the template bounds to calculate the progress bar size and position.
+    x1, y1, x2, y2 = template_item["pos"]
+    template_w = x2 - x1
+    template_h = y2 - y1
+
+    # Define progress bar dimensions: 80% of template width, 5% of template height.
+    bar_width = template_w * 0.8
+    bar_height = template_h * 0.05
+    # Center horizontally; place the bar 20% above the bottom of the template.
+    bar_x1 = x1 + (template_w - bar_width) / 2
+    bar_y1 = y1 + template_h * 0.2
+    bar_x2 = bar_x1 + bar_width
+    bar_y2 = bar_y1 + bar_height
+
+    # Create a background rectangle (dark gray)
+    bg_item = {
+        "type": "rect",
+        "pos": (bar_x1, bar_y1, bar_x2, bar_y2),
+        "color": (0.2, 0.2, 0.2, 1.0)
+    }
+    data_list.append(bg_item)
+
+    # Create the filled portion: width proportional to progress.
+    fill_width = bar_width * progress
+    fill_item = {
+        "type": "rect",
+        "pos": (bar_x1, bar_y1, bar_x1 + fill_width, bar_y2),
+        "color": (0.0, 0.7, 0.0, 1.0)  # green color
+    }
+    data_list.append(fill_item)
+
+    # Build a text item displaying progress percentage above the progress bar.
+    percent_text = f"Downloading world: {int(progress * 100)}% complete"
+    # Use a font size that is a bit smaller than the bar height.
+    text_size = bar_height * 0.8
+    text_x = (bar_x1 + bar_x2) / 2
+    text_y = bar_y2 + text_size  # position above the bar
+    text_item = build_text_item(
+        text=percent_text,
+        x=text_x,
+        y=text_y,
+        size=text_size,
+        color=(1.0, 1.0, 1.0, 1.0),
+        alignment='CENTER',
+        multiline=False
+    )
+    data_list.append(text_item)
+
+    return data_list
+
 def load_image_buttons():
     """
     Build the entire UI data list (images + text items) for the current mode (BROWSE or DETAIL).
@@ -491,6 +552,11 @@ def load_image_buttons():
         # Build a single large thumbnail + detail text + back button
         detail_content = build_detail_content(template_item)
         data_list.extend(detail_content)
+
+    elif scene.ui_current_mode == "LOADING":
+        loading_items = build_loading_progress(template_item, scene.download_progress)
+        data_list.extend(loading_items)
+
 
     # 3) If scene.show_loading_image is True, add the spinner
     if scene.show_loading_image and template_item:
@@ -829,9 +895,20 @@ def draw_image_buttons_callback():
     if not data:
         return
 
-    # Draw non-text items first.
+    # Draw items of type "rect" first.
     for item in data:
-        if item.get("type") != "text":
+        if item.get("type") == "rect":
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            shader.bind()
+            shader.uniform_float("color", item.get("color", (1.0, 1.0, 1.0, 1.0)))
+            x1, y1, x2, y2 = item.get("pos")
+            vertices = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": vertices})
+            batch.draw(shader)
+
+    # Draw non-text items that are not rectangles.
+    for item in data:
+        if item.get("type") not in {"text", "rect"}:
             shader = item.get("shader")
             batch_obj = item.get("batch")
             gpu_texture = item.get("texture")

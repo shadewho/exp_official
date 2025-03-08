@@ -77,10 +77,12 @@ def register():
         description="Which UI mode is currently shown",
         items=[
             ("BROWSE", "Browse Thumbnails", ""),
-            ("DETAIL", "Item Detail View", "")
+            ("DETAIL", "Item Detail View", ""),
+            ("LOADING", "Loading Progress", "")
         ],
-        default="BROWSE"  # Start in the thumbnail/browse mode
+        default="BROWSE"
     )
+
 
     # Add property for toggling image display
     bpy.types.Scene.show_image_buttons = bpy.props.BoolProperty(
@@ -154,10 +156,19 @@ def register():
 
     bpy.types.Scene.comment_text = bpy.props.StringProperty(name="Comment", default="")
 
-    
-    # Register other add-on classes, properties, and handlers here
+    bpy.types.Scene.show_loading = bpy.props.BoolProperty(
+        name="Show Loading",
+        description="Display the loading indicator",
+        default=False
+    )
+    bpy.types.Scene.download_progress = bpy.props.FloatProperty(
+        name="Download Progress",
+        description="Download progress (0.0 to 1.0)",
+        default=0.0,
+        min=0.0,
+        max=1.0
+    )
 
-    # Register backend, panel, and social operators
     for cls in classes:
         bpy.utils.register_class(cls)
 
@@ -178,6 +189,8 @@ def unregister():
     del bpy.types.Scene.total_thumbnail_pages
     del bpy.types.Scene.download_code
     del bpy.types.Scene.comment_text
+    del bpy.types.Scene.show_loading
+    del bpy.types.Scene.download_progress
 
     bpy.utils.unregister_class(MyAddonComment)
     bpy.utils.unregister_class(MyAddonSceneProps)

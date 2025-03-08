@@ -19,6 +19,7 @@ import threading
 import queue
 from ..exp_api import download_blend_file, append_scene_from_blend
 from ..cache_manager import cache_manager, filter_cached_data
+from .explore_downloads import explore_icon_handler
 # A global queue for background fetch results
 fetch_page_queue = queue.Queue()
 load_page_queue = queue.Queue()
@@ -542,51 +543,27 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             if context.area:
                                 context.area.tag_redraw()
                         return {'RUNNING_MODAL'}
+                    
                     elif button["name"] == "Explore_Icon":
-                        # Handle exploration logic (downloading and appending a blend file).
                         download_code = scene.download_code
                         if scene.my_addon_data.file_id > 0 and download_code:
                             token = load_token()
                             if not token:
                                 self.report({'ERROR'}, "You must be logged in to explore a package.")
                                 return {'CANCELLED'}
-                            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                            explore_url = PACKAGES_ENDPOINT.replace("/packages", "/explore")
-                            payload = {"download_code": download_code, "file_type": "world"}
-                            try:
-                                import requests
-                                response = requests.post(explore_url, json=payload, headers=headers)
-                                if response.status_code == 200:
-                                    data = response.json()
-                                    if data.get("success"):
-                                        download_url = data.get("download_url")
-                                        local_blend_path = download_blend_file(download_url)
-                                        if local_blend_path:
-                                            result, appended_scene_name = append_scene_from_blend(local_blend_path)
-                                            if result == {'FINISHED'} and appended_scene_name:
-                                                self.report({'INFO'}, "Scene appended successfully!")
-                                                scene["appended_scene_name"] = appended_scene_name
-                                                scene["world_blend_path"] = local_blend_path
-                                                bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=True)
-                                                return self.cancel(context)
-                                            else:
-                                                self.report({'ERROR'}, "Failed to append scene.")
-                                                return {'CANCELLED'}
-                                        else:
-                                            self.report({'ERROR'}, "Failed to download .blend file.")
-                                            return {'CANCELLED'}
-                                    else:
-                                        self.report({'ERROR'}, f"Explore failed: {data.get('message')}")
-                                        return {'CANCELLED'}
-                                else:
-                                    self.report({'ERROR'}, f"API Error {response.status_code}: {response.text}")
-                                    return {'CANCELLED'}
-                            except Exception as e:
-                                self.report({'ERROR'}, f"Error exploring package: {e}")
-                                return {'CANCELLED'}
+
+                            # Set a loading flag and reset progress (for the UI drawing)
+                            scene.download_progress = 0.0
+                            scene.ui_current_mode = "LOADING"  # This is only for drawing, not for process control.
+
+                            # Immediately start the download process regardless of UI mode.
+                            explore_icon_handler(context, download_code)
                         else:
                             self.report({'ERROR'}, "No package selected or missing download code.")
                         return {'RUNNING_MODAL'}
+
+
+
                     else:
                         # Handle clicking a thumbnail in BROWSE mode.
                         if scene.ui_current_mode == "BROWSE":

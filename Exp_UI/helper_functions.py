@@ -28,19 +28,19 @@ from .cache_manager import filter_cached_data
 # Download Helper
 # ----------------------------------------------------------------------------------
 
-def download_blend_file(url):
+def download_blend_file(url, progress_callback=None):
     """
     Downloads the .blend file from the given `url` into the addon directory's
     "World Downloads" folder. Returns the local file path if successful.
-    Ensures the file is fully written before returning.
+    If progress_callback is provided, it is called with a float between 0.0 and 1.0.
     """
-    # Extract the filename from the URL, removing query parameters
+    import uuid, os, traceback
+
     base_filename = os.path.basename(url.split('?')[0])
     if not base_filename.endswith('.blend'):
         base_filename += '.blend'
     
-    # Create a unique filename to prevent collisions
-    unique_id = uuid.uuid4().hex  # Generate a unique identifier
+    unique_id = uuid.uuid4().hex
     unique_filename = f"{os.path.splitext(base_filename)[0]}_{unique_id}.blend"
     local_path = os.path.join(WORLD_DOWNLOADS_FOLDER, unique_filename)
     
@@ -52,21 +52,33 @@ def download_blend_file(url):
             print(f"[ERROR] Failed to download file. HTTP {response.status_code}")
             return None
 
-        # Write the file to disk
+        total = response.headers.get("Content-Length")
+        if total is not None:
+            total = int(total)
+        else:
+            total = 0
+
+        downloaded = 0
         with open(local_path, "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):
-                if chunk:  # Filter out keep-alive chunks
+                if chunk:
                     file.write(chunk)
-            file.flush()  # Ensure data is written
-            os.fsync(file.fileno())  # Physically ensure it's on disk
+                    downloaded += len(chunk)
+                    if total > 0 and progress_callback:
+                        progress = downloaded / total
+                        progress_callback(progress)
+            file.flush()
+            os.fsync(file.fileno())
         print("[INFO] Downloaded .blend file successfully.")
 
-        # Verify file size
         if os.path.getsize(local_path) == 0:
             print(f"[ERROR] Downloaded file is empty: {local_path}")
             os.remove(local_path)
             return None
 
+        # Ensure progress is set to 100%
+        if progress_callback:
+            progress_callback(1.0)
         return local_path
 
     except Exception as e:

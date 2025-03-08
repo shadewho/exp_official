@@ -14,8 +14,9 @@ os.makedirs(output_path, exist_ok=True)
 output_file_path = os.path.join(output_path, output_file)
 
 # Configuration for filtering
-ignored_files = {'ui_backup.py','combine.py', '.gitignore', 'exp_spawn','exp_animations.py',
-                 'exp_custom_animations.py', 'exp_audio.py', 'exp_time.py', 'exp_startup.py'
+ignored_files = {'ui_backup.py','combine.py', '.gitignore','exp_animations.py',
+                 'exp_custom_animations.py', 'exp_audio.py', 'exp_time.py', 'exp_startup.py',
+                 'exp_reactions.py', 'exp_interactions.py'
                  }   # Files to exclude
 
 ignored_folders = {'__pycache__', '.git', 'exp_assets', 'Skins', 'Default_Armature', 'Exp_UI'}# Folders to exclude entirely (including .git)
