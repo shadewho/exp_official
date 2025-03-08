@@ -596,13 +596,15 @@ class PACKAGE_OT_Display(bpy.types.Operator):
             self._timer = None
         if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
             bpy.types.Scene.gpu_image_buttons_data.clear()
-        context.scene.ui_current_mode = "BROWSE"
+        # Set mode to GAME to prevent any further UI drawing.
+        context.scene.ui_current_mode = "GAME"
         context.window.cursor_modal_restore()
         if context.area:
             context.area.tag_redraw()
             bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
         self.report({'INFO'}, "Package UI closed.")
         return {'CANCELLED'}
+
 
     def begin_loading_for_page(self, context, new_page):
         self._do_loading = True

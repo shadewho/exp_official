@@ -62,7 +62,6 @@ def async_download_blend_file(url, progress_callback):
 
 def timer_finish_download():
     global current_download_task, download_progress_value
-    # Update the scene's progress from the global variable (executed on main thread)
     bpy.context.scene.download_progress = download_progress_value
 
     if current_download_task is None:
@@ -80,8 +79,17 @@ def timer_finish_download():
         bpy.context.scene["appended_scene_name"] = appended_scene_name
         bpy.context.scene["world_blend_path"] = current_download_task.local_blend_path
         print("Scene appended successfully, launching game modal.")
+        
+        # Remove the custom UI.
         bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
-        # Launch the game modal
+        if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
+            bpy.types.Scene.gpu_image_buttons_data.clear()
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        
+        # Set UI mode to GAME so load_image_buttons returns an empty list.
+        bpy.context.scene.ui_current_mode = "GAME"
+        
+        # Launch the game modal.
         view3d_area = next((area for area in bpy.context.window.screen.areas if area.type == 'VIEW_3D'), None)
         if view3d_area:
             view3d_region = next((region for region in view3d_area.regions if region.type == 'WINDOW'), None)
@@ -99,8 +107,6 @@ def timer_finish_download():
         print("Failed to append scene.")
     current_download_task = None
     return None
-
-
 
 
 def explore_icon_handler(context, download_code):

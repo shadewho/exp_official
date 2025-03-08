@@ -557,6 +557,9 @@ def load_image_buttons():
         loading_items = build_loading_progress(template_item, scene.download_progress)
         data_list.extend(loading_items)
 
+    elif scene.ui_current_mode == "GAME":
+        return []  # Do not build any UI when in game mode.
+
 
     # 3) If scene.show_loading_image is True, add the spinner
     if scene.show_loading_image and template_item:

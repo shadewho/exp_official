@@ -78,10 +78,12 @@ def register():
         items=[
             ("BROWSE", "Browse Thumbnails", ""),
             ("DETAIL", "Item Detail View", ""),
-            ("LOADING", "Loading Progress", "")
+            ("LOADING", "Loading Progress", ""),
+            ("GAME", "Game Mode", "")  # New state for game mode
         ],
         default="BROWSE"
     )
+
 
 
     # Add property for toggling image display
