@@ -29,17 +29,14 @@ class DownloadTask:
             if response.status_code != 200 or not response.json().get("success"):
                 self.error = "Explore API call failed."
                 self.done = True
-                print("Explore API call failed:", response.text)
                 return
             self.download_url = response.json().get("download_url")
-            print("Download URL received:", self.download_url)
             # Step 2: Download the .blend file with streaming.
             self.local_blend_path = async_download_blend_file(self.download_url, progress_callback=self.update_progress)
             self.done = True
         except Exception as e:
             self.error = str(e)
             self.done = True
-            print("Exception in download task:", e)
 
     def update_progress(self, progress):
         global download_progress_value
@@ -67,18 +64,17 @@ def timer_finish_download():
     if current_download_task is None:
         return None  # No task; stop timer.
     if not current_download_task.done:
-        print("Polling download progress:", current_download_task.progress)
         return 0.1  # Poll again in 0.1 seconds.
     if current_download_task.error:
-        print("Download error:", current_download_task.error)
         current_download_task = None
         return None  # Stop timer.
+
     print("Download finished. Attempting to append scene from:", current_download_task.local_blend_path)
     result, appended_scene_name = append_scene_from_blend(current_download_task.local_blend_path)
     if result == {'FINISHED'} and appended_scene_name:
         bpy.context.scene["appended_scene_name"] = appended_scene_name
         bpy.context.scene["world_blend_path"] = current_download_task.local_blend_path
-        print("Scene appended successfully, launching game modal.")
+        print("Scene appended; now waiting for it to be available...")
         
         # Remove the custom UI.
         bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
@@ -86,23 +82,33 @@ def timer_finish_download():
             bpy.types.Scene.gpu_image_buttons_data.clear()
         bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
         
-        # Set UI mode to GAME so load_image_buttons returns an empty list.
-        bpy.context.scene.ui_current_mode = "GAME"
-        
-        # Launch the game modal.
-        view3d_area = next((area for area in bpy.context.window.screen.areas if area.type == 'VIEW_3D'), None)
-        if view3d_area:
-            view3d_region = next((region for region in view3d_area.regions if region.type == 'WINDOW'), None)
-            if view3d_region:
-                override = bpy.context.copy()
-                override['area'] = view3d_area
-                override['region'] = view3d_region
-                with bpy.context.temp_override(**override):
-                    bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=True)
+        # Instead of immediately switching to GAME mode, wait until the appended scene is available.
+        def check_scene():
+            scene_obj = bpy.data.scenes.get(appended_scene_name)
+            if scene_obj:
+                bpy.context.window.scene = scene_obj  # Set it as the active scene.
+                print("Appended scene detected. Launching game modal.")
+                bpy.context.scene.ui_current_mode = "GAME"
+                # Launch the game modal.
+                view3d_area = next((area for area in bpy.context.window.screen.areas if area.type == 'VIEW_3D'), None)
+                if view3d_area:
+                    view3d_region = next((region for region in view3d_area.regions if region.type == 'WINDOW'), None)
+                    if view3d_region:
+                        override = bpy.context.copy()
+                        override['area'] = view3d_area
+                        override['region'] = view3d_region
+                        with bpy.context.temp_override(**override):
+                            bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=True)
+                    else:
+                        print("No valid VIEW_3D region found.")
+                else:
+                    print("No VIEW_3D area found for context override.")
+                return None  # Stop the timer.
             else:
-                print("No valid VIEW_3D region found.")
-        else:
-            print("No VIEW_3D area found for context override.")
+                print("Waiting for appended scene...")
+                return 1.0  # Check again after 0.5 seconds.
+
+        bpy.app.timers.register(check_scene)
     else:
         print("Failed to append scene.")
     current_download_task = None

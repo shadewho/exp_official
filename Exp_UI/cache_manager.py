@@ -83,10 +83,8 @@ def ensure_package_data():
             cache_manager.set_package_data({1: packages})
             return True
         else:
-            print("[ERROR] Package fetch did not succeed.")
             return False
     except Exception as e:
-        print(f"[ERROR] Failed to fetch packages: {e}")
         return False
 
 def filter_cached_data(file_type, search_query):

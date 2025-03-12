@@ -62,7 +62,7 @@ classes = (
 )
 
 def register():
-    bpy.app.timers.register(preload_metadata_timer, first_interval=5.0)
+    bpy.app.timers.register(preload_metadata_timer, first_interval=60.0)
     # 1) Register your comment sub-class
     bpy.utils.register_class(MyAddonComment)
     # 2) Register your main property group

@@ -43,13 +43,10 @@ def download_blend_file(url, progress_callback=None):
     unique_id = uuid.uuid4().hex
     unique_filename = f"{os.path.splitext(base_filename)[0]}_{unique_id}.blend"
     local_path = os.path.join(WORLD_DOWNLOADS_FOLDER, unique_filename)
-    
-    print(f"[INFO] Downloading .blend file to: {local_path}")
 
     try:
         response = requests.get(url, stream=True)
         if response.status_code != 200:
-            print(f"[ERROR] Failed to download file. HTTP {response.status_code}")
             return None
 
         total = response.headers.get("Content-Length")
@@ -69,10 +66,8 @@ def download_blend_file(url, progress_callback=None):
                         progress_callback(progress)
             file.flush()
             os.fsync(file.fileno())
-        print("[INFO] Downloaded .blend file successfully.")
 
         if os.path.getsize(local_path) == 0:
-            print(f"[ERROR] Downloaded file is empty: {local_path}")
             os.remove(local_path)
             return None
 
@@ -82,7 +77,6 @@ def download_blend_file(url, progress_callback=None):
         return local_path
 
     except Exception as e:
-        print(f"[ERROR] Exception during download: {e}")
         traceback.print_exc()
         return None
 
@@ -93,53 +87,74 @@ def download_blend_file(url, progress_callback=None):
 
 def append_scene_from_blend(local_blend_path):
     """
-    Appends the first scene from the given `.blend` file into the current Blender project.
-    Does NOT delete the `.blend` file.
+    Attempts to append the first scene from a .blend file and logs each step.
     
     Returns:
-       A tuple: (result, appended_scene_name)
-       result is {'FINISHED'} on success, {'CANCELLED'} on failure.
-       appended_scene_name is the actual name of the scene appended, or None if failed.
+        A tuple (result, scene_name):
+          - result: {'FINISHED'} if the scene was successfully appended, otherwise {'CANCELLED'}.
+          - scene_name: The name of the appended scene if successful; otherwise None.
     """
-    print(f"[INFO] Appending scene from: {local_blend_path}")
+    print("[LOG] Starting append_scene_from_blend with file:", local_blend_path)
+    
+    # Step 1: Load available scenes from the blend file
     try:
-        # Load the list of scenes from the .blend file
+        print("[LOG] Attempting to load library from file...")
         with bpy.data.libraries.load(local_blend_path, link=False) as (data_from, data_to):
             scene_names = data_from.scenes
-
-        if not scene_names:
-            print(f"[ERROR] No scenes found in {local_blend_path}")
-            return {'CANCELLED'}, None
-
-        # Choose the first scene from the file
-        scene_to_append = scene_names[0]
-        print(f"[INFO] Appending scene: {scene_to_append}")
-
-        bpy.ops.wm.append(
-            filepath=os.path.join(local_blend_path, "Scene", scene_to_append),
-            directory=os.path.join(local_blend_path, "Scene"),
-            filename=scene_to_append
-        )
-        print(f"[INFO] Scene '{scene_to_append}' appended successfully.")
-
-        # Retrieve the appended scene by its name (as it comes from the file)
-        appended_scene = bpy.data.scenes.get(scene_to_append)
-        if appended_scene is None:
-            print(f"[ERROR] Appended scene '{scene_to_append}' not found in bpy.data.scenes")
-            return {'CANCELLED'}, None
-
-        # Set the appended scene as the active scene
-        bpy.context.window.scene = appended_scene
-        print(f"[INFO] Scene set as active: {appended_scene.name}")
-
+            print("[LOG] Library loaded. Found scenes:", scene_names)
     except Exception as e:
-        print(f"[ERROR] Failed to append scene: {e}")
+        print("[EXCEPTION] Failed to load library from file:", local_blend_path)
         traceback.print_exc()
         return {'CANCELLED'}, None
 
+    # Step 2: Check if any scenes are available
+    if not scene_names:
+        print("[ERROR] No scenes found in the file:", local_blend_path)
+        return {'CANCELLED'}, None
+
+    # Choose the first scene to append
+    scene_to_append = scene_names[0]
+    print("[LOG] Selected scene to append:", scene_to_append)
+
+    # Step 3: Build file paths for the append operator
+    append_filepath = os.path.join(local_blend_path, "Scene", scene_to_append)
+    append_directory = os.path.join(local_blend_path, "Scene")
+    print("[LOG] Prepared append parameters:")
+    print("      filepath =", append_filepath)
+    print("      directory =", append_directory)
+    print("      filename =", scene_to_append)
+
+    # Step 4: Call the append operator
+    try:
+        result = bpy.ops.wm.append(
+            filepath=append_filepath,
+            directory=append_directory,
+            filename=scene_to_append
+        )
+        print("[LOG] bpy.ops.wm.append returned:", result)
+    except Exception as e:
+        print("[EXCEPTION] Exception during bpy.ops.wm.append call:")
+        traceback.print_exc()
+        return {'CANCELLED'}, None
+
+    # Step 5: Verify that the scene has been appended
+    appended_scene = bpy.data.scenes.get(scene_to_append)
+    if not appended_scene:
+        print("[ERROR] Appended scene not found in bpy.data.scenes after append operator.")
+        return {'CANCELLED'}, None
+
+    print("[LOG] Successfully appended scene:", appended_scene.name)
+    
+    # Step 6: Set the appended scene as active in the current window context
+    try:
+        bpy.context.window.scene = appended_scene
+        print("[LOG] Appended scene set as active.")
+    except Exception as e:
+        print("[EXCEPTION] Failed to set the appended scene as active:")
+        traceback.print_exc()
+        return {'CANCELLED'}, appended_scene.name
+
     return {'FINISHED'}, appended_scene.name
-
-
 
 
 # ----------------------------------------------------------------------------------
@@ -156,7 +171,6 @@ def download_thumbnail(url, file_id=None):
     key = file_id if file_id is not None else url
     cached_path = get_cached_path_if_exists(key)
     if cached_path:
-        print(f"[INFO] Thumbnail already cached: {cached_path}")
         return cached_path
 
     parsed = urlparse(url)
@@ -166,12 +180,10 @@ def download_thumbnail(url, file_id=None):
         ext = ".png"
     local_filename = base_name
     local_path = os.path.join(THUMBNAIL_CACHE_FOLDER, local_filename)
-    print(f"[INFO] Downloading thumbnail to: {local_path}")
 
     try:
         response = requests.get(url, stream=True)
         if response.status_code != 200:
-            print(f"[ERROR] Failed to download thumbnail. HTTP {response.status_code}")
             return None
 
         with open(local_path, "wb") as f:
@@ -182,7 +194,6 @@ def download_thumbnail(url, file_id=None):
         register_thumbnail_in_index(key, local_path, thumbnail_url=url)
         return local_path
     except Exception as e:
-        print(f"[ERROR] Exception during thumbnail download: {e}")
         return None
 
 #remove the world temp file and appended scene - called in game modal cancel()
@@ -198,7 +209,6 @@ def cleanup_downloaded_worlds():
 
     if appended_scene_name and appended_scene_name in bpy.data.scenes:
         appended_scene = bpy.data.scenes[appended_scene_name]
-        print(f"Found appended scene: {appended_scene_name}")
 
         # Iterate over a copy of the appended scene's objects.
         for obj in list(appended_scene.objects):
@@ -222,7 +232,6 @@ def cleanup_downloaded_worlds():
             # Remove the object.
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
-                print(f"Removed object: {obj_name}")
             except Exception as e:
                 print(f"Error removing object {obj_name}: {e}")
 
@@ -231,7 +240,6 @@ def cleanup_downloaded_worlds():
                 try:
                     if mesh_data.users == 0:
                         bpy.data.meshes.remove(mesh_data)
-                        print(f"Removed mesh data: {mesh_data_name}")
                 except Exception as e:
                     # If the data block is already removed, we skip.
                     print(f"Error removing mesh data {mesh_data_name}: {e}")
@@ -239,7 +247,6 @@ def cleanup_downloaded_worlds():
         # Now remove the appended scene.
         try:
             bpy.data.scenes.remove(appended_scene)
-            print(f"Removed appended scene: {appended_scene_name}")
         except Exception as e:
             print(f"Error removing scene {appended_scene_name}: {e}")
     else:
@@ -302,12 +309,9 @@ def background_fetch_metadata(package_id):
     # Otherwise, start background loading.
     thread = threading.Thread(target=_fetch_metadata_worker, args=(package_id,), daemon=True)
     thread.start()
-    print(f"[INFO] Started background thread to fetch metadata for package {package_id}.")
-
 
     thread = threading.Thread(target=_fetch_metadata_worker, args=(package_id,), daemon=True)
     thread.start()
-    print(f"[INFO] Started background thread to fetch metadata for package {package_id}.")
 
 def _fetch_metadata_worker(package_id):
     token = load_token()
@@ -328,12 +332,10 @@ def _fetch_metadata_worker(package_id):
             if thumb_url:
                 local_thumb_path = download_thumbnail(thumb_url)
                 metadata["local_thumb_path"] = local_thumb_path
-                print(f"[INFO] Downloaded thumbnail for package {package_id} to {local_thumb_path}")
             else:
                 metadata["local_thumb_path"] = None
 
             register_metadata_in_index(package_id, metadata)
-            print(f"[INFO] Successfully fetched and cached metadata for package {package_id}.")
         else:
             print(f"[ERROR] Failed to fetch metadata for package {package_id}: {data.get('message', 'Unknown error')}")
     except Exception as e:
@@ -397,8 +399,7 @@ def on_filter_changed(self, context):
     # Attempt to remove the active modal UI (if any)
     try:
         bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
-        print("Active UI removed.")
     except Exception as e:
-        print("No active UI to remove:", e)
+        pass
     # Now, call the operator to apply the filters and show a fresh UI.
     bpy.ops.webapp.apply_filters_showui('EXEC_DEFAULT', page_number=1)

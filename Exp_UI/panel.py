@@ -148,7 +148,9 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
 
             # 4) Upload Date
             layout.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
-
+            
+            #4.5) Download Count
+            layout.label(text=f"Downloads: {addon_data.download_count}")
             # 5) Likes (heart + count)
             row = layout.row(align=True)
             like_op = row.operator("webapp.like_package", text=f"♥ {addon_data.likes}")

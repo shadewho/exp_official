@@ -470,7 +470,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             for cdict in detail_data.get("comments", []):
                                 c_item = addon_data.comments.add()
                                 c_item.author = cdict.get("author", "")
-                                c_item.text = cdict.get("text", "")
+                                c_item.text = cdict.get("content", "")
                                 c_item.timestamp = cdict.get("timestamp", "")
                             scene.ui_current_mode = "DETAIL"
                         else:

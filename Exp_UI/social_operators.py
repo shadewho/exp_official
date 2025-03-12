@@ -72,7 +72,7 @@ class COMMENT_PACKAGE_OT_WebApp(bpy.types.Operator):
                 comment_data = data.get("comment", {})
                 new_comment = context.scene.my_addon_data.comments.add()
                 new_comment.author = comment_data.get("author", "Anonymous")
-                new_comment.text = comment_data.get("text", self.comment_text)
+                new_comment.text = comment_data.get("content", self.comment_text)
                 new_comment.timestamp = comment_data.get("timestamp", "")
                 self.report({'INFO'}, "Comment added!")
                 # If in persistent mode, clear the scene property so the text field resets.
@@ -214,7 +214,7 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
             box_info.label(text=f"Title: {addon_data.package_name}", icon='BOOKMARKS')
             box_info.label(text=f"Description: {addon_data.description}")
             box_info.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
-
+            box_info.label(text=f"Downloads: {addon_data.download_count}", icon='IMPORT') 
             row_author = box_info.row(align=True)
             row_author.label(text=f"Author: {addon_data.author}")
             if addon_data.profile_url:

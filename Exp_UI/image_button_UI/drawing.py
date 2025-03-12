@@ -207,11 +207,17 @@ def build_browse_content(template_item):
         })
 
         package_name = pkg.get("package_name", "NoName")
+        likes = pkg.get("likes", 0)
+        downloads = pkg.get("download_count", 0)
+
         add_thumbnail_title(
             data_list,
             (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
-            package_name
+            package_name,
+            likes,
+            downloads
         )
+
 
     # --- 4) If there's more than 1 page, draw arrows ---
     if total_pages > 1:
@@ -464,63 +470,131 @@ def build_detail_content(template_item):
 
 def build_loading_progress(template_item, progress):
     """
-    Build draw items for a progress bar to show download progress.
-    
-    :param template_item: The dictionary for the main template background.
-    :param progress: A float between 0.0 and 1.0 indicating the current progress.
-    :return: A list of draw item dictionaries.
+    Draws a semi-transparent overlay, a centered dark box,
+    a single progress bar with its percentage, and a short message:
+      "Your game will begin momentarily..."
     """
     data_list = []
-    
-    # Use the template bounds to calculate the progress bar size and position.
+
+    # The template's bounding box
     x1, y1, x2, y2 = template_item["pos"]
     template_w = x2 - x1
     template_h = y2 - y1
 
-    # Define progress bar dimensions: 80% of template width, 5% of template height.
-    bar_width = template_w * 0.8
-    bar_height = template_h * 0.05
-    # Center horizontally; place the bar 20% above the bottom of the template.
-    bar_x1 = x1 + (template_w - bar_width) / 2
-    bar_y1 = y1 + template_h * 0.2
-    bar_x2 = bar_x1 + bar_width
-    bar_y2 = bar_y1 + bar_height
-
-    # Create a background rectangle (dark gray)
-    bg_item = {
+    # -------------------------------------------------------
+    # 1) Semi-Transparent Overlay
+    # -------------------------------------------------------
+    data_list.append({
         "type": "rect",
-        "pos": (bar_x1, bar_y1, bar_x2, bar_y2),
-        "color": (0.2, 0.2, 0.2, 1.0)
-    }
-    data_list.append(bg_item)
+        "pos": (x1, y1, x2, y2),
+        "color": (0.0, 0.0, 0.0, 0.6)  # Black, 60% opacity
+    })
 
-    # Create the filled portion: width proportional to progress.
-    fill_width = bar_width * progress
-    fill_item = {
+    # -------------------------------------------------------
+    # 2) Centered Box for Progress UI
+    # -------------------------------------------------------
+    # Make it ~40% of the template width, 25% of the template height
+    box_w = template_w * 0.7
+    box_h = template_h * 0.5
+
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+
+    box_x1 = center_x - (box_w / 2)
+    box_x2 = center_x + (box_w / 2)
+    box_y1 = center_y - (box_h / 2)
+    box_y2 = center_y + (box_h / 2)
+
+    # Dark background box
+    data_list.append({
         "type": "rect",
-        "pos": (bar_x1, bar_y1, bar_x1 + fill_width, bar_y2),
-        "color": (0.0, 0.7, 0.0, 1.0)  # green color
-    }
-    data_list.append(fill_item)
+        "pos": (box_x1, box_y1, box_x2, box_y2),
+        "color": (0.1, 0.1, 0.1, 0.9)
+    })
 
-    # Build a text item displaying progress percentage above the progress bar.
-    percent_text = f"Downloading world: {int(progress * 100)}% complete"
-    # Use a font size that is a bit smaller than the bar height.
-    text_size = bar_height * 0.8
-    text_x = (bar_x1 + bar_x2) / 2
-    text_y = bar_y2 + text_size  # position above the bar
-    text_item = build_text_item(
-        text=percent_text,
-        x=text_x,
-        y=text_y,
-        size=text_size,
+    # -------------------------------------------------------
+    # 3) "Loading..." Title Text
+    # -------------------------------------------------------
+    title_font_size = min(box_w, box_h) * 0.15
+    title_x = (box_x1 + box_x2) / 2
+    # Slightly below the top edge of the box
+    title_y = box_y2 - (title_font_size * 1.5)
+
+    data_list.append(build_text_item(
+        text="Loading...",
+        x=title_x,
+        y=title_y,
+        size=title_font_size,
         color=(1.0, 1.0, 1.0, 1.0),
         alignment='CENTER',
         multiline=False
-    )
-    data_list.append(text_item)
+    ))
+
+    # -------------------------------------------------------
+    # 4) Progress Bar
+    # -------------------------------------------------------
+    bar_width = box_w * 0.8
+    bar_height = box_h * 0.15
+    bar_x1 = (box_x1 + box_x2) / 2 - (bar_width / 2)
+    bar_x2 = bar_x1 + bar_width
+    # Position it near the bottom quarter of the box
+    bar_y1 = box_y1 + (box_h * 0.25)
+    bar_y2 = bar_y1 + bar_height
+
+    # Bar background
+    data_list.append({
+        "type": "rect",
+        "pos": (bar_x1, bar_y1, bar_x2, bar_y2),
+        "color": (0.2, 0.2, 0.2, 1.0)  # Dark gray
+    })
+
+    # Filled portion
+    fill_w = bar_width * progress
+    data_list.append({
+        "type": "rect",
+        "pos": (bar_x1, bar_y1, bar_x1 + fill_w, bar_y2),
+        "color": (0.0, 0.7, 0.0, 1.0)  # Green
+    })
+
+    # -------------------------------------------------------
+    # 5) Percentage Text Inside the Bar
+    # -------------------------------------------------------
+    percent_font_size = bar_height * 0.7
+    percent_x = (bar_x1 + bar_x2) / 2
+    percent_y = bar_y1 + (bar_height / 2) - (percent_font_size / 2)
+
+    data_list.append(build_text_item(
+        text=f"{int(progress * 100)}%",
+        x=percent_x,
+        y=percent_y,
+        size=percent_font_size,
+        color=(1.0, 1.0, 1.0, 1.0),
+        alignment='CENTER',
+        multiline=False
+    ))
+
+    # -------------------------------------------------------
+    # 6) "Your game will begin momentarily..." Message
+    # -------------------------------------------------------
+    message_text = "Your game will begin momentarily..."
+    message_font_size = box_h * 0.10  # or tweak to taste
+    message_x = (box_x1 + box_x2) / 2
+    # Place it just below the bar
+    message_y = bar_y1 - (message_font_size * 1.5)
+
+    data_list.append(build_text_item(
+        text=message_text,
+        x=message_x,
+        y=message_y,
+        size=message_font_size,
+        color=(0.8, 0.8, 0.8, 1.0),
+        alignment='CENTER',
+        multiline=False
+    ))
 
     return data_list
+
+
 
 def load_image_buttons():
     """
@@ -556,6 +630,7 @@ def load_image_buttons():
     elif scene.ui_current_mode == "LOADING":
         loading_items = build_loading_progress(template_item, scene.download_progress)
         data_list.extend(loading_items)
+
 
     elif scene.ui_current_mode == "GAME":
         return []  # Do not build any UI when in game mode.
@@ -669,35 +744,63 @@ def draw_text_item(item):
         blf.draw(font_id, line)
 
 
-def add_thumbnail_title(data_list, thumb_box, title_text):
+def add_thumbnail_title(
+    data_list, 
+    thumb_box, 
+    title_text, 
+    likes=0, 
+    download_count=0
+):
+    """
+    Draws two lines of text under the thumbnail:
+      1) Title (truncated to 20 chars)
+      2) "♥ <likes> | ↓ <download_count>"
+    """
     x1, y1, x2, y2 = thumb_box
     thumb_height = (y2 - y1)
 
-    # 1) Truncate at 20 chars, adding "..."
+    # 1) Truncate title at 20 chars, adding "..."
     max_chars = 20
     if len(title_text) > max_chars:
         title_text = title_text[:(max_chars - 3)] + "..."
 
     center_x = (x1 + x2) / 2.0
     
-    # 2) The vertical offset from the bottom of the thumbnail
+    # 2) Vertical offset from bottom of thumbnail for the title line
     offset_pixels = THUMBNAIL_TEXT_OFFSET_RATIO * thumb_height
-    text_y = y1 - offset_pixels
+    title_y = y1 - offset_pixels
 
     # 3) Font size
     dynamic_font_size = THUMBNAIL_TEXT_SIZE_RATIO * thumb_height
-    
-    # 4) Build the text item
+
+    # ---- First line: Title ----
     text_label = build_text_item(
         text=title_text,
         x=center_x,
-        y=text_y,
+        y=title_y,
         size=dynamic_font_size,
         color=THUMBNAIL_TEXT_COLOR,
         alignment=THUMBNAIL_TEXT_ALIGNMENT,
         multiline=False
     )
     data_list.append(text_label)
+
+    # ---- Second line: Likes + Downloads ----
+    # Place it below the title line (e.g., 1.2 * font size below)
+    meta_y = title_y - (dynamic_font_size * 1.2)
+    meta_text = f"↓ {download_count} | ♥ {likes} "
+
+    meta_label = build_text_item(
+        text=meta_text,
+        x=center_x,
+        y=meta_y,
+        size=dynamic_font_size * 0.9,  # slightly smaller if you like
+        color=THUMBNAIL_TEXT_COLOR,
+        alignment=THUMBNAIL_TEXT_ALIGNMENT,
+        multiline=False
+    )
+    data_list.append(meta_label)
+
 
 def build_item_detail_text(data_list, template_item):
     """
@@ -717,6 +820,7 @@ def build_item_detail_text(data_list, template_item):
     description = addon_data.description
     likes = addon_data.likes
     upload_date = addon_data.upload_date
+    download_count = addon_data.download_count  
 
     # Heart symbol
     heart_char = "♥"
@@ -733,7 +837,11 @@ def build_item_detail_text(data_list, template_item):
         "",  # blank line
         f"Likes: {heart_char} {likes}",
         "",  # blank line
-        f"Uploaded: {upload_date_formatted} ago"
+        f"Downloads: {download_count}",  # <--- Insert the new line
+        "",  # blank line
+        f"Uploaded: {upload_date_formatted} ago",
+        ""
+
     ]
 
     x1, y1, x2, y2 = template_item["pos"]

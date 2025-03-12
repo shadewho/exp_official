@@ -100,6 +100,13 @@ class MyAddonSceneProps(PropertyGroup):
         name="Uploads Used",
         default=0
     )
+    download_count: IntProperty(
+        name="Download Count",
+        description="Total number of downloads",
+        default=0
+    )
+    
+    
     def init_from_package(self, pkg: dict):
         """
         A helper to initialize these props from the server's package dict (fetched_packages_data).
@@ -114,3 +121,4 @@ class MyAddonSceneProps(PropertyGroup):
         self.upload_date = pkg.get("upload_date", "N/A")
         # Build out the profile link:
         self.profile_url = f"{USER_PROFILE_BASE_URL}/{self.author}"
+        self.download_count = pkg.get("download_count", 0)
