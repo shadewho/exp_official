@@ -1,23 +1,16 @@
 # operators.py
 
 import bpy
-import math
 import os
-import requests
-from gpu_extras.batch import batch_for_shader
-from ..auth import load_token
+from ..auth import load_token, ensure_internet_connection, is_internet_available
 from .drawing import load_image_buttons, draw_image_buttons_callback
-from .utils import calculate_free_space, calculate_template_position, viewport_changed
-from .cache import (get_or_load_image, get_or_create_texture, clear_image_datablocks,
-                     get_cached_metadata
-                )
+from .utils import viewport_changed
 from .config import THUMBNAILS_PER_PAGE
-from ..helper_functions import download_thumbnail, background_fetch_metadata
+from ..helper_functions import download_thumbnail
 from ..main_config import PACKAGES_ENDPOINT
-from ..exp_api import fetch_packages, explore_package, fetch_detail_for_file
+from ..exp_api import fetch_packages, fetch_detail_for_file
 import threading
 import queue
-from ..exp_api import download_blend_file, append_scene_from_blend
 from ..cache_manager import cache_manager, filter_cached_data
 from .explore_downloads import explore_icon_handler
 # A global queue for background fetch results
@@ -58,6 +51,9 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
     _timer = None
 
     def execute(self, context):
+        if not ensure_internet_connection(context):
+            self.report({'ERROR'}, "No internet connection detected. Cannot fetch packages.")
+            return {'CANCELLED'}
         scene = context.scene
         file_type = scene.package_item_type  # "world" or "shop_item"
         sort_by = scene.package_sort_by        # "newest", etc.
@@ -144,6 +140,15 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         return {'PASS_THROUGH'}
 
     def _fetch_worker(self, file_type, sort_by, search_query):
+        token = load_token()
+        if not token:
+            fetch_page_queue.put(("FETCH_ERROR", {"error": "Not logged in. Fetch cancelled."}))
+            return
+
+        if not is_internet_available():
+            fetch_page_queue.put(("FETCH_ERROR", {"error": "No internet connection detected."}))
+            return
+
         try:
             params = {
                 "file_type": file_type,
@@ -168,7 +173,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                 if thumb_url:
                     # Check cache using file_id (assumed to be unique for each package)
                     package_id = pkg.get("file_id")
-                    cached_thumb = cache_manager.get_thumbnail(package_id)  # Ensure cache_manager is updated to use file_id
+                    cached_thumb = cache_manager.get_thumbnail(package_id)
                     if cached_thumb and os.path.exists(cached_thumb["file_path"]):
                         pkg["local_thumb_path"] = cached_thumb["file_path"]
                     else:
@@ -183,6 +188,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             fetch_page_queue.put(("FETCH_DONE", {"packages": packages, "sort_by": sort_by}))
         except Exception as e:
             fetch_page_queue.put(("FETCH_ERROR", {"error": str(e)}))
+
 
     def update_pagination(self, context, master_list, current_page, items_per_page=THUMBNAILS_PER_PAGE):
         """
@@ -415,6 +421,10 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
+        if not is_internet_available():
+            bpy.ops.webapp.logout()
+            self.report({'ERROR'}, "No internet connection. Logging out and closing UI.")
+            return self.cancel(context)
         scene = context.scene
 
         if event.type == 'TIMER':
@@ -459,8 +469,9 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 elif self.loading_step == 1:
                     if self._active_task == "page":
                         result = bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=self._target_page)
-                        if result != {'FINISHED'}:
+                        if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):
                             self.report({'ERROR'}, "Page load failed or cancelled.")
+
                     elif self._active_task == "detail":
                         detail_data = fetch_detail_for_file(file_id=self._detail_file_id)
                         if detail_data and detail_data.get("success"):

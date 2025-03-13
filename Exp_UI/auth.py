@@ -1,28 +1,21 @@
-# auth.py
-
 import os
 import bpy
 import requests
-from .main_config import  (VALIDATE_TOKEN_ENDPOINT, LOGIN_ENDPOINT,
-                            LOGOUT_ENDPOINT, TOKEN_FILE, LOGIN_PAGE_ENDPOINT,
-                            BLENDER_LOGIN_SUCCESS_ENDPOINT, BLENDER_CALLBACK_URL
-
-)
-import logging
 import threading
-import http.server
-from http.server import BaseHTTPRequestHandler
-import socketserver
 import urllib.parse
 import webbrowser
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from .main_config import (
+    VALIDATE_TOKEN_ENDPOINT, LOGIN_ENDPOINT, LOGOUT_ENDPOINT, TOKEN_FILE,
+    LOGIN_PAGE_ENDPOINT, BLENDER_LOGIN_SUCCESS_ENDPOINT, BLENDER_CALLBACK_URL, BASE_URL
+)
 
-# Configure logging for auth.py
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Adjust as needed
-
-if not logger.hasHandlers():
-    logging.basicConfig(level=logging.DEBUG)
+import socketserver
+import socket
+# -----------------------------------------------------------------------------
+# Token File Helpers
+# -----------------------------------------------------------------------------
 
 def save_token(token):
     """Save the token to a file."""
@@ -41,6 +34,10 @@ def clear_token():
     if os.path.exists(TOKEN_FILE):
         os.remove(TOKEN_FILE)
 
+# -----------------------------------------------------------------------------
+# Token Validation and Expiry
+# -----------------------------------------------------------------------------
+
 def validate_token():
     """
     Validates the current authentication token.
@@ -48,7 +45,12 @@ def validate_token():
     """
     token = load_token()
     if not token:
-        logger.warning("No token found for validation.")
+        print("Warning: No token found for validation.")
+        return False
+
+    if not is_internet_available():
+        print("Error: No internet connection detected. Logging out.")
+        clear_token()  # Log the user out immediately.
         return False
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -57,19 +59,69 @@ def validate_token():
         response.raise_for_status()
         data = response.json()
         if data.get("success"):
-            logger.info("Token is valid.")
+            print("Info: Token is valid.")
             return True
         else:
-            logger.warning("Token validation failed.")
+            print("Warning: Token validation failed.")
             clear_token()
             return False
     except requests.RequestException as e:
-        logger.error(f"Token validation request failed: {e}")
+        print(f"Error: Token validation request failed: {e}")
         return False
 
 def is_logged_in():
     """Check if the user is logged in by validating the token."""
     return validate_token()
+
+def token_expiry_check():
+    """
+    Timer callback that checks whether the current login token is valid.
+    If not, it clears the token and updates the UI.
+    Returns the time (in seconds) until the next check.
+    """
+    if not validate_token():
+        clear_token()
+        bpy.context.scene.my_addon_data.is_from_webapp = False
+        print("[INFO] Your login token has expired. You have been logged out automatically.")
+    return 60.0  # Check every 60 seconds
+
+# -----------------------------------------------------------------------------
+# Internet Connection Checks
+# -----------------------------------------------------------------------------
+
+def is_internet_available():
+    """Check if the internet is available by connecting to a known server."""
+    try:
+        # Use Google's public DNS server to test connectivity.
+        socket.setdefaulttimeout(3)
+        host = socket.gethostbyname("8.8.8.8")
+        s = socket.create_connection((host, 53), 2)
+        s.close()
+        print("internet connectivity check passed")
+        return True
+    except Exception as e:
+        print("Internet connectivity check failed:", e)
+        return False
+
+
+def ensure_internet_connection(context):
+    """
+    Checks if the internet is available.
+    If not, logs out the user, disables the web UI, and returns False.
+    Otherwise, returns True.
+    """
+    if not is_internet_available():
+        print("Error: No internet connection detected. Logging out and disabling web UI.")
+        clear_token()
+        if hasattr(bpy.context.scene, "my_addon_data"):
+            bpy.context.scene.my_addon_data.is_from_webapp = False
+        bpy.context.scene.ui_current_mode = "GAME"
+        return False
+    return True
+
+# -----------------------------------------------------------------------------
+# Callback Server
+# -----------------------------------------------------------------------------
 
 class CallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):

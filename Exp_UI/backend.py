@@ -7,7 +7,7 @@ import shutil
 from .helper_functions import (
  download_blend_file, append_scene_from_blend
 )
-from .auth import load_token, save_token, clear_token, initiate_login, start_local_server
+from .auth import load_token, save_token, clear_token, initiate_login, start_local_server, ensure_internet_connection
 
 import traceback
 import threading
@@ -26,12 +26,17 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
+        if not ensure_internet_connection(context):
+            self.report({'ERROR'}, "No internet connection detected. Cannot login.")
+            return {'CANCELLED'}
+
         # Start the callback server on port 8000 in a background thread
         threading.Thread(target=start_local_server, args=(8000,), daemon=True).start()
         # Now open the login page; this will include the callback URL as a parameter.
         initiate_login()
         self.report({'INFO'}, "Login page opened. Complete login in your browser.")
         return {'FINISHED'}
+
 
 class LOGOUT_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.logout"
@@ -56,6 +61,10 @@ class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
         token = load_token()
         if not token:
             self.report({'ERROR'}, "You must log in first.")
+            return {'CANCELLED'}
+        
+        if not ensure_internet_connection(context):
+            self.report({'ERROR'}, "No internet connection detected. Logging out.")
             return {'CANCELLED'}
 
         download_code = context.scene.download_code.strip()

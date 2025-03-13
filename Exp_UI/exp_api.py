@@ -16,19 +16,10 @@ from .main_config import (
     USAGE_ENDPOINT
 )
 from .helper_functions import download_blend_file, append_scene_from_blend
-import logging
-from .auth import load_token, save_token, clear_token
+from .auth import load_token, save_token, clear_token, is_internet_available
 from .cache_manager import cache_manager
-from .main_config import (PACKAGE_DETAILS_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
+from .main_config import PACKAGE_DETAILS_ENDPOINT, THUMBNAIL_CACHE_FOLDER
 
-# Configure logging for api.py
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Adjust as needed
-
-# You can add handlers if you want to log to files or other destinations
-# For simplicity, we'll use basicConfig here
-if not logger.hasHandlers():
-    logging.basicConfig(level=logging.DEBUG)
 
 def login(username, password):
     """
@@ -52,13 +43,15 @@ def login(username, password):
         if data.get("success"):
             token = data.get("token")
             save_token(token)
-            logger.info("Login successful.")
+            # Login successful.
         else:
-            logger.error(f"Login failed: {data.get('message', 'Unknown error')}")
+            # Login failed.
+            pass
         return data
     except requests.RequestException as e:
-        logger.error(f"Login request failed: {e}")
+        # Login request failed.
         raise
+
 
 def logout():
     """
@@ -74,21 +67,20 @@ def logout():
     try:
         response = requests.post(url, headers=headers)
         if response.status_code == 404:
-            logger.error(f"Logout endpoint not found: {url}")
+            # Logout endpoint not found.
             return {"success": False, "message": "Logout endpoint not found."}
         response.raise_for_status()
         data = response.json()
         if data.get("success"):
             clear_token()
-            logger.info("Logout successful.")
+            # Logout successful.
         else:
-            logger.error(f"Logout failed: {data.get('message', 'Unknown error')}")
+            # Logout failed.
+            pass
         return data
     except requests.RequestException as e:
-        logger.error(f"Logout request failed: {e}")
         return {"success": False, "message": str(e)}
     except ValueError:
-        logger.error("Received non-JSON response during logout.")
         return {"success": False, "message": "Invalid response from server."}
 
 
@@ -108,15 +100,15 @@ def validate_token():
         response.raise_for_status()
         data = response.json()
         if data.get("success"):
-            logger.info("Token is valid.")
+            # Token is valid.
             return True
         else:
             clear_token()
-            logger.warning("Token is invalid.")
+            # Token is invalid.
             return False
     except requests.RequestException as e:
-        logger.error(f"Token validation failed: {e}")
         return False
+
 
 def fetch_packages(params):
     """
@@ -128,6 +120,11 @@ def fetch_packages(params):
     Returns:
         dict: Response data containing packages.
     """
+    # Check for internet connectivity
+    if not is_internet_available():
+        clear_token()  # Log out the user by clearing the token.
+        raise Exception("No internet connection detected. You have been logged out.")
+
     url = PACKAGES_ENDPOINT
     token = load_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -137,13 +134,15 @@ def fetch_packages(params):
         response.raise_for_status()
         data = response.json()
         if data.get("success"):
-            logger.info(f"Fetched {len(data.get('packages', []))} packages.")
+            # Fetched packages successfully.
+            pass
         else:
-            logger.error(f"Failed to fetch packages: {data.get('message', 'Unknown error')}")
+            # Failed to fetch packages.
+            pass
         return data
     except requests.RequestException as e:
-        logger.error(f"Fetch packages request failed: {e}")
         raise
+
 
 def like_package(file_id):
     """
@@ -160,12 +159,12 @@ def like_package(file_id):
 
     resp = requests.post(url, headers=headers)
 
-    # If 400, parse JSON but *do not* raise an exception
+    # If 400, parse JSON but do not raise an exception
     if resp.status_code == 400:
         data = resp.json()  # e.g. { "success": false, "message": "Already liked" }
         return data
 
-    # For everything else >= 400 except 400, go ahead and raise
+    # For any other status code >= 400 (except 400), raise an error.
     if resp.status_code >= 400:
         resp.raise_for_status()
 
@@ -173,19 +172,17 @@ def like_package(file_id):
     return data
 
 
-
 def comment_package(file_id, comment_text):
     """
     POST /comment/<file_id>
     JSON body: { "comment_text": ... }
-    Returns dict { success: bool, comment: {...} } or error
+    Returns dict { success: bool, comment: {...} } or error.
     """
     token = load_token()
     if not token:
         raise Exception("Not logged in")
 
     url = f"{COMMENT_PACKAGE_ENDPOINT}/{file_id}"
-
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -221,12 +218,13 @@ def download_package(download_code):
         response.raise_for_status()
         data = response.json()
         if data.get("success"):
-            logger.info("Download URL retrieved successfully.")
+            # Download URL retrieved successfully.
+            pass
         else:
-            logger.error(f"Failed to retrieve download URL: {data.get('message', 'Unknown error')}")
+            # Failed to retrieve download URL.
+            pass
         return data
     except requests.RequestException as e:
-        logger.error(f"Download package request failed: {e}")
         raise
 
 
@@ -287,17 +285,11 @@ def explore_package(pkg):
 
         # 4) If it's a shop item, store it in the Shop Downloads folder
         elif file_type == "shop_item":
-            # Move or copy it to SHOP_DOWNLOADS_FOLDER
-
             base_name = os.path.basename(local_blend_path)
             final_path = os.path.join(SHOP_DOWNLOADS_FOLDER, base_name)
             print(f"[INFO] Copying from {local_blend_path} to {final_path}")
             shutil.copy2(local_blend_path, final_path)
-            # Optionally remove the original from World Downloads if you want:
-            # os.remove(local_blend_path)
-
             return {'FINISHED'}, f"Shop item downloaded to: {final_path}"
-
         else:
             print(f"[ERROR] Unknown file_type: {file_type}")
             return {'CANCELLED'}, "Unknown file type"
@@ -305,7 +297,6 @@ def explore_package(pkg):
     except Exception as e:
         traceback.print_exc()
         return {'CANCELLED'}, str(e)
-
 
 
 def fetch_detail_for_file(file_id):
@@ -319,7 +310,7 @@ def fetch_detail_for_file(file_id):
         dict or None: Detailed package data if successful, else None.
     """
     token = load_token()
-    url = f"{PACKAGE_DETAILS_ENDPOINT}/{file_id}"  # Use the correct endpoint
+    url = f"{PACKAGE_DETAILS_ENDPOINT}/{file_id}"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     try:
@@ -329,13 +320,11 @@ def fetch_detail_for_file(file_id):
         if data.get("success"):
             return data
         else:
-            logger.error(f"Failed to fetch package details: {data.get('message', 'Unknown error')}")
+            # Failed to fetch package details.
             return None
     except requests.RequestException as e:
-        logger.error(f"Fetch package details request failed: {e}")
         return None
     except ValueError:
-        logger.error("Received non-JSON response during fetch package details.")
         return None
     
 

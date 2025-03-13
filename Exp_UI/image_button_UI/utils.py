@@ -15,6 +15,10 @@ def calculate_free_space():
     Also subtract the widths of any side panels (TOOLS and UI regions) from the horizontal space.
     """
     context = bpy.context
+    # Check that context.area and context.region exist.
+    if not context.area or not context.region:
+        return None
+
     # Use the current region (the drawing area)
     region = context.region
     free_space = {
@@ -90,9 +94,16 @@ def calculate_template_position(free_space, aspect_ratio=TEMPLATE_ASPECT_RATIO, 
 
 
 def viewport_changed():
-    """Return True if the VIEW_3D area size changed since last check."""
+    """
+    Return True if the VIEW_3D area size changed since last check.
+    If no valid viewport is available, returns False.
+    """
     global LAST_VIEWPORT_SIZE
     free_space = calculate_free_space()
+    if free_space is None:
+        # No valid viewport information available.
+        return False
+
     w, h = free_space["width"], free_space["height"]
 
     if (w, h) != (LAST_VIEWPORT_SIZE["width"], LAST_VIEWPORT_SIZE["height"]):

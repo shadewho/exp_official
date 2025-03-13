@@ -219,7 +219,6 @@ def preload_metadata_timer():
             last_access = entry.get("last_access", 0)
             # Example rule: if the file is missing or hasn't been accessed in 7 days.
             if not file_path or not os.path.exists(file_path) or (current_time - last_access > 7 * 24 * 3600):
-                print(f"[INFO] Removing stale thumbnail cache entry: {key}")
                 keys_to_remove.append(key)
         for key in keys_to_remove:
             index_data.pop(key, None)
@@ -231,12 +230,10 @@ def preload_metadata_timer():
             metadata_time = metadata.get("last_access", 0)
             # If metadata is older than 1 day, refresh it.
             if current_time - metadata_time > 24 * 3600:
-                print(f"[INFO] Refreshing stale metadata for package {package_id}")
                 from .helper_functions import background_fetch_metadata
                 background_fetch_metadata(package_id)
         
         _last_validation_time = current_time
-        print("[INFO] Full cache validation completed.")
 
     # --- End merged cache validation logic ---
     

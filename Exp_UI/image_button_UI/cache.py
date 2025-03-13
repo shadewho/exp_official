@@ -88,11 +88,22 @@ def get_cached_path_if_exists(key):
 
 def get_or_load_image(image_path):
     """
-    Return a bpy.types.Image if it's already in LOADED_IMAGES,
-    else load it from disk once. This avoids repeated creation of image data blocks.
+    Returns a bpy.types.Image corresponding to the given file path.
+    If the image is cached and still valid, returns it.
+    Otherwise, loads it from disk and caches it.
     """
     if image_path in LOADED_IMAGES:
-        return LOADED_IMAGES[image_path]
+        cached_img = LOADED_IMAGES[image_path]
+        try:
+            # Try to access a property (like name) to ensure the image is still valid.
+            _ = cached_img.name
+        except ReferenceError:
+            # The cached image reference is stale. Remove it from our cache.
+            print(f"[INFO] Cached image for {image_path} is stale. Reloading from disk.")
+            del LOADED_IMAGES[image_path]
+        else:
+            return cached_img
+
     if not os.path.exists(image_path):
         print(f"[ERROR] get_or_load_image: File not found: {image_path}")
         return None
@@ -105,27 +116,49 @@ def get_or_load_image(image_path):
         print(f"[ERROR] Failed to load image: {image_path}")
         return None
 
+
 def get_or_create_texture(img):
-    """Return a gpu.types.GPUTexture if it's already in LOADED_TEXTURES, else create it once."""
+    """
+    Returns a GPU texture for the given image.
+    If the image is not valid, returns None.
+    """
     if not img:
         return None
-    key = img.name
+    try:
+        key = img.name  # This might raise ReferenceError if img is invalid.
+    except ReferenceError:
+        print("[ERROR] Tried to access img.name but the image has been removed.")
+        return None
+
     if key in LOADED_TEXTURES:
         return LOADED_TEXTURES[key]
 
-    tex = gpu.texture.from_image(img)
+    try:
+        tex = gpu.texture.from_image(img)
+    except ReferenceError:
+        print("[ERROR] Failed to create texture because the image is no longer valid.")
+        return None
+
     LOADED_TEXTURES[key] = tex
     return tex
 
 def clear_image_datablocks():
     """
-    Remove references to all loaded images so that Blender won't save them in the .blend file.
-    Clears LOADED_IMAGES and LOADED_TEXTURES. Call this when you close your thumbnail UI.
+    Clears out our cached images and GPU textures.
+    Iterates over LOADED_IMAGES, removes each image from bpy.data.images (if still present),
+    and then clears both caches.
+    This function should be called when a new blend file is loaded or when you need to refresh the UI.
     """
-    for path, img in LOADED_IMAGES.items():
+    global LOADED_IMAGES, LOADED_TEXTURES
+    # Iterate over a copy of the items to avoid modifying the dictionary during iteration.
+    for path, img in list(LOADED_IMAGES.items()):
         if img and img.name in bpy.data.images:
-            bpy.data.images.remove(bpy.data.images[img.name], do_unlink=True)
-
+            try:
+                bpy.data.images.remove(bpy.data.images[img.name], do_unlink=True)
+                print(f"[INFO] Removed image: {img.name}")
+            except Exception as e:
+                print(f"[ERROR] Could not remove image {img.name}: {e}")
+    # Clear the caches.
     LOADED_IMAGES.clear()
     LOADED_TEXTURES.clear()
 
@@ -200,11 +233,9 @@ def preload_in_memory_thumbnails():
     index_data = load_thumbnail_index()
     keys = list(index_data.keys())
     total = len(keys)
-    print(f"[INFO] Starting preload of {total} thumbnails into memory.")
 
     def load_next_thumbnail():
         if not keys:
-            print("[INFO] Preloading of thumbnails complete.")
             return None  # Returning None stops the timer.
         key = keys.pop(0)
         entry = index_data.get(key)
