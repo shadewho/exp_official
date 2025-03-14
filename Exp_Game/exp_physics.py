@@ -34,7 +34,7 @@ def capsule_collision_resolve(
     bvh_tree,
     obj,
     radius=0.2,
-    heights=(0.3,1.0,1.9),
+    heights=(0.3, 1.0, 1.9),
     max_iterations=3,
     push_strength=0.2
 ):
@@ -51,6 +51,10 @@ def capsule_collision_resolve(
     """
     if not bvh_tree or not obj:
         return
+
+    # Ensure bvh_tree is the actual BVH tree (if it's returned as a tuple, extract the first element)
+    if isinstance(bvh_tree, tuple):
+        bvh_tree = bvh_tree[0]
 
     for _ in range(max_iterations):
         any_fix = False

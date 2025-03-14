@@ -159,6 +159,11 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             if search_query:
                 params["search_query"] = search_query
 
+            # Only include event_stage if file_type is 'event'
+            if file_type == 'event':
+                scene = bpy.context.scene
+                params["event_stage"] = scene.event_stage
+
             data = fetch_packages(params)
             if not data.get("success"):
                 fetch_page_queue.put(("FETCH_ERROR", {"error": data.get("message", "Unknown error")}))
@@ -383,6 +388,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
     last_item_type: str = ""
     last_sort_by: str = ""
     last_search: str = ""
+    last_event_stage: str = ""  # New: store the last event stage
 
     # Loading state (for when a page/detail refresh is in progress)
     _do_loading = False
@@ -405,6 +411,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         self.last_item_type = scene.package_item_type
         self.last_sort_by = scene.package_sort_by
         self.last_search = scene.package_search_query
+        self.last_event_stage = scene.event_stage  # Save the initial event stage
 
         # Initialize UI draw data.
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
@@ -443,15 +450,19 @@ class PACKAGE_OT_Display(bpy.types.Operator):
             current_item = scene.package_item_type
             current_sort = scene.package_sort_by
             current_search = scene.package_search_query
+            current_event_stage = scene.event_stage  # New: current event stage
 
+            # If the current type is "event", also monitor the event_stage property.
             if (current_item != self.last_item_type or
                 current_sort != self.last_sort_by or
-                current_search != self.last_search):
+                current_search != self.last_search or
+                (current_item == 'event' and current_event_stage != self.last_event_stage)):
                 
                 # Update the saved values.
                 self.last_item_type = current_item
                 self.last_sort_by = current_sort
                 self.last_search = current_search
+                self.last_event_stage = current_event_stage
 
                 # Reset to page one and show a loading indicator.
                 scene.current_thumbnail_page = 1
@@ -471,7 +482,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                         result = bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=self._target_page)
                         if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):
                             self.report({'ERROR'}, "Page load failed or cancelled.")
-
                     elif self._active_task == "detail":
                         detail_data = fetch_detail_for_file(file_id=self._detail_file_id)
                         if detail_data and detail_data.get("success"):
@@ -554,7 +564,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             if context.area:
                                 context.area.tag_redraw()
                         return {'RUNNING_MODAL'}
-                    
                     elif button["name"] == "Explore_Icon":
                         download_code = scene.download_code
                         if scene.my_addon_data.file_id > 0 and download_code:
@@ -562,19 +571,14 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             if not token:
                                 self.report({'ERROR'}, "You must be logged in to explore a package.")
                                 return {'CANCELLED'}
-
                             # Set a loading flag and reset progress (for the UI drawing)
                             scene.download_progress = 0.0
                             scene.ui_current_mode = "LOADING"  # This is only for drawing, not for process control.
-
                             # Immediately start the download process regardless of UI mode.
                             explore_icon_handler(context, download_code)
                         else:
                             self.report({'ERROR'}, "No package selected or missing download code.")
                         return {'RUNNING_MODAL'}
-
-
-
                     else:
                         # Handle clicking a thumbnail in BROWSE mode.
                         if scene.ui_current_mode == "BROWSE":
@@ -616,7 +620,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         self.report({'INFO'}, "Package UI closed.")
         return {'CANCELLED'}
 
-
     def begin_loading_for_page(self, context, new_page):
         self._do_loading = True
         self.loading_step = 0
@@ -636,6 +639,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
         if context.area:
             context.area.tag_redraw()
+
 
 # ------------------------------------------------------------------------
 # 3) REMOVE_PACKAGE_OT_Display

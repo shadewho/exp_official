@@ -126,10 +126,11 @@ def register():
     )
     bpy.types.Scene.package_item_type = bpy.props.EnumProperty(
         name="Item Type",
-        description="World or Shop",
+        description="Select a type: World, Shop Item, or Event (maps in voting/winners)",
         items=[
             ('world', 'World', ''),
-            ('shop_item', 'Shop Item', '')
+            ('shop_item', 'Shop', ''),
+            ('event', 'Event', 'Playable event maps (voting and winners)')
         ],
         default='world'
     )
@@ -144,6 +145,16 @@ def register():
             ('featured', 'Featured', '')
         ],
         default='newest'
+    )
+    bpy.types.Scene.event_stage = bpy.props.EnumProperty(
+        name="Event Stage",
+        description="Select the current stage for events",
+        items=[
+            ('submit', 'Submit', ''),
+            ('vote', 'Vote', ''),
+            ('winners', 'Winners', '')
+        ],
+        default='submit'
     )
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
@@ -200,6 +211,7 @@ def unregister():
     del bpy.types.Scene.package_item_type
     del bpy.types.Scene.package_sort_by
     del bpy.types.Scene.package_search_query
+    del bpy.types.Scene.event_stage
     del bpy.types.Scene.my_addon_data
     del bpy.types.Scene.current_thumbnail_page
     del bpy.types.Scene.total_thumbnail_pages

@@ -92,9 +92,20 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
         row = layout.row()
         row.alignment = 'CENTER'
         row.label(text="-Filters-")
-        layout.prop(scene, "package_item_type", text="Item Type")
-        layout.prop(scene, "package_sort_by", text="Sort By")
-        layout.prop(scene, "package_search_query", text="Search")
+
+        # 1) Item Type as toggle buttons (no label, side-by-side)
+        row = layout.row(align=True)
+        row.prop(scene, "package_item_type", text="Item Type", expand=True)
+
+        # Conditionally show event-stage enum if the event filter is active
+        if scene.package_item_type == 'event':
+            layout.prop(scene, "event_stage", text="Event Stage", expand=True)
+
+        else:
+            # 2) Sort By
+            layout.prop(scene, "package_sort_by", text="Sort By")
+            # 3) Search
+            layout.prop(scene, "package_search_query", text="Search")
 
         layout.separator()
 

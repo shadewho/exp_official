@@ -50,17 +50,20 @@ def find_best_floor_below(target_object, static_bvh, dynamic_bvh_map, max_distan
 
     # 1) Static check
     if static_bvh:
-        loc_s, norm_s = raycast_down(static_bvh, target_object, dist=max_distance)
+        # If static_bvh is a tuple, extract the BVH tree.
+        bvh = static_bvh[0] if isinstance(static_bvh, tuple) else static_bvh
+        loc_s, norm_s = raycast_down(bvh, target_object, dist=max_distance)
         if loc_s:
             best_loc  = loc_s
             best_norm = norm_s
-            best_obj  = None  # indicates it's the static floor
+            best_obj  = None  # Indicates it's the static floor
 
     # 2) Dynamic checks
     if dynamic_bvh_map:
         for dyn_obj, dyn_bvh in dynamic_bvh_map.items():
             if dyn_bvh:
-                loc_d, norm_d = raycast_down(dyn_bvh, target_object, dist=max_distance)
+                bvh_dyn = dyn_bvh[0] if isinstance(dyn_bvh, tuple) else dyn_bvh
+                loc_d, norm_d = raycast_down(bvh_dyn, target_object, dist=max_distance)
                 if loc_d:
                     if best_loc is None:
                         best_loc  = loc_d

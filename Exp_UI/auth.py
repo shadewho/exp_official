@@ -13,6 +13,11 @@ from .main_config import (
 
 import socketserver
 import socket
+import time
+
+_last_internet_check_time = 0
+_cached_internet_available = False
+_CACHE_DURATION = 10  # seconds
 # -----------------------------------------------------------------------------
 # Token File Helpers
 # -----------------------------------------------------------------------------
@@ -90,7 +95,15 @@ def token_expiry_check():
 # -----------------------------------------------------------------------------
 
 def is_internet_available():
-    """Check if the internet is available by connecting to a known server."""
+    """Check if the internet is available by connecting to a known server.
+       Caches the result for _CACHE_DURATION seconds to avoid repeated calls.
+    """
+    global _last_internet_check_time, _cached_internet_available
+    current_time = time.time()
+    # If the last check was recent, return the cached result.
+    if current_time - _last_internet_check_time < _CACHE_DURATION:
+        return _cached_internet_available
+
     try:
         # Use Google's public DNS server to test connectivity.
         socket.setdefaulttimeout(3)
@@ -98,10 +111,13 @@ def is_internet_available():
         s = socket.create_connection((host, 53), 2)
         s.close()
         print("internet connectivity check passed")
-        return True
+        _cached_internet_available = True
     except Exception as e:
         print("Internet connectivity check failed:", e)
-        return False
+        _cached_internet_available = False
+
+    _last_internet_check_time = current_time
+    return _cached_internet_available
 
 
 def ensure_internet_connection(context):

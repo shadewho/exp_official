@@ -315,7 +315,7 @@ class ExpModal(bpy.types.Operator):
                     if cached is not None:
                         last_matrix, cached_bvh, dyn_radius = cached
                         # If the object's transform hasn’t changed significantly, reuse the BVH and radius.
-                        if (current_matrix - last_matrix).length < MATRIX_THRESHOLD:
+                        if (current_matrix.to_translation() - last_matrix.to_translation()).length < MATRIX_THRESHOLD:
                             self.dynamic_bvh_map[dyn_obj] = (cached_bvh, dyn_radius)
                             continue
                     # Otherwise, rebuild the BVH for this dynamic mesh
