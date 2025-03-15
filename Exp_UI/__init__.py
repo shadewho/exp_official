@@ -24,7 +24,7 @@ from .social_operators import (
     OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp,
     POPUP_SOCIAL_DETAILS_OT
 )
-from .addon_data import MyAddonComment, MyAddonSceneProps
+from .addon_data import MyAddonComment, MyAddonSceneProps, get_event_items
 from bpy.props import PointerProperty
 from .image_button_UI.operators import (
     FETCH_PAGE_THREADED_OT_WebApp,
@@ -39,7 +39,7 @@ from .cache_memory_operators import (
 
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
-
+from .helper_functions import update_event_stage
 # List all classes that will be registered.
 classes = (
     LOGIN_OT_WebApp,
@@ -102,6 +102,13 @@ def register():
     bpy.utils.register_class(MyAddonSceneProps)
     bpy.types.Scene.my_addon_data = PointerProperty(type=MyAddonSceneProps)
 
+    bpy.types.Scene.fetched_events = bpy.props.PointerProperty(type=bpy.types.PropertyGroup)
+    bpy.types.Scene.selected_event = bpy.props.EnumProperty(
+        name="Event",
+        description="Select an event to filter packages",
+        items=get_event_items  # Make sure get_event_items is in scope or imported.
+    )
+
     # Register UI mode and other scene properties.
     bpy.types.Scene.ui_current_mode = bpy.props.EnumProperty(
         name="UI Current Mode",
@@ -150,12 +157,14 @@ def register():
         name="Event Stage",
         description="Select the current stage for events",
         items=[
-            ('submit', 'Submit', ''),
-            ('vote', 'Vote', ''),
-            ('winners', 'Winners', '')
+            ('submission', 'Submit', 'Submission phase'),
+            ('voting', 'Vote', 'Voting phase'),
+            ('winners', 'Winners', 'Completed events')
         ],
-        default='submit'
+        default='submission',
+        update=update_event_stage
     )
+
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
         description="Filter packages by name or author",
@@ -213,6 +222,8 @@ def unregister():
     del bpy.types.Scene.package_search_query
     del bpy.types.Scene.event_stage
     del bpy.types.Scene.my_addon_data
+    del bpy.types.Scene.fetched_events
+    del bpy.types.Scene.selected_event
     del bpy.types.Scene.current_thumbnail_page
     del bpy.types.Scene.total_thumbnail_pages
     del bpy.types.Scene.download_code
@@ -230,6 +241,7 @@ def unregister():
     # Remove the persistent handler if it was registered.
     if on_blend_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_blend_load)
+
 
 if __name__ == "__main__":
     register()

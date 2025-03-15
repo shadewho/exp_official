@@ -199,6 +199,13 @@ def preload_metadata_timer():
     Timer callback that calls the PRELOAD_METADATA_OT_WebApp operator to preload metadata.
     In addition, every hour, it validates and refreshes the persistent cache (thumbnails and metadata).
     """
+    import bpy, time
+
+    scene = bpy.context.scene
+    # If game modal is active, skip preloading to avoid hitches.
+    if scene.ui_current_mode == "GAME":
+        return 10.0  # Delay next check, but do nothing
+
     try:
         bpy.ops.webapp.preload_metadata('INVOKE_DEFAULT')
     except Exception as e:
@@ -239,3 +246,4 @@ def preload_metadata_timer():
     
     # Return the interval (in seconds) for the next call.
     return 10.0  # This timer will run every 10 seconds.
+

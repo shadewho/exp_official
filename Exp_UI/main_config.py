@@ -2,8 +2,8 @@
 import os
 
 # Determine the base URL based on the environment
-# You can set an environment variable 'ADDON_ENV' to switch between environments
-# Default to 'development' if not set
+# You can set an environment variable 'ADDON_ENV' to switch between environments.
+# Default to 'development' if not set.
 ENVIRONMENT = os.getenv('ADDON_ENV', 'development')
 
 BASE_URLS = {
@@ -20,8 +20,8 @@ USER_PROFILE_BASE_URLS = {
 # Select the appropriate base URL
 BASE_URL = BASE_URLS.get(ENVIRONMENT, BASE_URLS['development'])
 USER_PROFILE_BASE_URL = USER_PROFILE_BASE_URLS.get(ENVIRONMENT, USER_PROFILE_BASE_URLS['development'])
-# Define specific endpoints
 
+# Define specific endpoints for the blender API
 LOGIN_ENDPOINT = f"{BASE_URL}/api/login"
 LOGOUT_ENDPOINT = f"{BASE_URL}/api/logout"
 DOWNLOAD_ENDPOINT = f"{BASE_URL}/api/download"
@@ -32,6 +32,14 @@ LIKE_PACKAGE_ENDPOINT = f"{BASE_URL}/api/like"
 COMMENT_PACKAGE_ENDPOINT = f"{BASE_URL}/api/comment"
 USAGE_ENDPOINT = f"{BASE_URL}/api/usage"
 
+# Define specific endpoints for events.
+EVENTS_BASE_URL = {
+    'development': 'http://127.0.0.1:5000/events',
+    'production': 'https://exploratory.online/events'
+}
+# Get the events URL for the current environment.
+EVENTS_URL = EVENTS_BASE_URL.get(ENVIRONMENT, EVENTS_BASE_URL['development'])
+EVENTS_ENDPOINT = f"{EVENTS_URL}/api/events_by_stage"
 
 if ENVIRONMENT == 'development':
     LOGIN_PAGE_ENDPOINT = "http://127.0.0.1:5000/login"
@@ -45,14 +53,13 @@ else:
     BLENDER_CALLBACK_URL = "http://localhost:8000/callback"
     BLENDER_LOGIN_SUCCESS_ENDPOINT = "https://exploratory.online/blender_login_successful"
 
-
-# Define the path to the addon's folder
+# Define the path to the addon's folder.
 ADDON_FOLDER = os.path.dirname(__file__)
 
-# Path to the login token file
+# Path to the login token file.
 TOKEN_FILE = os.path.join(ADDON_FOLDER, "login_token.txt")
 
-# Subfolder in the addon directory for downloaded .blend files
+# Subfolder in the addon directory for downloaded .blend files.
 WORLD_DOWNLOADS_FOLDER = os.path.join(ADDON_FOLDER, "World Downloads")
 if not os.path.exists(WORLD_DOWNLOADS_FOLDER):
     os.makedirs(WORLD_DOWNLOADS_FOLDER)

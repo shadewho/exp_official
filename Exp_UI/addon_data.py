@@ -122,3 +122,27 @@ class MyAddonSceneProps(PropertyGroup):
         # Build out the profile link:
         self.profile_url = f"{USER_PROFILE_BASE_URL}/{self.author}"
         self.download_count = pkg.get("download_count", 0)
+
+
+# This property will hold the entire events data fetched from the backend.
+bpy.types.Scene.fetched_events = bpy.props.PointerProperty(type=bpy.types.PropertyGroup)
+
+# A helper function that returns the items for the event dropdown.
+def get_event_items(self, context):
+    events_data = context.scene.get("fetched_events_data", {})  # This will store our fetched events.
+    stage = context.scene.event_stage  # Already defined as an EnumProperty (e.g., 'submit', 'vote', 'winners')
+    items = []
+    stage_events = events_data.get(stage, [])
+    for event in stage_events:
+        # Each item is a tuple: (value, label, description)
+        items.append((str(event["id"]), event["title"], event.get("description", "")))
+    if not items:
+        items = [("0", "No events", "No active event in this stage")]
+    return items
+
+# Add a property for selecting an event.
+bpy.types.Scene.selected_event = bpy.props.EnumProperty(
+    name="Event",
+    description="Select an event to filter packages",
+    items=get_event_items
+)

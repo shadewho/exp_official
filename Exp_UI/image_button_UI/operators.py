@@ -159,10 +159,13 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             if search_query:
                 params["search_query"] = search_query
 
-            # Only include event_stage if file_type is 'event'
+            # For event files, add filters for event stage and the selected event.
             if file_type == 'event':
                 scene = bpy.context.scene
                 params["event_stage"] = scene.event_stage
+                # If the user has selected a specific event (and it's not the default "0")
+                if hasattr(scene, "selected_event") and scene.selected_event and scene.selected_event != "0":
+                    params["selected_event"] = scene.selected_event
 
             data = fetch_packages(params)
             if not data.get("success"):
@@ -182,7 +185,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                     if cached_thumb and os.path.exists(cached_thumb["file_path"]):
                         pkg["local_thumb_path"] = cached_thumb["file_path"]
                     else:
-                        # Pass file_id into download_thumbnail for consistent caching
+                        # Download and cache the thumbnail; pass file_id for consistent caching.
                         local_path = download_thumbnail(thumb_url, file_id=package_id)
                         pkg["local_thumb_path"] = local_path
                 else:
@@ -193,6 +196,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             fetch_page_queue.put(("FETCH_DONE", {"packages": packages, "sort_by": sort_by}))
         except Exception as e:
             fetch_page_queue.put(("FETCH_ERROR", {"error": str(e)}))
+
 
 
     def update_pagination(self, context, master_list, current_page, items_per_page=THUMBNAILS_PER_PAGE):

@@ -77,7 +77,7 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
             layout.label(text="(Log in to access filters and scenes.)", icon='ERROR')
             return
 
-        # Master buttons in their own rows (stacked vertically)
+        # Master buttons
         row = layout.row()
         op = row.operator("webapp.apply_filters_showui", text="Exploratory Interface", icon='RESTRICT_VIEW_OFF')
         op.page_number = 1
@@ -88,32 +88,32 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
         layout.separator()
         layout.separator()
 
-        # Filter UI:
+        # Filter UI header
         row = layout.row()
         row.alignment = 'CENTER'
         row.label(text="-Filters-")
 
-        # 1) Item Type as toggle buttons (no label, side-by-side)
+        # 1) Item Type toggle buttons
         row = layout.row(align=True)
         row.prop(scene, "package_item_type", text="Item Type", expand=True)
 
-        # Conditionally show event-stage enum if the event filter is active
+        # If the package type is 'event', display event-specific filters.
         if scene.package_item_type == 'event':
             layout.prop(scene, "event_stage", text="Event Stage", expand=True)
-
+            layout.prop(scene, "selected_event", text="Event")
         else:
-            # 2) Sort By
+            # For non-event types, show sort and search controls.
             layout.prop(scene, "package_sort_by", text="Sort By")
-            # 3) Search
             layout.prop(scene, "package_search_query", text="Search")
 
         layout.separator()
 
-        # Scene "Find Item" UI:
+        # Scene "Find Item" UI
         layout.label(text="Download Code:")
         split = layout.split(factor=0.85)
         split.prop(scene, "download_code", text="")  # Text field with no label.
         split.operator("webapp.download_code", text="", icon='VIEWZOOM')
+
 
 
 
