@@ -393,6 +393,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
     last_sort_by: str = ""
     last_search: str = ""
     last_event_stage: str = ""  # New: store the last event stage
+    last_selected_event: str = ""  # New: store the last selected event
 
     # Loading state (for when a page/detail refresh is in progress)
     _do_loading = False
@@ -416,6 +417,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         self.last_sort_by = scene.package_sort_by
         self.last_search = scene.package_search_query
         self.last_event_stage = scene.event_stage  # Save the initial event stage
+        self.last_selected_event = scene.selected_event  # Save the initial selected event
 
         # Initialize UI draw data.
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
@@ -454,19 +456,21 @@ class PACKAGE_OT_Display(bpy.types.Operator):
             current_item = scene.package_item_type
             current_sort = scene.package_sort_by
             current_search = scene.package_search_query
-            current_event_stage = scene.event_stage  # New: current event stage
+            current_event_stage = scene.event_stage  # current event stage
+            current_selected_event = scene.selected_event  # current selected event
 
-            # If the current type is "event", also monitor the event_stage property.
+            # If the current type is "event", also monitor event_stage and selected_event.
             if (current_item != self.last_item_type or
                 current_sort != self.last_sort_by or
                 current_search != self.last_search or
-                (current_item == 'event' and current_event_stage != self.last_event_stage)):
+                (current_item == 'event' and (current_event_stage != self.last_event_stage or current_selected_event != self.last_selected_event))):
                 
                 # Update the saved values.
                 self.last_item_type = current_item
                 self.last_sort_by = current_sort
                 self.last_search = current_search
                 self.last_event_stage = current_event_stage
+                self.last_selected_event = current_selected_event
 
                 # Reset to page one and show a loading indicator.
                 scene.current_thumbnail_page = 1
@@ -544,8 +548,12 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
                     # Handle specific button actions.
                     if button["name"] == "Close_Icon":
-                        self.report({'INFO'}, "Close button clicked! Removing UI...")
+                        from ..image_button_UI.explore_downloads import current_download_task
+                        if current_download_task is not None:
+                            current_download_task.cancel()
+                        self.report({'INFO'}, "Close button clicked! Cancelling download and removing UI...")
                         return self.cancel(context)
+
                     elif button["name"] == "Template":
                         continue
                     elif button["name"] == "Right_Arrow":
@@ -643,6 +651,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
         if context.area:
             context.area.tag_redraw()
+
 
 
 # ------------------------------------------------------------------------

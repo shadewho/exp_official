@@ -106,6 +106,11 @@ class MyAddonSceneProps(PropertyGroup):
         default=0
     )
     
+    event_submission_id: IntProperty(
+        name="Event Submission ID",
+        default=0
+    )
+
     
     def init_from_package(self, pkg: dict):
         """
@@ -122,6 +127,8 @@ class MyAddonSceneProps(PropertyGroup):
         # Build out the profile link:
         self.profile_url = f"{USER_PROFILE_BASE_URL}/{self.author}"
         self.download_count = pkg.get("download_count", 0)
+        if pkg.get("file_type") == "event":
+            self.event_submission_id = pkg.get("submission_id", 0)
 
 
 # This property will hold the entire events data fetched from the backend.

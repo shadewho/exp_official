@@ -22,7 +22,7 @@ from .panel import (
 from .social_operators import (
     LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
     OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp,
-    POPUP_SOCIAL_DETAILS_OT
+    POPUP_SOCIAL_DETAILS_OT, VOTE_MAP_OT_WebApp
 )
 from .addon_data import MyAddonComment, MyAddonSceneProps, get_event_items
 from bpy.props import PointerProperty
@@ -62,7 +62,8 @@ classes = (
     CLEAR_ALL_DATA_OT_WebApp,
     REFRESH_FILTERS_OT_WebApp,
     PRELOAD_METADATA_OT_WebApp,
-    POPUP_SOCIAL_DETAILS_OT
+    POPUP_SOCIAL_DETAILS_OT,
+    VOTE_MAP_OT_WebApp
 )
 
 # --- Persistent Handler ---

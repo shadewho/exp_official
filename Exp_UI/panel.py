@@ -99,6 +99,7 @@ class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
 
         # If the package type is 'event', display event-specific filters.
         if scene.package_item_type == 'event':
+            layout.separator()
             layout.prop(scene, "event_stage", text="Event Stage", expand=True)
             layout.prop(scene, "selected_event", text="Event")
         else:
@@ -154,18 +155,24 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
             else:
                 row.label(text=addon_data.author)
 
-            # 3) Description (one line)
+            # 3) Description
             layout.label(text=f"Description: {addon_data.description}")
 
             # 4) Upload Date
             layout.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
             
-            #4.5) Download Count
+            # 4.5) Download Count
             layout.label(text=f"Downloads: {addon_data.download_count}")
-            # 5) Likes (heart + count)
+
+            # 5) Either show the vote/favorite button or the like button:
             row = layout.row(align=True)
-            like_op = row.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
-            like_op.skip_popup = True
+            if scene.package_item_type == 'event' and scene.event_stage == 'voting':
+                # Show "Favorite" button with a star icon (★)
+                vote_op = row.operator("webapp.vote_map", text="★ Vote")
+                vote_op.skip_popup = True
+            else:
+                like_op = row.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
+                like_op.skip_popup = True
 
             # 6) Comments
             layout.label(text="Comments:")
@@ -180,4 +187,5 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
 
         else:
             layout.label(text="No active item to display.", icon='INFO')
+
 

@@ -1,13 +1,14 @@
 # social_operators.py
 
 from .auth import load_token
-from .main_config import LIKE_PACKAGE_ENDPOINT, COMMENT_PACKAGE_ENDPOINT, USAGE_ENDPOINT
+from .main_config import LIKE_PACKAGE_ENDPOINT, COMMENT_PACKAGE_ENDPOINT, USAGE_ENDPOINT, EVENTS_URL
 from .exp_api import like_package, comment_package
 import bpy
 import webbrowser
 from bpy.props import StringProperty
 import requests
 from .helper_functions import format_relative_time
+
 
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.like_package"
@@ -221,12 +222,19 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
                 op = row_author.operator("webapp.open_url", text="Profile")
                 op.url = addon_data.profile_url
 
-            row_likes = layout.row(align=True)
-            row_likes.label(text=f"{addon_data.likes} Likes", icon='FUND')
-            op_like = row_likes.operator("webapp.like_package", text="Like")
-            # For persistent mode, we want immediate execution
-            op_like.skip_popup = True
-            op_like.launched_from_persistent = True
+            # Check if the package is an event and the event stage is 'voting'
+            if scene.package_item_type == 'event' and scene.event_stage == 'voting':
+                row_vote = layout.row(align=True)
+                # Display the vote operator with a star icon; adjust text as needed.
+                vote_op = row_vote.operator("webapp.vote_map", text="★ Vote")
+                # You can set properties on vote_op if necessary:
+                vote_op.skip_popup = True
+            else:
+                row_likes = layout.row(align=True)
+                row_likes.label(text=f"{addon_data.likes} Likes", icon='FUND')
+                op_like = row_likes.operator("webapp.like_package", text="Like")
+                op_like.skip_popup = True
+                op_like.launched_from_persistent = True
 
             layout.separator()
             layout.label(text="Comments:", icon='COMMUNITY')
@@ -238,8 +246,7 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
             )
 
             layout.separator()
-            # Display an inline text field bound to the scene property.
-
+            # Inline text field for new comments.
             row = layout.row(align=True)
             row.prop(scene, "comment_text", text="", emboss=True)
             op_comment = row.operator("webapp.comment_package", text="", icon='ADD')
@@ -250,4 +257,64 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
             layout.label(text="No social data available.", icon='INFO')
 
 
+class VOTE_MAP_OT_WebApp(bpy.types.Operator):
+    bl_idname = "webapp.vote_map"
+    bl_label = "Vote for Map"
+    bl_options = {'REGISTER'}
+    
+    skip_popup: bpy.props.BoolProperty(default=False)
 
+    def execute(self, context):
+        scene = context.scene
+        addon_data = scene.my_addon_data
+
+        if scene.package_item_type != 'event' or scene.event_stage != 'voting':
+            self.report({'ERROR'}, "Not in voting stage for an event map.")
+            return {'CANCELLED'}
+
+        submission_id = addon_data.event_submission_id
+        if submission_id <= 0:
+            self.report({'ERROR'}, "No valid submission ID found.")
+            return {'CANCELLED'}
+
+        token = load_token()
+        if not token:
+            self.report({'ERROR'}, "You must be logged in to vote.")
+            return {'CANCELLED'}
+
+        # Debug print to check token
+        print("DEBUG: Token retrieved:", token)
+        
+        # Ensure header format is correct
+        headers = {"Authorization": f"Bearer {token}"}
+        print("DEBUG: Headers being sent:", headers)
+        
+        vote_url = f"{EVENTS_URL}/vote/{submission_id}"
+        print("DEBUG: Vote URL:", vote_url)
+        
+        try:
+            response = requests.post(vote_url, headers=headers, timeout=5)
+            print("DEBUG: Server response status:", response.status_code)
+            # Try printing raw response text for debugging if JSON fails.
+            print("DEBUG: Response text:", response.text)
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("success"):
+                self.report({'ERROR'}, data.get("message", "Vote failed."))
+                return {'CANCELLED'}
+            self.report({'INFO'}, data.get("message", "Vote cast successfully!"))
+            return {'FINISHED'}
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 400:
+                try:
+                    data = response.json()
+                    self.report({'INFO'}, data.get("message", "Already voted."))
+                except Exception:
+                    self.report({'ERROR'}, "Bad Request")
+                return {'FINISHED'}
+            else:
+                self.report({'ERROR'}, f"Error during vote: {e}")
+                return {'CANCELLED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Error during vote: {e}")
+            return {'CANCELLED'}
