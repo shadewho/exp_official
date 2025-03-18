@@ -3,6 +3,8 @@
 import bpy
 from .auth import load_token
 from .helper_functions import format_relative_time
+from .version_info import CURRENT_VERSION
+from .exp_api import check_for_update
 
 class VIEW3D_PT_SubscriptionUsage(bpy.types.Panel):
     bl_label = "Subscription Usage"
@@ -189,3 +191,33 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
             layout.label(text="No active item to display.", icon='INFO')
 
 
+class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
+    bl_label = "Settings and Update"
+    bl_idname = "VIEW3D_PT_settings_update"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
+        layout.operator("wm.check_addon_update", text="Check for Update")
+        # Additional settings can go here.
+
+class INFO_MT_addon_update(bpy.types.Menu):
+    bl_label = "Update Available"
+    bl_idname = "INFO_MT_addon_update"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="A new version of the add-on is available!")
+        layout.label(text="Please update the add-on to continue using it.")
+
+
+    def execute(self, context):
+        update_needed = not check_for_update()  # check_for_update returns False if update is required.
+        if update_needed:
+            self.report({'WARNING'}, "A new version is available! Please update the add-on.")
+        else:
+            self.report({'INFO'}, "Your add-on is up-to-date.")
+        return {'FINISHED'}

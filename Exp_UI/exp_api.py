@@ -1,5 +1,6 @@
 # api.py
 import os
+import bpy
 import requests
 import shutil
 import traceback
@@ -13,8 +14,10 @@ from .main_config import (
     LIKE_PACKAGE_ENDPOINT,
     COMMENT_PACKAGE_ENDPOINT,
     SHOP_DOWNLOADS_FOLDER,
-    USAGE_ENDPOINT
+    USAGE_ENDPOINT,
+    BASE_URL,
 )
+from .version_info import CURRENT_VERSION
 from .helper_functions import download_blend_file, append_scene_from_blend
 from .auth import load_token, save_token, clear_token, is_internet_available
 from .cache_manager import cache_manager
@@ -339,3 +342,20 @@ def get_usage_data():
     if not data.get("success"):
         raise Exception(data.get("message", "Failed to fetch usage data"))
     return data
+
+def check_for_update():
+    try:
+        url = f"{BASE_URL}/api/addon_version"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                active_version = data.get("version_string")
+                if active_version != CURRENT_VERSION:
+                    bpy.ops.wm.call_menu(name="INFO_MT_addon_update")
+                    return False  # Update is required.
+        else:
+            print("Error checking addon version:", response.text)
+    except Exception as e:
+        print("Exception during update check:", e)
+    return True  # No update needed.

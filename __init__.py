@@ -1,7 +1,9 @@
 bl_info = {
     "name": "Exploratory",
     "blender": (4, 2, 0),
-    "author": "shade.who",
+    "author": "Spencer Shade",
+    "doc_url": "https://exploratory.online/",
+    "tracker_url": "https://discord.gg/GJpGAAvMBe",
     "description": "Explore and Create within Blender.",
     "version": (1, 0, 1),
 }

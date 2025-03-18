@@ -3,7 +3,7 @@ bl_info = {
     "blender": (4, 2, 0),
     "author": "Your Name",
     "description": "A simple add-on for UI EXP purposes in Blender.",
-    "version": (1, 0, 2),
+    "version": (1, 0, 1),
 }
 
 
@@ -17,7 +17,9 @@ from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
     VIEW3D_PT_PackageDisplay_CurrentItem,
-    VIEW3D_PT_SubscriptionUsage
+    VIEW3D_PT_SubscriptionUsage,
+    VIEW3D_PT_SettingsAndUpdate,
+    INFO_MT_addon_update
 )
 from .social_operators import (
     LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
@@ -63,7 +65,9 @@ classes = (
     REFRESH_FILTERS_OT_WebApp,
     PRELOAD_METADATA_OT_WebApp,
     POPUP_SOCIAL_DETAILS_OT,
-    VOTE_MAP_OT_WebApp
+    VOTE_MAP_OT_WebApp,
+    VIEW3D_PT_SettingsAndUpdate,
+    INFO_MT_addon_update
 )
 
 # --- Persistent Handler ---

@@ -12,7 +12,7 @@ from .auth import load_token, save_token, clear_token, initiate_login, start_loc
 import traceback
 import threading
 from .main_config import (LOGIN_ENDPOINT, DOWNLOAD_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
-from .exp_api import login, logout
+from .exp_api import login, logout, check_for_update
 from .helper_functions import download_thumbnail
 
 
@@ -26,13 +26,19 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
+        # First, check for updates before logging in.
+        if not check_for_update():
+            self.report({'WARNING'}, "A new add-on version is available. Please update before logging in.")
+            return {'CANCELLED'}
+
+        # Ensure that there is an active internet connection.
         if not ensure_internet_connection(context):
             self.report({'ERROR'}, "No internet connection detected. Cannot login.")
             return {'CANCELLED'}
 
-        # Start the callback server on port 8000 in a background thread
+        # Start the callback server on port 8000 in a background thread.
         threading.Thread(target=start_local_server, args=(8000,), daemon=True).start()
-        # Now open the login page; this will include the callback URL as a parameter.
+        # Open the login page; this includes the callback URL as a parameter.
         initiate_login()
         self.report({'INFO'}, "Login page opened. Complete login in your browser.")
         return {'FINISHED'}
