@@ -2,7 +2,8 @@
 
 
 import bpy
-
+import os
+from ..exp_preferences import get_addon_path
 def center_cursor_in_3d_view(context, margin=50):
     """
     Centers the cursor in the 3D View region with a specified margin to prevent it
@@ -195,3 +196,145 @@ def move_armature_and_children_to_scene(target_armature, destination_scene):
         if not any(o == obj for o in destination_scene.collection.objects):
             destination_scene.collection.objects.link(obj)
             print(f"Linked {obj.name} to scene {destination_scene.name}")
+
+
+def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
+    """
+    Appends a workspace from game_screen.blend (if not already present)
+    and switches the current window to it.
+    """
+    scene = context.scene
+
+    # 1) Store the original workspace name (if not already stored)
+    if "original_workspace_name" not in scene:
+        original_ws = context.window.workspace
+        scene["original_workspace_name"] = original_ws.name
+        print("Stored original workspace:", original_ws.name)
+    else:
+        print("Original workspace already stored as:", scene["original_workspace_name"])
+
+    # 2) Build the path to your .blend file using get_addon_path()
+    blend_path = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Game_Screen", "game_screen.blend")
+
+    # 3) Define the directory inside the blend file where workspaces are stored.
+    directory = blend_path + "/WorkSpace/"
+    filepath  = os.path.join(directory, workspace_name)
+
+    # 4) Append the workspace if not already present.
+    if workspace_name not in bpy.data.workspaces:
+        try:
+            bpy.ops.wm.append(
+                filepath=filepath,
+                directory=directory,
+                filename=workspace_name
+            )
+            print(f"Appended workspace '{workspace_name}' from {blend_path}")
+        except Exception as e:
+            print(f"Failed to append workspace '{workspace_name}': {e}")
+
+    # 5) Switch the current window to the appended workspace.
+    new_ws = bpy.data.workspaces.get(workspace_name)
+    if new_ws:
+        context.window.workspace = new_ws
+        print("Switched to new workspace:", new_ws.name)
+    else:
+        print(f"Workspace '{workspace_name}' not found after append.")
+
+
+def revert_to_original_workspace(context):
+    """
+    Reverts the window to the workspace that was active before we switched,
+    then deletes the custom 'exp_game' workspace, and finally switches back
+    to the original workspace.
+    """
+    scene = context.scene
+
+    # Retrieve the stored original workspace name; if missing, use a fallback.
+    original_name = scene.get("original_workspace_name", "Layout")
+    original_ws = bpy.data.workspaces.get(original_name)
+    if original_ws:
+        print(f"Intended original workspace: '{original_ws.name}'")
+    else:
+        print("Original workspace not found; using fallback 'Layout'")
+        original_ws = bpy.data.workspaces.get("Layout")
+
+    # Remove the custom property.
+    if "original_workspace_name" in scene:
+        del scene["original_workspace_name"]
+
+    # Define a timer callback that will delete the game workspace and then switch back.
+    def delete_and_revert():
+        # Delete the 'exp_game' workspace.
+        game_ws = bpy.data.workspaces.get("exp_game")
+        if game_ws:
+            # For deletion, we need to activate the game workspace.
+            context.window.workspace = game_ws
+            print("Switched to game workspace for deletion:", game_ws.name)
+
+            # Build an override context with a 3D View.
+            override_ctx = bpy.context.copy()
+            override_ctx['window'] = context.window
+            override_ctx['screen'] = context.window.screen
+            for area in context.window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    override_ctx['area'] = area
+                    for reg in area.regions:
+                        if reg.type == 'WINDOW':
+                            override_ctx['region'] = reg
+                            break
+                    break
+
+            with bpy.context.temp_override(**override_ctx):
+                bpy.ops.workspace.delete('EXEC_DEFAULT')
+            print("Removed workspace 'exp_game' from the blend file.")
+        else:
+            print("Workspace 'exp_game' not found for deletion.")
+
+        # Now switch back to the original workspace.
+        if original_ws:
+            context.window.workspace = original_ws
+            print("Switched back to original workspace:", original_ws.name)
+        else:
+            fallback_ws = bpy.data.workspaces.get("Layout")
+            if fallback_ws:
+                context.window.workspace = fallback_ws
+                print("Switched to fallback workspace: 'Layout'")
+        return None  # Stop the timer
+
+    # Schedule the deletion and reversion after a short delay.
+    bpy.app.timers.register(delete_and_revert, first_interval=0.1)
+
+def delayed_invoke_modal():
+    for window in bpy.context.window_manager.windows:
+        if window.workspace.name == "exp_game":
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    # Build an override context for the 3D View area
+                    override_ctx = bpy.context.copy()
+                    override_ctx['window'] = window
+                    override_ctx['screen'] = window.screen
+                    override_ctx['area'] = area
+                    # Find the 'WINDOW' region and add it to the override context.
+                    for reg in area.regions:
+                        if reg.type == 'WINDOW':
+                            override_ctx['region'] = reg
+                            break
+                    # Use the temporary override context to invoke the modal operator.
+                    with bpy.context.temp_override(**override_ctx):
+                        bpy.ops.view3d.exp_modal('INVOKE_DEFAULT')
+                    return None  # Stop the timer once invoked
+    return 0.1  # Retry if no suitable context is ready yet
+
+
+
+class EXP_GAME_OT_StartGame(bpy.types.Operator):
+    bl_idname = "exploratory.start_game"
+    bl_label = "Start Game"
+
+    def execute(self, context):
+        # 1. Append and switch to the game workspace.
+        append_and_switch_to_game_workspace(context, "exp_game")
+        
+        # 2. Register a timer to delay invocation of the modal operator.
+        bpy.app.timers.register(delayed_invoke_modal, first_interval=0.1)
+        return {'FINISHED'}

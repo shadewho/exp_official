@@ -24,6 +24,9 @@ class ExploratoryPanel(bpy.types.Panel):
             op = layout.operator("view3d.exp_modal", text="Start Exploratory Modal")
             op.launched_from_ui = False  # or True, as desired
 
+            layout.operator("exploratory.start_game", text="Start Game")
+
+
 
 # --------------------------------------------------------------------
 # NEW PANEL: Character, Actions, Audio (only visible in Explore mode)

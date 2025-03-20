@@ -13,7 +13,8 @@ from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds,
                         get_global_audio_manager, clean_audio_temp)
 from .exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
-                          move_armature_and_children_to_scene)  
+                          move_armature_and_children_to_scene,
+                            revert_to_original_workspace)  
 from ..exp_preferences import ExploratoryAddonPreferences, get_addon_path
 from .exp_custom_animations import update_all_custom_managers
 from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
@@ -438,6 +439,8 @@ class ExpModal(bpy.types.Operator):
         #Cleanup scene and temp blend file
         cleanup_downloaded_worlds()
 
+        revert_to_original_workspace(context)
+        
         # Only re-open the UI if we launched from the UI button.
         if self.launched_from_ui:
             bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
@@ -569,8 +572,22 @@ class ExpModal(bpy.types.Operator):
             self.keys_pressed.discard(event.type)
 
     def handle_mouse_move(self, context, event):
-        """Mouse look => adjust yaw/pitch, clamp pitch, warp cursor to center."""
+        # Try to get the region from the context
         region = context.region
+        # If it's not available, search for the 3D View 'WINDOW' region manually
+        if region is None:
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for reg in area.regions:
+                        if reg.type == 'WINDOW':
+                            region = reg
+                            break
+                    if region:
+                        break
+        # If still not found, exit the function
+        if region is None:
+            return
+
         region_x, region_y = region.x, region.y
         width, height = region.width, region.height
 
@@ -586,11 +603,12 @@ class ExpModal(bpy.types.Operator):
         self.yaw -= delta_x * self.sensitivity
         self.pitch -= delta_y * self.sensitivity
 
-        # Clamp pitch so we don't flip upside-down
+        # Clamp pitch to avoid flipping
         self.pitch = max(-math.pi / 2 + 0.1, min(math.pi / 2 - 0.1, self.pitch))
 
         # Warp the cursor to keep it centered
         context.window.cursor_warp(center_x, center_y)
+
 
     def handle_jump(self, event):
         """Manage jump start, cooldown, etc."""

@@ -201,8 +201,10 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
-        layout.operator("wm.check_addon_update", text="Check for Update")
+        # Use layout.menu instead of layout.operator for a menu:
+        layout.menu("INFO_MT_addon_update", text="Update Available")
         # Additional settings can go here.
+
 
 class INFO_MT_addon_update(bpy.types.Menu):
     bl_label = "Update Available"

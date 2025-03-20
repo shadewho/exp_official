@@ -18,6 +18,7 @@ from .exp_properties import (remove_scene_properties, add_scene_properties,
                              EXPLORATORY_OT_RemoveProxyMesh, EXPLORATORY_UL_ProxyMeshList
 )
 
+from .exp_startup import EXP_GAME_OT_StartGame
 from .exp_audio import AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio
 
 from .exp_interactions import (
@@ -83,6 +84,7 @@ def register():
 
 
     bpy.utils.register_class(ExpModal)
+    bpy.utils.register_class(EXP_GAME_OT_StartGame)
 
 
     bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
@@ -123,6 +125,7 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
 
     bpy.utils.unregister_class(ExpModal)
+    bpy.utils.unregister_class(EXP_GAME_OT_StartGame)
     bpy.utils.unregister_class(EXPLORATORY_UL_ReactionsInInteraction)
     bpy.utils.unregister_class(EXPLORATORY_UL_CustomInteractions)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Studio)

@@ -149,7 +149,7 @@ def timer_finish_download():
             scene_obj = bpy.data.scenes.get(appended_scene_name)
             if scene_obj:
                 bpy.context.window.scene = scene_obj  # Set as active scene.
-                print("Appended scene detected. Launching game modal.")
+                print("Appended scene detected. Launching game via start game operator.")
                 bpy.context.scene.ui_current_mode = "GAME"
                 view3d_area = next((area for area in bpy.context.window.screen.areas if area.type == 'VIEW_3D'), None)
                 if view3d_area:
@@ -159,7 +159,7 @@ def timer_finish_download():
                         override['area'] = view3d_area
                         override['region'] = view3d_region
                         with bpy.context.temp_override(**override):
-                            bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=True)
+                            bpy.ops.exploratory.start_game('INVOKE_DEFAULT')
                     else:
                         print("No valid VIEW_3D region found.")
                 else:
@@ -168,11 +168,9 @@ def timer_finish_download():
             else:
                 print("Waiting for appended scene...")
                 return 1.0  # Check again in 1 second.
+
         bpy.app.timers.register(check_scene)
-    else:
-        print("Failed to append scene.")
-    current_download_task = None
-    return None
+
 
 def explore_icon_handler(context, download_code):
     """
