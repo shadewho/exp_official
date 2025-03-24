@@ -424,31 +424,57 @@ class ExpModal(bpy.types.Operator):
         self.target_object.location = delta_mat @ loc
 
     def cancel(self, context):
+        print(self.launched_from_ui)
         """Cleanup code when user cancels with ESC or Right-click."""
         context.window.cursor_modal_restore()
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
         self.keys_pressed.clear()
 
-        #-------------------------------------
-        #reset scene state and user preferences
-        #--------------------------------------
+        # Reset scene state and user preferences.
         restore_user_settings(context.scene)
         stop_all_sounds()
 
-        #Cleanup scene and temp blend file
+        # Cleanup scene and temp blend file.
         cleanup_downloaded_worlds()
 
+        # Revert to the original workspace.
         revert_to_original_workspace(context)
         
-        # Only re-open the UI if we launched from the UI button.
+        # Only launch UI popups if we were launched from the custom UI.
         if self.launched_from_ui:
-            bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
 
-        if self.launched_from_ui:
-            bpy.ops.view3d.popup_social_details('INVOKE_DEFAULT')
-        
+            # Helper function: find a valid VIEW_3D area and WINDOW region.
+            def get_valid_view3d_override():
+                for window in bpy.context.window_manager.windows:
+                    for area in window.screen.areas:
+                        if area.type == 'VIEW_3D':
+                            for region in area.regions:
+                                if region.type == 'WINDOW':
+                                    return {
+                                        'window': window,
+                                        'screen': window.screen,
+                                        'area': area,
+                                        'region': region
+                                    }
+                return None
+
+            # Delayed callback function to invoke the UI operators.
+            def delayed_ui_popups():
+                override_ctx = get_valid_view3d_override()
+                if override_ctx is not None:
+                    with bpy.context.temp_override(**override_ctx):
+                        bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
+                        bpy.ops.view3d.popup_social_details('INVOKE_DEFAULT')
+                else:
+                    print("No valid VIEW3D context found for UI popups.")
+                return None  # Stop the timer
+
+            # Register the timer to delay UI calls.
+            bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)
+            
         return {'CANCELLED'}
+
 
 
     # ---------------------------

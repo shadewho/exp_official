@@ -304,37 +304,51 @@ def revert_to_original_workspace(context):
     # Schedule the deletion and reversion after a short delay.
     bpy.app.timers.register(delete_and_revert, first_interval=0.1)
 
-def delayed_invoke_modal():
+def delayed_invoke_modal(from_ui):
     for window in bpy.context.window_manager.windows:
         if window.workspace.name == "exp_game":
             for area in window.screen.areas:
                 if area.type == 'VIEW_3D':
-                    # Build an override context for the 3D View area
                     override_ctx = bpy.context.copy()
                     override_ctx['window'] = window
                     override_ctx['screen'] = window.screen
                     override_ctx['area'] = area
-                    # Find the 'WINDOW' region and add it to the override context.
                     for reg in area.regions:
                         if reg.type == 'WINDOW':
                             override_ctx['region'] = reg
                             break
-                    # Use the temporary override context to invoke the modal operator.
                     with bpy.context.temp_override(**override_ctx):
-                        bpy.ops.view3d.exp_modal('INVOKE_DEFAULT')
-                    return None  # Stop the timer once invoked
-    return 0.1  # Retry if no suitable context is ready yet
+                        bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=from_ui)
+                    return None
+    return 0.1
 
 
 
+#########################################
+#Append workspace then start the game
+#########################################
 class EXP_GAME_OT_StartGame(bpy.types.Operator):
     bl_idname = "exploratory.start_game"
     bl_label = "Start Game"
-
+    """This operator is used to start the game by appending and 
+    switching to the game workspace and then invoking the modal operator."""
+    
+    launched_from_ui: bpy.props.BoolProperty(
+        name="Launched from UI",
+        default=False
+    )
+    
     def execute(self, context):
-        # 1. Append and switch to the game workspace.
+        # Store the current (original) workspace name so we can revert later.
+        context.scene["original_workspace_name"] = context.window.workspace.name
+        
+        # Switch to the custom game workspace ("exp_game").
         append_and_switch_to_game_workspace(context, "exp_game")
         
-        # 2. Register a timer to delay invocation of the modal operator.
-        bpy.app.timers.register(delayed_invoke_modal, first_interval=0.1)
+        # Capture the property locally to avoid referencing the removed operator.
+        from_ui_value = self.launched_from_ui
+        
+        # Register a timer callback to delay the modal invocation.
+        bpy.app.timers.register(lambda: delayed_invoke_modal(from_ui_value), first_interval=0.2)
         return {'FINISHED'}
+

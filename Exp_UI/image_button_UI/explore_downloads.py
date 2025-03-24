@@ -159,7 +159,8 @@ def timer_finish_download():
                         override['area'] = view3d_area
                         override['region'] = view3d_region
                         with bpy.context.temp_override(**override):
-                            bpy.ops.exploratory.start_game('INVOKE_DEFAULT')
+                            bpy.ops.exploratory.start_game('INVOKE_DEFAULT', launched_from_ui=True)
+
                     else:
                         print("No valid VIEW_3D region found.")
                 else:
