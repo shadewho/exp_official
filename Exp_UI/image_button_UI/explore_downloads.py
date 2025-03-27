@@ -148,7 +148,9 @@ def timer_finish_download():
         def check_scene():
             scene_obj = bpy.data.scenes.get(appended_scene_name)
             if scene_obj:
-                bpy.context.window.scene = scene_obj  # Set as active scene.
+                # Here, capture the original workspace name before switching scenes.
+                original_workspace = bpy.context.window.workspace.name
+                bpy.context.window.scene = scene_obj  # Set the appended scene as active.
                 print("Appended scene detected. Launching game via start game operator.")
                 bpy.context.scene.ui_current_mode = "GAME"
                 view3d_area = next((area for area in bpy.context.window.screen.areas if area.type == 'VIEW_3D'), None)
@@ -158,9 +160,13 @@ def timer_finish_download():
                         override = bpy.context.copy()
                         override['area'] = view3d_area
                         override['region'] = view3d_region
+                        
                         with bpy.context.temp_override(**override):
-                            bpy.ops.exploratory.start_game('INVOKE_DEFAULT', launched_from_ui=True)
-
+                            bpy.ops.exploratory.start_game(
+                                'INVOKE_DEFAULT', 
+                                launched_from_ui=True, 
+                                original_workspace_name=original_workspace
+                            )
                     else:
                         print("No valid VIEW_3D region found.")
                 else:

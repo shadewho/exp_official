@@ -245,5 +245,5 @@ def preload_metadata_timer():
     # --- End merged cache validation logic ---
     
     # Return the interval (in seconds) for the next call.
-    return 10.0  # This timer will run every 10 seconds.
+    return 30.0  # This timer will run every 10 seconds.
 
