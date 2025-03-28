@@ -13,7 +13,7 @@ import traceback
 import threading
 from .main_config import (LOGIN_ENDPOINT, DOWNLOAD_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
 from .exp_api import login, logout, check_for_update
-from .helper_functions import download_thumbnail
+from .helper_functions import download_thumbnail, auto_refresh_usage
 
 
 # ----------------------------------------------------------------------------
@@ -41,7 +41,12 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
         # Open the login page; this includes the callback URL as a parameter.
         initiate_login()
         self.report({'INFO'}, "Login page opened. Complete login in your browser.")
+        
+        # Schedule a one-time refresh of usage data after a short delay.
+        bpy.app.timers.register(auto_refresh_usage, first_interval=3.0)
+        
         return {'FINISHED'}
+
 
 
 class LOGOUT_OT_WebApp(bpy.types.Operator):

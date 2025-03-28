@@ -198,12 +198,23 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
+    @classmethod
+    def poll(cls, context):
+        return context.scene.main_category == 'EXPLORE'
+
     def draw(self, context):
         layout = self.layout
+        scene = context.scene
+
         layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
-        # Use layout.menu instead of layout.operator for a menu:
         layout.menu("INFO_MT_addon_update", text="Update Available")
-        # Additional settings can go here.
+
+        # Audio Control Section with spacing
+        layout.separator()
+        layout.label(text="Audio Control:")
+        layout.prop(scene, "enable_audio", text="Enable Audio")
+        layout.prop(scene, "audio_level", text="Master Volume")
+
 
 
 class INFO_MT_addon_update(bpy.types.Menu):

@@ -462,3 +462,14 @@ bpy.types.Scene.selected_event = bpy.props.EnumProperty(
     description="Select an event to filter packages",
     items=get_event_items
 )
+
+# -------------------------------------------------------------------
+#refresh the usage data for a users subscription
+# -------------------------------------------------------------------
+def auto_refresh_usage():
+    try:
+        bpy.ops.webapp.refresh_usage('INVOKE_DEFAULT')
+        print("Auto refresh usage operator called.")
+    except Exception as e:
+        print("Error auto refreshing usage:", e)
+    return None  # Returning None stops the timer

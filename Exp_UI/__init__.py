@@ -41,7 +41,8 @@ from .cache_memory_operators import (
 
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
-from .helper_functions import update_event_stage
+from .helper_functions import update_event_stage, auto_refresh_usage
+
 # List all classes that will be registered.
 classes = (
     LOGIN_OT_WebApp,
@@ -101,6 +102,8 @@ def register():
 
     # Register the token expiry check timer.
     bpy.app.timers.register(token_expiry_check, first_interval=60.0)
+
+    bpy.app.timers.register(auto_refresh_usage, first_interval=1.0)
 
     # Register the comment and main property group classes.
     bpy.utils.register_class(MyAddonComment)
