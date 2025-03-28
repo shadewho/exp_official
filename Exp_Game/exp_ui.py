@@ -21,10 +21,13 @@ class ExploratoryPanel(bpy.types.Panel):
 
         # Only show the modal operator button if in CREATE mode:
         if scene.main_category == 'CREATE':
-            op = layout.operator("view3d.exp_modal", text="Start Exploratory Modal")
-            op.launched_from_ui = False  # or True, as desired
+            op = layout.operator("view3d.exp_modal", text="Start Game (Not Fullscreen)")
+            op.launched_from_ui = False  # Indicates it's a direct modal launch.
+            op.should_revert_workspace = False  # Don't revert workspace for direct modal.
 
-            layout.operator("exploratory.start_game", text="Start Game")
+            # Button to launch the full-screen game (which switches workspaces).
+            layout.operator("exploratory.start_game", text="Start Game (Fullscreen)")
+
 
 
 

@@ -312,8 +312,6 @@ def delayed_invoke_modal(from_ui):
                     return None
     return 0.1
 
-
-
 #########################################
 #Append workspace then start the game
 #########################################

@@ -64,6 +64,11 @@ class ExpModal(bpy.types.Operator):
         name="Launched from UI",
         default=False,
     )
+    should_revert_workspace: bpy.props.BoolProperty(
+        name="Revert Workspace on Cancel",
+        description="If false, do not revert the workspace when canceling the modal",
+        default=True
+    )
     # ---------------------------
     # Internal State Variables
     # ---------------------------
@@ -439,7 +444,9 @@ class ExpModal(bpy.types.Operator):
         cleanup_downloaded_worlds()
 
         # Revert to the original workspace.
-        revert_to_original_workspace(context)
+        # Only revert the workspace if the flag is True.
+        if self.should_revert_workspace:
+            revert_to_original_workspace(context)
         
         # Only launch UI popups if we were launched from the custom UI.
         if self.launched_from_ui:
