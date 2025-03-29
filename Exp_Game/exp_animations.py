@@ -172,50 +172,47 @@ class AnimationStateManager:
         scene = bpy.context.scene
         char  = scene.character_actions
 
-        def safe_name(a_ptr):
-            return a_ptr.name if a_ptr else None
-
-        # default for "loop" is True, "override" is False, "play_fully" is False
-        # We'll override them in special states.
-        loop       = True
-        override   = False
-        play_fully = False
+        def safe_speed(act):
+            return act.action_speed if (act and hasattr(act, "action_speed")) else 1.0
 
         if new_state == AnimState.IDLE:
-            a_name = safe_name(char.idle_action)
-            spd    = char.idle_speed
-            return (a_name, loop, spd, override, play_fully)
+            act = char.idle_action
+            a_name = act.name if act else None
+            spd    = safe_speed(act)
+            return (a_name, True, spd, False, False)
 
         elif new_state == AnimState.WALK:
-            a_name = safe_name(char.walk_action)
-            spd    = char.walk_speed
-            return (a_name, loop, spd, override, play_fully)
+            act = char.walk_action
+            a_name = act.name if act else None
+            spd    = safe_speed(act)
+            return (a_name, True, spd, False, False)
 
         elif new_state == AnimState.RUN:
-            a_name = safe_name(char.run_action)
-            spd    = char.run_speed
-            return (a_name, loop, spd, override, play_fully)
+            act = char.run_action
+            a_name = act.name if act else None
+            spd    = safe_speed(act)
+            return (a_name, True, spd, False, False)
 
         elif new_state == AnimState.JUMP:
-            a_name = safe_name(char.jump_action)
-            spd    = char.jump_speed
-            # jump => one-time => loop=False, override=True, must play fully
+            act = char.jump_action
+            a_name = act.name if act else None
+            spd    = safe_speed(act)
+            # jump: one-time (non-looping), override and must play fully
             return (a_name, False, spd, True, True)
 
         elif new_state == AnimState.FALL:
-            a_name = safe_name(char.fall_action)
-            spd    = char.fall_speed
-            # fall => typically loop, not override
+            act = char.fall_action
+            a_name = act.name if act else None
+            spd    = safe_speed(act)
             return (a_name, True, spd, False, False)
 
         elif new_state == AnimState.LAND:
-            a_name = safe_name(char.land_action)
-            spd    = char.land_speed
-            # land => override everything, not loop, must play fully
+            act = char.land_action
+            a_name = act.name if act else None
+            spd    = safe_speed(act)
             return (a_name, False, spd, True, True)
 
         return (None, True, 1.0, False, False)
-
 
     # -------------------------------------------------
     # 2) State machine (unchanged)

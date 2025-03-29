@@ -62,38 +62,104 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         layout.separator()
         layout.label(text="Action Speeds:")
         char_actions = scene.character_actions
-        layout.prop(char_actions, "idle_speed")
-        layout.prop(char_actions, "walk_speed")
-        layout.prop(char_actions, "run_speed")
-        layout.prop(char_actions, "jump_speed")
-        layout.prop(char_actions, "fall_speed")
-        layout.prop(char_actions, "land_speed")
+        # Instead of showing scene-level speed properties, show the speed from the Action data-block.
+        if char_actions.idle_action:
+            layout.prop(char_actions.idle_action, "action_speed", text="Idle Speed")
+        else:
+            layout.label(text="Idle Action not assigned")
+
+        if char_actions.walk_action:
+            layout.prop(char_actions.walk_action, "action_speed", text="Walk Speed")
+        else:
+            layout.label(text="Walk Action not assigned")
+
+        if char_actions.run_action:
+            layout.prop(char_actions.run_action, "action_speed", text="Run Speed")
+        else:
+            layout.label(text="Run Action not assigned")
+
+        if char_actions.jump_action:
+            layout.prop(char_actions.jump_action, "action_speed", text="Jump Speed")
+        else:
+            layout.label(text="Jump Action not assigned")
+
+        if char_actions.fall_action:
+            layout.prop(char_actions.fall_action, "action_speed", text="Fall Speed")
+        else:
+            layout.label(text="Fall Action not assigned")
+
+        if char_actions.land_action:
+            layout.prop(char_actions.land_action, "action_speed", text="Land Speed")
+        else:
+            layout.label(text="Land Action not assigned")
 
         layout.separator()
-        layout.label(text="Audio Control:")
-        layout.prop(scene, "enable_audio", text="Enable Audio")
-        layout.prop(scene, "audio_level", text="Master Volume")
-
         layout.label(text="Audio Pointers:")
+
+        # Walk Sound
         row = layout.row()
         row.prop(scene.character_audio, "walk_sound", text="Walk Sound")
-        row.operator("exp_audio.test_sound_pointer", text="Test").sound_slot = "walk_sound"
 
+        if scene.character_audio.walk_sound:
+            row = layout.row(align=True)
+            row.prop(scene.character_audio.walk_sound, "sound_speed", text="Speed")
+            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
+            op.sound_slot = "walk_sound"
+        else:
+            row = layout.row()
+            row.label(text="(No Walk Sound)")
+
+        # Run Sound
         row = layout.row()
         row.prop(scene.character_audio, "run_sound", text="Run Sound")
-        row.operator("exp_audio.test_sound_pointer", text="Test").sound_slot = "run_sound"
 
+        if scene.character_audio.run_sound:
+            row = layout.row(align=True)
+            row.prop(scene.character_audio.run_sound, "sound_speed", text="Speed")
+            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
+            op.sound_slot = "run_sound"
+        else:
+            row = layout.row()
+            row.label(text="(No Run Sound)")
+
+        # Jump Sound
         row = layout.row()
         row.prop(scene.character_audio, "jump_sound", text="Jump Sound")
-        row.operator("exp_audio.test_sound_pointer", text="Test").sound_slot = "jump_sound"
 
+        if scene.character_audio.jump_sound:
+            row = layout.row(align=True)
+            row.prop(scene.character_audio.jump_sound, "sound_speed", text="Speed")
+            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
+            op.sound_slot = "jump_sound"
+        else:
+            row = layout.row()
+            row.label(text="(No Jump Sound)")
+
+        # Fall Sound
         row = layout.row()
         row.prop(scene.character_audio, "fall_sound", text="Fall Sound")
-        row.operator("exp_audio.test_sound_pointer", text="Test").sound_slot = "fall_sound"
 
+        if scene.character_audio.fall_sound:
+            row = layout.row(align=True)
+            row.prop(scene.character_audio.fall_sound, "sound_speed", text="Speed")
+            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
+            op.sound_slot = "fall_sound"
+        else:
+            row = layout.row()
+            row.label(text="(No Fall Sound)")
+
+        # Land Sound
         row = layout.row()
         row.prop(scene.character_audio, "land_sound", text="Land Sound")
-        row.operator("exp_audio.test_sound_pointer", text="Test").sound_slot = "land_sound"
+
+        if scene.character_audio.land_sound:
+            row = layout.row(align=True)
+            row.prop(scene.character_audio.land_sound, "sound_speed", text="Speed")
+            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
+            op.sound_slot = "land_sound"
+        else:
+            row = layout.row()
+            row.label(text="(No Land Sound)")
 
 
 # --------------------------------------------------------------------

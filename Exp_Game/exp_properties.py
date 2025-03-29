@@ -3,6 +3,21 @@
 import bpy
 import os
 
+bpy.types.Action.action_speed = bpy.props.FloatProperty(
+    name="Action Speed",
+    description="Speed multiplier for this action",
+    default=1.0,
+    min=0.1,
+    max=5.0
+)
+bpy.types.Sound.sound_speed = bpy.props.FloatProperty(
+    name="Sound Speed",
+    description="Speed multiplier for this sound",
+    default=1.0,
+    min=0.1,
+    max=5.0
+)
+
 def list_actions(self, context):
     items = []
     for act in bpy.data.actions:
@@ -174,15 +189,6 @@ class CharacterActionsPG(bpy.types.PropertyGroup):
         type=bpy.types.Action,
         description="Action to use for the land state"
     )
-
-
-    # Speeds
-    idle_speed: bpy.props.FloatProperty(name="Idle Speed", default=1.0, min=0.1, max=5.0)
-    walk_speed: bpy.props.FloatProperty(name="Walk Speed", default=1.0, min=0.1, max=5.0)
-    run_speed:  bpy.props.FloatProperty(name="Run Speed",  default=1.0, min=0.1, max=5.0)
-    jump_speed: bpy.props.FloatProperty(name="Jump Speed", default=1.0, min=0.1, max=5.0)
-    fall_speed: bpy.props.FloatProperty(name="Fall Speed", default=1.0, min=0.1, max=5.0)
-    land_speed: bpy.props.FloatProperty(name="Land Speed", default=1.0, min=0.1, max=5.0)
 
 
 def remove_scene_properties():

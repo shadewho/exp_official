@@ -158,7 +158,9 @@ class CharacterAudioStateManager:
             print(f"[CharacterAudio] Playing local file fallback for '{sound_data.name}' => {abs_path}")
 
         handle.volume = scene.audio_level
+        handle.pitch = sound_data.sound_speed  # Apply the speed multiplier
         self.current_handle = handle
+
 
 
 ##############################################################################
@@ -203,6 +205,7 @@ class AUDIO_OT_TestSoundPointer(bpy.types.Operator):
             # If there's an in-memory version, use it
             handle = device.play(sound_data.factory)
             handle.volume = scene.audio_level
+            handle.pitch = sound_data.sound_speed  # Apply the sound speed multiplier
             self.report({'INFO'}, f"Playing in-memory sound: {sound_data.name}")
             return {'FINISHED'}
         else:
@@ -216,11 +219,13 @@ class AUDIO_OT_TestSoundPointer(bpy.types.Operator):
                 snd = aud.Sound(abs_path)
                 handle = device.play(snd)
                 handle.volume = scene.audio_level
+                handle.pitch = sound_data.sound_speed  # Apply the sound speed multiplier
                 self.report({'INFO'}, f"Playing fallback file for '{sound_data.name}' => {abs_path}")
                 return {'FINISHED'}
             except Exception as ex:
                 self.report({'ERROR'}, f"aud error: {ex}")
                 return {'CANCELLED'}
+
 
 
 ##############################################################################
