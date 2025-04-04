@@ -6,6 +6,7 @@ from .exp_animations import AnimState
 from ..exp_preferences import get_addon_path
 import shutil
 import time
+from .exp_time import get_game_time 
 
 ##############################################################################
 # MAP FROM AnimState => The property name in scene.character_audio
@@ -93,15 +94,11 @@ def get_global_audio_manager():
 # CharacterAudioStateManager
 ##############################################################################
 class CharacterAudioStateManager:
-    """
-    Checks AnimState each frame. If changed, stops old sound and
-    plays new pointer-based sound from scene.character_audio.
-    - NO local path fallback. Must have in-memory factory or it won't play.
-    """
-
     def __init__(self):
         self.last_state = None
         self.current_handle = None
+        self.current_sound_start_time = None
+        self.current_sound_duration = None
 
     def update_audio_state(self, new_state):
         scene = bpy.context.scene
@@ -110,21 +107,43 @@ class CharacterAudioStateManager:
             self.last_state = None
             return
 
-        # If state didn't change, do nothing
-        if new_state == self.last_state:
+        current_time = get_game_time()
+
+        # 1. If the state changes, switch immediately.
+        if new_state != self.last_state:
+            self.stop_current_sound()
+            self.last_state = new_state
+            self.play_sound_for_state(new_state)
             return
 
-        # Stop old and try to play new
-        self.stop_current_sound()
-        self.play_sound_for_state(new_state)
-        self.last_state = new_state
+        # 2. For looping states (e.g. WALK, RUN, FALL), if a sound is already playing,
+        #    let it continue uninterrupted.
+        if new_state in (AnimState.WALK, AnimState.RUN, AnimState.FALL):
+            if self.current_handle is not None:
+                # Check if the sound has finished its natural playthrough.
+                elapsed = current_time - self.current_sound_start_time
+                if elapsed >= self.current_sound_duration:
+                    # Sound finished naturally; restart it.
+                    print(f"[CharacterAudio] Loop: audio finished after {elapsed:.2f}s; restarting.")
+                    self.stop_current_sound()
+                    self.play_sound_for_state(new_state)
+            else:
+                # No sound is playing, so (re)start it.
+                self.play_sound_for_state(new_state)
+        # For non-looping states, if the state hasn’t changed, do nothing.
 
     def stop_current_sound(self):
         if self.current_handle:
             self.current_handle.stop()
-            self.current_handle = None
+        self.current_handle = None
+        self.current_sound_start_time = None
+        self.current_sound_duration = None
 
     def play_sound_for_state(self, state):
+        # Only start a new sound if one isn’t already playing.
+        if self.current_handle is not None:
+            return
+
         scene = bpy.context.scene
         if not scene.enable_audio:
             return
@@ -144,21 +163,34 @@ class CharacterAudioStateManager:
         device = aud.Device()
 
         if sound_data.factory:
-            # If there's an in-memory factory, great—play that.
             handle = device.play(sound_data.factory)
-            print(f"[CharacterAudio] Playing in-memory factory for '{sound_data.name}'.")
+            print(f"[CharacterAudio] Playing in-memory sound for '{sound_data.name}'.")
         else:
-            # Otherwise, fallback to a local file path (e.g. in temp_sounds).
             abs_path = bpy.path.abspath(sound_data.filepath or "")
             if not os.path.isfile(abs_path):
-                print(f"[CharacterAudio] No local file found at '{abs_path}' for sound '{sound_data.name}'.")
+                print(f"[CharacterAudio] File not found: '{abs_path}' for sound '{sound_data.name}'.")
                 return
             snd = aud.Sound(abs_path)
             handle = device.play(snd)
-            print(f"[CharacterAudio] Playing local file fallback for '{sound_data.name}' => {abs_path}")
+            print(f"[CharacterAudio] Playing fallback sound for '{sound_data.name}' from '{abs_path}'.")
+
+        # Determine the sound's duration:
+        sound_duration = getattr(sound_data, "sound_duration", None)
+        if sound_duration is None:
+            try:
+                sound_duration = handle.length
+            except Exception:
+                sound_duration = 2.0  # Fallback duration
+
+        # Record the start time and duration.
+        self.current_sound_start_time = get_game_time()
+        self.current_sound_duration = sound_duration
+
+        # Play the sound once. (It will be restarted when its duration has elapsed.)
+        handle.loop_count = 0
 
         handle.volume = scene.audio_level
-        handle.pitch = sound_data.sound_speed  # Apply the speed multiplier
+        handle.pitch = sound_data.sound_speed
         self.current_handle = handle
 
 
@@ -320,9 +352,6 @@ class EXPLORATORY_OT_BuildAudio(bpy.types.Operator):
 
                     # Overwrite the .filepath so we can do `aud.Sound(sound_data.filepath)`:
                     sound_data.filepath = temp_path
-
-
-
 
         # Walk
         process_sound(

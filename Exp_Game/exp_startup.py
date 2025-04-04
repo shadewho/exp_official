@@ -64,6 +64,17 @@ def set_viewport_shading_rendered():
                 print("No shading property found for area:", area)
 
 
+def ensure_timeline_at_zero():
+    """
+    Ensures that the scene's current frame is 0.
+    This is important so that the NLA strips and animations are in sync when the modal starts.
+    """
+    scene = bpy.context.scene
+    if scene.frame_current != 0:
+        scene.frame_current = 0
+        print("Timeline frame reset to 0.")
+
+
 def record_user_settings(scene):
     """
     Records a snapshot of user settings that you may later want to restore.

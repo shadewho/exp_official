@@ -48,6 +48,11 @@ class ProxyMeshEntry(bpy.types.PropertyGroup):
         default=False,
         description="If True, this mesh may move each frame and we’ll handle it differently."
     )
+    hide_during_game: bpy.props.BoolProperty(
+        name="Hide During Game",
+        default=False,
+        description="If enabled, the proxy mesh will be hidden during gameplay."
+    )
 class EXPLORATORY_UL_ProxyMeshList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:

@@ -2,7 +2,8 @@ import mathutils
 import math
 import bpy
 from .exp_raycastutils import raycast_to_ground
-
+import ctypes
+import ctypes.wintypes
 def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor):
     # Calculate the direction vector
     direction = mathutils.Vector((
@@ -44,4 +45,21 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor)
                     region_3d = area.spaces.active.region_3d
                     region_3d.view_location = view_location
                     region_3d.view_rotation = direction.to_track_quat('Z', 'Y').to_matrix().to_3x3().to_quaternion()
+
+
+def confine_cursor_to_window():
+    hwnd = ctypes.windll.user32.GetActiveWindow()
+    rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect))
+    # Convert client coordinates to screen coordinates
+    pt = ctypes.wintypes.POINT(rect.left, rect.top)
+    ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+    rect.left, rect.top = pt.x, pt.y
+    pt = ctypes.wintypes.POINT(rect.right, rect.bottom)
+    ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+    rect.right, rect.bottom = pt.x, pt.y
+    ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
+
+def release_cursor_clip():
+    ctypes.windll.user32.ClipCursor(None)
 

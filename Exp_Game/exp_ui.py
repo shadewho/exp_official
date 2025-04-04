@@ -210,11 +210,14 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
             box.label(text="Selected Proxy Mesh Details:")
             box.prop(entry, "name", text="Name")
             box.prop(entry, "mesh_object", text="Mesh")
-            box.prop(entry, "is_moving", text="Is Moving?")
+            box.prop(entry, "is_moving", text="Is Moving")
+            # New line to display the hide_during_game boolean:
+            box.prop(entry, "hide_during_game", text="Hide During Game")
 
         layout.separator()
         layout.label(text="Spawn Object")
         layout.prop(scene, "spawn_object", text="")
+
 
 ###############################################################
 # the "Studio" Panel in the same "Exploratory" tab
