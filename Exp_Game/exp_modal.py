@@ -9,7 +9,7 @@ from .exp_utilities import get_game_world
 from .exp_movement import move_character
 from .exp_raycastutils import create_bvh_tree
 from .exp_spawn import spawn_user
-from .exp_view import update_view, confine_cursor_to_window, release_cursor_clip
+from .exp_view import update_view, confine_cursor_to_window, release_cursor_clip, shortest_angle_diff
 from .exp_animations import AnimationStateManager, set_global_animation_manager
 from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds, 
                         get_global_audio_manager, clean_audio_temp)
@@ -90,7 +90,7 @@ class ExpModal(bpy.types.Operator):
     jump_key_released: bool = True
 
     # Rotation smoothing for character turning
-    rotation_smoothness: float = 0.35
+    rotation_smoothness: float = 0.30 #higher value = faster turn
 
     # References to objects / data
     target_object = None
@@ -725,12 +725,10 @@ class ExpModal(bpy.types.Operator):
     # Utility / Helper Methods
     # ---------------------------
     def smooth_rotate_towards_camera(self):
-        """Smoothly rotate the character to match the camera yaw if user-chosen movement keys are pressed."""
         if not self.target_object:
             return
 
-        # Only rotate if user-chosen forward/back/left/right or run are pressed
-        # (i.e. if user is actually trying to move)
+        # Only rotate if movement keys are pressed.
         pressed_keys = {
             self.pref_forward_key,
             self.pref_backward_key,
@@ -742,8 +740,9 @@ class ExpModal(bpy.types.Operator):
             return
 
         desired_yaw = self.determine_desired_yaw(actual_pressed)
-        current_z = self.target_object.rotation_euler.z
-        yaw_diff = desired_yaw - current_z
+        current_yaw = self.target_object.rotation_euler.z
+        # Use the helper to get the shortest difference.
+        yaw_diff = shortest_angle_diff(current_yaw, desired_yaw)
         if abs(yaw_diff) > 0.001:
             self.target_object.rotation_euler.z += yaw_diff * self.rotation_smoothness
 

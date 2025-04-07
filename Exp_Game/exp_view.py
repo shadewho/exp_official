@@ -46,6 +46,9 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor)
                     region_3d.view_location = view_location
                     region_3d.view_rotation = direction.to_track_quat('Z', 'Y').to_matrix().to_3x3().to_quaternion()
 
+def shortest_angle_diff(current, target):
+    diff = (target - current + math.pi) % (2 * math.pi) - math.pi
+    return diff
 
 def confine_cursor_to_window():
     hwnd = ctypes.windll.user32.GetActiveWindow()

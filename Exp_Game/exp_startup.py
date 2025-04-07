@@ -94,7 +94,10 @@ def record_user_settings(scene):
         original_settings["use_taa_reprojection"] = scene.eevee.use_taa_reprojection
         original_settings["use_shadow_jitter_viewport"] = scene.eevee.use_shadow_jitter_viewport
         original_settings["taa_samples"] = scene.eevee.taa_samples
-
+        original_settings["use_raytracing"] = scene.eevee.use_raytracing
+        original_settings["shadow_ray_count"] = scene.eevee.shadow_ray_count
+        original_settings["shadow_step_count"] = scene.eevee.shadow_step_count
+        original_settings["shadow_resolution_scale"] = scene.eevee.shadow_resolution_scale
     # Record 3D Viewport lens settings for each VIEW_3D area.
     # Convert the pointer to a string so that it can be used as a key.
     original_settings["viewport_lens"] = {}
@@ -126,14 +129,20 @@ def apply_performance_settings(scene, performance_level):
         # Force the two Eevee settings regardless of performance level:
         scene.eevee.use_taa_reprojection = False
         scene.eevee.use_shadow_jitter_viewport = False
+        scene.eevee.use_raytracing = False
+        scene.eevee.shadow_ray_count = 1
+        scene.eevee.shadow_step_count = 1
 
         # Adjust TAA samples based on performance level:
         if performance_level == "LOW":
             scene.eevee.taa_samples = 4
+            scene.eevee.shadow_resolution_scale = 0.0
         elif performance_level == "MEDIUM":
             scene.eevee.taa_samples = 8
+            scene.eevee.shadow_resolution_scale = 0.25
         elif performance_level == "HIGH":
             scene.eevee.taa_samples = 16
+            scene.eevee.shadow_resolution_scale = 0.5
 
     # Now set all VIEW_3D areas’ shading mode to 'RENDERED'
     set_viewport_shading_rendered()
@@ -141,13 +150,20 @@ def apply_performance_settings(scene, performance_level):
     # Set the viewport lens for each VIEW_3D area to 55mm.
     for area in bpy.context.window.screen.areas:
         if area.type == 'VIEW_3D':
-            area.spaces.active.lens = 55
+            space = area.spaces.active
+            space.lens = 55
+            # Set the viewport to perspective mode.
+            space.region_3d.view_perspective = 'PERSP'
 
     print("Performance settings applied:", {
         "render_engine": scene.render.engine,
         "taa_samples": scene.eevee.taa_samples if hasattr(scene, "eevee") else "N/A",
         "use_taa_reprojection": scene.eevee.use_taa_reprojection if hasattr(scene, "eevee") else "N/A",
         "use_shadow_jitter_viewport": scene.eevee.use_shadow_jitter_viewport if hasattr(scene, "eevee") else "N/A",
+        "use_raytracing": scene.eevee.use_raytracing if hasattr(scene, "eevee") else "N/A",
+        "shadow_ray_count": scene.eevee.shadow_ray_count if hasattr(scene, "eevee") else "N/A",
+        "shadow_step_count": scene.eevee.shadow_step_count if hasattr(scene, "eevee") else "N/A",
+        "shadow_resolution_scale": scene.eevee.shadow_resolution_scale if hasattr(scene, "eevee") else "N/A",
         "viewport_lens": 55,
     })
 
@@ -169,6 +185,11 @@ def restore_user_settings(scene):
         scene.eevee.use_taa_reprojection = original_settings.get("use_taa_reprojection", scene.eevee.use_taa_reprojection)
         scene.eevee.use_shadow_jitter_viewport = original_settings.get("use_shadow_jitter_viewport", scene.eevee.use_shadow_jitter_viewport)
         scene.eevee.taa_samples = original_settings.get("taa_samples", scene.eevee.taa_samples)
+        scene.eevee.use_raytracing = original_settings.get("use_raytracing", scene.eevee.use_raytracing)
+        scene.eevee.shadow_ray_count = original_settings.get("shadow_ray_count", scene.eevee.shadow_ray_count)
+        scene.eevee.shadow_step_count = original_settings.get("shadow_step_count", scene.eevee.shadow_step_count)
+        scene.eevee.shadow_resolution_scale = original_settings.get("shadow_resolution_scale", scene.eevee.shadow_resolution_scale)
+        
 
     # Restore 3D Viewport lens settings for each VIEW_3D area.
     viewport_lens = original_settings.get("viewport_lens")
