@@ -124,6 +124,29 @@ class AnimationStateManager:
         """
         self._last_is_grounded = is_grounded
 
+        # --- EXTRA OVERRIDE CHECK FOR JUMP ANIMATION ---
+        # If the current active action is the jump animation and the state machine intends
+        # to switch to FALL or LAND (indicated by new_action being empty),
+        # then use the true duration of the jump strip to decide when to allow an override.
+        jump_action_name = None
+        if bpy.context.scene.character_actions.jump_action:
+            jump_action_name = bpy.context.scene.character_actions.jump_action.name
+
+        new_action, loop, speed, override, play_fully = self._pick_action(
+            keys_pressed, is_grounded, vertical_velocity, delta_time
+        )
+        if (not new_action) and self.one_time_in_progress and (self.last_action_name == jump_action_name):
+            # Find the jump record in active_actions
+            for rec in self.active_actions:
+                if rec["action_name"] == jump_action_name:
+                    # Calculate the expected duration (in seconds) of the jump action:
+                    expected_duration = rec["action_length"] / (self.base_speed_factor * speed)
+                    elapsed = get_game_time() - rec["start_time"]
+                    # Allow override when elapsed time reaches 90% of the expected duration.
+                    if elapsed >= expected_duration * 0.9:
+                        self.one_time_in_progress = False
+                    break
+
         # -------------------------------------------------
         # A) If a custom or one-time action is in progress, 
         #    skip picking new default animations:
@@ -135,9 +158,6 @@ class AnimationStateManager:
         # -------------------------------------------------
         # B) Otherwise do normal default logic
         # -------------------------------------------------
-        new_action, loop, speed, override, play_fully = self._pick_action(
-            keys_pressed, is_grounded, vertical_velocity, delta_time
-        )
         if new_action and (new_action != self.last_action_name):
             self.start_action(
                 action_name=new_action,
@@ -161,7 +181,6 @@ class AnimationStateManager:
             self.one_time_in_progress = False
 
         return new_action
-
 
 
     # -------------------------------------------------

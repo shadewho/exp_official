@@ -22,7 +22,7 @@ from .helper_functions import download_blend_file, append_scene_from_blend
 from .auth import load_token, save_token, clear_token, is_internet_available
 from .cache_manager import cache_manager
 from .main_config import PACKAGE_DETAILS_ENDPOINT, THUMBNAIL_CACHE_FOLDER
-
+from ..Exp_Game.exp_utilities import get_game_world
 
 def login(username, password):
     """
@@ -283,8 +283,15 @@ def explore_package(pkg):
         # 3) If it's a world, append the scene
         if file_type == "world":
             print("[INFO] Appending scene from downloaded .blend...")
-            result = append_scene_from_blend(local_blend_path)
+            game_world = get_game_world()  # Use the helper function to get the game world
+            if not game_world:
+                err_msg = "No Game World assigned. Please select a Game World in the Create tab."
+                print("[ERROR]", err_msg)
+                return {'CANCELLED'}, err_msg
+            else:
+                result = append_scene_from_blend(local_blend_path, scene_name=game_world.name)
             return result, "Scene appended." if result == {'FINISHED'} else "Failed to append scene."
+
 
         # 4) If it's a shop item, store it in the Shop Downloads folder
         elif file_type == "shop_item":

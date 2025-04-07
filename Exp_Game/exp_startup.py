@@ -4,6 +4,7 @@
 import bpy
 import os
 from ..exp_preferences import get_addon_path
+from .exp_utilities import get_game_world
 def center_cursor_in_3d_view(context, margin=50):
     """
     Centers the cursor in the 3D View region with a specified margin to prevent it
@@ -340,17 +341,15 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
     )
     
     def execute(self, context):
-        wm = context.window_manager
-        # Use the passed-in workspace name if available, otherwise get it from the current context.
-        if self.original_workspace_name:
-            wm["original_workspace_name"] = self.original_workspace_name
-        else:
-            wm["original_workspace_name"] = context.window.workspace.name
         
-        # Switch to the custom game workspace ("exp_game").
+        # (Optional) Store the original workspace name from the current context.
+        original_workspace = context.window.workspace.name
+        # You could store it elsewhere if needed for later use.
+        
+        # Switch to the custom game workspace (e.g., "exp_game").
         append_and_switch_to_game_workspace(context, "exp_game")
         
-        # Delay the modal operator invocation as before.
+        # Delay the modal operator invocation.
         from_ui_value = self.launched_from_ui
         bpy.app.timers.register(lambda: delayed_invoke_modal(from_ui_value), first_interval=0.2)
         return {'FINISHED'}

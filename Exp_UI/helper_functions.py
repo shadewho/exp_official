@@ -86,18 +86,20 @@ def download_blend_file(url, progress_callback=None):
 # Scene Setup Helper
 # ----------------------------------------------------------------------------------
 
-def append_scene_from_blend(local_blend_path):
+def append_scene_from_blend(local_blend_path, scene_name=None):
     """
-    Attempts to append the first scene from a .blend file and logs each step.
+    Attempts to append a scene from a .blend file. If a scene_name is provided and exists
+    in the file, that scene is appended; otherwise, the first scene is used.
     
     Returns:
-        A tuple (result, scene_name):
+        A tuple (result, appended_scene_name):
           - result: {'FINISHED'} if the scene was successfully appended, otherwise {'CANCELLED'}.
-          - scene_name: The name of the appended scene if successful; otherwise None.
+          - appended_scene_name: The name of the appended scene if successful; otherwise None.
     """
+
     print("[LOG] Starting append_scene_from_blend with file:", local_blend_path)
     
-    # Step 1: Load available scenes from the blend file
+    # Step 1: Load available scenes from the blend file.
     try:
         print("[LOG] Attempting to load library from file...")
         with bpy.data.libraries.load(local_blend_path, link=False) as (data_from, data_to):
@@ -108,16 +110,27 @@ def append_scene_from_blend(local_blend_path):
         traceback.print_exc()
         return {'CANCELLED'}, None
 
-    # Step 2: Check if any scenes are available
+    # Step 2: Check if any scenes are available.
     if not scene_names:
         print("[ERROR] No scenes found in the file:", local_blend_path)
         return {'CANCELLED'}, None
 
-    # Choose the first scene to append
-    scene_to_append = scene_names[0]
-    print("[LOG] Selected scene to append:", scene_to_append)
+    # Step 3: Determine which scene to append.
+    if scene_name:
+        if scene_name in scene_names:
+            scene_to_append = scene_name
+            print("[LOG] Using user-selected game world scene:", scene_to_append)
+        else:
+            print("[ERROR] The specified game world scene", scene_name, "was not found in the blend file.")
+            return {'CANCELLED'}, None
+    else:
+        # If no game world scene is specified, default to the first available scene.
+        scene_to_append = scene_names[0]
+        print("[LOG] No game world scene specified. Defaulting to first scene:", scene_to_append)
 
-    # Step 3: Build file paths for the append operator
+
+
+    # Step 4: Build file paths for the append operator.
     append_filepath = os.path.join(local_blend_path, "Scene", scene_to_append)
     append_directory = os.path.join(local_blend_path, "Scene")
     print("[LOG] Prepared append parameters:")
@@ -125,7 +138,7 @@ def append_scene_from_blend(local_blend_path):
     print("      directory =", append_directory)
     print("      filename =", scene_to_append)
 
-    # Step 4: Call the append operator
+    # Step 5: Call the append operator.
     try:
         result = bpy.ops.wm.append(
             filepath=append_filepath,
@@ -138,7 +151,7 @@ def append_scene_from_blend(local_blend_path):
         traceback.print_exc()
         return {'CANCELLED'}, None
 
-    # Step 5: Verify that the scene has been appended
+    # Step 6: Verify that the scene has been appended.
     appended_scene = bpy.data.scenes.get(scene_to_append)
     if not appended_scene:
         print("[ERROR] Appended scene not found in bpy.data.scenes after append operator.")
@@ -146,7 +159,7 @@ def append_scene_from_blend(local_blend_path):
 
     print("[LOG] Successfully appended scene:", appended_scene.name)
     
-    # Step 6: Set the appended scene as active in the current window context
+    # Step 7: Set the appended scene as active.
     try:
         bpy.context.window.scene = appended_scene
         print("[LOG] Appended scene set as active.")
@@ -156,7 +169,6 @@ def append_scene_from_blend(local_blend_path):
         return {'CANCELLED'}, appended_scene.name
 
     return {'FINISHED'}, appended_scene.name
-
 
 # ----------------------------------------------------------------------------------
 # Thumbnail Download Helper

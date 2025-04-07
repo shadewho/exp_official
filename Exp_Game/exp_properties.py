@@ -158,7 +158,6 @@ def add_scene_properties():
         max=1.0
     )
 
-
 class CharacterActionsPG(bpy.types.PropertyGroup):
     """
     This property group will hold pointers to Actions instead of storing their names.
@@ -194,7 +193,6 @@ class CharacterActionsPG(bpy.types.PropertyGroup):
         type=bpy.types.Action,
         description="Action to use for the land state"
     )
-
 
 def remove_scene_properties():
     del bpy.types.Scene.target_armature

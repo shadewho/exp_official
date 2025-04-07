@@ -20,9 +20,9 @@ from .exp_properties import (
     ProxyMeshEntry,
     EXPLORATORY_OT_AddProxyMesh,
     EXPLORATORY_OT_RemoveProxyMesh,
-    EXPLORATORY_UL_ProxyMeshList
+    EXPLORATORY_UL_ProxyMeshList,
 )
-
+from .exp_utilities import EXPLORATORY_OT_SetGameWorld
 from .exp_startup import EXP_GAME_OT_StartGame
 from .exp_audio import AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio
 from .exp_interactions import (
@@ -99,9 +99,11 @@ def register():
     bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
     bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
-
+    
     # --- Scene Properties ---
     add_scene_properties()
+
+    bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
 
     print("Exploratory Add-on Registered!")
 
@@ -142,6 +144,8 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_OT_AddInteraction)
     bpy.utils.unregister_class(InteractionDefinition)
     bpy.utils.unregister_class(ReactionDefinition)
+
+    bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
 
     # --- Character Actions & Proxy Mesh ---
     del bpy.types.Scene.character_actions

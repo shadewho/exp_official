@@ -1,5 +1,7 @@
 # File: exp_ui.py
 import bpy
+from .exp_utilities import (
+    get_game_world)
 # --------------------------------------------------------------------
 # Exploratory Modal Panel
 # --------------------------------------------------------------------
@@ -13,6 +15,7 @@ class ExploratoryPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        wm = context.window_manager  # Get the global WindowManager
 
         # Always show the mode toggle:
         layout.prop(scene, "main_category", expand=True)
@@ -22,11 +25,28 @@ class ExploratoryPanel(bpy.types.Panel):
         # Only show the modal operator button if in CREATE mode:
         if scene.main_category == 'CREATE':
             op = layout.operator("view3d.exp_modal", text="Start Game (Not Fullscreen)")
-            op.launched_from_ui = False  # Indicates it's a direct modal launch.
-            op.should_revert_workspace = False  # Don't revert workspace for direct modal.
-
-            # Button to launch the full-screen game (which switches workspaces).
+            op.launched_from_ui = False  # Direct modal launch.
+            op.should_revert_workspace = False  # Do not revert workspace.
             layout.operator("exploratory.start_game", text="Start Game (Fullscreen)")
+
+            layout.separator()
+            
+            # Provide a button to mark the current scene as the game world
+            layout.operator("exploratory.set_game_world", text="Set Game World", icon='WORLD')
+
+            game_world = get_game_world()
+            if game_world:
+                layout.label(text=f"Game World: {game_world.name}")
+                
+            else:
+                row = layout.row()
+                row.alert = True
+                row.label(text="No Game World Assigned!")
+                
+                row = layout.row()
+                row.alert = True
+                row.label(text="Switch to your desired scene and click 'Set Game World' to assign it.")
+
 
 
 

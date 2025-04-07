@@ -5,6 +5,7 @@ import bpy
 import math
 import time
 import sys
+from .exp_utilities import get_game_world
 from .exp_movement import move_character
 from .exp_raycastutils import create_bvh_tree
 from .exp_spawn import spawn_user
