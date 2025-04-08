@@ -129,7 +129,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         default="PLAY_ONCE"
     )
 
-
     #--------------------------------------------------------
     #AUDIO AUDIO AUDIO
     #--------------------------------------------------------
@@ -400,6 +399,12 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     vector_value: bpy.props.FloatVectorProperty(size=4, default=(0,0,0,0))
     vector_length: bpy.props.IntProperty(default=3)
 
+    # --- New default value fields (for the starting/default value) ---
+    default_bool_value: bpy.props.BoolProperty(default=False)
+    default_int_value: bpy.props.IntProperty(default=0)
+    default_float_value: bpy.props.FloatProperty(default=0.0)
+    default_string_value: bpy.props.StringProperty(default="")
+    default_vector_value: bpy.props.FloatVectorProperty(size=4, default=(0.0, 0.0, 0.0, 0.0))
 
 #############################################
 ##### OBJECTIVE REACTION FIELDS
@@ -736,7 +741,6 @@ def _lerp_value(old_val, new_val, alpha, is_int=False, is_bool=False):
 
 def _set_property_value(path_str, val):
     """Assign val to path_str using exec or partial indexing for arrays."""
-    import mathutils
     try:
         old_val = eval(path_str, {"bpy":bpy, "mathutils":mathutils})
         if (isinstance(old_val, (list,tuple,mathutils.Vector)) 
@@ -753,19 +757,29 @@ def _set_property_value(path_str, val):
         pass
 
 def execute_property_reaction(r):
-    """
-    Called at runtime. Creates a forward PropertyTask. If reset_enabled,
-    we schedule a second revert after it finishes (see update_property_tasks).
-    """
     path_str = r.property_data_path.strip()
     if not path_str:
         return
     try:
-        old_val = eval(path_str, {"bpy":bpy,"mathutils":mathutils})
+        current_val = eval(path_str, {"bpy": bpy, "mathutils": mathutils})
     except Exception as ex:
         return
 
-    # figure out the new_val
+    # Use the user-defined default value as the starting value.
+    if r.property_type == "BOOL":
+        default_val = r.default_bool_value
+    elif r.property_type == "INT":
+        default_val = r.default_int_value
+    elif r.property_type == "FLOAT":
+        default_val = r.default_float_value
+    elif r.property_type == "STRING":
+        default_val = r.default_string_value
+    elif r.property_type == "VECTOR":
+        default_val = list(r.default_vector_value[:r.vector_length])
+    else:
+        return
+
+    # Determine the target new value:
     if   r.property_type == "BOOL":   new_val = r.bool_value
     elif r.property_type == "INT":    new_val = r.int_value
     elif r.property_type == "FLOAT":  new_val = r.float_value
@@ -776,29 +790,28 @@ def execute_property_reaction(r):
         return
 
     start_time = get_game_time()
-    duration   = r.property_transition_duration
-    reset_en   = r.property_reset
-    reset_dly  = r.property_reset_delay
+    duration = r.property_transition_duration
+    reset_en = r.property_reset
+    reset_dly = r.property_reset_delay
+
+    # Use the default value (provided by the user) as the 'old value'
+    old_val = default_val
 
     if duration <= 0:
-        # instant
         _set_property_value(path_str, new_val)
-        # schedule revert if needed
         if reset_en:
             revert_start = get_game_time() + reset_dly
-            # second task from new_val -> old_val
             pt2 = PropertyTask(
                 path_str=path_str,
                 old_val=new_val,
                 new_val=old_val,
                 start_time=revert_start,
-                duration=duration, # same duration 
+                duration=duration,  # instant transition
                 reset_enabled=False,
                 reset_delay=0.0
             )
             _active_property_tasks.append(pt2)
     else:
-        # schedule forward
         pt = PropertyTask(
             path_str=path_str,
             old_val=old_val,
@@ -809,6 +822,7 @@ def execute_property_reaction(r):
             reset_delay=reset_dly
         )
         _active_property_tasks.append(pt)
+
 
 def update_property_tasks():
     """
@@ -847,7 +861,6 @@ def _assign_safely(path_str, val):
     cast accordingly, then do the assignment. This ensures we
     never pass float to an int property, etc.
     """
-    import mathutils
     try:
         old_val = eval(path_str, {"bpy":bpy, "mathutils":mathutils})
     except Exception as ex:

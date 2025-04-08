@@ -1,7 +1,7 @@
 import bpy
 from .exp_time import init_time
 from .exp_objectives import reset_all_objectives
-from .exp_reactions import reset_all_tasks
+from .exp_reactions import reset_all_tasks, _set_property_value
 from .exp_interactions import reset_all_interactions
 from .exp_spawn import spawn_user
 from . import exp_globals
@@ -21,16 +21,13 @@ def capture_scene_state(self, context):
     self._initial_game_state["object_transforms"] = {}
 
     for obj in scene.objects:
-        # Store a sub‐dictionary for each object’s name
+        # Capture the object's transform data plus viewport visibility.
         self._initial_game_state["object_transforms"][obj.name] = {
             "location": obj.location.copy(),
             "rotation": obj.rotation_euler.copy(),
             "scale":    obj.scale.copy(),
+            "hide_viewport": obj.hide_viewport,   # <-- Capture the viewport visibility.
         }
-        # If you later want to store more (like hide_viewport, etc.),
-        # just add more fields here:
-        # e.g. "hide_viewport": obj.hide_viewport,
-        # e.g. "some_custom_flag": your_own_logic
         
 
     # 2) Add another subdict for scene‐level data if you want
@@ -59,7 +56,39 @@ def restore_scene_state(modal_op, context):
             obj.rotation_euler = xform_data["rotation"]
             obj.scale          = xform_data["scale"]
 
+            # Restore viewport visibility if it was captured.
+            if "hide_viewport" in xform_data:
+                obj.hide_viewport = xform_data["hide_viewport"]
 
+
+def reset_property_reactions(scene):
+    """
+    For each Interaction in the scene, find any PROPERTY reaction and reset the target property
+    to the user-defined default value.
+    """
+    # Assuming custom interactions are stored on scene.custom_interactions
+    for inter in scene.custom_interactions:
+        for reaction in inter.reactions:
+            if reaction.reaction_type == "PROPERTY":
+                path_str = reaction.property_data_path.strip()
+                if not path_str:
+                    continue
+                # Choose the default value based on the detected property type:
+                if reaction.property_type == "BOOL":
+                    def_val = reaction.default_bool_value
+                elif reaction.property_type == "INT":
+                    def_val = reaction.default_int_value
+                elif reaction.property_type == "FLOAT":
+                    def_val = reaction.default_float_value
+                elif reaction.property_type == "STRING":
+                    def_val = reaction.default_string_value
+                elif reaction.property_type == "VECTOR":
+                    def_val = list(reaction.default_vector_value[:reaction.vector_length])
+                else:
+                    continue
+
+                # Use the helper (_set_property_value) to assign the default value:
+                _set_property_value(path_str, def_val)
 
 class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
     bl_idname = "exploratory.reset_game"
@@ -78,6 +107,7 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         reset_all_interactions(context.scene)
         reset_all_tasks()
         reset_all_objectives(context.scene)
+        reset_property_reactions(context.scene)
         init_time()
         clear_all_text()
 

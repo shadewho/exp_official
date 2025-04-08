@@ -37,7 +37,7 @@ class ExploratoryPanel(bpy.types.Panel):
             game_world = get_game_world()
             if game_world:
                 layout.label(text=f"Game World: {game_world.name}")
-                
+
             else:
                 row = layout.row()
                 row.alert = True
@@ -457,20 +457,27 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
             box2.prop(reaction, "property_reset", text="Reset?")
             if reaction.property_reset:
                 box2.prop(reaction, "property_reset_delay", text="Reset Delay")
-            # Depending on the type, show a different field:
+            
+            # Display input fields based on the detected type.
             if reaction.property_type == "BOOL":
                 box2.prop(reaction, "bool_value", text="New Bool Value")
+                box2.prop(reaction, "default_bool_value", text="Default Bool Value")
             elif reaction.property_type == "INT":
                 box2.prop(reaction, "int_value", text="New Int Value")
+                box2.prop(reaction, "default_int_value", text="Default Int Value")
             elif reaction.property_type == "FLOAT":
                 box2.prop(reaction, "float_value", text="New Float Value")
+                box2.prop(reaction, "default_float_value", text="Default Float Value")
             elif reaction.property_type == "STRING":
                 box2.prop(reaction, "string_value", text="New String Value")
+                box2.prop(reaction, "default_string_value", text="Default String Value")
             elif reaction.property_type == "VECTOR":
                 box2.label(text=f"Vector length: {reaction.vector_length}")
                 box2.prop(reaction, "vector_value", text="New Vector")
+                box2.prop(reaction, "default_vector_value", text="Default Vector")
             else:
                 box2.label(text="No property detected or invalid path.")
+
 
         #custom transform reaction ----------
         elif reaction.reaction_type == "TRANSFORM":
@@ -563,9 +570,16 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
         # ===============================
         elif reaction.reaction_type == "MOBILITY_GAME":
             mg = reaction.mobility_game_settings
+            box2.label(text="Character Mobility")
             box2.prop(mg, "allow_movement", text="Allow Movement")
             box2.prop(mg, "allow_jump", text="Allow Jump")
             box2.prop(mg, "allow_sprint", text="Allow Sprint")
+            
+            box2.separator()
+            
+            box2.label(text="Mesh Visibility Trigger")
+            box2.prop(mg, "mesh_object", text="Mesh Object")
+            box2.prop(mg, "mesh_action", text="Action")
 
         # ===============================
         # Sound Reaction

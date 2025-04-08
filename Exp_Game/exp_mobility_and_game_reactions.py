@@ -25,28 +25,53 @@ class MobilityGameReactionsPG(PropertyGroup):
         default=True,
         description="If False, SHIFT sprint is blocked"
     )
+    # --- Mesh Visibility Properties ---
+    mesh_object: bpy.props.PointerProperty(
+        name="Mesh Object",
+        type=bpy.types.Object,
+        description="Mesh object to be hidden or unhidden"
+    )
+    mesh_action: bpy.props.EnumProperty(
+        name="Mesh Action on Trigger",
+        description="Select whether to hide, unhide or toggle the mesh object's visibility when the trigger condition is met",
+        items=[
+            ("NONE", "None", "Do not change mesh visibility"),
+            ("HIDE", "Hide", "Hide the mesh object"),
+            ("UNHIDE", "Unhide", "Unhide the mesh object"),
+            ("TOGGLE", "Toggle", "Toggle mesh visibility based on its current state")
+        ],
+        default="NONE"
+    )
 
 def execute_mobility_reaction(reaction):
     """
-    If reaction.reaction_type == 'MOBILITY_GAME',
-    we read the new booleans from reaction.mobility_game_settings
-    and store them into the *same* property group in scene.mobility_game
-    (or scene.input_locks, whichever pointer you use).
+    Reads the mobility and mesh settings from the reaction, copies them to the scene-level pointer,
+    and then applies the mesh visibility change based on the chosen action.
     """
     scene = bpy.context.scene
 
-    # The ReactionDefinition has a pointer:
-    #   reaction.mobility_game_settings : MobilityGameReactionsPG
-    # We want to copy those values into the scene-level pointer so
-    # that the modal can reference them each frame.
     if not hasattr(scene, "mobility_game"):
         print("Scene has no 'mobility_game' pointer! Did you define it in __init__?")
         return
 
-    src = reaction.mobility_game_settings  # from the Reaction
-    dst = scene.mobility_game             # the global/scene-level pointer
+    src = reaction.mobility_game_settings  # Reaction-defined settings
+    dst = scene.mobility_game              # Scene-level pointer
 
-    # Overwrite all fields:
+    # Copy mobility settings
     dst.allow_movement = src.allow_movement
     dst.allow_jump     = src.allow_jump
     dst.allow_sprint   = src.allow_sprint
+
+    # Copy the mesh settings
+    dst.mesh_object = src.mesh_object
+    dst.mesh_action = src.mesh_action
+
+    # --- Apply Mesh Visibility Change ---
+    if src.mesh_object and src.mesh_action != "NONE":
+        if src.mesh_action == "HIDE":
+            src.mesh_object.hide_viewport = True
+        elif src.mesh_action == "UNHIDE":
+            src.mesh_object.hide_viewport = False
+        elif src.mesh_action == "TOGGLE":
+            # Toggle: if currently hidden, unhide; otherwise hide.
+            src.mesh_object.hide_viewport = not src.mesh_object.hide_viewport
