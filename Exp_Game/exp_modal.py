@@ -5,6 +5,7 @@ import bpy
 import math
 import time
 import sys
+from .exp_physics import update_dynamic_meshes
 from .exp_utilities import get_game_world
 from .exp_movement import move_character
 from .exp_raycastutils import create_bvh_tree
@@ -16,7 +17,8 @@ from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds,
 from .exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene,
-                            revert_to_original_workspace, ensure_timeline_at_zero)  
+                            revert_to_original_workspace, ensure_timeline_at_zero,
+                            ensure_object_mode)  
 from ..exp_preferences import ExploratoryAddonPreferences, get_addon_path
 from .exp_custom_animations import update_all_custom_managers
 from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
@@ -140,6 +142,9 @@ class ExpModal(bpy.types.Operator):
     def invoke(self, context, event):
         scene = context.scene
         addon_prefs = context.preferences.addons["Exploratory"].preferences
+
+        if not self.launched_from_ui:
+            ensure_object_mode(context)
 
         #----------------------------
         #Scene state and preference setup
@@ -336,53 +341,8 @@ class ExpModal(bpy.types.Operator):
             audio_state_mgr = get_global_audio_state_manager()
             audio_state_mgr.update_audio_state(current_anim_state)
 
-            # C.1) Dynamic Mesh Updates with Caching and Mesh-Specific Collision Size
-            if not hasattr(self, "cached_dynamic_bvhs"):
-                self.cached_dynamic_bvhs = {}
-            self.dynamic_bvh_map = {}
-            MATRIX_THRESHOLD = 1e-3  # Adjust as needed to detect significant movement
-            for dyn_obj in self.moving_meshes:
-                if dyn_obj and dyn_obj.type == 'MESH':
-                    current_matrix = dyn_obj.matrix_world.copy()
-                    cached = self.cached_dynamic_bvhs.get(dyn_obj)
-                    if cached is not None:
-                        last_matrix, cached_bvh, dyn_radius = cached
-                        # If the object's transform hasn’t changed significantly, reuse the BVH and radius.
-                        if (current_matrix.to_translation() - last_matrix.to_translation()).length < MATRIX_THRESHOLD:
-                            self.dynamic_bvh_map[dyn_obj] = (cached_bvh, dyn_radius)
-                            continue
-                    # Otherwise, rebuild the BVH for this dynamic mesh
-                    dyn_bvh = create_bvh_tree([dyn_obj])
-                    if dyn_bvh:
-                        # Compute the collision size using the mesh's actual geometry
-                        dyn_radius = approximate_bounding_sphere_radius(dyn_obj)
-                        self.dynamic_bvh_map[dyn_obj] = (dyn_bvh, dyn_radius)
-                        self.cached_dynamic_bvhs[dyn_obj] = (current_matrix, dyn_bvh, dyn_radius)
-
-            # C.2) Vertical Dictionary Positional Update
-            for dyn_obj in self.moving_meshes:
-                old_pos = self.platform_prev_positions.get(dyn_obj, None)
-                new_pos = dyn_obj.matrix_world.translation.copy()  # current center
-                if old_pos is not None:
-                    # Calculate the object's lateral (sideways) motion vector.
-                    motion_vec = new_pos - old_pos
-                    if not hasattr(self, 'platform_motion_map'):
-                        self.platform_motion_map = {}
-                    self.platform_motion_map[dyn_obj] = motion_vec
-                # Update stored position for next frame
-                self.platform_prev_positions[dyn_obj] = new_pos
-
-            # C.3) Update Platform Delta Map
-            self.platform_delta_map = {}
-            for dyn_obj in self.moving_meshes:
-                old_mat = self.platform_prev_matrices[dyn_obj]
-                new_mat = dyn_obj.matrix_world.copy()
-                delta_mat = new_mat @ old_mat.inverted()
-                self.platform_delta_map[dyn_obj] = delta_mat
-                self.platform_prev_matrices[dyn_obj] = new_mat
-
-            # C.4) Apply Platform Delta if Grounded
-            self.apply_platform_delta_if_grounded()
+            # --- NEW: Update Dynamic Mesh Data (moved to exp_physics) ---
+            update_dynamic_meshes(self)
 
 
             # update movement real time (holding keys)
@@ -403,13 +363,14 @@ class ExpModal(bpy.types.Operator):
             self.update_movement_and_gravity(context)
             self.update_jumping(context)
 
-            # E) Check interactions
-            check_interactions(context)
-
-            # F) update custom actions, transform tasks, etc.
+            # E) update custom actions, transform tasks, etc.
             update_all_custom_managers(self.delta_time)
             update_transform_tasks()
             update_property_tasks()
+
+            # F) Check interactions
+            check_interactions(context)
+
 
             # G) Update the UI messages
             update_text_reactions()
@@ -486,6 +447,8 @@ class ExpModal(bpy.types.Operator):
                     entry.mesh_object.hide_viewport = original
         # Cleanup scene and temporary blend file
         cleanup_downloaded_worlds()
+
+        clear_all_text()
 
         # Revert to the original workspace if the flag is True
         if self.should_revert_workspace:

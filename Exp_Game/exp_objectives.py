@@ -79,15 +79,15 @@ def update_all_objective_timers(scene):
 def reset_all_objectives(scene):
     """
     At the start of the modal, reset each Objective so that
-    timer_value = timer_start_value and timer_active = False.
-    Also resets integer counters if desired.
+    timer_value = timer_start_value, timer_active = False,
+    and current_value = default_value.
     """
     for objv in scene.objectives:
         objv.timer_active = False
         objv.timer_value  = objv.timer_start_value
         objv.prev_timer_time = 0.0
-        # If you also want to reset current_value:
-        # objv.current_value = objv.default_value
+        objv.current_value = objv.default_value  # Now resetting the counter
+
 
 
 

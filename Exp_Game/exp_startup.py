@@ -45,10 +45,20 @@ def clear_old_dynamic_references(self):
     if hasattr(self, "grounded_platform"):
         self.grounded_platform = None
 
+
+#----------------------------------------------------------
+# Ensure Object Mode if user calls from non-fullscreen modal
+#----------------------------------------------------------
+def ensure_object_mode(context):
+    """Switch to Object Mode if in a 3D View and not already in Object mode."""
+    if context.area and context.area.type == 'VIEW_3D':
+        if context.active_object and context.active_object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+
 #----------------------------------------------------------
 ### Snapshot of User Settings (No Global)
 #----------------------------------------------------------
-
 def set_viewport_shading_rendered():
     """
     Sets the shading mode of all VIEW_3D areas to 'RENDERED'.
@@ -374,5 +384,3 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         from_ui_value = self.launched_from_ui
         bpy.app.timers.register(lambda: delayed_invoke_modal(from_ui_value), first_interval=0.2)
         return {'FINISHED'}
-
-

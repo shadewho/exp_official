@@ -231,7 +231,8 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
             box.prop(entry, "name", text="Name")
             box.prop(entry, "mesh_object", text="Mesh")
             box.prop(entry, "is_moving", text="Is Moving")
-            # New line to display the hide_during_game boolean:
+            if entry.is_moving:
+                box.prop(entry, "register_distance", text="Register Distance")
             box.prop(entry, "hide_during_game", text="Hide During Game")
 
         layout.separator()

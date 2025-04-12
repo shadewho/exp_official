@@ -4,7 +4,7 @@ import os
 # Determine the base URL based on the environment
 # You can set an environment variable 'ADDON_ENV' to switch between environments.
 # Default to 'development' if not set.
-ENVIRONMENT = os.getenv('ADDON_ENV', 'development')
+ENVIRONMENT = os.getenv('ADDON_ENV', 'production')
 
 BASE_URLS = {
     'development': 'http://127.0.0.1:5000/blender_api',

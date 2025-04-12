@@ -48,6 +48,7 @@ def find_best_floor_below(target_object, static_bvh, dynamic_bvh_map, max_distan
     best_norm = None
     best_obj  = None
 
+
     # 1) Static check
     if static_bvh:
         # If static_bvh is a tuple, extract the BVH tree.
@@ -82,7 +83,7 @@ def find_best_floor_below(target_object, static_bvh, dynamic_bvh_map, max_distan
 
 
 # ------------------------------------------------------------
-# CHUNK #1: New move_character(...) function (copy/paste fully)
+# #1: New move_character(...) function 
 # ------------------------------------------------------------
 def move_character(
     op,                 # <-- New argument: reference to the modal operator
@@ -217,8 +218,6 @@ def move_character(
         # Collide with all dynamic objects except the one that might be under feet
         if dynamic_bvh_map:
             for dyn_obj, dyn_bvh in dynamic_bvh_map.items():
-                if dyn_obj == obj_below:
-                    continue
                 capsule_collision_resolve(dyn_bvh, target_object, radius=0.2, max_iterations=2)
 
         # Now snap + carry if we do have a floor under feet

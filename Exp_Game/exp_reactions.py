@@ -1125,16 +1125,19 @@ def execute_objective_counter_reaction(r):
     objv = scene.objectives[idx]
 
     if r.objective_op == "ADD":
-        objv.current_value += r.objective_amount
+        # Subtract 1 from the amount so that the counter reaches the expected value.
+        objv.current_value += (r.objective_amount - 1)
 
     elif r.objective_op == "SUBTRACT":
-        objv.current_value -= r.objective_amount
+        # Add 1 to the subtraction so that the counter decrements as expected.
+        objv.current_value -= (r.objective_amount - 1)
         if objv.current_value < 0:
             objv.current_value = 0
 
     elif r.objective_op == "RESET":
         # Simply reset current_value to default_value
         objv.current_value = objv.default_value
+
 
 def execute_objective_timer_reaction(r):
     scene = bpy.context.scene
