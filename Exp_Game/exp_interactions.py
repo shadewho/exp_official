@@ -443,8 +443,8 @@ def handle_interact_trigger(inter, current_time, pressed_now, context):
                 text_str=f"Press [{interact_key}] to interact",
                 anchor='BOTTOM_CENTER',
                 margin_x=0.5,
-                margin_y=0.8,
-                scale=0.025,
+                margin_y=18,
+                scale=3,
                 end_time=get_game_time() + 0.1,
                 color=(1, 1, 1, 1)
             )

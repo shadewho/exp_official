@@ -4,7 +4,7 @@ import bpy
 from .exp_raycastutils import raycast_to_ground
 import ctypes
 import ctypes.wintypes
-def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor):
+def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor, dynamic_bvh_map=None):
     # Calculate the direction vector
     direction = mathutils.Vector((
         math.cos(pitch) * math.sin(yaw),  # Flipped the direction to look down positive Y axis
@@ -14,7 +14,7 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor)
 
     # Set the desired view location to orbit around the object at head height
     head_height = 2.0  # 2 meters above the object's origin
-    scan_point = obj.location + mathutils.Vector((0, 0, head_height ))  # Set scan point to head height
+    scan_point = obj.location + mathutils.Vector((0, 0, head_height))  # Set scan point to head height
     view_location = scan_point + direction * orbit_distance  # Start with the default orbit distance
 
     # Extend the scan distance to account for the view distance property
@@ -34,9 +34,45 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor)
             distance_to_hit = (scan_point - hit_location).length
             # If the hit location is closer than the desired extended distance, adjust to avoid obstruction
             if distance_to_hit < extended_scan_distance:
-                buffer_distance = -(bpy.context.scene.zoom_factor) -0.5  ############ .5 additional buffer distance
+                buffer_distance = -(bpy.context.scene.zoom_factor) - 0.5  # .5 additional buffer distance
                 adjusted_distance = distance_to_hit + buffer_distance
                 view_location = scan_point + direction_to_view * adjusted_distance
+
+    #####################################################################
+    # Dynamic BVH Check (without removing or changing original logic)
+    #####################################################################
+    if dynamic_bvh_map:
+        # We'll do a second pass and see if any dynamic mesh is closer than our current camera offset.
+        # We'll replicate the logic above but for each dynamic BVH, then compare distances.
+        direction_to_view_dyn = (view_location - scan_point).normalized()
+        extended_view_location_dyn = scan_point + direction_to_view_dyn * extended_scan_distance
+
+        closest_distance_dyn = None
+        closest_hit_dyn = None
+
+        for dyn_obj, (dyn_bvh, dyn_radius) in dynamic_bvh_map.items():
+            if not dyn_bvh:
+                continue
+            # Raycast to dynamic object
+            hit_dyn = raycast_to_ground(dyn_bvh, scan_point, direction_to_view_dyn)
+            if hit_dyn:
+                dist_dyn = (scan_point - hit_dyn).length
+                # Track the closest dynamic obstacle
+                if (closest_distance_dyn is None) or (dist_dyn < closest_distance_dyn):
+                    closest_distance_dyn = dist_dyn
+                    closest_hit_dyn = hit_dyn
+
+        # If a dynamic obstacle is closer than our current view, clamp again
+        if closest_hit_dyn:
+            if closest_distance_dyn < extended_scan_distance:
+                buffer_distance_dyn = -(bpy.context.scene.zoom_factor) - 0.5
+                adjusted_distance_dyn = closest_distance_dyn + buffer_distance_dyn
+                # If that actually pulls the camera forward more than static did, apply it
+                if adjusted_distance_dyn < (view_location - scan_point).length:
+                    view_location = scan_point + direction_to_view_dyn * adjusted_distance_dyn
+    #####################################################################
+    # END of new dynamic block
+    #####################################################################
 
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':

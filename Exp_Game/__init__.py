@@ -22,6 +22,7 @@ from .exp_properties import (
     EXPLORATORY_OT_RemoveProxyMesh,
     EXPLORATORY_UL_ProxyMeshList,
 )
+from .exp_custom_ui import EXPLORE_OT_PreviewCustomText
 from .exp_utilities import EXPLORATORY_OT_SetGameWorld
 from .exp_startup import EXP_GAME_OT_StartGame
 from .exp_audio import AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio
@@ -73,6 +74,8 @@ def register():
     bpy.utils.register_class(VIEW3D_PT_Exploratory_Studio)
     # 5. Objectives Panel (CREATE mode)
     bpy.utils.register_class(VIEW3D_PT_Objectives)
+
+    bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
 
     # Register the UILists used in panels
     bpy.utils.register_class(EXPLORATORY_UL_CustomInteractions)
@@ -136,6 +139,7 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_UL_Objectives)
     bpy.utils.unregister_class(ExploratoryCharacterPanel)
     bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
+    bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
 
     # --- Interactions & Reactions ---
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveReactionFromInteraction)

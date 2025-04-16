@@ -15,7 +15,6 @@ class ExploratoryPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        wm = context.window_manager  # Get the global WindowManager
 
         # Always show the mode toggle:
         layout.prop(scene, "main_category", expand=True)
@@ -525,19 +524,27 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
             #  B) Objective Display
             # ===============================
             elif reaction.custom_text_subtype == "OBJECTIVE":
-                # This subtype (sometimes called OBJECTIVE_DISPLAY) shows objective.current_value
+                # This subtype shows objective.current_value using separate fields.
                 box2.prop(reaction, "text_objective_index", text="Objective")
-                box2.prop(reaction, "text_objective_format", text="Format")  # e.g. "Coins: {value}"
+                # Remove the old Format field and use separate fields:
+                format_box = box2.box()  # Create a nested box inside box2.
+                format_box.label(text="Counter Formatting")  # Add a header label.
+                col = format_box.column(align=True)  # Create a column for vertical alignment.
+                col.prop(reaction, "custom_text_prefix", text="Prefix")
+                col.prop(reaction, "custom_text_include_counter", text="Include Counter")
+                col.prop(reaction, "custom_text_suffix", text="Suffix")
 
+                
                 box2.prop(reaction, "custom_text_indefinite", text="Indefinite?")
                 if not reaction.custom_text_indefinite:
                     box2.prop(reaction, "custom_text_duration", text="Duration")
-
+    
                 box2.prop(reaction, "custom_text_anchor", text="Anchor")
                 box2.prop(reaction, "custom_text_scale", text="Scale")
                 box2.prop(reaction, "custom_text_margin_x", text="Margin X")
                 box2.prop(reaction, "custom_text_margin_y", text="Margin Y")
                 box2.prop(reaction, "custom_text_color", text="Color")
+
 
             # ===============================
             #  C) Objective Timer Display
@@ -554,6 +561,7 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
                 box2.prop(reaction, "custom_text_margin_x", text="Margin X")
                 box2.prop(reaction, "custom_text_margin_y", text="Margin Y")
                 box2.prop(reaction, "custom_text_color", text="Color")
+            box2.operator("exploratory.preview_custom_text", text="Preview All Custom Text")
 
         # ===============================
         # Objective Timer Start/Stop

@@ -73,9 +73,9 @@ class ExpModal(bpy.types.Operator):
         description="If false, do not revert the workspace when canceling the modal",
         default=True
     )
-    # ---------------------------
+    # -----------------------------
     # Internal State Variables
-    # ---------------------------
+    # -----------------------------
     pitch: bpy.props.FloatProperty(name="Pitch", default=0.0)
     yaw: bpy.props.FloatProperty(name="Yaw", default=0.0)
     z_velocity: bpy.props.FloatProperty(name="Z Velocity", default=0.0)
@@ -341,7 +341,7 @@ class ExpModal(bpy.types.Operator):
             audio_state_mgr = get_global_audio_state_manager()
             audio_state_mgr.update_audio_state(current_anim_state)
 
-            # --- NEW: Update Dynamic Mesh Data (moved to exp_physics) ---
+            # Update Dynamic Mesh Data (moved to exp_physics) ---
             update_dynamic_meshes(self)
 
 
@@ -538,8 +538,9 @@ class ExpModal(bpy.types.Operator):
             self.pitch,
             self.yaw,
             self.bvh_tree,
-            self.camera_distance,
-            context.scene.zoom_factor
+            self.camera_distance,          # orbit_distance: a float
+            context.scene.zoom_factor,     # zoom_factor: a float
+            dynamic_bvh_map=self.dynamic_bvh_map  # dynamic BVH map: a dictionary
         )
 
         # Possibly rotate character to face yaw

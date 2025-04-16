@@ -256,27 +256,25 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         ],
         default='TOP_LEFT'
     )
-    custom_text_margin_x: bpy.props.FloatProperty(
-        name="Margin X (ratio)",
-        default=0.05,  # means 5% of viewport width
-        min=0.0,
-        max=1.0,
-        description="Horizontal margin as a fraction of the viewport width"
+    custom_text_margin_x: bpy.props.IntProperty(
+        name="Margin X",
+        default=0,
+        description="Horizontal grid offset. 0 is at the anchor; +1 shifts one grid unit right (or left, as defined)"
     )
-    custom_text_margin_y: bpy.props.FloatProperty(
-        name="Margin Y (ratio)",
-        default=0.05,  # means 5% of viewport height
-        min=0.0,
-        max=1.0,
-        description="Vertical margin as a fraction of the viewport height"
+    custom_text_margin_y: bpy.props.IntProperty(
+        name="Margin Y",
+        default=0,
+        description="Vertical grid offset. 0 is at the anchor; +1 shifts one grid unit up (or down) relative to the anchor"
     )
-    custom_text_scale: bpy.props.FloatProperty(
-        name="Scale (ratio)",
-        default=0.05,  # means 5% of viewport height used as font size
-        min=0.0,
-        max=1.0,
-        description="Text scale as a fraction of viewport height"
+
+    custom_text_scale: bpy.props.IntProperty(
+        name="Scale",
+        default=10,  # A mid-range default (scale of 10/20)
+        min=0,
+        max=20,
+        description="Text scaling factor in grid units (0=small, 20=large)"
     )
+
 
     # NEW: Duration or Indefinite
     custom_text_duration: bpy.props.FloatProperty(
@@ -313,11 +311,24 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         items=enum_objective_items  # <--- same function you use elsewhere
     )
 
-    # Optional: If you want a format string, e.g. "Coins: {value}"
-    text_objective_format: bpy.props.StringProperty(
-        name="Format",
-        default="Progress: {value}"
+    # fields for more intuitive Objective Counter formatting:
+    custom_text_prefix: bpy.props.StringProperty(
+        name="Prefix Text",
+        default="",
+        description="Text displayed before the objective counter value."
     )
+    custom_text_suffix: bpy.props.StringProperty(
+        name="Suffix Text",
+        default="",
+        description="Text displayed after the objective counter value."
+    )
+    custom_text_include_counter: bpy.props.BoolProperty(
+        name="Include Counter",
+        default=True,
+        description="If enabled, the numeric value of the objective is displayed."
+    )
+
+
     # --------------------------------------------------
    #Pointer properties for CUSTOM object & action
     # --------------------------------------------------
@@ -966,41 +977,43 @@ def execute_custom_ui_text_reaction(r):
         else:
             e_time = get_game_time() + r.custom_text_duration
 
-        # Create a reaction text item with empty text (we’ll fill it later)
+        # Here you obtain the current objective value
+        # (Assuming that elsewhere in your update loop you update the reaction item's text.)
+        # For example, objective_value can be obtained from the scene's objective list.
+        scene = bpy.context.scene
+        if r.text_objective_index.isdigit():
+            idx = int(r.text_objective_index)
+            if 0 <= idx < len(scene.objectives):
+                objective_value = scene.objectives[idx].current_value
+            else:
+                objective_value = "?"
+        else:
+            objective_value = "?"
+
+        # Build the display text from separate fields.
+        if r.custom_text_include_counter:
+            display_text = f"{r.custom_text_prefix}{objective_value}{r.custom_text_suffix}"
+        else:
+            display_text = f"{r.custom_text_prefix}{r.custom_text_suffix}"
+
+        # Create the reaction text item with the composed text.
         item = exp_custom_ui.add_text_reaction(
-            text_str="",  # we update this each frame
+            text_str=r.custom_text_value,
             anchor=r.custom_text_anchor,
             margin_x=r.custom_text_margin_x,
             margin_y=r.custom_text_margin_y,
             scale=r.custom_text_scale,
             end_time=e_time,
-            color=tuple(r.custom_text_color),
+            color=tuple(r.custom_text_color)
         )
         item["subtype"] = "OBJECTIVE"
         item["objective_index"] = r.text_objective_index
-        item["format"] = r.text_objective_format
 
-    elif subtype == "OBJECTIVE_TIMER_DISPLAY":
-        # figure out end_time
-        if r.custom_text_indefinite:
-            e_time = None
-        else:
-            now = get_game_time()
-            e_time = now + r.custom_text_duration
+        # Newly added lines:
+        item["custom_text_prefix"] = r.custom_text_prefix
+        item["custom_text_suffix"] = r.custom_text_suffix
+        item["custom_text_include_counter"] = r.custom_text_include_counter
 
-        item = exp_custom_ui.add_text_reaction(
-            text_str="",  # We’ll fill it each frame
-            anchor=r.custom_text_anchor,
-            margin_x=r.custom_text_margin_x,
-            margin_y=r.custom_text_margin_y,
-            scale=r.custom_text_scale,
-            end_time=e_time,
-            color=tuple(r.custom_text_color),
-        )
-
-        # Mark subtype & store which objective
-        item["subtype"] = "OBJECTIVE_TIMER_DISPLAY"
-        item["objective_index"] = r.text_objective_index
 
 
 ##----Sound reaction----------------------#
@@ -1125,19 +1138,16 @@ def execute_objective_counter_reaction(r):
     objv = scene.objectives[idx]
 
     if r.objective_op == "ADD":
-        # Subtract 1 from the amount so that the counter reaches the expected value.
-        objv.current_value += (r.objective_amount - 1)
+        objv.current_value += r.objective_amount
 
     elif r.objective_op == "SUBTRACT":
-        # Add 1 to the subtraction so that the counter decrements as expected.
-        objv.current_value -= (r.objective_amount - 1)
+        objv.current_value -= r.objective_amount
         if objv.current_value < 0:
             objv.current_value = 0
 
     elif r.objective_op == "RESET":
         # Simply reset current_value to default_value
         objv.current_value = objv.default_value
-
 
 def execute_objective_timer_reaction(r):
     scene = bpy.context.scene
