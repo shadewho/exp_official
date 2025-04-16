@@ -182,7 +182,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
 
 
 # --------------------------------------------------------------------
-# NEW PANEL: Proxy Meshes (only visible in Create mode)
+# Proxy Meshes (only visible in Create mode)
 # --------------------------------------------------------------------
 class ExploratoryProxyMeshPanel(bpy.types.Panel):
     bl_label = "Proxy Meshes"
@@ -229,10 +229,28 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
             box.label(text="Selected Proxy Mesh Details:")
             box.prop(entry, "name", text="Name")
             box.prop(entry, "mesh_object", text="Mesh")
-            box.prop(entry, "is_moving", text="Is Moving")
+            box.prop(entry, "is_moving", text="Dynamic Mesh (Moving)")
+
             if entry.is_moving:
-                box.prop(entry, "register_distance", text="Register Distance")
+                dyn_box = box.box()
+
+                # — Warning Group —
+                warn_grp = dyn_box.column(align=True)
+                warn_grp.label(text="⚠ Mesh rebuild every frame!")
+                warn_grp.label(text="Optimize mesh and use Register Distance")
+                warn_grp.label(text="Very expensive calculations for complex geometry!")
+
+                dyn_box.separator()
+
+                # — Register Distance Group —
+                dist_grp = dyn_box.column(align=True)
+                dist_grp.prop(entry, "register_distance", text="Register Distance")
+                dist_grp.label(text="Register Distance = Distance from mesh before calculations are considered.")
+                dist_grp.label(text="0.0 = Always on.")
+
+                
             box.prop(entry, "hide_during_game", text="Hide During Game")
+
 
         layout.separator()
         layout.label(text="Spawn Object")
@@ -499,7 +517,6 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
                 box2.prop(reaction, "transform_scale", text="Scale")
 
             box2.prop(reaction, "transform_duration", text="Duration")
-            box2.prop(reaction, "transform_distance", text="Distance")
 
 
         #custom UI text reaction ---------------

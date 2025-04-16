@@ -18,6 +18,29 @@ from . import exp_custom_ui
 # Global list to hold pending trigger tasks.
 _pending_trigger_tasks = []
 
+# -------------------------------------------------------------------
+# Dynamic trigger_mode items based on trigger_type
+# -------------------------------------------------------------------
+def trigger_mode_items(self, context):
+    # always include One‑Shot and Cooldown
+    items = [
+        ("ONE_SHOT", "One-Shot",    "Fire once only, never again"),
+        ("COOLDOWN", "Cooldown",    "Allow repeated fires but only after cooldown"),
+    ]
+    # but only proximity/collision get the Enter‑Only mode
+    if self.trigger_type in {"PROXIMITY", "COLLISION"}:
+        items.insert(1, ("ENTER_ONLY", "Enter Only",
+                         "Fire on each new enter/press; resets on release/exit"))
+    return items
+
+def update_trigger_type(self, context):
+    # ensure current mode is still valid when trigger_type changes
+    allowed = [item[0] for item in trigger_mode_items(self, context)]
+    if self.trigger_mode not in allowed:
+        # reset to first allowed mode
+        self.trigger_mode = allowed[0]
+
+
 ###############################################################################
 # 1) InteractionDefinition
 ###############################################################################
@@ -40,13 +63,20 @@ class InteractionDefinition(bpy.types.PropertyGroup):
     trigger_type: bpy.props.EnumProperty(
         name="Trigger Type",
         items=[
-            ("PROXIMITY", "Proximity", "Triggers when within distance"),
-            ("COLLISION", "Collision", "Triggers on collision"),
-            ("INTERACT",  "Interact Key", "Triggers on user pressing Interact"),
-            ("OBJECTIVE_UPDATE", "Objective Update", "Triggers when an objective changes"),
-            ("TIMER_COMPLETE", "Timer Complete", "Fires when an objective’s timer ends"),
+            ("PROXIMITY",       "Proximity",        "Triggers when within distance"),
+            ("COLLISION",       "Collision",        "Triggers on collision"),
+            ("INTERACT",        "Interact Key",     "Triggers on user pressing Interact"),
+            ("OBJECTIVE_UPDATE","Objective Update", "Triggers when an objective changes"),
+            ("TIMER_COMPLETE",  "Timer Complete",   "Fires when an objective’s timer ends"),
         ],
-        default="PROXIMITY"
+        default="PROXIMITY",
+        update=update_trigger_type,  # ← ensure mode stays valid
+    )
+
+    trigger_mode: bpy.props.EnumProperty(
+        name="Trigger Mode",
+        items=trigger_mode_items,  # a Python callback, not a static list
+        default=0,                  # ⟵ must be an integer index into whatever trigger_mode_items() returns
     )
 
     # Proximity Trigger
@@ -90,17 +120,6 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         min=0.0,
         description="Time in seconds before we can re-fire if we remain inside (used only if trigger_mode=COOLDOWN)."
     )
-    
-    trigger_mode: bpy.props.EnumProperty(
-        name="Trigger Mode",
-        items=[
-            ("ONE_SHOT",   "One-Shot",    "Fire once only, never again"),
-            ("ENTER_ONLY", "Enter Only",  "Fire on each new enter/press; resets on release/exit"),
-            ("COOLDOWN",   "Cooldown",    "Allow repeated fires but only after cooldown"),
-        ],
-        default="ENTER_ONLY",
-    )
-
 
     interact_object: bpy.props.PointerProperty(
         name="Interact Object",
@@ -270,6 +289,12 @@ def check_interactions(context):
     scene = context.scene
     current_time = get_game_time()
 
+    # ─── CLAMP ANY INVALID trigger_mode VALUES ───
+    for inter in scene.custom_interactions:
+        allowed = [item[0] for item in trigger_mode_items(inter, context)]
+        if inter.trigger_mode not in allowed:
+            inter.trigger_mode = allowed[0]
+
     pressed_this_frame = was_interact_pressed()
 
     update_all_objective_timers(context.scene)
@@ -320,9 +345,9 @@ def process_pending_triggers():
             run_reactions(task["interaction"].reactions)
             _pending_trigger_tasks.remove(task)
 
-###############################################################################
-# 4.1) Proximity Trigger: ENTER/LEAVE
-###############################################################################
+# -------------------------------------------------------------------
+# 4.1) Proximity Trigger: ENTER/LEAVE (updated)
+# -------------------------------------------------------------------
 def handle_proximity_trigger(inter, current_time):
     obj_a = inter.proximity_object_a
     obj_b = inter.proximity_object_b
@@ -336,13 +361,14 @@ def handle_proximity_trigger(inter, current_time):
     was_in_zone = inter.is_in_zone
     inter.is_in_zone = inside_now
 
-    # 1) If ONE_SHOT and already fired, do nothing
+    # 1) ONE_SHOT: never re‐fire
     if inter.trigger_mode == "ONE_SHOT" and inter.has_fired:
         return
 
-    # 2) We just ENTERED
+    # 2) ENTER
     if not was_in_zone and inside_now:
-        if inter.trigger_mode == "ONE_SHOT":
+        # common fire logic
+        def fire():
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
             else:
@@ -350,31 +376,20 @@ def handle_proximity_trigger(inter, current_time):
             inter.has_fired = True
             inter.last_trigger_time = current_time
 
-        elif inter.trigger_mode == "ENTER_ONLY":
-            if inter.trigger_delay > 0.0:
-                schedule_trigger(inter, current_time + inter.trigger_delay)
-            else:
-                run_reactions(inter.reactions)
-            inter.has_fired = True
-            inter.last_trigger_time = current_time
+        if inter.trigger_mode in {"ONE_SHOT", "ENTER_ONLY"}:
+            fire()
 
         elif inter.trigger_mode == "COOLDOWN":
             time_since = current_time - inter.last_trigger_time
-            # Fire if never fired or time_since >= cooldown
             if (not inter.has_fired) or (time_since >= inter.trigger_cooldown):
-                if inter.trigger_delay > 0.0:
-                    schedule_trigger(inter, current_time + inter.trigger_delay)
-                else:
-                    run_reactions(inter.reactions)
-                inter.has_fired = True
-                inter.last_trigger_time = current_time
+                fire()
 
-    # 3) We just LEFT
+    # 3) LEAVE → only ENTER_ONLY resets here
     elif was_in_zone and not inside_now:
-        if inter.trigger_mode != "ONE_SHOT":
+        if inter.trigger_mode == "ENTER_ONLY":
             inter.has_fired = False
 
-    # 4) STILL INSIDE or STILL OUT?
+    # 4) STILL INSIDE: allow COOLDOWN to retrigger when timer expires
     else:
         if inside_now and inter.trigger_mode == "COOLDOWN" and inter.has_fired:
             time_since = current_time - inter.last_trigger_time
@@ -505,9 +520,11 @@ def can_fire_trigger(inter, current_time):
 
 def reset_interaction_if_needed(inter):
     """
-    If we leave the zone/collision and this is NOT one-shot => allow future triggers again.
+    Only ENTER_ONLY should clear has_fired on exit.
+    COOLDOWN holds has_fired=True until cooldown expires.
+    ONE_SHOT never resets.
     """
-    if inter.trigger_mode != "ONE_SHOT":
+    if inter.trigger_mode == "ENTER_ONLY":
         inter.has_fired = False
 
 

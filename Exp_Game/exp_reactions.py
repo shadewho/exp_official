@@ -227,12 +227,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         min=0.0,
         description="How long the transform should take"
     )
-    transform_distance: bpy.props.FloatProperty(
-        name="Distance",
-        default=0.0,
-        min=0.0,
-        description="(Optional) For advanced usage: maybe how far to move or threshold check, etc."
-    )
 
     # --------------------------------------------------
     # 2) CUSTOM UI TEXT REACTION FIELDS
