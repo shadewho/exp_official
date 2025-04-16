@@ -185,10 +185,10 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Transform Mode",
         description="How we interpret the transform (absolute location, offset, move to object, etc.)",
         items=[
-            ("OFFSET",    "Offset",    "Add location/rotation/scale to the current transforms (existing behavior)"),
+            ("OFFSET",    "Global Offset",    "Add location/rotation/scale to the current transforms (existing behavior)"),
+            ("LOCAL_OFFSET","Local Offset","Offset the transforms in local space, rather than world space"),
             ("TO_LOCATION", "To Location", "Teleport or animate to a specific global 3D location (and optional rotation/scale)"),
             ("TO_OBJECT",   "To Object",   "Animate or teleport to another object’s transforms"),
-            ("LOCAL_OFFSET","Local Offset","Offset the transforms in local space, rather than world space"),
         ],
         default="OFFSET"
     )

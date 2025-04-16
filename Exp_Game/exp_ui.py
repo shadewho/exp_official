@@ -342,6 +342,8 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
         elif inter.trigger_type == "COLLISION":
             box.prop(inter, "collision_object_a", text="Object A")
             box.prop(inter, "collision_object_b", text="Object B")
+            box.prop(inter, "collision_margin", text="Collision Margin")
+
 
         elif inter.trigger_type == "INTERACT":
             box.prop(inter, "interact_object", text="Object to Interact")

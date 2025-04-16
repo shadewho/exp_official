@@ -77,6 +77,12 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         type=bpy.types.Object,
         description="Which objects must collide to trigger?"
     )
+    collision_margin: bpy.props.FloatProperty(
+        name="Collision Margin",
+        default=0.0,
+        min=0.0,
+        description="Extra distance for collision checks. 0 means exact bounding-box overlap."
+    )
 
     trigger_cooldown: bpy.props.FloatProperty(
         name="Trigger Cooldown",
@@ -390,7 +396,9 @@ def handle_collision_trigger(inter, current_time):
     if not obj_a or not obj_b:
         return
 
-    colliding_now = bounding_sphere_collision(obj_a, obj_b)
+    margin = inter.collision_margin
+    colliding_now = bounding_sphere_collision(obj_a, obj_b, margin=margin)
+
 
     # ENTER
     if (not inter.is_in_zone) and colliding_now:
@@ -536,25 +544,59 @@ def run_reactions(reactions):
 ###############################################################################
 # 6) Collision Helper
 ###############################################################################
-def bounding_sphere_collision(obj_a, obj_b):
+import mathutils
+from mathutils import Vector
+
+def bounding_sphere_collision(obj_a, obj_b, margin=0.0):
     """
-    Returns True if bounding spheres overlap.
-    This is a fast approximate check:
-      - We gather obj_a & obj_b's bounding boxes => approximate a sphere radius
-      - We check the distance between their world centers
-      - If distance < sum_of_radii => collision
+    Actually uses Axis-Aligned Bounding Boxes (AABB).
+    This version lets you specify a 'margin' so we count collisions
+    if they're within 'margin' distance of touching.
     """
+
     if not obj_a or not obj_b:
         return False
 
-    center_a = obj_a.matrix_world.translation
-    center_b = obj_b.matrix_world.translation
-    dist = (center_a - center_b).length
+    # Helper to get the min/max of an object's world AABB
+    def get_world_aabb(obj):
+        corners = []
+        for corner_local in obj.bound_box:
+            corner_world = obj.matrix_world @ Vector(corner_local)
+            corners.append(corner_world)
 
-    radius_a = approximate_bounding_sphere_radius(obj_a)
-    radius_b = approximate_bounding_sphere_radius(obj_b)
+        min_x = min(pt.x for pt in corners)
+        max_x = max(pt.x for pt in corners)
+        min_y = min(pt.y for pt in corners)
+        max_y = max(pt.y for pt in corners)
+        min_z = min(pt.z for pt in corners)
+        max_z = max(pt.z for pt in corners)
+        return (min_x, max_x, min_y, max_y, min_z, max_z)
 
-    return (dist < (radius_a + radius_b))
+    # Get each object's AABB
+    A_minx, A_maxx, A_miny, A_maxy, A_minz, A_maxz = get_world_aabb(obj_a)
+    B_minx, B_maxx, B_miny, B_maxy, B_minz, B_maxz = get_world_aabb(obj_b)
+
+    # Inflate each AABB by margin on all sides
+    A_minx -= margin
+    A_maxx += margin
+    A_miny -= margin
+    A_maxy += margin
+    A_minz -= margin
+    A_maxz += margin
+
+    B_minx -= margin
+    B_maxx += margin
+    B_miny -= margin
+    B_maxy += margin
+    B_minz -= margin
+    B_maxz += margin
+
+    # Check overlap in X, Y, and Z
+    overlap_x = (A_minx <= B_maxx) and (A_maxx >= B_minx)
+    overlap_y = (A_miny <= B_maxy) and (A_maxy >= B_miny)
+    overlap_z = (A_minz <= B_maxz) and (A_maxz >= B_minz)
+
+    return (overlap_x and overlap_y and overlap_z)
 
 
 def approximate_bounding_sphere_radius(obj):
