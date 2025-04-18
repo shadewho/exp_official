@@ -32,9 +32,10 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
         # If the ray hits something, adjust the view location
         if hit_location:
             distance_to_hit = (scan_point - hit_location).length
+            print(f"Hit location: {hit_location}, Distance to hit: {distance_to_hit}")
             # If the hit location is closer than the desired extended distance, adjust to avoid obstruction
             if distance_to_hit < extended_scan_distance:
-                buffer_distance = -(bpy.context.scene.zoom_factor) - 0.5  # .5 additional buffer distance
+                buffer_distance = -(bpy.context.scene.zoom_factor) - 0.0  # .5 additional buffer distance
                 adjusted_distance = distance_to_hit + buffer_distance
                 view_location = scan_point + direction_to_view * adjusted_distance
 

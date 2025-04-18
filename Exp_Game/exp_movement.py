@@ -236,16 +236,6 @@ def move_character(
         else:
             is_grounded = False
 
-    update_view(
-        context,
-        target_object,
-        pitch,
-        yaw,
-        bvh_tree,
-        context.scene.orbit_distance,
-        context.scene.zoom_factor
-    )
-
     # ---------------------------
     # FINAL: Store the best_obj
     # ---------------------------

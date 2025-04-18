@@ -31,31 +31,25 @@ def spawn_user():
     else:
         print("No spawn_object set; using the character's current location.")
 
-    # 3) We still do your camera logic:
+    # 3) camera logic:
 
-    #   - Get the character's new location (after possibly moving to exp_spawn)
+    # Compute world‑space “behind + pitched” direction
     obj_location = arm.location
     obj_rotation = arm.matrix_world.to_quaternion()
-
-    #   - The local Y axis in object space
-    direction = Vector((0, 1, 0))
-    #   - Rotate direction by the object's world rotation => world direction
-    direction = obj_rotation @ direction
-
-    #   - Calculate how far behind the object we place the camera
-    view_position = obj_location + direction * distance
-
-    #   - Set the 3D Viewport location
-    space_data = bpy.context.space_data
-    space_data.region_3d.view_location = view_position
-
-    #   - Now apply pitch + object rotation as yaw
+    yaw = obj_rotation.to_euler('XYZ').z
     pitch_rad = math.radians(pitch)
-    pitch_quaternion = Quaternion((1, 0, 0), pitch_rad)
-    yaw_quaternion = obj_rotation
-    final_quaternion = yaw_quaternion @ pitch_quaternion
+    cam_dir = Vector((
+        math.cos(pitch_rad) * math.sin(yaw),
+        -math.cos(pitch_rad) * math.cos(yaw),
+        math.sin(pitch_rad)
+    ))
+    view_position = obj_location + cam_dir * distance
 
-    space_data.region_3d.view_rotation = final_quaternion
-
-    #   - Finally, set the 'zoom' factor
-    space_data.region_3d.view_distance = view_distance
+    # Apply to every VIEW_3D in the current screen:
+    for area in bpy.context.screen.areas:
+        if area.type == 'VIEW_3D':
+            r3d = area.spaces.active.region_3d
+            r3d.view_location = view_position
+            r3d.view_rotation = cam_dir.to_track_quat('Z', 'Y')
+            # combine orbit_distance + zoom_factor
+            r3d.view_distance = distance + view_distance

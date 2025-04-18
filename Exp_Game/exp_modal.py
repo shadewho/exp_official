@@ -258,8 +258,16 @@ class ExpModal(bpy.types.Operator):
             # Call your macOS-specific function here
             pass
 
-        self.last_mouse_x = event.mouse_x
-        self.last_mouse_y = event.mouse_y
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        cx = region.x + region.width // 2
+                        cy = region.y + region.height // 2
+                        self.last_mouse_x = cx
+                        self.last_mouse_y = cy
+                        break
+                break
 
         # 8) Create a timer (runs as fast as possible, interval=0.0)
         self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
@@ -538,10 +546,11 @@ class ExpModal(bpy.types.Operator):
             self.pitch,
             self.yaw,
             self.bvh_tree,
-            self.camera_distance,          # orbit_distance: a float
-            context.scene.zoom_factor,     # zoom_factor: a float
-            dynamic_bvh_map=self.dynamic_bvh_map  # dynamic BVH map: a dictionary
+            context.scene.orbit_distance,    # ← orbit_distance
+            context.scene.zoom_factor,       # ← zoom_factor
+            dynamic_bvh_map=self.dynamic_bvh_map
         )
+
 
         # Possibly rotate character to face yaw
         self.smooth_rotate_towards_camera()

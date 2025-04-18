@@ -1,7 +1,7 @@
 #exp_utilities.py
 
 import bpy
-
+from .exp_spawn import spawn_user
 def set_game_world(scene):
     """Store the name of the designated game world in a text datablock."""
     txt = bpy.data.texts.get("GAME_WORLD")
@@ -26,5 +26,6 @@ class EXPLORATORY_OT_SetGameWorld(bpy.types.Operator):
 
     def execute(self, context):
         set_game_world(context.scene)
+        spawn_user()
         self.report({'INFO'}, f"Game World set to {context.scene.name}")
         return {'FINISHED'}
