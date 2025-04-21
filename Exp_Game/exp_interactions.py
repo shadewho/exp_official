@@ -78,6 +78,13 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         items=trigger_mode_items,  # a Python callback, not a static list
         default=0,                  # ⟵ must be an integer index into whatever trigger_mode_items() returns
     )
+    
+    #use character allows users to assign the scene's target_armature as Object A
+    use_character: bpy.props.BoolProperty(
+        name="Use Character",
+        default=False,
+        description="If enabled, Object A is the game characters target_armature"
+    )
 
     # Proximity Trigger
     proximity_object_a: bpy.props.PointerProperty(
@@ -116,7 +123,7 @@ class InteractionDefinition(bpy.types.PropertyGroup):
 
     trigger_cooldown: bpy.props.FloatProperty(
         name="Trigger Cooldown",
-        default=2.0,
+        default=0.0,
         min=0.0,
         description="Time in seconds before we can re-fire if we remain inside (used only if trigger_mode=COOLDOWN)."
     )
@@ -346,10 +353,16 @@ def process_pending_triggers():
             _pending_trigger_tasks.remove(task)
 
 # -------------------------------------------------------------------
-# 4.1) Proximity Trigger: ENTER/LEAVE (updated)
+# 4.1) Proximity Trigger:
 # -------------------------------------------------------------------
 def handle_proximity_trigger(inter, current_time):
-    obj_a = inter.proximity_object_a
+    scene = bpy.context.scene
+
+    # pick A: either the user‑chosen object or the character armature
+    if inter.use_character:
+        obj_a = scene.target_armature
+    else:
+        obj_a = inter.proximity_object_a
     obj_b = inter.proximity_object_b
     dist_thresh = inter.proximity_distance
 
@@ -361,13 +374,12 @@ def handle_proximity_trigger(inter, current_time):
     was_in_zone = inter.is_in_zone
     inter.is_in_zone = inside_now
 
-    # 1) ONE_SHOT: never re‐fire
+    # 1) ONE_SHOT: never re‑fire
     if inter.trigger_mode == "ONE_SHOT" and inter.has_fired:
         return
 
     # 2) ENTER
     if not was_in_zone and inside_now:
-        # common fire logic
         def fire():
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
@@ -378,7 +390,6 @@ def handle_proximity_trigger(inter, current_time):
 
         if inter.trigger_mode in {"ONE_SHOT", "ENTER_ONLY"}:
             fire()
-
         elif inter.trigger_mode == "COOLDOWN":
             time_since = current_time - inter.last_trigger_time
             if (not inter.has_fired) or (time_since >= inter.trigger_cooldown):
@@ -402,18 +413,25 @@ def handle_proximity_trigger(inter, current_time):
                 inter.last_trigger_time = current_time
 
 
-###############################################################################
-# 4.2) Collision Trigger: ENTER/LEAVE
-###############################################################################
+
+# -------------------------------------------------------------------
+# 4.2) Collision Trigger: ENTER/LEAVE (updated)
+# -------------------------------------------------------------------
 def handle_collision_trigger(inter, current_time):
-    obj_a = inter.collision_object_a
+    scene = bpy.context.scene
+
+    # pick A: either the user‑chosen object or the character armature
+    if inter.use_character:
+        obj_a = scene.target_armature
+    else:
+        obj_a = inter.collision_object_a
     obj_b = inter.collision_object_b
+
     if not obj_a or not obj_b:
         return
 
     margin = inter.collision_margin
     colliding_now = bounding_sphere_collision(obj_a, obj_b, margin=margin)
-
 
     # ENTER
     if (not inter.is_in_zone) and colliding_now:
@@ -441,6 +459,7 @@ def handle_collision_trigger(inter, current_time):
                     run_reactions(inter.reactions)
                 inter.has_fired = True
                 inter.last_trigger_time = current_time
+
 
 
 ###############################################################################
@@ -689,44 +708,45 @@ def reset_all_interactions(scene):
 
 def handle_objective_update_trigger(inter, current_time):
     scene = bpy.context.scene
-    if not inter.objective_index.isdigit():
-        return  # no valid objective chosen
 
+    # 1) Validate the objective index
+    if not inter.objective_index.isdigit():
+        return
     idx = int(inter.objective_index)
     if idx < 0 or idx >= len(scene.objectives):
-        return  # out of range
+        return
 
-    objv = scene.objectives[idx]
+    objv    = scene.objectives[idx]
     old_val = inter.last_known_count
     new_val = objv.current_value
 
+    # 2) If ONE_SHOT and already fired, bail out
     if inter.trigger_mode == "ONE_SHOT" and inter.has_fired:
+        inter.last_known_count = new_val
         return
 
-    fired_now = False
+    # 3) Decide whether the condition is met right now
+    should_fire = False
+    cond_value  = inter.objective_condition_value
 
     if inter.objective_condition == "CHANGED":
-        if new_val != old_val:
-            fired_now = True
+        should_fire = (new_val != old_val)
 
     elif inter.objective_condition == "INCREASED":
-        if new_val > old_val:
-            fired_now = True
+        should_fire = (new_val > old_val)
 
     elif inter.objective_condition == "DECREASED":
-        if new_val < old_val and old_val >= 0:
-            fired_now = True
+        should_fire = (new_val < old_val and old_val >= 0)
 
     elif inter.objective_condition == "EQUALS":
-        if new_val == inter.objective_condition_value:
-            fired_now = True
+        should_fire = (new_val == cond_value)
 
     elif inter.objective_condition == "AT_LEAST":
-        if new_val >= inter.objective_condition_value:
-            fired_now = True
+        should_fire = (new_val >= cond_value)
 
-    if fired_now:
-        if can_fire_trigger(inter, current_time):
+    # 4) If it’s met, fire—honoring COOLDOWN
+    if should_fire:
+        def _fire():
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
             else:
@@ -734,6 +754,16 @@ def handle_objective_update_trigger(inter, current_time):
             inter.has_fired = True
             inter.last_trigger_time = current_time
 
+        if inter.trigger_mode == "COOLDOWN":
+            # Only fire if we haven't yet, or cooldown has passed
+            elapsed = current_time - inter.last_trigger_time
+            if (not inter.has_fired) or (elapsed >= inter.trigger_cooldown):
+                _fire()
+        else:
+            # ONE_SHOT or default
+            _fire()
+
+    # 5) Store for next frame
     inter.last_known_count = new_val
 
 

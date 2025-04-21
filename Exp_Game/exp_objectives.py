@@ -9,7 +9,14 @@ class ObjectiveDefinition(bpy.types.PropertyGroup):
     description: bpy.props.StringProperty(default="")
 
     default_value: bpy.props.IntProperty(default=0)
-    current_value: bpy.props.IntProperty(default=0)
+
+    # obj counter, now with a lambda‑hook into clamp_current()
+    current_value: bpy.props.IntProperty(
+        name="Current Value",
+        default=0,
+        update=lambda self, context: self.clamp_current(context),
+        description="Can be auto‑clamped by the optional min/max above"
+    )
 
     timer_mode: bpy.props.EnumProperty(
         name="Timer Mode",
@@ -18,12 +25,42 @@ class ObjectiveDefinition(bpy.types.PropertyGroup):
         default="COUNT_DOWN"
     )
 
+    # minimum/maximum options
+    use_min_limit: bpy.props.BoolProperty(
+        name="Enable Minimum",
+        default=False,
+        description="Clamp current_value to min_value if enabled"
+    )
+    min_value: bpy.props.IntProperty(
+        name="Minimum Value",
+        default=0,
+        description="Lowest allowed current_value"
+    )
+
+    use_max_limit: bpy.props.BoolProperty(
+        name="Enable Maximum",
+        default=False,
+        description="Clamp current_value to max_value if enabled"
+    )
+    max_value: bpy.props.IntProperty(
+        name="Maximum Value",
+        default=0,
+        description="Highest allowed current_value"
+    )
+    # clamp callback
+    def clamp_current(self, context):
+        """Force current_value back into [min_value..max_value] if those are enabled."""
+        if self.use_min_limit and self.current_value < self.min_value:
+            self.current_value = self.min_value
+        if self.use_max_limit and self.current_value > self.max_value:
+            self.current_value = self.max_value
+
+    # Timer properties
     timer_start_value: bpy.props.FloatProperty(default=0.0)
     timer_end_value:   bpy.props.FloatProperty(default=30.0)
     timer_value:       bpy.props.FloatProperty(default=0.0)
     timer_active:      bpy.props.BoolProperty(default=False)
 
-    # We add this:
     just_finished: bpy.props.BoolProperty(default=False)
 
     prev_timer_time: bpy.props.FloatProperty(default=0.0)

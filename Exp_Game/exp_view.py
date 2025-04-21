@@ -7,19 +7,23 @@ import ctypes.wintypes
 def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor, dynamic_bvh_map=None):
     # Calculate the direction vector
     direction = mathutils.Vector((
-        math.cos(pitch) * math.sin(yaw),  # Flipped the direction to look down positive Y axis
+        math.cos(pitch) * math.sin(yaw),
         -math.cos(pitch) * math.cos(yaw),
         math.sin(pitch)
     ))
 
-    # Set the desired view location to orbit around the object at head height
-    head_height = 2.0  # 2 meters above the object's origin
-    scan_point = obj.location + mathutils.Vector((0, 0, head_height))  # Set scan point to head height
-    view_location = scan_point + direction * orbit_distance  # Start with the default orbit distance
+    # Set the desired view location
+    head_height = 2.0
+    scan_point = obj.location + mathutils.Vector((0, 0, head_height))
+    view_location = scan_point + direction * orbit_distance
 
-    # Extend the scan distance to account for the view distance property
-    extended_scan_distance = orbit_distance + zoom_factor  # Extend the raycast distance
+    # Pull your detection range out by the buffer amount
+    buf = context.scene.camera_collision_buffer
+    extended_scan_distance = orbit_distance + zoom_factor + buf
+    if extended_scan_distance < 0.0:
+        extended_scan_distance = 0.0
 
+        
     # Perform obstruction checking
     if bvh_tree:
         # Calculate the direction vector from the head to the extended view location
@@ -32,12 +36,15 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
         # If the ray hits something, adjust the view location
         if hit_location:
             distance_to_hit = (scan_point - hit_location).length
-            print(f"Hit location: {hit_location}, Distance to hit: {distance_to_hit}")
-            # If the hit location is closer than the desired extended distance, adjust to avoid obstruction
             if distance_to_hit < extended_scan_distance:
-                buffer_distance = -(bpy.context.scene.zoom_factor) - 0.0  # .5 additional buffer distance
-                adjusted_distance = distance_to_hit + buffer_distance
+                buf = context.scene.camera_collision_buffer
+                # compute raw pull‑in distance
+                adjusted_distance = distance_to_hit - buf
+                # clamp so we never go farther out than orbit_distance
+                adjusted_distance = min(adjusted_distance, orbit_distance)
+                # apply it
                 view_location = scan_point + direction_to_view * adjusted_distance
+
 
     #####################################################################
     # Dynamic BVH Check (without removing or changing original logic)
@@ -64,13 +71,13 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
                     closest_hit_dyn = hit_dyn
 
         # If a dynamic obstacle is closer than our current view, clamp again
-        if closest_hit_dyn:
-            if closest_distance_dyn < extended_scan_distance:
-                buffer_distance_dyn = -(bpy.context.scene.zoom_factor) - 0.5
-                adjusted_distance_dyn = closest_distance_dyn + buffer_distance_dyn
-                # If that actually pulls the camera forward more than static did, apply it
-                if adjusted_distance_dyn < (view_location - scan_point).length:
-                    view_location = scan_point + direction_to_view_dyn * adjusted_distance_dyn
+        if closest_hit_dyn and closest_distance_dyn < extended_scan_distance:
+            buf = context.scene.camera_collision_buffer
+            adjusted_distance_dyn = closest_distance_dyn - buf
+            adjusted_distance_dyn = min(adjusted_distance_dyn, orbit_distance)
+            if adjusted_distance_dyn < (view_location - scan_point).length:
+                view_location = scan_point + direction_to_view_dyn * adjusted_distance_dyn
+
     #####################################################################
     # END of new dynamic block
     #####################################################################

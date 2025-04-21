@@ -442,6 +442,12 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         ],
         default="START"
     )
+    interruptible: bpy.props.BoolProperty(
+        name="Interruptible",
+        default=True,
+        description="If True, the timer can continuously be restarted in-game.)"
+    )
+
 
 #############################################
 ##### mobility and game reactions
@@ -1008,6 +1014,26 @@ def execute_custom_ui_text_reaction(r):
         item["custom_text_suffix"] = r.custom_text_suffix
         item["custom_text_include_counter"] = r.custom_text_include_counter
 
+    elif subtype == "OBJECTIVE_TIMER_DISPLAY":
+        # Determine expiration time (or indefinite)
+        if r.custom_text_indefinite:
+            e_time = None
+        else:
+            e_time = get_game_time() + r.custom_text_duration
+
+        # Create a new text reaction, with an empty placeholder.
+        # update_text_reactions() will fill in the real timer string each frame.
+        item = exp_custom_ui.add_text_reaction(
+            text_str="",  # placeholder, overwritten by update_text_reactions()
+            anchor=r.custom_text_anchor,
+            margin_x=r.custom_text_margin_x,
+            margin_y=r.custom_text_margin_y,
+            scale=r.custom_text_scale,
+            end_time=e_time,
+            color=tuple(r.custom_text_color),
+        )
+        item["subtype"] = "OBJECTIVE_TIMER_DISPLAY"
+        item["objective_index"] = r.text_objective_index
 
 
 ##----Sound reaction----------------------#
@@ -1131,6 +1157,7 @@ def execute_objective_counter_reaction(r):
 
     objv = scene.objectives[idx]
 
+    # ─── perform the counter operation ───────────
     if r.objective_op == "ADD":
         objv.current_value += r.objective_amount
 
@@ -1140,8 +1167,17 @@ def execute_objective_counter_reaction(r):
             objv.current_value = 0
 
     elif r.objective_op == "RESET":
-        # Simply reset current_value to default_value
         objv.current_value = objv.default_value
+    # ───────────────────────────────────────────────
+
+    # ─── NOW clamp to min/max if enabled ─────────
+    if getattr(objv, "use_min_limit", False) and objv.current_value < objv.min_value:
+        objv.current_value = objv.min_value
+
+    if getattr(objv, "use_max_limit", False) and objv.current_value > objv.max_value:
+        objv.current_value = objv.max_value
+    # ───────────────────────────────────────────────
+
 
 def execute_objective_timer_reaction(r):
     scene = bpy.context.scene
@@ -1155,6 +1191,10 @@ def execute_objective_timer_reaction(r):
     now = get_game_time()
 
     if r.objective_timer_op == "START":
-        objv.start_timer(now)  # <-- Now you pass 'now' to the method.
+        # if not interruptible and timer is already running (and not yet finished), skip
+        if not r.interruptible and objv.timer_active and not objv.just_finished:
+            return
+        objv.start_timer(now)
+
     elif r.objective_timer_op == "STOP":
         objv.stop_timer()

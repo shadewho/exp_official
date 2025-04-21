@@ -17,7 +17,7 @@ output_file_path = os.path.join(output_path, output_file)
 ignored_files = {'ui_backup.py','combine.py', '.gitignore',
                  'exp_custom_animations.py','exp_audio.py', 'exp_animations.py',
                  'exp_startup.py', 'exp_globals.py', 'exp_time.py', 'exp_mobility_and_game_reactions.py',
-                 'exp_interactions.py', 'exp_reactions.py'
+                 'exp_view.py', 'exp_movement.py', 'exp_physics.py'
                  
                  }   # Files to exclude
 

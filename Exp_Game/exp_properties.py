@@ -135,14 +135,14 @@ def add_scene_properties():
 
     bpy.types.Scene.orbit_distance = bpy.props.FloatProperty(
         name="Orbit Distance",
-        default=3.0,
+        default=2.0,
         min=1.0,    
         max=10.0
     )
     bpy.types.Scene.zoom_factor = bpy.props.FloatProperty(
         name="Zoom Factor",
-        default=1.0,
-        min=0.5,
+        default=2.0,
+        min=0.1,
         max=15.0
     )
     bpy.types.Scene.pitch_angle = bpy.props.FloatProperty(
@@ -151,6 +151,14 @@ def add_scene_properties():
         min=-180.0,
         max=180.0
     )
+    # How far the camera pulls in when avoiding obstacles
+    bpy.types.Scene.camera_collision_buffer = bpy.props.FloatProperty(
+        name="Collision Buffer",
+        default=4.1,
+        min=0.0,
+        description="Meters to pull the camera toward the character when a collision is detected"
+    )
+
     ###AUDIO GLOBALS###
     bpy.types.Scene.enable_audio = bpy.props.BoolProperty(
         name="Enable Audio",

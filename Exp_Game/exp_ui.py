@@ -29,7 +29,7 @@ class ExploratoryPanel(bpy.types.Panel):
             layout.operator("exploratory.start_game", text="Start Game (Fullscreen)")
 
             layout.separator()
-            
+
             # Provide a button to mark the current scene as the game world
             layout.operator("exploratory.set_game_world", text="Set Game World", icon='WORLD')
 
@@ -352,15 +352,28 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
 
         # Trigger Type & Fields
         box.prop(inter, "trigger_type", text="Trigger")
+
         if inter.trigger_type == "PROXIMITY":
             box.prop(inter, "proximity_distance", text="Distance")
-            box.prop(inter, "proximity_object_a", text="Object A")
+            box.prop(inter, "use_character", text="Use Character as Object A")
+            if inter.use_character:
+                # show a read‑only label instead of the picker
+                char = context.scene.target_armature
+                box.label(text=f"Object A: {char.name if char else '—'}")
+            else:
+                box.prop(inter, "proximity_object_a", text="Object A")
             box.prop(inter, "proximity_object_b", text="Object B")
 
         elif inter.trigger_type == "COLLISION":
-            box.prop(inter, "collision_object_a", text="Object A")
+            box.prop(inter, "use_character", text="Use Character?")
+            if inter.use_character:
+                char = context.scene.target_armature
+                box.label(text=f"Object A: {char.name if char else '—'}")
+            else:
+                box.prop(inter, "collision_object_a", text="Object A")
             box.prop(inter, "collision_object_b", text="Object B")
             box.prop(inter, "collision_margin", text="Collision Margin")
+
 
 
         elif inter.trigger_type == "INTERACT":
@@ -521,76 +534,60 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
 
         #custom UI text reaction ---------------
         elif reaction.reaction_type == "CUSTOM_UI_TEXT":
-            # 1) Always show the dropdown for which subtype of custom UI text
+            # 1) Subtype selector
             box2.prop(reaction, "custom_text_subtype", text="Subtype")
+            subtype = reaction.custom_text_subtype
+            box2.label(text="Note: Preview custom text in fullscreen mode for best results.")
 
-            # ===============================
-            #  A) Static Text
-            # ===============================
-            if reaction.custom_text_subtype == "STATIC":
-                box2.prop(reaction, "custom_text_value", text="Text")
-                box2.prop(reaction, "custom_text_indefinite", text="Indefinite?")
-                if not reaction.custom_text_indefinite:
-                    box2.prop(reaction, "custom_text_duration", text="Duration")
+            # ── A) Content ─────────────────────────────────────────────────────────
+            content_box = box2.box()
+            content_box.label(text="Text Content")
+            if subtype == 'STATIC':
+                content_box.prop(reaction, "custom_text_value", text="Text")
+            else:
+                content_box.prop(reaction, "text_objective_index", text="Objective")
 
-                box2.prop(reaction, "custom_text_anchor", text="Anchor")
-                box2.prop(reaction, "custom_text_scale", text="Scale")
-                box2.prop(reaction, "custom_text_margin_x", text="Margin X")
-                box2.prop(reaction, "custom_text_margin_y", text="Margin Y")
-                box2.prop(reaction, "custom_text_color", text="Color")
+            # ── B) Counter Formatting (OBJECTIVE only) ─────────────────────────────
+            if subtype == 'OBJECTIVE':
+                fmt = content_box.box()
+                fmt.label(text="Counter Formatting")
+                fmt.prop(reaction, "custom_text_prefix", text="Prefix")
+                fmt.prop(reaction, "custom_text_include_counter", text="Show Counter")
+                fmt.prop(reaction, "custom_text_suffix", text="Suffix")
 
-            # ===============================
-            #  B) Objective Display
-            # ===============================
-            elif reaction.custom_text_subtype == "OBJECTIVE":
-                # This subtype shows objective.current_value using separate fields.
-                box2.prop(reaction, "text_objective_index", text="Objective")
-                # Remove the old Format field and use separate fields:
-                format_box = box2.box()  # Create a nested box inside box2.
-                format_box.label(text="Counter Formatting")  # Add a header label.
-                col = format_box.column(align=True)  # Create a column for vertical alignment.
-                col.prop(reaction, "custom_text_prefix", text="Prefix")
-                col.prop(reaction, "custom_text_include_counter", text="Include Counter")
-                col.prop(reaction, "custom_text_suffix", text="Suffix")
+            # ── C) Display Timing ───────────────────────────────────────────────────
+            timing_box = box2.box()
+            timing_box.label(text="Display Timing")
+            timing_box.prop(reaction, "custom_text_indefinite", text="Indefinite")
+            if not reaction.custom_text_indefinite:
+                timing_box.prop(reaction, "custom_text_duration", text="Duration (sec)")
 
-                
-                box2.prop(reaction, "custom_text_indefinite", text="Indefinite?")
-                if not reaction.custom_text_indefinite:
-                    box2.prop(reaction, "custom_text_duration", text="Duration")
-    
-                box2.prop(reaction, "custom_text_anchor", text="Anchor")
-                box2.prop(reaction, "custom_text_scale", text="Scale")
-                box2.prop(reaction, "custom_text_margin_x", text="Margin X")
-                box2.prop(reaction, "custom_text_margin_y", text="Margin Y")
-                box2.prop(reaction, "custom_text_color", text="Color")
+            # ── D) Position & Size ─────────────────────────────────────────────────
+            layout_box = box2.box()
+            layout_box.label(text="Position & Size")
+            layout_box.prop(reaction, "custom_text_anchor", text="Anchor")
+            layout_box.prop(reaction, "custom_text_scale", text="Scale")
+            margins = layout_box.column(align=True)
+            margins.prop(reaction, "custom_text_margin_x", text="Margin X")
+            margins.prop(reaction, "custom_text_margin_y", text="Margin Y")
 
+            # ── E) Appearance ──────────────────────────────────────────────────────
+            style_box = box2.box()
+            style_box.label(text="Appearance")
+            style_box.prop(reaction, "custom_text_color", text="Color")
 
-            # ===============================
-            #  C) Objective Timer Display
-            # ===============================
-            elif reaction.custom_text_subtype == "OBJECTIVE_TIMER_DISPLAY":
-                # This subtype shows an objective’s timer countdown
-                box2.prop(reaction, "text_objective_index", text="Objective")
-                box2.prop(reaction, "custom_text_indefinite", text="Indefinite?")
-                if not reaction.custom_text_indefinite:
-                    box2.prop(reaction, "custom_text_duration", text="Duration")
+            # ── F) Preview Button ───────────────────────────────────────────────────
+            box2.separator()
+            box2.operator("exploratory.preview_custom_text", text="Preview Text")
 
-                box2.prop(reaction, "custom_text_anchor", text="Anchor")
-                box2.prop(reaction, "custom_text_scale", text="Scale")
-                box2.prop(reaction, "custom_text_margin_x", text="Margin X")
-                box2.prop(reaction, "custom_text_margin_y", text="Margin Y")
-                box2.prop(reaction, "custom_text_color", text="Color")
-            box2.operator("exploratory.preview_custom_text", text="Preview All Custom Text")
 
         # ===============================
         # Objective Timer Start/Stop
         # ===============================
         elif reaction.reaction_type == "OBJECTIVE_TIMER":
-            # Show the Objective dropdown
             box2.prop(reaction, "objective_index", text="Timer Objective")
-
-            # Let the user pick START or STOP
             box2.prop(reaction, "objective_timer_op", text="Timer Operation")
+            box2.prop(reaction, "interruptible", text="Interruptible")
 
 
         # ===============================
@@ -684,9 +681,20 @@ class VIEW3D_PT_Objectives(bpy.types.Panel):
             box.prop(objv, "name", text="Name")
             box.prop(objv, "description", text="Description")
 
-            box.label(text="Integer Counter:")
+            box.label(text="Objective Counter:")
             box.prop(objv, "default_value", text="Default Value")
-            box.prop(objv, "current_value", text="Current Value")
+            box.label(text="Default Value = value when the game starts or resets.")
+            box.separator()
+
+            # ─── NEW: optional min/max limits UI ────────────────────────
+            box.separator()
+            box.label(text="Value Limits (optional):")
+            box.prop(objv, "use_min_limit", text="Enable Minimum")
+            if objv.use_min_limit:
+                box.prop(objv, "min_value", text="Minimum Value")
+            box.prop(objv, "use_max_limit", text="Enable Maximum")
+            if objv.use_max_limit:
+                box.prop(objv, "max_value", text="Maximum Value")
 
             box.separator()
             box.label(text="Timer Settings:")

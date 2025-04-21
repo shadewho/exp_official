@@ -327,7 +327,7 @@ def clear_text_reactions():
 
 
 class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
-    """Preview all custom text items for 3 seconds without starting the game."""
+    """Preview all custom text items for 5 seconds without starting the game."""
     bl_idname = "exploratory.preview_custom_text"
     bl_label = "Preview Custom Text"
     bl_options = {'REGISTER'}
@@ -348,7 +348,6 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
         # Get a reference time.
         current_time = get_game_time() or time.time()
         end_time = current_time + self.duration
-        print(f"Current time: {current_time:.3f}, duration: {self.duration:.1f} sec, computed end_time: {end_time:.3f}")
 
         # Search for custom UI text reactions defined by the user.
         interactions = getattr(context.scene, "custom_interactions", None)
@@ -386,7 +385,7 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
                     item["text"] = f"{prefix}{suffix}"
                 print(f"Set dummy objective counter text: {item['text']}")
             elif subtype == "OBJECTIVE_TIMER_DISPLAY":
-                item["text"] = "00:42s"
+                item["text"] = "00:00s"
                 print(f"Set dummy timer text: {item['text']}")
 
         print("Total preview text reactions in _reaction_texts:", len(_reaction_texts))
