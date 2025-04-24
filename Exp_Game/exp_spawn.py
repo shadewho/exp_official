@@ -53,3 +53,50 @@ def spawn_user():
             r3d.view_rotation = cam_dir.to_track_quat('Z', 'Y')
             # combine orbit_distance + zoom_factor
             r3d.view_distance = distance + view_distance
+
+#-----------------------------------------------------------
+#remove character to maintain a clean scene character state
+#-----------------------------------------------------------
+class EXPLORATORY_OT_RemoveCharacter(bpy.types.Operator):
+    bl_idname = "exploratory.remove_character"
+    bl_label  = "Remove Character"
+
+    def execute(self, context):
+        scene = context.scene
+
+        # ← early-out if locked
+        if scene.character_spawn_lock:
+            self.report({'INFO'}, "Character spawn is locked; skipping removal.")
+            return {'CANCELLED'}
+
+        arm = scene.target_armature
+        if not arm:
+            return {'CANCELLED'}
+
+        # only remove the target armature + its children
+        to_remove = [arm] + list(arm.children_recursive)
+        for obj in to_remove:
+            # unlink from every scene
+            for sc in bpy.data.scenes:
+                if obj.name in sc.collection.objects:
+                    sc.collection.objects.unlink(obj)
+            # remove the object
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except Exception:
+                pass
+
+        # clear the scene pointer
+        scene.target_armature = None
+
+        # purge any unused mesh datablocks
+        for mesh in list(bpy.data.meshes):
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+        # purge any unused armature datablocks
+        for arm_data in list(bpy.data.armatures):
+            if arm_data.users == 0:
+                bpy.data.armatures.remove(arm_data)
+
+        return {'FINISHED'}

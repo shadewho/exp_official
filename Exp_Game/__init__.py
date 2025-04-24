@@ -12,7 +12,7 @@ from .exp_ui import (
     VIEW3D_PT_Objectives,
     EXPLORATORY_UL_Objectives
 )
-
+from .exp_spawn import EXPLORATORY_OT_RemoveCharacter
 from .exp_properties import (
     remove_scene_properties,
     add_scene_properties,
@@ -25,7 +25,9 @@ from .exp_properties import (
 from .exp_custom_ui import EXPLORE_OT_PreviewCustomText
 from .exp_utilities import EXPLORATORY_OT_SetGameWorld
 from .exp_startup import EXP_GAME_OT_StartGame
-from .exp_audio import AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio
+from .exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
+                        EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds
+)
 from .exp_interactions import (
     InteractionDefinition,
     EXPLORATORY_OT_AddInteraction,
@@ -90,7 +92,13 @@ def register():
     bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
     bpy.utils.register_class(CharacterAudioPG)
     bpy.utils.register_class(EXPLORATORY_OT_BuildAudio)
+    bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
+    bpy.utils.register_class(EXP_AUDIO_OT_TestReactionSound)
+    bpy.utils.register_class(EXP_AUDIO_OT_PackAllSounds)
     bpy.types.Scene.character_audio = bpy.props.PointerProperty(type=CharacterAudioPG)
+
+    # --- Character Removal ---
+    bpy.utils.register_class(EXPLORATORY_OT_RemoveCharacter)
 
     # --- Objectives Properties & Operators ---
     register_objective_properties()
@@ -122,6 +130,9 @@ def unregister():
 
     # --- Audio ---
     del bpy.types.Scene.character_audio
+    bpy.utils.unregister_class(EXP_AUDIO_OT_PackAllSounds)
+    bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
+    bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)
     bpy.utils.unregister_class(AUDIO_OT_TestSoundPointer)
     bpy.utils.unregister_class(CharacterAudioPG)
     bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
@@ -153,6 +164,7 @@ def unregister():
 
     # --- Character Actions & Proxy Mesh ---
     del bpy.types.Scene.character_actions
+    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
     bpy.utils.unregister_class(CharacterActionsPG)
     bpy.utils.unregister_class(ProxyMeshEntry)
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)

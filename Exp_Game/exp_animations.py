@@ -121,43 +121,70 @@ class AnimationStateManager:
         3) Possibly start_action
         4) Scrub
         5) If a one-time ended => stop one_time_in_progress
+
+        Additionally: after LAND starts, wait 0.2 s, then if the player presses
+        a movement key, cancel the remaining LAND strip and immediately transition.
         """
+        # remember grounded state
         self._last_is_grounded = is_grounded
 
-        # --- EXTRA OVERRIDE CHECK FOR JUMP ANIMATION ---
-        # If the current active action is the jump animation and the state machine intends
-        # to switch to FALL or LAND (indicated by new_action being empty),
-        # then use the true duration of the jump strip to decide when to allow an override.
-        jump_action_name = None
+        # ——— DELAYED CANCEL FOR LAND ANIMATION ———
+        land_name = None
+        if bpy.context.scene.character_actions.land_action:
+            land_name = bpy.context.scene.character_actions.land_action.name
+
+        if (
+            self.anim_state == AnimState.LAND and
+            self.one_time_in_progress and
+            land_name
+        ):
+            for rec in self.active_actions:
+                if rec["action_name"] == land_name:
+                    elapsed = get_game_time() - rec["start_time"]
+                    if elapsed >= 0.4:  # tweak this delay as desired
+                        # if any movement key is held, clear the land strip
+                        k = get_user_keymap()
+                        move_keys = {k['forward'], k['backward'], k['left'], k['right']}
+                        if keys_pressed.intersection(move_keys):
+                            obj = self.target_object
+                            if obj and obj.animation_data:
+                                track = obj.animation_data.nla_tracks.get(self.track_name)
+                                if track:
+                                    for strip in list(track.strips):
+                                        track.strips.remove(strip)
+                            # reset so the next frame picks walk/run
+                            self.active_actions.clear()
+                            self.one_time_in_progress = False
+                            self.landing_in_progress   = False
+                            self.last_action_name      = None
+                    break
+
+        # ——— EXTRA OVERRIDE CHECK FOR JUMP ANIMATION ———
+        jump_name = None
         if bpy.context.scene.character_actions.jump_action:
-            jump_action_name = bpy.context.scene.character_actions.jump_action.name
+            jump_name = bpy.context.scene.character_actions.jump_action.name
 
         new_action, loop, speed, override, play_fully = self._pick_action(
             keys_pressed, is_grounded, vertical_velocity, delta_time
         )
-        if (not new_action) and self.one_time_in_progress and (self.last_action_name == jump_action_name):
-            # Find the jump record in active_actions
+        if (
+            not new_action and
+            self.one_time_in_progress and
+            (self.last_action_name == jump_name)
+        ):
             for rec in self.active_actions:
-                if rec["action_name"] == jump_action_name:
-                    # Calculate the expected duration (in seconds) of the jump action:
-                    expected_duration = rec["action_length"] / (self.base_speed_factor * speed)
-                    elapsed = get_game_time() - rec["start_time"]
-                    # Allow override when elapsed time reaches 90% of the expected duration.
-                    if elapsed >= expected_duration * 0.9:
+                if rec["action_name"] == jump_name:
+                    expected = rec["action_length"] / (self.base_speed_factor * speed)
+                    if (get_game_time() - rec["start_time"]) >= expected * 0.9:
                         self.one_time_in_progress = False
                     break
 
-        # -------------------------------------------------
-        # A) If a custom or one-time action is in progress, 
-        #    skip picking new default animations:
-        # -------------------------------------------------
+        # ——— A) If any one-time action still playing, just scrub it ———
         if self.one_time_in_progress:
             self.scrub_nla_strips(delta_time)
-            return None  # no default action while override is in progress
+            return None
 
-        # -------------------------------------------------
-        # B) Otherwise do normal default logic
-        # -------------------------------------------------
+        # ——— B) Start a new default action if changed ———
         if new_action and (new_action != self.last_action_name):
             self.start_action(
                 action_name=new_action,
@@ -169,14 +196,10 @@ class AnimationStateManager:
                 play_fully=play_fully
             )
 
-        # -------------------------------------------------
-        # C) Scrub
-        # -------------------------------------------------
+        # ——— C) Advance all strips ———
         self.scrub_nla_strips(delta_time)
 
-        # -------------------------------------------------
-        # D) If a one-time ended => stop one_time_in_progress
-        # -------------------------------------------------
+        # ——— D) If a one-time ended without us noticing, clear the flag ———
         if self.one_time_in_progress and (not self._current_has_one_time()):
             self.one_time_in_progress = False
 

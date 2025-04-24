@@ -551,11 +551,11 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
 
         # 2) Skin
         layout.separator()
-        layout.label(text="Skin Selection:")
+        layout.label(text="Character Selection:")
         b_s = layout.box()
-        b_s.prop(self, "skin_use_default", text="Use Default Skin?")
+        b_s.prop(self, "skin_use_default", text="Use Default Character?")
         if not self.skin_use_default:
-            b_s.prop(self, "skin_custom_blend", text="Custom Skin Blend")
+            b_s.prop(self, "skin_custom_blend", text="Custom Char .Blend")
 
         # 3) Actions + Sounds (Single Table)
         layout.separator()
@@ -637,9 +637,6 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             snd_enum="land_sound_enum_prop"
         )
 
-        layout.separator()
-        layout.operator("exploratory.build_character", text="Build Character", icon='FILE_TICK')
-
 
 # ------------------------------------------------------------------------
 # 4) The operator that appends skin + actions
@@ -668,17 +665,41 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     def execute(self, context):
         prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
-        if not hasattr(scene, "character_actions"):
-            self.report({'ERROR'}, "scene.character_actions not found.")
-            return {'CANCELLED'}
 
-        char_actions = scene.character_actions
+        # 1) Honor the Lock Flag
+        if getattr(scene, "character_spawn_lock", False):
+            self.report({'INFO'}, "Character spawn is locked; skipping mesh/armature append.")
+            return {'FINISHED'}
 
-        # 1) Append the skin
-        self.append_all_skin_objects(
-            use_default=prefs.skin_use_default,
-            custom_blend=prefs.skin_custom_blend
+        # 2) Decide which .blend to pull skin from
+        blend_path = (
+            self.DEFAULT_SKIN_BLEND
+            if prefs.skin_use_default
+            else prefs.skin_custom_blend
         )
+
+        try:
+            with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
+                lib_obj_names = set(data_from.objects)
+        except Exception as e:
+            self.report({'WARNING'}, f"Could not read {blend_path}: {e}")
+            lib_obj_names = set()
+
+        # ——— UPDATED HERE ———
+        arm = scene.target_armature
+        if arm and arm.name in lib_obj_names:
+            # Remove existing armature + its mesh children to avoid naming conflicts
+            bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
+        # —————————————————
+
+        # 3) Append the skin (this sets scene.target_armature)
+        self.append_all_skin_objects(
+            use_default  = prefs.skin_use_default,
+            custom_blend = prefs.skin_custom_blend
+        )
+
+        # ——— 5) Now assign actions exactly as before ———
+        char_actions = scene.character_actions
 
         # 2) For each Action state, find or append
         def process_action(state_label, use_default, custom_blend, chosen_name, default_name, target_attr):

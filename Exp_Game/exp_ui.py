@@ -51,8 +51,9 @@ class ExploratoryPanel(bpy.types.Panel):
 
 
 # --------------------------------------------------------------------
-# NEW PANEL: Character, Actions, Audio (only visible in Explore mode)
+# Character, Actions, Audio (only visible in Explore mode)
 # --------------------------------------------------------------------
+
 class ExploratoryCharacterPanel(bpy.types.Panel):
     bl_label = "Character, Actions, Audio"
     bl_idname = "VIEW3D_PT_exploratory_character"
@@ -60,125 +61,106 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
-    # Optionally, you can hide this panel when in Create mode:
     @classmethod
     def poll(cls, context):
         return context.scene.main_category == 'CREATE'
 
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
+        scene  = context.scene
+        ca     = scene.character_actions
+        audio  = scene.character_audio
 
-        layout.prop(scene, "target_armature", text="Target Armature")
-        layout.label(text="Animation Slots")
-        layout.prop(scene.character_actions, "idle_action")
-        layout.prop(scene.character_actions, "walk_action")
-        layout.prop(scene.character_actions, "run_action")
-        layout.prop(scene.character_actions, "jump_action")
-        layout.prop(scene.character_actions, "fall_action")
-        layout.prop(scene.character_actions, "land_action")
+        # ─── Character ───
+        box = layout.box()
+        box.label(text="Character", icon='SETTINGS')
 
-        layout.separator()
-        layout.label(text="Action Speeds:")
-        char_actions = scene.character_actions
-        # Instead of showing scene-level speed properties, show the speed from the Action data-block.
-        if char_actions.idle_action:
-            layout.prop(char_actions.idle_action, "action_speed", text="Idle Speed")
-        else:
-            layout.label(text="Idle Action not assigned")
+        # Target Armature picker
+        split = box.split(factor=0.4, align=True)
+        colL  = split.column()
+        colR  = split.column()
+        colL.label(text="Target Armature (Character)")
+        colR.prop(scene, "target_armature", text="")
 
-        if char_actions.walk_action:
-            layout.prop(char_actions.walk_action, "action_speed", text="Walk Speed")
-        else:
-            layout.label(text="Walk Action not assigned")
+        box.separator()
 
-        if char_actions.run_action:
-            layout.prop(char_actions.run_action, "action_speed", text="Run Speed")
-        else:
-            layout.label(text="Run Action not assigned")
+        # Lock + description
+        col = box.column(align=True)
+        icon = 'LOCKED' if scene.character_spawn_lock else 'UNLOCKED'
+        row  = col.row()
+        row.scale_y = 1.0
+        row.prop(
+            scene,
+            "character_spawn_lock",
+            text="Character Lock",
+            icon=icon,
+            toggle=True
+        )
+        col.label(text="• If ON the character must be set manually.")
+        col.label(text="• If ON the character will not be removed or changed.")
+        col.label(text="• Useful for testing a character")
+        col.label(text="• Useful for setting a custom world character")
+        col.separator()
+        col.label(text="• If OFF the character will be built automatically")
+        col.label(text="• If OFF the character will be removed then re-appended on game start.")
+        col.label(text="• If OFF the character filepath set in preferences will be used.")
+        col.label(text="• Easy and stable for working character filepaths (see preferences)")
 
-        if char_actions.jump_action:
-            layout.prop(char_actions.jump_action, "action_speed", text="Jump Speed")
-        else:
-            layout.label(text="Jump Action not assigned")
+        # ─── Build Character Button (inside the same box) ───
+        box.separator()
+        btn = box.row()
+        btn.scale_y = 1.0
+        btn.operator(
+            "exploratory.build_character",
+            text="Build Character",
+            icon='ARMATURE_DATA'
+        )
 
-        if char_actions.fall_action:
-            layout.prop(char_actions.fall_action, "action_speed", text="Fall Speed")
-        else:
-            layout.label(text="Fall Action not assigned")
 
-        if char_actions.land_action:
-            layout.prop(char_actions.land_action, "action_speed", text="Land Speed")
-        else:
-            layout.label(text="Land Action not assigned")
+        # Animations & Speeds with 75/25 split
+        box = layout.box()
+        box.label(text="Animations", icon='ACTION')
 
-        layout.separator()
-        layout.label(text="Audio Pointers:")
+        def anim_row(action_attr, label):
+            split = box.split(factor=0.75, align=True)
+            colA  = split.column()
+            colB  = split.column()
+            act = getattr(ca, action_attr)
+            colA.prop(ca, action_attr, text=label)
+            if act:
+                colB.prop(act, "action_speed", text="Speed")
+            else:
+                colB.label(text="—")
 
-        # Walk Sound
-        row = layout.row()
-        row.prop(scene.character_audio, "walk_sound", text="Walk Sound")
+        anim_row("idle_action", "Idle")
+        anim_row("walk_action", "Walk")
+        anim_row("run_action",  "Run")
+        anim_row("jump_action", "Jump")
+        anim_row("fall_action", "Fall")
+        anim_row("land_action", "Land")
 
-        if scene.character_audio.walk_sound:
-            row = layout.row(align=True)
-            row.prop(scene.character_audio.walk_sound, "sound_speed", text="Speed")
-            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
-            op.sound_slot = "walk_sound"
-        else:
-            row = layout.row()
-            row.label(text="(No Walk Sound)")
+        # Audio (unchanged)
+        box = layout.box()
+        box.label(text="Audio", icon='SOUND')
 
-        # Run Sound
-        row = layout.row()
-        row.prop(scene.character_audio, "run_sound", text="Run Sound")
+        def sound_row(prop_name, label):
+            row = box.row()
+            snd = getattr(audio, prop_name)
+            row.prop(audio, prop_name, text=label)
+            if snd:
+                sub = box.row(align=True)
+                sub.prop(snd, "sound_speed", text="Speed")
+                op = sub.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
+                op.sound_slot = prop_name
+            else:
+                box.label(text=f"{label}: (none)")
 
-        if scene.character_audio.run_sound:
-            row = layout.row(align=True)
-            row.prop(scene.character_audio.run_sound, "sound_speed", text="Speed")
-            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
-            op.sound_slot = "run_sound"
-        else:
-            row = layout.row()
-            row.label(text="(No Run Sound)")
+        sound_row("walk_sound", "Walk")
+        sound_row("run_sound",  "Run")
+        sound_row("jump_sound", "Jump")
+        sound_row("fall_sound", "Fall")
+        sound_row("land_sound", "Land")
 
-        # Jump Sound
-        row = layout.row()
-        row.prop(scene.character_audio, "jump_sound", text="Jump Sound")
-
-        if scene.character_audio.jump_sound:
-            row = layout.row(align=True)
-            row.prop(scene.character_audio.jump_sound, "sound_speed", text="Speed")
-            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
-            op.sound_slot = "jump_sound"
-        else:
-            row = layout.row()
-            row.label(text="(No Jump Sound)")
-
-        # Fall Sound
-        row = layout.row()
-        row.prop(scene.character_audio, "fall_sound", text="Fall Sound")
-
-        if scene.character_audio.fall_sound:
-            row = layout.row(align=True)
-            row.prop(scene.character_audio.fall_sound, "sound_speed", text="Speed")
-            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
-            op.sound_slot = "fall_sound"
-        else:
-            row = layout.row()
-            row.label(text="(No Fall Sound)")
-
-        # Land Sound
-        row = layout.row()
-        row.prop(scene.character_audio, "land_sound", text="Land Sound")
-
-        if scene.character_audio.land_sound:
-            row = layout.row(align=True)
-            row.prop(scene.character_audio.land_sound, "sound_speed", text="Speed")
-            op = row.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
-            op.sound_slot = "land_sound"
-        else:
-            row = layout.row()
-            row.label(text="(No Land Sound)")
 
 
 # --------------------------------------------------------------------
@@ -480,33 +462,40 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
 
         #-Property reaction----------------------------#
         elif reaction.reaction_type == "PROPERTY":
-            # The user pastes the entire path, e.g. "bpy.data.materials['MyMat'].node_tree.nodes..."
+            box2.label(
+                text="For node properties, copy the properties from the node graph (e.g. the specific node)",
+                icon='INFO'
+            )
+            box2.label(
+                text="Group input properties do not reflect real-time changes in the node graph.",
+                icon='INFO'
+            )
             box2.prop(reaction, "property_data_path", text="Data Path")
 
             # Show the detected property type
             row = box2.row()
             row.label(text=f"Detected Type: {reaction.property_type}")
             box2.prop(reaction, "property_transition_duration", text="Duration")
-            box2.prop(reaction, "property_reset", text="Reset?")
+            box2.prop(reaction, "property_reset", text="Reset after")
             if reaction.property_reset:
-                box2.prop(reaction, "property_reset_delay", text="Reset Delay")
+                box2.prop(reaction, "property_reset_delay", text="Reset when target value is reached")
             
             # Display input fields based on the detected type.
             if reaction.property_type == "BOOL":
-                box2.prop(reaction, "bool_value", text="New Bool Value")
+                box2.prop(reaction, "bool_value", text="Target Bool Value")
                 box2.prop(reaction, "default_bool_value", text="Default Bool Value")
             elif reaction.property_type == "INT":
-                box2.prop(reaction, "int_value", text="New Int Value")
+                box2.prop(reaction, "int_value", text="Target Int Value")
                 box2.prop(reaction, "default_int_value", text="Default Int Value")
             elif reaction.property_type == "FLOAT":
-                box2.prop(reaction, "float_value", text="New Float Value")
+                box2.prop(reaction, "float_value", text="Target Float Value")
                 box2.prop(reaction, "default_float_value", text="Default Float Value")
             elif reaction.property_type == "STRING":
-                box2.prop(reaction, "string_value", text="New String Value")
+                box2.prop(reaction, "string_value", text="Target String Value")
                 box2.prop(reaction, "default_string_value", text="Default String Value")
             elif reaction.property_type == "VECTOR":
                 box2.label(text=f"Vector length: {reaction.vector_length}")
-                box2.prop(reaction, "vector_value", text="New Vector")
+                box2.prop(reaction, "vector_value", text="Target Vector")
                 box2.prop(reaction, "default_vector_value", text="Default Vector")
             else:
                 box2.label(text="No property detected or invalid path.")
@@ -610,20 +599,57 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
         # Sound Reaction
         # ===============================
         elif reaction.reaction_type == "SOUND":
-            box2.label(text="Play Packed Sound")
-            box2.prop(reaction, "sound_volume", text="Relative Volume")
-            box2.prop(reaction, "sound_use_distance", text="Use Distance?")
+            # ───── Notice ─────
+            note_box = box2.box()
+            note_box.label(text="Notice: Custom Sounds must be packed into the .blend to work in-game.")
+            note_box.label(text="Reason: Custom sounds can't rely on external file sources.")
 
+            # ───── Packing ─────
+            pack_box = box2.box()
+            pack_box.operator(
+                "exp_audio.pack_all_sounds",
+                text="Pack All Sounds",
+                icon='PACKAGE'
+            )
 
-            box2.prop(reaction, "sound_pointer", text="Sound Datablock")
-            box2.prop(reaction, "sound_play_mode", text="Mode")
+            # ───── Load / Test ─────
+            io_box = box2.box()
+            io_box.label(text="Load / Test Sound")
+            row = io_box.row(align=True)
+            row.prop(reaction, "sound_pointer", text="Sound")
 
-            if reaction.sound_play_mode == "DURATION":
-                box2.prop(reaction, "sound_duration", text="Duration")
+            load_op = row.operator(
+                "exp_audio.load_audio_file",
+                text="",
+                icon='FILE_FOLDER'
+            )
+            load_op.interaction_index = scene.custom_interactions_index
+            load_op.reaction_index    = inter.reactions_index
+
+            test_op = row.operator(
+                "exp_audio.test_reaction_sound",
+                text="",
+                icon='PLAY'
+            )
+            test_op.interaction_index = scene.custom_interactions_index
+            test_op.reaction_index    = inter.reactions_index
+
+            # ───── Parameters ─────
+            params_box = box2.box()
+            params_box.label(text="Parameters")
+            params_box.prop(reaction, "sound_volume", text="Relative Volume")
+            params_box.prop(reaction, "sound_use_distance", text="Use Distance?")
 
             if reaction.sound_use_distance:
-                box2.prop(reaction, "sound_distance_object", text="Distance Obj")
-                box2.prop(reaction, "sound_max_distance",   text="Max Distance")
+                dist_box = params_box.box()
+                dist_box.prop(reaction, "sound_distance_object", text="Distance Object")
+                dist_box.prop(reaction, "sound_max_distance", text="Max Distance")
+
+            params_box.prop(reaction, "sound_play_mode", text="Mode")
+            if reaction.sound_play_mode == "DURATION":
+                params_box.prop(reaction, "sound_duration", text="Duration")
+
+
 
 
 

@@ -6,8 +6,11 @@ from .exp_animations import AnimState
 from ..exp_preferences import get_addon_path
 import shutil
 import time
-from .exp_time import get_game_time 
-
+from .exp_time import get_game_time
+from bpy.props import StringProperty, IntProperty
+from bpy_extras.io_utils import ImportHelper
+from bpy.props import StringProperty, IntProperty
+from bpy_extras.io_utils import ImportHelper
 ##############################################################################
 # MAP FROM AnimState => The property name in scene.character_audio
 ##############################################################################
@@ -446,3 +449,106 @@ def clean_audio_temp():
     os.makedirs(temp_sounds_dir, exist_ok=True)
 
     print(f"[clean_audio_temp] Temp folder reset: {temp_sounds_dir}")
+
+
+
+# ------------------------------------------------------------------------
+#Play sound reactions audio helpers -- for SOUND reactions only
+#-------------------------------------------------------------------------
+class EXP_AUDIO_OT_LoadAudioFile(bpy.types.Operator, ImportHelper):
+    """Load an external audio file into a Play Sound reaction"""
+    bl_idname = "exp_audio.load_audio_file"
+    bl_label = "Load Reaction Sound"
+    filename_ext = ".wav;.mp3;.ogg"
+
+    filter_glob: StringProperty(
+        default="*.wav;*.mp3;*.ogg",
+        options={'HIDDEN'},
+        description="Audio file extensions"
+    )
+
+    interaction_index: IntProperty()
+    reaction_index:    IntProperty()
+
+    def execute(self, context):
+        # load & pack
+        sound = bpy.data.sounds.load(self.filepath, check_existing=True)
+        sound.pack()
+        # assign to the SOUND reaction
+        inter = context.scene.custom_interactions[self.interaction_index]
+        reaction = inter.reactions[self.reaction_index]
+        reaction.sound_pointer = sound
+        self.report({'INFO'}, f"Loaded '{sound.name}' into '{reaction.name}'")
+        return {'FINISHED'}
+
+
+class EXP_AUDIO_OT_TestReactionSound(bpy.types.Operator):
+    """Play the audio in this Sound-Reaction slot only if it’s packed"""
+    bl_idname = "exp_audio.test_reaction_sound"
+    bl_label = "Test Reaction Sound"
+
+    interaction_index: IntProperty()
+    reaction_index:    IntProperty()
+
+    def execute(self, context):
+        scene = context.scene
+        # Get the reaction
+        inter    = scene.custom_interactions[self.interaction_index]
+        reaction = inter.reactions[self.reaction_index]
+        sound    = reaction.sound_pointer
+
+        if not sound:
+            self.report({'WARNING'}, "No sound assigned.")
+            return {'CANCELLED'}
+
+        # Must be packed first
+        if not sound.packed_file:
+            self.report(
+                {'ERROR'},
+                f"Sound '{sound.name}' is not packed. Please run 'Pack All Sounds' first."
+            )
+            return {'CANCELLED'}
+
+        # Extract the packed bytes to a temporary file
+        addon_root = get_addon_path()
+        temp_dir   = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = extract_packed_sound(sound, temp_dir)
+        if not temp_path or not os.path.isfile(temp_path):
+            self.report(
+                {'ERROR'},
+                f"Failed to extract packed sound '{sound.name}'."
+            )
+            return {'CANCELLED'}
+
+        # Play via aud.Sound on the extracted file
+        device = aud.Device()
+        try:
+            factory = aud.Sound(temp_path)
+            handle  = device.play(factory)
+        except Exception as e:
+            self.report({'ERROR'}, f"aud error: {e}")
+            return {'CANCELLED'}
+
+        # Apply volume + pitch
+        handle.volume = scene.audio_level * reaction.sound_volume
+        handle.pitch  = getattr(sound, "sound_speed", 1.0)
+        return {'FINISHED'}
+    
+# ------------------------------------------------------------------------
+# Pack all sounds to the blend file
+# ------------------------------------------------------------------------
+class EXP_AUDIO_OT_PackAllSounds(bpy.types.Operator):
+    """Pack every Sound datablock into this .blend file"""
+    bl_idname = "exp_audio.pack_all_sounds"
+    bl_label = "Pack All Sounds"
+
+    def execute(self, context):
+        packed = 0
+        for snd in bpy.data.sounds:
+            # only pack if it’s external and not already packed
+            if snd.filepath and not snd.packed_file:
+                snd.pack()
+                packed += 1
+        self.report({'INFO'}, f"Packed {packed} sound(s) into blend")
+        return {'FINISHED'}

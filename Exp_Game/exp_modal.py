@@ -24,9 +24,9 @@ from .exp_custom_animations import update_all_custom_managers
 from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
 from .exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
 from .exp_time import init_time, update_time, get_game_time
-from .exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text
+from .exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text, show_controls_info
 from .exp_objectives import update_all_objective_timers, reset_all_objectives
-from .exp_game_reset import capture_scene_state
+from .exp_game_reset import capture_scene_state, reset_property_reactions
 from . import exp_globals
 from .exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.helper_functions import cleanup_downloaded_worlds
@@ -186,6 +186,7 @@ class ExpModal(bpy.types.Operator):
         clear_all_text()
         register_ui_draw()
 
+
         # 2) Override our local sensitivity from user preferences
         self.sensitivity = addon_prefs.mouse_sensitivity * .001
 
@@ -221,10 +222,14 @@ class ExpModal(bpy.types.Operator):
         #4D Game time
         init_time()  # Start the game clock at 0
 
+        # show control hints for 10 seconds
+        show_controls_info(10.0)
+
         # 4E) *** RESET ALL INTERACTIONS AND TASKS***
         reset_all_interactions(context.scene)
         reset_all_tasks()
-        reset_all_objectives(context.scene)   
+        reset_all_objectives(context.scene)
+        reset_property_reactions(context.scene)   
 
 
         # 5) Center the cursor for reading mouse deltas

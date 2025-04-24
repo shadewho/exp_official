@@ -132,6 +132,11 @@ def add_scene_properties():
         type=bpy.types.Object,
         description="Armature (or main character object) for the Third Person system"
     )
+    bpy.types.Scene.character_spawn_lock = bpy.props.BoolProperty(
+        name="Lock Character Spawn",
+        default=False,
+        description="If on, building or removing the character is disabled"
+    )
 
     bpy.types.Scene.orbit_distance = bpy.props.FloatProperty(
         name="Orbit Distance",

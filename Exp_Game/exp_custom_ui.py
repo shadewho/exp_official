@@ -413,3 +413,39 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
         # ----------------------------------------------------------------
         
         return {'FINISHED'}
+    
+
+def show_controls_info(duration: float = 10.0):
+    """
+    Display key-command info in the top-left for `duration` seconds.
+    """
+    # Calculate when to stop showing
+    end_time = get_game_time() + duration
+
+    # Grab the user’s keybind prefs
+    prefs = bpy.context.preferences.addons["Exploratory"].preferences
+
+    # (hard-coded plus user prefs)
+    controls = [
+        (prefs.key_reset,    "Reset Game"),
+        ("ESC",              "End Game"),
+        (prefs.key_forward,  "Move Forward"),
+        (prefs.key_backward, "Move Backward"),
+        (prefs.key_left,     "Move Left"),
+        (prefs.key_right,    "Move Right"),
+        (prefs.key_jump,     "Jump"),
+        (prefs.key_run,      "Sprint"),
+        (prefs.key_interact, "Interact"),
+    ]
+
+    # Stack each on its own row
+    for idx, (key, desc) in enumerate(controls):
+        add_text_reaction(
+            text_str = f"{key} \u2013 {desc}",
+            anchor   = 'TOP_LEFT',
+            margin_x = 1,
+            margin_y = idx + 5,
+            scale    = 3,
+            end_time = end_time,
+            color    = (1, 1, 1, .65),
+        )
