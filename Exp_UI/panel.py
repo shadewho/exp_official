@@ -209,11 +209,27 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
         layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
         layout.menu("INFO_MT_addon_update", text="Update Available")
 
-        # Audio Control Section with spacing
+        # Audio Control Section
         layout.separator()
-        layout.label(text="Audio Control:")
-        layout.prop(scene, "enable_audio", text="Enable Audio")
-        layout.prop(scene, "audio_level", text="Master Volume")
+        box = layout.box()
+        box.label(text="Audio", icon='SOUND')
+
+        prefs = context.preferences.addons["Exploratory"].preferences
+        split = box.split(factor=0.5, align=True)
+        col = split.column(align=True)
+        icon = 'RADIOBUT_ON' if prefs.enable_audio else 'RADIOBUT_OFF'
+        col.prop(
+            prefs,
+            "enable_audio",
+            text="Master Volume",
+            icon=icon
+        )
+        split.column(align=True).prop(
+            prefs,
+            "audio_level",
+            text="Volume",
+            slider=True
+        )
 
 
 

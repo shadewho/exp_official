@@ -32,5 +32,6 @@ CLOSE_WINDOW_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "clo
 BACK_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "back_button.jpg")
 EXPLORE_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "explore_button.jpg")
 LOADING_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "loading.jpg")
+MISSING_THUMB = os.path.join(os.path.dirname(__file__),"ui_templates", "missing_thumbnail.jpg")
 
 LAST_VIEWPORT_SIZE = {"width": 0, "height": 0}

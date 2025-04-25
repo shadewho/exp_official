@@ -168,11 +168,10 @@ class ExpModal(bpy.types.Operator):
             return {'CANCELLED'}
         
 
-        #---------------------
-        #reset audio temp folder
-        #---------------------
-        # A) Clean out old temp audio
-        clean_audio_temp()
+        # A) Clean out old audio temp (skip when audio-lock is ON)
+        if not context.scene.character_audio_lock:
+            clean_audio_temp()
+
 
         # B) Build character
         result = bpy.ops.exploratory.build_character('EXEC_DEFAULT')
@@ -205,7 +204,6 @@ class ExpModal(bpy.types.Operator):
         scene.mobility_game.allow_jump = True
         scene.mobility_game.allow_sprint = True
 
-
         # If performance mode is on => optionally do something
         if addon_prefs.performance_mode:
             pass
@@ -214,7 +212,6 @@ class ExpModal(bpy.types.Operator):
 
         # 4B) Clear any old dynamic references
         self.ensure_dynamic_fields_exist()
-
 
         # 4C) Spawn the user/object if needed
         spawn_user()

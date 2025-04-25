@@ -297,7 +297,22 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     )
 
     # ----------------------------------------------------------------
-    # (D) Walk => separate booleans for Action vs Sound
+    # (D 1) AUDIO MASTER PROPERTIES
+    # ----------------------------------------------------------------
+    enable_audio: bpy.props.BoolProperty(
+        name="Enable Audio",
+        description="Global master audio mute/unmute",
+        default=True
+    )
+    audio_level: bpy.props.FloatProperty(
+        name="Audio Volume",
+        description="Global master volume (0.0–1.0)",
+        default=0.5,
+        min=0.0,
+        max=1.0
+    )
+    # ----------------------------------------------------------------
+    # (D 2) Walk => separate booleans for Action vs Sound
     # ----------------------------------------------------------------
     # Action
     walk_use_default_action: bpy.props.BoolProperty(
@@ -549,6 +564,29 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         layout.label(text="Performance Settings:")
         layout.prop(self, "performance_level")
 
+        #--------------------
+        #MASTER AUDIO SETTINGS
+        #-------------------
+        box = layout.box()
+        box.label(text="Global Audio", icon='SOUND')
+
+        # mimic the N-panel split
+        split = box.split(factor=0.5, align=True)
+        col = split.column(align=True)
+        icon = 'RADIOBUT_ON' if self.enable_audio else 'RADIOBUT_OFF'
+        col.prop(
+            self,
+            "enable_audio",
+            text="Master Volume",
+            icon=icon
+        )
+        split.column(align=True).prop(
+            self,
+            "audio_level",
+            text="Volume",
+            slider=True
+        )
+
         # 2) Skin
         layout.separator()
         layout.label(text="Character Selection:")
@@ -651,7 +689,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     bl_idname = "exploratory.build_character"
     bl_label = "Build Character (Skin + Actions)"
 
-    # Provide your real default .blend paths
     DEFAULT_SKIN_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend")
     DEFAULT_ANIMS_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Animations", "exp_animations.blend")
 
@@ -666,18 +703,19 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
 
-        # 1) Honor the Lock Flag
-        if getattr(scene, "character_spawn_lock", False):
+        # 1) Honor the mesh/armature spawn lock
+        if scene.character_spawn_lock:
             self.report({'INFO'}, "Character spawn is locked; skipping mesh/armature append.")
             return {'FINISHED'}
 
-        # 2) Decide which .blend to pull skin from
+        # 2) Determine which blend file to use for the skin
         blend_path = (
             self.DEFAULT_SKIN_BLEND
             if prefs.skin_use_default
             else prefs.skin_custom_blend
         )
 
+        # 3) If the armature already exists in that blend, remove it first
         try:
             with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
                 lib_obj_names = set(data_from.objects)
@@ -685,39 +723,47 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.report({'WARNING'}, f"Could not read {blend_path}: {e}")
             lib_obj_names = set()
 
-        # ——— UPDATED HERE ———
-        arm = scene.target_armature
-        if arm and arm.name in lib_obj_names:
-            # Remove existing armature + its mesh children to avoid naming conflicts
+        existing_arm = scene.target_armature
+        if existing_arm and existing_arm.name in lib_obj_names:
             bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
-        # —————————————————
 
-        # 3) Append the skin (this sets scene.target_armature)
+        # 4) Append the skin objects
         self.append_all_skin_objects(
             use_default  = prefs.skin_use_default,
             custom_blend = prefs.skin_custom_blend
         )
 
-        # ——— 5) Now assign actions exactly as before ———
+        # 5) Honor the action lock: if ON, skip all action appending
+        if scene.character_actions_lock:
+            self.report({'INFO'}, "Character actions lock is ON; skipping action assignment.")
+            return {'FINISHED'}
+
+        # 6) Otherwise, append & assign each action
         char_actions = scene.character_actions
 
-        # 2) For each Action state, find or append
         def process_action(state_label, use_default, custom_blend, chosen_name, default_name, target_attr):
             if use_default:
-                blend_path = self.DEFAULT_ANIMS_BLEND
+                anim_blend = self.DEFAULT_ANIMS_BLEND
                 action_name = default_name
             else:
-                blend_path = custom_blend
+                anim_blend = custom_blend
                 action_name = chosen_name
+
             if not action_name:
-                print(f"[{state_label}] No action name chosen. Skipping.")
+                print(f"[{state_label}] No action name; skipping.")
                 return
-            action_ref = self.ensure_action_in_file(blend_path, action_name, state_label)
+
+            # Append it if needed
+            existing = bpy.data.actions.get(action_name)
+            if not existing and os.path.isfile(anim_blend):
+                with bpy.data.libraries.load(anim_blend, link=False) as (df, dt):
+                    if action_name in df.actions:
+                        dt.actions = [action_name]
+            action_ref = bpy.data.actions.get(action_name)
             if action_ref:
                 setattr(char_actions, target_attr, action_ref)
                 print(f"[{state_label}] => {action_ref.name}")
 
-        # IDLE
         process_action("Idle",
             prefs.idle_use_default_action,
             prefs.idle_custom_blend_action,
@@ -725,7 +771,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.DEFAULT_IDLE_NAME,
             "idle_action"
         )
-        # WALK
         process_action("Walk",
             prefs.walk_use_default_action,
             prefs.walk_custom_blend_action,
@@ -733,7 +778,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.DEFAULT_WALK_NAME,
             "walk_action"
         )
-        # RUN
         process_action("Run",
             prefs.run_use_default_action,
             prefs.run_custom_blend_action,
@@ -741,7 +785,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.DEFAULT_RUN_NAME,
             "run_action"
         )
-        # JUMP
         process_action("Jump",
             prefs.jump_use_default_action,
             prefs.jump_custom_blend_action,
@@ -749,7 +792,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.DEFAULT_JUMP_NAME,
             "jump_action"
         )
-        # FALL
         process_action("Fall",
             prefs.fall_use_default_action,
             prefs.fall_custom_blend_action,
@@ -757,7 +799,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.DEFAULT_FALL_NAME,
             "fall_action"
         )
-        # LAND
         process_action("Land",
             prefs.land_use_default_action,
             prefs.land_custom_blend_action,

@@ -53,7 +53,6 @@ class ExploratoryPanel(bpy.types.Panel):
 # --------------------------------------------------------------------
 # Character, Actions, Audio (only visible in Explore mode)
 # --------------------------------------------------------------------
-
 class ExploratoryCharacterPanel(bpy.types.Panel):
     bl_label = "Character, Actions, Audio"
     bl_idname = "VIEW3D_PT_exploratory_character"
@@ -70,6 +69,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         scene  = context.scene
         ca     = scene.character_actions
         audio  = scene.character_audio
+        prefs  = context.preferences.addons["Exploratory"].preferences
 
         # ─── Character ───
         box = layout.box()
@@ -85,10 +85,8 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         box.separator()
 
         # Lock + description
-        col = box.column(align=True)
+        row = box.row(align=True)
         icon = 'LOCKED' if scene.character_spawn_lock else 'UNLOCKED'
-        row  = col.row()
-        row.scale_y = 1.0
         row.prop(
             scene,
             "character_spawn_lock",
@@ -96,17 +94,18 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             icon=icon,
             toggle=True
         )
-        col.label(text="• If ON the character must be set manually.")
-        col.label(text="• If ON the character will not be removed or changed.")
-        col.label(text="• Useful for testing a character")
-        col.label(text="• Useful for setting a custom world character")
-        col.separator()
-        col.label(text="• If OFF the character will be built automatically")
-        col.label(text="• If OFF the character will be removed then re-appended on game start.")
-        col.label(text="• If OFF the character filepath set in preferences will be used.")
-        col.label(text="• Easy and stable for working character filepaths (see preferences)")
+        char_col = box.column(align=True)
+        char_col.label(text="• If ON the character must be set manually.")
+        char_col.label(text="• If ON the character will not be removed or changed.")
+        char_col.label(text="• Useful for testing a character")
+        char_col.label(text="• Useful for setting a custom world characters")
+        char_col.separator()
+        char_col.label(text="• If OFF the character will be built automatically")
+        char_col.label(text="• If OFF the character will be removed then re-appended on game start.")
+        char_col.label(text="• If OFF the character filepath set in preferences will be used.")
+        char_col.label(text="• Easy and stable for working character filepaths (see preferences)")
 
-        # ─── Build Character Button (inside the same box) ───
+        # ─── Build Character Button ───
         box.separator()
         btn = box.row()
         btn.scale_y = 1.0
@@ -116,10 +115,28 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             icon='ARMATURE_DATA'
         )
 
-
-        # Animations & Speeds with 75/25 split
+        # ─── Animations & Speeds ───
         box = layout.box()
         box.label(text="Animations", icon='ACTION')
+
+        # ─── Actions Lock ───
+        row = box.row(align=True)
+        icon = 'LOCKED' if scene.character_actions_lock else 'UNLOCKED'
+        row.prop(
+            scene,
+            "character_actions_lock",
+            text="Actions Lock",
+            icon=icon,
+            toggle=True
+        )
+        action_col = box.column(align=True)
+        action_col.label(text="• If ON the actions must be set manually.")
+        action_col.label(text="• Useful for custom scene action assignments or testing.")
+        action_col.label(text="• Useful for creating a world with custom actions.")
+        action_col.separator()
+        action_col.label(text="• If OFF audio will be appended from preferences.")
+        action_col.label(text="• Useful for creating a world with custom actions.")
+        box.separator()
 
         def anim_row(action_attr, label):
             split = box.split(factor=0.75, align=True)
@@ -139,9 +156,44 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         anim_row("fall_action", "Fall")
         anim_row("land_action", "Land")
 
-        # Audio (unchanged)
+        # ─── Audio ───
         box = layout.box()
         box.label(text="Audio", icon='SOUND')
+
+        # ─── Audio Lock ───
+        row = box.row(align=True)
+        icon = 'LOCKED' if scene.character_audio_lock else 'UNLOCKED'
+        row.prop(
+            scene,
+            "character_audio_lock",
+            text="Audio Lock",
+            icon=icon,
+            toggle=True
+        )
+        audio_col = box.column(align=True)
+        audio_col.label(text="• If ON the audio must be set manually.")
+        audio_col.label(text="• Useful for custom scene audio assignments or testing.")
+        audio_col.label(text="• Useful for creating a world with custom audio.")
+        audio_col.separator()
+        audio_col.label(text="• If OFF audio will be appended from preferences.")
+        audio_col.label(text="• Uses the audio settings defined in preferences.")
+        box.separator()
+
+        split = box.split(factor=0.5, align=True)
+        col = split.column(align=True)
+        icon = 'RADIOBUT_ON' if prefs.enable_audio else 'RADIOBUT_OFF'
+        col.prop(
+            prefs,
+            "enable_audio",
+            text="Master Volume",
+            icon=icon
+        )
+        split.column(align=True).prop(
+            prefs,
+            "audio_level",
+            text="Volume",
+            slider=True
+        )
 
         def sound_row(prop_name, label):
             row = box.row()
@@ -161,7 +213,12 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         sound_row("fall_sound", "Fall")
         sound_row("land_sound", "Land")
 
-
+        box.separator()
+        box.operator(
+            "exp_audio.pack_all_sounds",
+            text="Pack All Sounds",
+            icon='PACKAGE'
+        )
 
 # --------------------------------------------------------------------
 # Proxy Meshes (only visible in Create mode)

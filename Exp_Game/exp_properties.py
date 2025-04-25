@@ -132,10 +132,22 @@ def add_scene_properties():
         type=bpy.types.Object,
         description="Armature (or main character object) for the Third Person system"
     )
+    #-----LOCKS LOCKS LOCKS --------#
     bpy.types.Scene.character_spawn_lock = bpy.props.BoolProperty(
         name="Lock Character Spawn",
         default=False,
         description="If on, building or removing the character is disabled"
+    )
+    bpy.types.Scene.character_actions_lock = bpy.props.BoolProperty(
+        name="Lock Character Actions",
+        default=False,
+        description="If on, building or changing the character’s actions is disabled"
+    )
+    # Lock out automatic audio appending
+    bpy.types.Scene.character_audio_lock = bpy.props.BoolProperty(
+        name="Lock Character Audio",
+        default=False,
+        description="If on, building or changing the character’s audio is disabled"
     )
 
     bpy.types.Scene.orbit_distance = bpy.props.FloatProperty(
@@ -162,21 +174,6 @@ def add_scene_properties():
         default=4.1,
         min=0.0,
         description="Meters to pull the camera toward the character when a collision is detected"
-    )
-
-    ###AUDIO GLOBALS###
-    bpy.types.Scene.enable_audio = bpy.props.BoolProperty(
-        name="Enable Audio",
-        description="If off, do not load/play any sounds at all",
-        default=True
-    )
-
-    bpy.types.Scene.audio_level = bpy.props.FloatProperty(
-        name="Audio Volume",
-        description="Master volume from 0.0 to 1.0",
-        default=0.5,
-        min=0.0,
-        max=1.0
     )
 
 class CharacterActionsPG(bpy.types.PropertyGroup):

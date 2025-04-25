@@ -76,11 +76,12 @@ class ExpAudioManager:
 
     def play_sound_datablock(self, sound_data: bpy.types.Sound):
         """Plays a sound datablock's factory (if it has one)."""
-        scene = bpy.context.scene
-        if not scene.enable_audio or not sound_data or not sound_data.factory:
+        prefs = bpy.context.preferences.addons["Exploratory"].preferences
+        if not prefs.enable_audio or not sound_data or not sound_data.factory:
             return None
+
         handle = self.device.play(sound_data.factory)
-        handle.volume = scene.audio_level
+        handle.volume = prefs.audio_level
         return handle
 
     def stop_all(self):
@@ -104,36 +105,28 @@ class CharacterAudioStateManager:
         self.current_sound_duration = None
 
     def update_audio_state(self, new_state):
-        scene = bpy.context.scene
-        if not scene.enable_audio:
+        prefs = bpy.context.preferences.addons["Exploratory"].preferences
+        if not prefs.enable_audio:
             self.stop_current_sound()
             self.last_state = None
             return
 
         current_time = get_game_time()
 
-        # 1. If the state changes, switch immediately.
         if new_state != self.last_state:
             self.stop_current_sound()
             self.last_state = new_state
             self.play_sound_for_state(new_state)
             return
 
-        # 2. For looping states (e.g. WALK, RUN, FALL), if a sound is already playing,
-        #    let it continue uninterrupted.
         if new_state in (AnimState.WALK, AnimState.RUN, AnimState.FALL):
-            if self.current_handle is not None:
-                # Check if the sound has finished its natural playthrough.
+            if self.current_handle:
                 elapsed = current_time - self.current_sound_start_time
                 if elapsed >= self.current_sound_duration:
-                    # Sound finished naturally; restart it.
-                    print(f"[CharacterAudio] Loop: audio finished after {elapsed:.2f}s; restarting.")
                     self.stop_current_sound()
                     self.play_sound_for_state(new_state)
             else:
-                # No sound is playing, so (re)start it.
                 self.play_sound_for_state(new_state)
-        # For non-looping states, if the state hasn’t changed, do nothing.
 
     def stop_current_sound(self):
         if self.current_handle:
@@ -143,19 +136,15 @@ class CharacterAudioStateManager:
         self.current_sound_duration = None
 
     def play_sound_for_state(self, state):
-        # Only start a new sound if one isn’t already playing.
-        if self.current_handle is not None:
-            return
-
-        scene = bpy.context.scene
-        if not scene.enable_audio:
+        prefs = bpy.context.preferences.addons["Exploratory"].preferences
+        if not prefs.enable_audio:
             return
 
         prop_name = AUDIO_PROPS_MAP.get(state)
         if not prop_name:
             return
 
-        audio_pg = getattr(scene, "character_audio", None)
+        audio_pg = getattr(bpy.context.scene, "character_audio", None)
         if not audio_pg:
             return
 
@@ -164,38 +153,28 @@ class CharacterAudioStateManager:
             return
 
         device = aud.Device()
-
         if sound_data.factory:
             handle = device.play(sound_data.factory)
-            print(f"[CharacterAudio] Playing in-memory sound for '{sound_data.name}'.")
         else:
             abs_path = bpy.path.abspath(sound_data.filepath or "")
             if not os.path.isfile(abs_path):
-                print(f"[CharacterAudio] File not found: '{abs_path}' for sound '{sound_data.name}'.")
                 return
-            snd = aud.Sound(abs_path)
-            handle = device.play(snd)
-            print(f"[CharacterAudio] Playing fallback sound for '{sound_data.name}' from '{abs_path}'.")
+            handle = device.play(aud.Sound(abs_path))
 
-        # Determine the sound's duration:
-        sound_duration = getattr(sound_data, "sound_duration", None)
-        if sound_duration is None:
+        duration = getattr(sound_data, "sound_duration", None)
+        if duration is None:
             try:
-                sound_duration = handle.length
+                duration = handle.length
             except Exception:
-                sound_duration = 2.0  # Fallback duration
+                duration = 2.0
 
-        # Record the start time and duration.
         self.current_sound_start_time = get_game_time()
-        self.current_sound_duration = sound_duration
+        self.current_sound_duration = duration
 
-        # Play the sound once. (It will be restarted when its duration has elapsed.)
         handle.loop_count = 0
-
-        handle.volume = scene.audio_level
+        handle.volume = prefs.audio_level
         handle.pitch = sound_data.sound_speed
         self.current_handle = handle
-
 
 
 ##############################################################################
@@ -219,8 +198,8 @@ class AUDIO_OT_TestSoundPointer(bpy.types.Operator):
     sound_slot: bpy.props.StringProperty(default="walk_sound")
 
     def execute(self, context):
-        scene = context.scene
-        audio_pg = getattr(scene, "character_audio", None)
+        prefs = context.preferences.addons["Exploratory"].preferences
+        audio_pg = getattr(context.scene, "character_audio", None)
         if not audio_pg:
             self.report({'WARNING'}, "scene.character_audio not found.")
             return {'CANCELLED'}
@@ -230,38 +209,32 @@ class AUDIO_OT_TestSoundPointer(bpy.types.Operator):
             self.report({'WARNING'}, f"No Sound assigned to {self.sound_slot}")
             return {'CANCELLED'}
 
-        if not scene.enable_audio:
-            self.report({'INFO'}, "Audio is disabled in Scene properties.")
+        if not prefs.enable_audio:
+            self.report({'INFO'}, "Audio is disabled in Preferences.")
             return {'CANCELLED'}
 
         device = aud.Device()
-
         if sound_data.factory:
-            # If there's an in-memory version, use it
             handle = device.play(sound_data.factory)
-            handle.volume = scene.audio_level
-            handle.pitch = sound_data.sound_speed  # Apply the sound speed multiplier
+            handle.volume = prefs.audio_level
+            handle.pitch = sound_data.sound_speed
             self.report({'INFO'}, f"Playing in-memory sound: {sound_data.name}")
             return {'FINISHED'}
-        else:
-            # Fallback: local path
-            abs_path = bpy.path.abspath(sound_data.filepath or "")
-            if not os.path.isfile(abs_path):
-                self.report({'ERROR'}, f"File not found: {abs_path}")
-                return {'CANCELLED'}
 
-            try:
-                snd = aud.Sound(abs_path)
-                handle = device.play(snd)
-                handle.volume = scene.audio_level
-                handle.pitch = sound_data.sound_speed  # Apply the sound speed multiplier
-                self.report({'INFO'}, f"Playing fallback file for '{sound_data.name}' => {abs_path}")
-                return {'FINISHED'}
-            except Exception as ex:
-                self.report({'ERROR'}, f"aud error: {ex}")
-                return {'CANCELLED'}
+        abs_path = bpy.path.abspath(sound_data.filepath or "")
+        if not os.path.isfile(abs_path):
+            self.report({'ERROR'}, f"File not found: {abs_path}")
+            return {'CANCELLED'}
 
-
+        try:
+            handle = device.play(aud.Sound(abs_path))
+            handle.volume = prefs.audio_level
+            handle.pitch = sound_data.sound_speed
+            self.report({'INFO'}, f"Playing fallback file: {abs_path}")
+            return {'FINISHED'}
+        except Exception as ex:
+            self.report({'ERROR'}, f"aud error: {ex}")
+            return {'CANCELLED'}
 
 ##############################################################################
 # PROPERTY GROUP
@@ -306,35 +279,36 @@ class EXPLORATORY_OT_BuildAudio(bpy.types.Operator):
     then assigns them to scene.character_audio pointer properties.
     """
     bl_idname = "exploratory.build_audio"
-    bl_label = "Build Audio (Append Sounds)"
+    bl_label  = "Build Audio (Append Sounds)"
 
     DEFAULT_SOUNDS_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Sounds", "exp_default_sounds.blend")
-
-    DEFAULT_WALK_SOUND = "exp_walk_sound"
-    DEFAULT_RUN_SOUND  = "exp_run_sound"
-    DEFAULT_JUMP_SOUND = "exp_jump_sound"
-    DEFAULT_FALL_SOUND = "exp_fall_sound"
-    DEFAULT_LAND_SOUND = "exp_land_sound"
+    DEFAULT_WALK_SOUND   = "exp_walk_sound"
+    DEFAULT_RUN_SOUND    = "exp_run_sound"
+    DEFAULT_JUMP_SOUND   = "exp_jump_sound"
+    DEFAULT_FALL_SOUND   = "exp_fall_sound"
+    DEFAULT_LAND_SOUND   = "exp_land_sound"
 
     def execute(self, context):
-        prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
-        
-        # Create a subfolder in system’s temp dir (or anywhere you want)
+
+        # 0) Honor the audio‐lock: skip everything if it's on
+        if getattr(scene, "character_audio_lock", False):
+            self.report({'INFO'}, "Character audio lock is ON; skipping audio build.")
+            return {'FINISHED'}
+
+        # 1) Grab prefs and prepare temp folder
+        prefs = context.preferences.addons["Exploratory"].preferences
         addon_root = get_addon_path()
         temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
 
-
+        # 2) Ensure the character_audio property exists
         if not hasattr(scene, "character_audio"):
             self.report({'ERROR'}, "scene.character_audio property not found.")
             return {'CANCELLED'}
         audio_pg = scene.character_audio
 
-        def process_sound(use_default: bool,
-                        custom_blend: str,
-                        chosen_name: str,
-                        default_name: str,
-                        assign_attr: str):
+        # 3) Helper to choose default vs custom, append, extract packed, assign
+        def process_sound(slot_name, use_default, custom_blend, chosen_name, default_name):
             if use_default:
                 blend_path = self.DEFAULT_SOUNDS_BLEND
                 sound_name = default_name
@@ -345,56 +319,51 @@ class EXPLORATORY_OT_BuildAudio(bpy.types.Operator):
             if not sound_name:
                 return
 
-            sound_data = ensure_sound_appended(blend_path, sound_name)
-            if sound_data:
-                setattr(audio_pg, assign_attr, sound_data)
+            # Append if needed
+            existing = bpy.data.sounds.get(sound_name)
+            if not existing and os.path.isfile(blend_path):
+                with bpy.data.libraries.load(blend_path, link=False) as (df, dt):
+                    if sound_name in df.sounds:
+                        dt.sounds = [sound_name]
+                existing = bpy.data.sounds.get(sound_name)
 
-                temp_path = extract_packed_sound(sound_data, temp_sounds_dir)
+            if existing:
+                setattr(audio_pg, slot_name, existing)
+                # extract packed bytes so aud.Sound(filepath) works
+                temp_path = extract_packed_sound(existing, temp_sounds_dir)
                 if temp_path:
-                    print("Using temp_sounds_dir =", temp_sounds_dir)
+                    existing.filepath = temp_path
 
-                    # Overwrite the .filepath so we can do `aud.Sound(sound_data.filepath)`:
-                    sound_data.filepath = temp_path
-
-        # Walk
-        process_sound(
+        # 4) Process each slot
+        process_sound("walk_sound",
             prefs.walk_use_default_sound,
             prefs.walk_custom_blend_sound,
             prefs.walk_sound_enum_prop,
-            self.DEFAULT_WALK_SOUND,
-            "walk_sound"
+            self.DEFAULT_WALK_SOUND
         )
-        # Run
-        process_sound(
+        process_sound("run_sound",
             prefs.run_use_default_sound,
             prefs.run_custom_blend_sound,
             prefs.run_sound_enum_prop,
-            self.DEFAULT_RUN_SOUND,
-            "run_sound"
+            self.DEFAULT_RUN_SOUND
         )
-        # Jump
-        process_sound(
+        process_sound("jump_sound",
             prefs.jump_use_default_sound,
             prefs.jump_custom_blend_sound,
             prefs.jump_sound_enum_prop,
-            self.DEFAULT_JUMP_SOUND,
-            "jump_sound"
+            self.DEFAULT_JUMP_SOUND
         )
-        # Fall
-        process_sound(
+        process_sound("fall_sound",
             prefs.fall_use_default_sound,
             prefs.fall_custom_blend_sound,
             prefs.fall_sound_enum_prop,
-            self.DEFAULT_FALL_SOUND,
-            "fall_sound"
+            self.DEFAULT_FALL_SOUND
         )
-        # Land
-        process_sound(
+        process_sound("land_sound",
             prefs.land_use_default_sound,
             prefs.land_custom_blend_sound,
             prefs.land_sound_enum_prop,
-            self.DEFAULT_LAND_SOUND,
-            "land_sound"
+            self.DEFAULT_LAND_SOUND
         )
 
         self.report({'INFO'}, "Build Audio complete (sounds assigned).")
@@ -448,8 +417,6 @@ def clean_audio_temp():
         shutil.rmtree(temp_sounds_dir, ignore_errors=True)
     os.makedirs(temp_sounds_dir, exist_ok=True)
 
-    print(f"[clean_audio_temp] Temp folder reset: {temp_sounds_dir}")
-
 
 
 # ------------------------------------------------------------------------
@@ -491,49 +458,34 @@ class EXP_AUDIO_OT_TestReactionSound(bpy.types.Operator):
     reaction_index:    IntProperty()
 
     def execute(self, context):
+        prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
-        # Get the reaction
-        inter    = scene.custom_interactions[self.interaction_index]
+        inter = scene.custom_interactions[self.interaction_index]
         reaction = inter.reactions[self.reaction_index]
-        sound    = reaction.sound_pointer
+        sound = reaction.sound_pointer
 
-        if not sound:
-            self.report({'WARNING'}, "No sound assigned.")
+        if not sound or not sound.packed_file:
+            self.report({'WARNING'}, "No packed sound assigned.")
             return {'CANCELLED'}
 
-        # Must be packed first
-        if not sound.packed_file:
-            self.report(
-                {'ERROR'},
-                f"Sound '{sound.name}' is not packed. Please run 'Pack All Sounds' first."
-            )
-            return {'CANCELLED'}
-
-        # Extract the packed bytes to a temporary file
         addon_root = get_addon_path()
-        temp_dir   = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
+        temp_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
         os.makedirs(temp_dir, exist_ok=True)
         temp_path = extract_packed_sound(sound, temp_dir)
-        if not temp_path or not os.path.isfile(temp_path):
-            self.report(
-                {'ERROR'},
-                f"Failed to extract packed sound '{sound.name}'."
-            )
+        if not temp_path:
+            self.report({'ERROR'}, "Failed to extract packed sound.")
             return {'CANCELLED'}
 
-        # Play via aud.Sound on the extracted file
-        device = aud.Device()
         try:
-            factory = aud.Sound(temp_path)
-            handle  = device.play(factory)
+            handle = aud.Device().play(aud.Sound(temp_path))
         except Exception as e:
             self.report({'ERROR'}, f"aud error: {e}")
             return {'CANCELLED'}
 
-        # Apply volume + pitch
-        handle.volume = scene.audio_level * reaction.sound_volume
-        handle.pitch  = getattr(sound, "sound_speed", 1.0)
+        handle.volume = prefs.audio_level * reaction.sound_volume
+        handle.pitch = getattr(sound, "sound_speed", 1.0)
         return {'FINISHED'}
+
     
 # ------------------------------------------------------------------------
 # Pack all sounds to the blend file

@@ -13,7 +13,8 @@ from .config import (
     ARROW_LEFT_PATH, ARROW_RIGHT_PATH, CLOSE_WINDOW_PATH, BACK_BUTTON_PATH,
     THUMBNAIL_TEXT_SIZE, THUMBNAIL_TEXT_COLOR, THUMBNAIL_TEXT_ALIGNMENT, THUMBNAIL_TEXT_OFFSET_RATIO, THUMBNAIL_TEXT_SIZE_RATIO, 
     THUMBNAILS_PER_PAGE, EXPLORE_BUTTON_PATH,
-    LOADING_IMAGE_OFFSET_X, LOADING_IMAGE_OFFSET_Y, LOADING_IMAGE_PATH, LOADING_IMAGE_SCALE
+    LOADING_IMAGE_OFFSET_X, LOADING_IMAGE_OFFSET_Y, LOADING_IMAGE_PATH, LOADING_IMAGE_SCALE,
+    MISSING_THUMB
 )
 from .cache import get_or_load_image, get_or_create_texture
 from .utils import calculate_free_space, calculate_template_position
@@ -121,13 +122,12 @@ def build_browse_content(template_item):
     center_x = (x1 + x2) / 2
     center_y = (y1 + y2) / 2
 
-    # --- 1) Fetch packages for the current page — REMOVED SLICING ---
+    # --- 1) Fetch packages for the current page ---
     packages_data = getattr(bpy.types.Scene, 'fetched_packages_data', [])
     scene = bpy.context.scene
     page = scene.current_thumbnail_page
     total_pages = scene.total_thumbnail_pages
 
-    # We simply do:
     visible_packages = packages_data
 
     # --- 2) Grid positioning ---
@@ -146,78 +146,70 @@ def build_browse_content(template_item):
     thumbnail_width = usable_width / GRID_COLUMNS * (1 - THUMBNAIL_SPACING_FACTOR)
     thumbnail_height = usable_height / GRID_ROWS * (1 - THUMBNAIL_SPACING_FACTOR)
 
-    # Enforce square thumbnails
     thumb_size = min(thumbnail_width, thumbnail_height)
 
-    spacing_x = 0
-    spacing_y = 0
-    if GRID_COLUMNS > 1:
-        spacing_x = (usable_width - GRID_COLUMNS * thumb_size) / (GRID_COLUMNS - 1)
-    if GRID_ROWS > 1:
-        spacing_y = (usable_height - GRID_ROWS * thumb_size) / (GRID_ROWS - 1)
+    spacing_x = (usable_width - GRID_COLUMNS * thumb_size) / (GRID_COLUMNS - 1) if GRID_COLUMNS > 1 else 0
+    spacing_y = (usable_height - GRID_ROWS * thumb_size) / (GRID_ROWS - 1) if GRID_ROWS > 1 else 0
 
     # --- 3) Build thumbnail items ---
     for index, pkg in enumerate(visible_packages):
-        thumb_url = pkg.get("thumbnail_url")
-        local_thumb_path = pkg.get("local_thumb_path")
-        
-        # If no valid local thumbnail exists, try to download it if a URL is provided.
-        if (not local_thumb_path or not os.path.exists(local_thumb_path)) and thumb_url:
-            local_thumb_path = download_thumbnail(thumb_url)
-            pkg["local_thumb_path"] = local_thumb_path
+        try:
+            thumb_url = pkg.get("thumbnail_url")
+            local_thumb = pkg.get("local_thumb_path")
 
-        # If still missing, skip this package.
-        if not local_thumb_path or not os.path.exists(local_thumb_path):
+            # download or fallback to placeholder
+            if not local_thumb or not os.path.exists(local_thumb):
+                if thumb_url:
+                    local_thumb = download_thumbnail(thumb_url)
+                if not local_thumb or not os.path.exists(local_thumb):
+                    local_thumb = MISSING_THUMB
+                pkg["local_thumb_path"] = local_thumb
+
+            img = get_or_load_image(local_thumb)
+            if not img:
+                raise RuntimeError(f"Could not load image: {local_thumb}")
+            tex = get_or_create_texture(img)
+            if not tex:
+                raise RuntimeError(f"Could not create texture: {local_thumb}")
+
+            row = index // GRID_COLUMNS
+            col = index % GRID_COLUMNS
+
+            thumb_x1 = thumbs_x1 + col * (thumb_size + spacing_x)
+            thumb_x2 = thumb_x1 + thumb_size
+
+            thumb_y2 = thumbs_y2 - row * (thumb_size + spacing_y)
+            thumb_y1 = thumb_y2 - thumb_size
+
+            shader = gpu.shader.from_builtin('IMAGE')
+            verts = [
+                (thumb_x1, thumb_y1),
+                (thumb_x2, thumb_y1),
+                (thumb_x2, thumb_y2),
+                (thumb_x1, thumb_y2),
+            ]
+            coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            batch_obj = batch_for_shader(shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
+
+            data_list.append({
+                "shader":  shader,
+                "batch":   batch_obj,
+                "texture": tex,
+                "name":    pkg.get("package_name", "unknown"),
+                "pos":     (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
+            })
+
+            add_thumbnail_title(
+                data_list,
+                (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
+                pkg.get("package_name", "NoName"),
+                pkg.get("likes", 0),
+                pkg.get("download_count", 0),
+            )
+
+        except Exception as e:
+            print(f"[ERROR] build_browse_content thumbnail #{index} skipped: {e}")
             continue
-
-        img = get_or_load_image(local_thumb_path)
-        if not img:
-            continue
-        tex = get_or_create_texture(img)
-        if not tex:
-            continue
-
-        row = index // GRID_COLUMNS
-        col = index % GRID_COLUMNS
-
-        # X position is as before
-        thumb_x1 = thumbs_x1 + col * (thumb_size + spacing_x)
-        thumb_x2 = thumb_x1 + thumb_size
-
-        # Y position from the top row downward:
-        thumb_y2 = thumbs_y2 - row * (thumb_size + spacing_y)
-        thumb_y1 = thumb_y2 - thumb_size
-
-        shader = gpu.shader.from_builtin('IMAGE')
-        verts = [
-            (thumb_x1, thumb_y1),
-            (thumb_x2, thumb_y1),
-            (thumb_x2, thumb_y2),
-            (thumb_x1, thumb_y2),
-        ]
-        coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
-        batch_obj = batch_for_shader(shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
-
-        data_list.append({
-            "shader": shader,
-            "batch": batch_obj,
-            "texture": tex,
-            "name": pkg.get("package_name", "unknown"),
-            "pos": (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
-        })
-
-        package_name = pkg.get("package_name", "NoName")
-        likes = pkg.get("likes", 0)
-        downloads = pkg.get("download_count", 0)
-
-        add_thumbnail_title(
-            data_list,
-            (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
-            package_name,
-            likes,
-            downloads
-        )
-
 
     # --- 4) If there's more than 1 page, draw arrows ---
     if total_pages > 1:
@@ -225,248 +217,256 @@ def build_browse_content(template_item):
         arrow_offset_x = 0.48
         arrow_offset_y = -0.05
 
-        left_arrow_img = get_or_load_image(ARROW_LEFT_PATH)
-        if left_arrow_img:
-            left_arrow_tex = get_or_create_texture(left_arrow_img)
-            if left_arrow_tex:
-                img_width, img_height = left_arrow_img.size
-                aspect_ratio = img_width / img_height if img_height else 1.0
-                arrow_width = arrow_scale * template_width
-                arrow_height = arrow_width / aspect_ratio
+        # Left arrow
+        try:
+            left_img = get_or_load_image(ARROW_LEFT_PATH)
+            if not left_img:
+                raise RuntimeError(f"Missing arrow image: {ARROW_LEFT_PATH}")
+            left_tex = get_or_create_texture(left_img)
+            if not left_tex:
+                raise RuntimeError("Failed to create left arrow texture")
 
-                left_x1 = center_x - (arrow_offset_x * template_width) - (arrow_width / 2)
-                left_y1 = center_y + (arrow_offset_y * template_height) - (arrow_height / 2)
-                left_x2 = left_x1 + arrow_width
-                left_y2 = left_y1 + arrow_height
+            w, h = left_img.size
+            aspect = w / h if h else 1.0
+            arrow_w = arrow_scale * template_width
+            arrow_h = arrow_w / aspect
 
-                shader = gpu.shader.from_builtin('IMAGE')
-                left_arrow_batch = batch_for_shader(
-                    shader, 'TRI_FAN',
-                    {
-                        "pos": [(left_x1, left_y1), (left_x2, left_y1),
-                                (left_x2, left_y2), (left_x1, left_y2)],
-                        "texCoord": [(0, 0), (1, 0), (1, 1), (0, 1)]
-                    }
-                )
+            left_x1 = center_x - arrow_offset_x * template_width - arrow_w / 2
+            left_y1 = center_y + arrow_offset_y * template_height - arrow_h / 2
+            left_x2 = left_x1 + arrow_w
+            left_y2 = left_y1 + arrow_h
 
-                data_list.append({
-                    "shader": shader,
-                    "batch": left_arrow_batch,
-                    "texture": left_arrow_tex,
-                    "name": "Left_Arrow",
-                    "pos": (left_x1, left_y1, left_x2, left_y2),
-                })
+            shader = gpu.shader.from_builtin('IMAGE')
+            verts = [(left_x1, left_y1), (left_x2, left_y1), (left_x2, left_y2), (left_x1, left_y2)]
+            coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
 
-        right_arrow_img = get_or_load_image(ARROW_RIGHT_PATH)
-        if right_arrow_img:
-            right_arrow_tex = get_or_create_texture(right_arrow_img)
-            if right_arrow_tex:
-                img_width, img_height = right_arrow_img.size
-                aspect_ratio = img_width / img_height if img_height else 1.0
-                arrow_width = arrow_scale * template_width
-                arrow_height = arrow_width / aspect_ratio
+            data_list.append({
+                "shader":  shader,
+                "batch":   batch,
+                "texture": left_tex,
+                "name":    "Left_Arrow",
+                "pos":     (left_x1, left_y1, left_x2, left_y2),
+            })
+        except Exception as e:
+            print(f"[ERROR] build_browse_content Left arrow skipped: {e}")
 
-                right_x1 = center_x + (arrow_offset_x * template_width) - (arrow_width / 2)
-                right_y1 = center_y + (arrow_offset_y * template_height) - (arrow_height / 2)
-                right_x2 = right_x1 + arrow_width
-                right_y2 = right_y1 + arrow_height
+        # Right arrow
+        try:
+            right_img = get_or_load_image(ARROW_RIGHT_PATH)
+            if not right_img:
+                raise RuntimeError(f"Missing arrow image: {ARROW_RIGHT_PATH}")
+            right_tex = get_or_create_texture(right_img)
+            if not right_tex:
+                raise RuntimeError("Failed to create right arrow texture")
 
-                shader = gpu.shader.from_builtin('IMAGE')
-                right_arrow_batch = batch_for_shader(
-                    shader, 'TRI_FAN',
-                    {
-                        "pos": [(right_x1, right_y1), (right_x2, right_y1),
-                                (right_x2, right_y2), (right_x1, right_y2)],
-                        "texCoord": [(0, 0), (1, 0), (1, 1), (0, 1)]
-                    }
-                )
+            w, h = right_img.size
+            aspect = w / h if h else 1.0
+            arrow_w = arrow_scale * template_width
+            arrow_h = arrow_w / aspect
 
-                data_list.append({
-                    "shader": shader,
-                    "batch": right_arrow_batch,
-                    "texture": right_arrow_tex,
-                    "name": "Right_Arrow",
-                    "pos": (right_x1, right_y1, right_x2, right_y2),
-                })
+            right_x1 = center_x + arrow_offset_x * template_width - arrow_w / 2
+            right_y1 = center_y + arrow_offset_y * template_height - arrow_h / 2
+            right_x2 = right_x1 + arrow_w
+            right_y2 = right_y1 + arrow_h
 
-    # --- 5) Show "Page X / Y" text at the bottom center (if desired) ---
-    page_label = f"Page {page} / {total_pages}"
-    text_size = template_height * 0.03
-    text_y = y1 + 0.01 * template_height  # e.g. 1% above the bottom
-    data_list.append({
-        "type": "text",
-        "content": page_label,
-        "position": ((x1 + x2) / 2, text_y),
-        "size": text_size,
-        "color": (1.0, 1.0, 1.0, 1.0),
-        "alignment": 'CENTER',
-        "multiline": False
-    })
+            shader = gpu.shader.from_builtin('IMAGE')
+            verts = [(right_x1, right_y1), (right_x2, right_y1), (right_x2, right_y2), (right_x1, right_y2)]
+            coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
+
+            data_list.append({
+                "shader":  shader,
+                "batch":   batch,
+                "texture": right_tex,
+                "name":    "Right_Arrow",
+                "pos":     (right_x1, right_y1, right_x2, right_y2),
+            })
+        except Exception as e:
+            print(f"[ERROR] build_browse_content Right arrow skipped: {e}")
+
+    # --- 5) Page label ---
+    try:
+        page_label = f"Page {page} / {total_pages}"
+        text_size = template_height * 0.03
+        text_y = y1 + 0.01 * template_height
+        data_list.append({
+            "type":     "text",
+            "content":  page_label,
+            "position": ((x1 + x2) / 2, text_y),
+            "size":     text_size,
+            "color":    (1.0, 1.0, 1.0, 1.0),
+            "alignment": 'CENTER',
+            "multiline": False
+        })
+    except Exception as e:
+        print(f"[ERROR] build_browse_content page label skipped: {e}")
 
     return data_list
+
 
 
 def build_detail_content(template_item):
     """
-    Build the detail view content, including a back button and an enlarged thumbnail.
-    Also adds an Explore button positioned relative to the center.
+    Build the detail view content, including:
+      - A back button
+      - An Explore button
+      - An enlarged thumbnail (1:1), falling back to a placeholder if missing
+      - Detailed description text
     """
     if not template_item:
         return []
-    
+
     data_list = []
     x1, y1, x2, y2 = template_item["pos"]
 
     # --- Back Button ---
-    back_img = get_or_load_image(BACK_BUTTON_PATH)
-    if back_img:
+    try:
+        back_img = get_or_load_image(BACK_BUTTON_PATH)
+        if not back_img:
+            raise RuntimeError(f"Failed to load back image from {BACK_BUTTON_PATH}")
         back_tex = get_or_create_texture(back_img)
-        if back_tex:
-            back_shader = gpu.shader.from_builtin('IMAGE')
+        if not back_tex:
+            raise RuntimeError("Failed to create texture for back image")
 
-            native_w, native_h = back_img.size
-            native_aspect = native_w / native_h if native_h != 0 else 1.0
+        back_shader = gpu.shader.from_builtin('IMAGE')
 
-            back_w_ratio = 0.1
-            back_w = back_w_ratio * (x2 - x1)
-            back_h = back_w / native_aspect
+        native_w, native_h = back_img.size
+        native_aspect = native_w / native_h if native_h else 1.0
 
-            back_margin_top_ratio = 0.05
-            back_margin_left_ratio = 0.02
+        back_w = 0.1 * (x2 - x1)
+        back_h = back_w / native_aspect
 
-            back_margin_top = back_margin_top_ratio * (y2 - y1)
-            back_margin_left = back_margin_left_ratio * (x2 - x1)
+        back_margin_top = 0.05 * (y2 - y1)
+        back_margin_left = 0.02 * (x2 - x1)
 
-            back_x1 = x1 + back_margin_left
-            back_x2 = back_x1 + back_w
-            back_y2 = y2 - back_margin_top
-            back_y1 = back_y2 - back_h
+        back_x1 = x1 + back_margin_left
+        back_x2 = back_x1 + back_w
+        back_y2 = y2 - back_margin_top
+        back_y1 = back_y2 - back_h
 
-            verts = [
-                (back_x1, back_y1),
-                (back_x2, back_y1),
-                (back_x2, back_y2),
-                (back_x1, back_y2)
-            ]
-            coords = [(0,0), (1,0), (1,1), (0,1)]
-            back_batch = batch_for_shader(
-                back_shader, 'TRI_FAN',
-                {"pos": verts, "texCoord": coords}
-            )
+        verts = [
+            (back_x1, back_y1),
+            (back_x2, back_y1),
+            (back_x2, back_y2),
+            (back_x1, back_y2),
+        ]
+        coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        back_batch = batch_for_shader(back_shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
 
-            data_list.append({
-                "shader": back_shader,
-                "batch": back_batch,
-                "texture": back_tex,
-                "name": "Back_Icon",
-                "pos": (back_x1, back_y1, back_x2, back_y2),
-            })
+        data_list.append({
+            "shader":  back_shader,
+            "batch":   back_batch,
+            "texture": back_tex,
+            "name":    "Back_Icon",
+            "pos":     (back_x1, back_y1, back_x2, back_y2),
+        })
+    except Exception as e:
+        print(f"[ERROR] build_detail_content (Back button): {e}")
 
     # --- Explore Button ---
-    explore_img = get_or_load_image(EXPLORE_BUTTON_PATH)
-    if explore_img:
+    try:
+        explore_img = get_or_load_image(EXPLORE_BUTTON_PATH)
+        if not explore_img:
+            raise RuntimeError(f"Failed to load explore image from {EXPLORE_BUTTON_PATH}")
         explore_tex = get_or_create_texture(explore_img)
-        if explore_tex:
-            explore_shader = gpu.shader.from_builtin('IMAGE')
+        if not explore_tex:
+            raise RuntimeError("Failed to create texture for explore image")
 
-            native_w, native_h = explore_img.size
-            explore_aspect = native_w / native_h if native_h != 0 else 1.0
+        explore_shader = gpu.shader.from_builtin('IMAGE')
 
-            explore_w_ratio = 0.3
-            explore_w = explore_w_ratio * (x2 - x1)
-            explore_h = explore_w / explore_aspect
+        native_w, native_h = explore_img.size
+        explore_aspect = native_w / native_h if native_h else 1.0
 
-            explore_offset_x_ratio = 0.25
-            explore_offset_y_ratio = -0.4
+        explore_w = 0.3 * (x2 - x1)
+        explore_h = explore_w / explore_aspect
 
-            explore_offset_x = explore_offset_x_ratio * (x2 - x1)
-            explore_offset_y = explore_offset_y_ratio * (y2 - y1)
+        explore_offset_x = 0.25 * (x2 - x1)
+        explore_offset_y = -0.4 * (y2 - y1)
 
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
 
-            explore_x1 = center_x + explore_offset_x - (explore_w / 2)
-            explore_y1 = center_y + explore_offset_y - (explore_h / 2)
-            explore_x2 = explore_x1 + explore_w
-            explore_y2 = explore_y1 + explore_h
+        explore_x1 = center_x + explore_offset_x - (explore_w / 2)
+        explore_y1 = center_y + explore_offset_y - (explore_h / 2)
+        explore_x2 = explore_x1 + explore_w
+        explore_y2 = explore_y1 + explore_h
 
-            verts = [
-                (explore_x1, explore_y1),
-                (explore_x2, explore_y1),
-                (explore_x2, explore_y2),
-                (explore_x1, explore_y2)
-            ]
-            coords = [(0,0), (1,0), (1,1), (0,1)]
-            explore_batch = batch_for_shader(
-                explore_shader, 'TRI_FAN',
-                {"pos": verts, "texCoord": coords}
-            )
+        verts = [
+            (explore_x1, explore_y1),
+            (explore_x2, explore_y1),
+            (explore_x2, explore_y2),
+            (explore_x1, explore_y2),
+        ]
+        coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        explore_batch = batch_for_shader(explore_shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
 
-            data_list.append({
-                "shader": explore_shader,
-                "batch": explore_batch,
-                "texture": explore_tex,
-                "name": "Explore_Icon",
-                "pos": (explore_x1, explore_y1, explore_x2, explore_y2),
-            })
-    
-    # --- Enlarged Thumbnail (forcing 1:1 square) ---
-    selected_image_path = str(bpy.context.scene.selected_thumbnail)
-    if selected_image_path and os.path.exists(selected_image_path):
-        enlarged_img = get_or_load_image(selected_image_path)
-        if enlarged_img:
-            enlarged_tex = get_or_create_texture(enlarged_img)
-            if enlarged_tex:
-                enlarged_shader = gpu.shader.from_builtin('IMAGE')
+        data_list.append({
+            "shader":  explore_shader,
+            "batch":   explore_batch,
+            "texture": explore_tex,
+            "name":    "Explore_Icon",
+            "pos":     (explore_x1, explore_y1, explore_x2, explore_y2),
+        })
+    except Exception as e:
+        print(f"[ERROR] build_detail_content (Explore button): {e}")
 
-                # Ignoring the actual aspect ratio:
-                # We'll keep the same enlarge_factor approach, but
-                # force enlarged height = enlarged width for a 1:1 square.
+    # --- Enlarged Thumbnail (1:1 square, with placeholder fallback) ---
+    try:
+        sel_path = bpy.context.scene.selected_thumbnail or ""
+        if not os.path.exists(sel_path):
+            sel_path = MISSING_THUMB
 
-                enlarge_factor = 8
-                thumb_width_ratio = 0.05  # originally 5% of template width
-                thumb_width = thumb_width_ratio * (x2 - x1)
-                enlarged_w = thumb_width * enlarge_factor
-                enlarged_h = enlarged_w  # <--- Force 1:1
+        img = get_or_load_image(sel_path)
+        if not img:
+            raise RuntimeError(f"Failed to load thumbnail image from {sel_path}")
+        tex = get_or_create_texture(img)
+        if not tex:
+            raise RuntimeError("Failed to create texture for thumbnail image")
 
-                offset_x_ratio = -0.25
-                offset_y_ratio = -0.075
+        shader = gpu.shader.from_builtin('IMAGE')
 
-                offset_x = offset_x_ratio * (x2 - x1)
-                offset_y = offset_y_ratio * (y2 - y1)
+        # Force square enlargement
+        thumb_width = 0.05 * (x2 - x1)
+        enlarge_factor = 8
+        enlarged_w = thumb_width * enlarge_factor
+        enlarged_h = enlarged_w
 
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
+        offset_x = -0.25 * (x2 - x1)
+        offset_y = -0.075 * (y2 - y1)
 
-                enlarged_x1 = center_x - (enlarged_w / 2) + offset_x
-                enlarged_y1 = center_y - (enlarged_h / 2) + offset_y
-                enlarged_x2 = enlarged_x1 + enlarged_w
-                enlarged_y2 = enlarged_y1 + enlarged_h
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
 
-                verts = [
-                    (enlarged_x1, enlarged_y1),
-                    (enlarged_x2, enlarged_y1),
-                    (enlarged_x2, enlarged_y2),
-                    (enlarged_x1, enlarged_y2)
-                ]
-                coords = [(0,0), (1,0), (1,1), (0,1)]
-                enlarged_batch = batch_for_shader(
-                    enlarged_shader, 'TRI_FAN',
-                    {"pos": verts, "texCoord": coords}
-                )
+        enlarged_x1 = center_x - (enlarged_w / 2) + offset_x
+        enlarged_y1 = center_y - (enlarged_h / 2) + offset_y
+        enlarged_x2 = enlarged_x1 + enlarged_w
+        enlarged_y2 = enlarged_y1 + enlarged_h
 
-                data_list.append({
-                    "shader": enlarged_shader,
-                    "batch": enlarged_batch,
-                    "texture": enlarged_tex,
-                    "name": "Enlarged_Thumbnail",
-                    "pos": (enlarged_x1, enlarged_y1, enlarged_x2, enlarged_y2),
-                })
+        verts = [
+            (enlarged_x1, enlarged_y1),
+            (enlarged_x2, enlarged_y1),
+            (enlarged_x2, enlarged_y2),
+            (enlarged_x1, enlarged_y2),
+        ]
+        coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        enlarged_batch = batch_for_shader(shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
 
-    # Detailed description text
+        data_list.append({
+            "shader":  shader,
+            "batch":   enlarged_batch,
+            "texture": tex,
+            "name":    "Enlarged_Thumbnail",
+            "pos":     (enlarged_x1, enlarged_y1, enlarged_x2, enlarged_y2),
+        })
+    except Exception as e:
+        print(f"[ERROR] build_detail_content (Enlarged thumbnail): {e}")
+
+    # --- Detailed description text ---
     build_item_detail_text(data_list, template_item)
 
     return data_list
+
 
 def build_loading_progress(template_item, progress):
     """

@@ -1037,72 +1037,61 @@ def execute_custom_ui_text_reaction(r):
 
 
 ##----Sound reaction----------------------#
-# File: exp_reactions.py
-
 def execute_sound_reaction(r):
     """
     Called when a 'SOUND' reaction fires.
     Now supports:
       - ONCE or DURATION looping
-      - Per‐reaction relative volume multiplier
+      - Per-reaction relative volume multiplier
       - Optional distance-based volume attenuation
     """
-
     # 1) Grab the chosen Sound data from ReactionDefinition
     sound_data = r.sound_pointer
     if not sound_data:
-        print("[execute_sound_reaction] No Sound chosen.")
         return
 
     # 2) Must be packed to play
     if not sound_data.packed_file:
-        print(f"[execute_sound_reaction] Sound '{sound_data.name}' is NOT packed. Aborting.")
         return
 
-    scene = bpy.context.scene
-    if not scene.enable_audio:
-        print("[execute_sound_reaction] Audio is disabled in Scene properties.")
+    # 3) Global mute check & master volume from prefs
+    prefs = bpy.context.preferences.addons["Exploratory"].preferences
+    if not prefs.enable_audio:
+        print("[execute_sound_reaction] Audio is disabled in Preferences.")
         return
 
-    # 3) Prepare extraction folder (temp_sounds)
+    # 4) Prepare extraction folder (temp_sounds)
     addon_root = get_addon_path()
     temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
     os.makedirs(temp_sounds_dir, exist_ok=True)
 
-    # 4) Extract the packed bytes -> local .wav/.ogg
+    # 5) Extract the packed bytes -> local .wav/.ogg
     temp_path = extract_packed_sound(sound_data, temp_sounds_dir)
     if not temp_path:
-        print("[execute_sound_reaction] Extraction failed for", sound_data.name)
         return
 
     # Overwrite sound_data.filepath so aud can load it properly
     sound_data.filepath = temp_path
 
-    # 5) Prepare the aud device
+    # 6) Prepare the aud device
     device = aud.Device()
 
-    # 6) Compute the base volume = (master volume) * (reaction’s relative volume)
-    #    e.g. if scene.audio_level=0.8 and r.sound_volume=0.5 => final base=0.4
-    base_volume = scene.audio_level * r.sound_volume
+    # 7) Compute the base volume = (master volume) * (reaction’s relative volume)
+    base_volume = prefs.audio_level * r.sound_volume
 
-    # 7) If "DURATION" => create infinite loop but end after r.sound_duration
+    # 8) Play
     if r.sound_play_mode == "DURATION":
-        # A) Create a looped aud.Factory
+        # Loop indefinitely, then schedule a stop
         factory = aud.Sound(temp_path).loop(-1)
         handle = device.play(factory)
-
-        # B) Assign volume
         handle.volume = base_volume
 
-        # C) Create a SoundTask that stops after r.sound_duration
         start_time = get_game_time()
         t = SoundTask(
             handle=handle,
             start_time=start_time,
             duration=r.sound_duration,
             mode="DURATION",
-
-            # Distance-based fields (if ReactionDefinition has them)
             use_distance=r.sound_use_distance,
             dist_object=r.sound_distance_object,
             dist_max=r.sound_max_distance,
@@ -1110,38 +1099,24 @@ def execute_sound_reaction(r):
         )
         _sound_tasks.append(t)
 
-        print(f"[execute_sound_reaction] Looping '{sound_data.name}' for {r.sound_duration:.1f} sec. "
-              f"(final volume={base_volume:.2f}, distanceUse={r.sound_use_distance})")
-
     else:
-        # sound_play_mode == "ONCE"
-        # A) Just create a normal aud.Sound
+        # Play once
         factory = aud.Sound(temp_path)
         handle = device.play(factory)
-
-        # B) Assign volume
         handle.volume = base_volume
 
-        # C) Create a SoundTask so we can forcibly stop if user ends the game
         start_time = get_game_time()
         t = SoundTask(
             handle=handle,
             start_time=start_time,
-            duration=0.0,  # not used for ONCE
+            duration=0.0,
             mode="ONCE",
-
-            # Distance-based fields
             use_distance=r.sound_use_distance,
             dist_object=r.sound_distance_object,
             dist_max=r.sound_max_distance,
             original_volume=base_volume
         )
         _sound_tasks.append(t)
-
-        print(f"[execute_sound_reaction] Playing '{sound_data.name}' once. "
-              f"(final volume={base_volume:.2f}, distanceUse={r.sound_use_distance})")
-
-
 
 
 ##----Objectives reaction----------------------#
