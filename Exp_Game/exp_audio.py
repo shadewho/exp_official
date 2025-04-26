@@ -504,3 +504,38 @@ class EXP_AUDIO_OT_PackAllSounds(bpy.types.Operator):
                 packed += 1
         self.report({'INFO'}, f"Packed {packed} sound(s) into blend")
         return {'FINISHED'}
+    
+
+# ------------------------------------------------------------------------
+# Load CHARACTER audio into the .blend file
+# ------------------------------------------------------------------------
+
+class EXP_AUDIO_OT_LoadCharacterAudioFile(bpy.types.Operator, ImportHelper):
+    """Load an external audio file into a Character Audio slot"""
+    bl_idname = "exp_audio.load_character_audio_file"
+    bl_label = "Load Character Sound"
+    filename_ext = ".wav;.mp3;.ogg"
+
+    filter_glob: StringProperty(
+        default="*.wav;*.mp3;*.ogg",
+        options={'HIDDEN'},
+        description="Audio file extensions"
+    )
+    sound_slot: StringProperty(
+        name="Slot",
+        description="Which character_audio property to set",
+        default="walk_sound"
+    )
+
+    def execute(self, context):
+        # load & pack
+        sound = bpy.data.sounds.load(self.filepath, check_existing=True)
+        sound.pack()
+        # assign into character_audio
+        char_audio = context.scene.character_audio
+        setattr(char_audio, self.sound_slot, sound)
+        self.report(
+            {'INFO'},
+            f"Loaded '{sound.name}' into character_audio.{self.sound_slot}"
+        )
+        return {'FINISHED'}

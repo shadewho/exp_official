@@ -689,8 +689,14 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     bl_idname = "exploratory.build_character"
     bl_label = "Build Character (Skin + Actions)"
 
-    DEFAULT_SKIN_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend")
-    DEFAULT_ANIMS_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Animations", "exp_animations.blend")
+    DEFAULT_SKIN_BLEND = os.path.join(
+        get_addon_path(),
+        "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend"
+    )
+    DEFAULT_ANIMS_BLEND = os.path.join(
+        get_addon_path(),
+        "Exp_Game", "exp_assets", "Animations", "exp_animations.blend"
+    )
 
     DEFAULT_IDLE_NAME = "exp_idle"
     DEFAULT_WALK_NAME = "exp_walk"
@@ -703,109 +709,116 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
 
-        # 1) Honor the mesh/armature spawn lock
-        if scene.character_spawn_lock:
-            self.report({'INFO'}, "Character spawn is locked; skipping mesh/armature append.")
-            return {'FINISHED'}
-
-        # 2) Determine which blend file to use for the skin
-        blend_path = (
+        # ─── 1) Skin ───────────────────────────────────────────────────────────
+        skin_blend = (
             self.DEFAULT_SKIN_BLEND
             if prefs.skin_use_default
             else prefs.skin_custom_blend
         )
+        if scene.character_spawn_lock:
+            self.report(
+                {'INFO'},
+                "Character spawn is locked; skipping skin append."
+            )
+        else:
+            # If the armature already exists in that blend, remove it first
+            try:
+                with bpy.data.libraries.load(skin_blend, link=False) as (df, _):
+                    lib_names = set(df.objects)
+            except Exception as e:
+                self.report({'WARNING'}, f"Could not read {skin_blend}: {e}")
+                lib_names = set()
 
-        # 3) If the armature already exists in that blend, remove it first
-        try:
-            with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
-                lib_obj_names = set(data_from.objects)
-        except Exception as e:
-            self.report({'WARNING'}, f"Could not read {blend_path}: {e}")
-            lib_obj_names = set()
+            existing_arm = scene.target_armature
+            if existing_arm and existing_arm.name in lib_names:
+                bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
 
-        existing_arm = scene.target_armature
-        if existing_arm and existing_arm.name in lib_obj_names:
-            bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
+            # Append skin objects
+            self.append_all_skin_objects(
+                use_default  = prefs.skin_use_default,
+                custom_blend = prefs.skin_custom_blend
+            )
 
-        # 4) Append the skin objects
-        self.append_all_skin_objects(
-            use_default  = prefs.skin_use_default,
-            custom_blend = prefs.skin_custom_blend
-        )
-
-        # 5) Honor the action lock: if ON, skip all action appending
+        # ─── 2) Actions ───────────────────────────────────────────────────────
         if scene.character_actions_lock:
-            self.report({'INFO'}, "Character actions lock is ON; skipping action assignment.")
-            return {'FINISHED'}
+            self.report(
+                {'INFO'},
+                "Character actions lock is ON; skipping action assignment."
+            )
+        else:
+            char_actions = scene.character_actions
 
-        # 6) Otherwise, append & assign each action
-        char_actions = scene.character_actions
+            def process_action(state_label, use_default, custom_blend,
+                               chosen_name, default_name, target_attr):
+                blend = (
+                    self.DEFAULT_ANIMS_BLEND
+                    if use_default
+                    else custom_blend
+                )
+                action_name = default_name if use_default else chosen_name
+                if not action_name:
+                    print(f"[{state_label}] No action name; skipping.")
+                    return
 
-        def process_action(state_label, use_default, custom_blend, chosen_name, default_name, target_attr):
-            if use_default:
-                anim_blend = self.DEFAULT_ANIMS_BLEND
-                action_name = default_name
-            else:
-                anim_blend = custom_blend
-                action_name = chosen_name
+                # Append if not already loaded
+                if not bpy.data.actions.get(action_name) and os.path.isfile(blend):
+                    with bpy.data.libraries.load(blend, link=False) as (df, dt):
+                        if action_name in df.actions:
+                            dt.actions = [action_name]
 
-            if not action_name:
-                print(f"[{state_label}] No action name; skipping.")
-                return
+                act = bpy.data.actions.get(action_name)
+                if act:
+                    setattr(char_actions, target_attr, act)
+                    print(f"[{state_label}] => {act.name}")
 
-            # Append it if needed
-            existing = bpy.data.actions.get(action_name)
-            if not existing and os.path.isfile(anim_blend):
-                with bpy.data.libraries.load(anim_blend, link=False) as (df, dt):
-                    if action_name in df.actions:
-                        dt.actions = [action_name]
-            action_ref = bpy.data.actions.get(action_name)
-            if action_ref:
-                setattr(char_actions, target_attr, action_ref)
-                print(f"[{state_label}] => {action_ref.name}")
-
-        process_action("Idle",
-            prefs.idle_use_default_action,
-            prefs.idle_custom_blend_action,
-            prefs.idle_action_enum_prop,
-            self.DEFAULT_IDLE_NAME,
-            "idle_action"
-        )
-        process_action("Walk",
-            prefs.walk_use_default_action,
-            prefs.walk_custom_blend_action,
-            prefs.walk_action_enum_prop,
-            self.DEFAULT_WALK_NAME,
-            "walk_action"
-        )
-        process_action("Run",
-            prefs.run_use_default_action,
-            prefs.run_custom_blend_action,
-            prefs.run_action_enum_prop,
-            self.DEFAULT_RUN_NAME,
-            "run_action"
-        )
-        process_action("Jump",
-            prefs.jump_use_default_action,
-            prefs.jump_custom_blend_action,
-            prefs.jump_action_enum_prop,
-            self.DEFAULT_JUMP_NAME,
-            "jump_action"
-        )
-        process_action("Fall",
-            prefs.fall_use_default_action,
-            prefs.fall_custom_blend_action,
-            prefs.fall_action_enum_prop,
-            self.DEFAULT_FALL_NAME,
-            "fall_action"
-        )
-        process_action("Land",
-            prefs.land_use_default_action,
-            prefs.land_custom_blend_action,
-            prefs.land_action_enum_prop,
-            self.DEFAULT_LAND_NAME,
-            "land_action"
-        )
+            process_action(
+                "Idle",
+                prefs.idle_use_default_action,
+                prefs.idle_custom_blend_action,
+                prefs.idle_action_enum_prop,
+                self.DEFAULT_IDLE_NAME,
+                "idle_action"
+            )
+            process_action(
+                "Walk",
+                prefs.walk_use_default_action,
+                prefs.walk_custom_blend_action,
+                prefs.walk_action_enum_prop,
+                self.DEFAULT_WALK_NAME,
+                "walk_action"
+            )
+            process_action(
+                "Run",
+                prefs.run_use_default_action,
+                prefs.run_custom_blend_action,
+                prefs.run_action_enum_prop,
+                self.DEFAULT_RUN_NAME,
+                "run_action"
+            )
+            process_action(
+                "Jump",
+                prefs.jump_use_default_action,
+                prefs.jump_custom_blend_action,
+                prefs.jump_action_enum_prop,
+                self.DEFAULT_JUMP_NAME,
+                "jump_action"
+            )
+            process_action(
+                "Fall",
+                prefs.fall_use_default_action,
+                prefs.fall_custom_blend_action,
+                prefs.fall_action_enum_prop,
+                self.DEFAULT_FALL_NAME,
+                "fall_action"
+            )
+            process_action(
+                "Land",
+                prefs.land_use_default_action,
+                prefs.land_custom_blend_action,
+                prefs.land_action_enum_prop,
+                self.DEFAULT_LAND_NAME,
+                "land_action"
+            )
 
         self.report({'INFO'}, "Build Character complete!")
         return {'FINISHED'}

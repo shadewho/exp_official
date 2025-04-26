@@ -196,14 +196,28 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         )
 
         def sound_row(prop_name, label):
-            row = box.row()
+            row = box.row(align=True)
             snd = getattr(audio, prop_name)
+
+            # the pointer field
             row.prop(audio, prop_name, text=label)
+            # new Load button
+            load_op = row.operator(
+                "exp_audio.load_character_audio_file",
+                text="",
+                icon='FILE_FOLDER'
+            )
+            load_op.sound_slot = prop_name
+
             if snd:
                 sub = box.row(align=True)
                 sub.prop(snd, "sound_speed", text="Speed")
-                op = sub.operator("exp_audio.test_sound_pointer", text="Test", icon='PLAY')
-                op.sound_slot = prop_name
+                test = sub.operator(
+                    "exp_audio.test_sound_pointer",
+                    text="Test",
+                    icon='PLAY'
+                )
+                test.sound_slot = prop_name
             else:
                 box.label(text=f"{label}: (none)")
 
@@ -219,6 +233,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             text="Pack All Sounds",
             icon='PACKAGE'
         )
+        box.label(text="For distribution, please pack all custom audio into the .blend file.")
 
 # --------------------------------------------------------------------
 # Proxy Meshes (only visible in Create mode)

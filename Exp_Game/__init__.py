@@ -26,7 +26,8 @@ from .exp_custom_ui import EXPLORE_OT_PreviewCustomText
 from .exp_utilities import EXPLORATORY_OT_SetGameWorld
 from .exp_startup import EXP_GAME_OT_StartGame
 from .exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
-                        EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds
+                        EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
+                        EXP_AUDIO_OT_LoadCharacterAudioFile
 )
 from .exp_interactions import (
     InteractionDefinition,
@@ -90,6 +91,7 @@ def register():
 
     # --- Audio Operators & Properties ---
     bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
+    bpy.utils.register_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
     bpy.utils.register_class(CharacterAudioPG)
     bpy.utils.register_class(EXPLORATORY_OT_BuildAudio)
     bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
@@ -134,6 +136,7 @@ def unregister():
     bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
     bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)
     bpy.utils.unregister_class(AUDIO_OT_TestSoundPointer)
+    bpy.utils.unregister_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
     bpy.utils.unregister_class(CharacterAudioPG)
     bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
 
