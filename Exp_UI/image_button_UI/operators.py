@@ -7,7 +7,7 @@ from .drawing import load_image_buttons, draw_image_buttons_callback
 from .utils import viewport_changed
 from .config import THUMBNAILS_PER_PAGE
 from ..helper_functions import download_thumbnail
-from ..main_config import PACKAGES_ENDPOINT
+from ..main_config import PACKAGES_ENDPOINT, EVENTS_URL, SHOP_URL
 from ..exp_api import fetch_packages, fetch_detail_for_file
 import threading
 import queue
@@ -591,6 +591,17 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                         else:
                             self.report({'ERROR'}, "No package selected or missing download code.")
                         return {'RUNNING_MODAL'}
+                    elif button["name"] == "Submit_World_Icon":
+                        # jump out to your website’s events page
+                        bpy.ops.webapp.open_url(
+                            'INVOKE_DEFAULT',
+                            url=EVENTS_URL
+                        )
+                        return {'RUNNING_MODAL'}
+                    elif button["name"] == "Visit_Shop_Icon":
+                        bpy.ops.webapp.open_url('INVOKE_DEFAULT', url=SHOP_URL)
+                        return {'RUNNING_MODAL'}
+                    
                     else:
                         # Handle clicking a thumbnail in BROWSE mode.
                         if scene.ui_current_mode == "BROWSE":

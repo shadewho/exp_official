@@ -6,7 +6,7 @@ from .exp_utilities import (
 # Exploratory Modal Panel
 # --------------------------------------------------------------------
 class ExploratoryPanel(bpy.types.Panel):
-    bl_label = "Exploratory Modal Panel"
+    bl_label = "Exploratory"
     bl_idname = "VIEW3D_PT_exploratory_modal"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -16,27 +16,43 @@ class ExploratoryPanel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
-        # Always show the mode toggle:
-        layout.prop(scene, "main_category", expand=True)
+        # ─── Main navigation ────────────────────────────────────────────
+        row = layout.row(align=True)
+        row.scale_x = 1.5   # make buttons wider
+        row.scale_y = 1.5   # make buttons taller
+        row.prop(scene, "main_category", expand=True)
+
         layout.separator()
         layout.separator()
 
-        # Only show the modal operator button if in CREATE mode:
+        # ─── CREATE MODE ──────────────────────────────────────────────
         if scene.main_category == 'CREATE':
-            op = layout.operator("view3d.exp_modal", text="Start Game (Not Fullscreen)")
-            op.launched_from_ui = False  # Direct modal launch.
-            op.should_revert_workspace = False  # Do not revert workspace.
-            layout.operator("exploratory.start_game", text="Start Game (Fullscreen)")
-
+            col = layout.column(align=True)
+            
+            # Play in windowed mode
+            op = col.operator(
+                "view3d.exp_modal",
+                text="▶     Play Windowed"
+            )
+            op.launched_from_ui = False
+            op.should_revert_workspace = False
+            
+            # Play in fullscreen
+            col.operator(
+                "exploratory.start_game",
+                text="▶     Play Fullscreen"
+            )
+            
             layout.separator()
-
-            # Provide a button to mark the current scene as the game world
-            layout.operator("exploratory.set_game_world", text="Set Game World", icon='WORLD')
+            layout.operator(
+                "exploratory.set_game_world",
+                text="Set Game World",
+                icon='WORLD'
+            )
 
             game_world = get_game_world()
             if game_world:
                 layout.label(text=f"Game World: {game_world.name}")
-
             else:
                 row = layout.row()
                 row.alert = True
@@ -44,7 +60,10 @@ class ExploratoryPanel(bpy.types.Panel):
                 
                 row = layout.row()
                 row.alert = True
-                row.label(text="Switch to your desired scene and click 'Set Game World' to assign it.")
+                row.label(
+                    text="Switch to your desired scene and click 'Set Game World' to assign it."
+                )
+
 
 
 
@@ -245,7 +264,6 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
-    # Show only when main_category is set to "CREATE"
     @classmethod
     def poll(cls, context):
         return context.scene.main_category == 'CREATE'
@@ -254,28 +272,26 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
+        # Proxy Mesh List
         layout.separator()
         layout.label(text="Proxy Meshes")
         row = layout.row()
         row.template_list(
-            "EXPLORATORY_UL_ProxyMeshList",  # Your UIList class name
+            "EXPLORATORY_UL_ProxyMeshList",
             "",
             scene,
-            "proxy_meshes",          # The collection property
+            "proxy_meshes",
             scene,
-            "proxy_meshes_index",    # The integer property for the active item
+            "proxy_meshes_index",
             rows=4
         )
-
-        # The side column with add/remove operators
         col = row.column(align=True)
         col.operator("exploratory.add_proxy_mesh", text="", icon='ADD')
         remove_op = col.operator("exploratory.remove_proxy_mesh", text="", icon='REMOVE')
         remove_op.index = scene.proxy_meshes_index
 
+        # Details for selected proxy mesh
         layout.separator()
-
-        # Show details for the currently selected proxy mesh
         idx = scene.proxy_meshes_index
         if 0 <= idx < len(scene.proxy_meshes):
             entry = scene.proxy_meshes[idx]
@@ -284,31 +300,27 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
             box.prop(entry, "name", text="Name")
             box.prop(entry, "mesh_object", text="Mesh")
             box.prop(entry, "is_moving", text="Dynamic Mesh (Moving)")
-
             if entry.is_moving:
                 dyn_box = box.box()
-
-                # — Warning Group —
                 warn_grp = dyn_box.column(align=True)
                 warn_grp.label(text="⚠ Mesh rebuild every frame!")
                 warn_grp.label(text="Optimize mesh and use Register Distance")
                 warn_grp.label(text="Very expensive calculations for complex geometry!")
-
                 dyn_box.separator()
-
-                # — Register Distance Group —
                 dist_grp = dyn_box.column(align=True)
                 dist_grp.prop(entry, "register_distance", text="Register Distance")
-                dist_grp.label(text="Register Distance = Distance from mesh before calculations are considered.")
-                dist_grp.label(text="0.0 = Always on.")
-
-                
+                dist_grp.label(text="Distance at which dynamic mesh updates.")
             box.prop(entry, "hide_during_game", text="Hide During Game")
 
-
+        # Spawn Object section in its own box
         layout.separator()
-        layout.label(text="Spawn Object")
-        layout.prop(scene, "spawn_object", text="")
+        spawn_box = layout.box()
+        spawn_box.label(text="Spawn Object", icon='EMPTY_AXIS')
+        spawn_box.prop(scene, "spawn_object", text="Object")
+        spawn_box.prop(scene, "spawn_use_nearest_z_surface", text="Find Nearest Z Surface")
+
+
+
 
 
 ###############################################################
@@ -753,51 +765,51 @@ class VIEW3D_PT_Objectives(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-
         return context.scene.main_category == "CREATE"
+
     def draw(self, context):
         layout = self.layout
         scene = context.scene
 
+        # List
         row = layout.row()
         row.template_list(
-            "EXPLORATORY_UL_Objectives",
-            "",
-            scene, "objectives",
-            scene, "objectives_index",
+            "EXPLORATORY_UL_Objectives", "", 
+            scene, "objectives", 
+            scene, "objectives_index", 
             rows=3
         )
         col = row.column(align=True)
-        col.operator("exploratory.add_objective", text="", icon='ADD')
-        rem = col.operator("exploratory.remove_objective", text="", icon='REMOVE')
+        col.operator("exploratory.add_objective", icon='ADD', text="")
+        rem = col.operator("exploratory.remove_objective", icon='REMOVE', text="")
         rem.index = scene.objectives_index
 
+        # Details
         idx = scene.objectives_index
         if 0 <= idx < len(scene.objectives):
             objv = scene.objectives[idx]
-            box = layout.box()
-            box.prop(objv, "name", text="Name")
-            box.prop(objv, "description", text="Description")
 
-            box.label(text="Objective Counter:")
-            box.prop(objv, "default_value", text="Default Value")
-            box.label(text="Default Value = value when the game starts or resets.")
-            box.separator()
+            # Basic Info
+            info_box = layout.box()
+            info_box.prop(objv, "name", text="Name")
+            info_box.prop(objv, "description", text="Description")
 
-            # ─── NEW: optional min/max limits UI ────────────────────────
-            box.separator()
-            box.label(text="Value Limits (optional):")
-            box.prop(objv, "use_min_limit", text="Enable Minimum")
+            # Counter Settings
+            counter_box = layout.box()
+            counter_box.label(text="Objective Counter Settings")
+            counter_box.prop(objv, "default_value", text="Default Value")
+            counter_box.label(text="(Value at start/reset)")
+            counter_box.prop(objv, "use_min_limit", text="Enable Min")
             if objv.use_min_limit:
-                box.prop(objv, "min_value", text="Minimum Value")
-            box.prop(objv, "use_max_limit", text="Enable Maximum")
+                counter_box.prop(objv, "min_value", text="Min Value")
+            counter_box.prop(objv, "use_max_limit", text="Enable Max")
             if objv.use_max_limit:
-                box.prop(objv, "max_value", text="Maximum Value")
+                counter_box.prop(objv, "max_value", text="Max Value")
 
-            box.separator()
-            box.label(text="Timer Settings:")
-            box.prop(objv, "timer_mode",       text="Mode")
-            box.prop(objv, "timer_start_value",text="Start Value")
-            box.prop(objv, "timer_end_value",  text="End Value")
+            # Timer Settings
+            timer_box = layout.box()
+            timer_box.label(text="Objective Timer Settings")
+            timer_box.prop(objv, "timer_mode", text="Mode")
+            timer_box.prop(objv, "timer_start_value", text="Start Value")
+            timer_box.prop(objv, "timer_end_value", text="End Value")
 
-            box.label(text=f"Current Timer Value: {objv.timer_value:.1f}")

@@ -14,7 +14,7 @@ from .config import (
     THUMBNAIL_TEXT_SIZE, THUMBNAIL_TEXT_COLOR, THUMBNAIL_TEXT_ALIGNMENT, THUMBNAIL_TEXT_OFFSET_RATIO, THUMBNAIL_TEXT_SIZE_RATIO, 
     THUMBNAILS_PER_PAGE, EXPLORE_BUTTON_PATH,
     LOADING_IMAGE_OFFSET_X, LOADING_IMAGE_OFFSET_Y, LOADING_IMAGE_PATH, LOADING_IMAGE_SCALE,
-    MISSING_THUMB
+    MISSING_THUMB, VISIT_SHOP_BUTTON_PATH, SUBMIT_WORLD_BUTTON_PATH
 )
 from .cache import get_or_load_image, get_or_create_texture
 from .utils import calculate_free_space, calculate_template_position
@@ -305,12 +305,11 @@ def build_browse_content(template_item):
     return data_list
 
 
-
 def build_detail_content(template_item):
     """
     Build the detail view content, including:
       - A back button
-      - An Explore button
+      - An Explore button (or Visit Shop for shop items)
       - An enlarged thumbnail (1:1), falling back to a placeholder if missing
       - Detailed description text
     """
@@ -364,52 +363,65 @@ def build_detail_content(template_item):
     except Exception as e:
         print(f"[ERROR] build_detail_content (Back button): {e}")
 
-    # --- Explore Button ---
+    # --- Explore / Visit Shop / Submit World Button ---
     try:
-        explore_img = get_or_load_image(EXPLORE_BUTTON_PATH)
-        if not explore_img:
-            raise RuntimeError(f"Failed to load explore image from {EXPLORE_BUTTON_PATH}")
-        explore_tex = get_or_create_texture(explore_img)
-        if not explore_tex:
-            raise RuntimeError("Failed to create texture for explore image")
+        # pick which image + name
+        if bpy.context.scene.package_item_type == 'shop_item':
+            btn_img  = get_or_load_image(VISIT_SHOP_BUTTON_PATH)
+            btn_name = "Visit_Shop_Icon"
+        elif (bpy.context.scene.package_item_type == 'event'
+              and bpy.context.scene.event_stage == 'submission'):
+            btn_img  = get_or_load_image(SUBMIT_WORLD_BUTTON_PATH)
+            btn_name = "Submit_World_Icon"
+        else:
+            btn_img  = get_or_load_image(EXPLORE_BUTTON_PATH)
+            btn_name = "Explore_Icon"
 
-        explore_shader = gpu.shader.from_builtin('IMAGE')
+        if not btn_img:
+            # determine which path we tried
+            source = {
+                "Visit_Shop_Icon": VISIT_SHOP_BUTTON_PATH,
+                "Submit_World_Icon": SUBMIT_WORLD_BUTTON_PATH,
+                "Explore_Icon": EXPLORE_BUTTON_PATH
+            }[btn_name]
+            raise RuntimeError(f"Failed to load button image from {source}")
 
-        native_w, native_h = explore_img.size
-        explore_aspect = native_w / native_h if native_h else 1.0
+        btn_tex = get_or_create_texture(btn_img)
+        if not btn_tex:
+            raise RuntimeError("Failed to create texture for button image")
 
-        explore_w = 0.3 * (x2 - x1)
-        explore_h = explore_w / explore_aspect
+        btn_shader = gpu.shader.from_builtin('IMAGE')
 
-        explore_offset_x = 0.25 * (x2 - x1)
-        explore_offset_y = -0.4 * (y2 - y1)
+        native_w, native_h = btn_img.size
+        aspect = (native_w / native_h) if native_h else 1.0
+
+        btn_w = 0.3 * (x2 - x1)
+        btn_h = btn_w / aspect
+
+        offset_x = 0.25 * (x2 - x1)
+        offset_y = -0.4 * (y2 - y1)
 
         center_x = (x1 + x2) / 2
         center_y = (y1 + y2) / 2
 
-        explore_x1 = center_x + explore_offset_x - (explore_w / 2)
-        explore_y1 = center_y + explore_offset_y - (explore_h / 2)
-        explore_x2 = explore_x1 + explore_w
-        explore_y2 = explore_y1 + explore_h
+        bx1 = center_x + offset_x - (btn_w / 2)
+        by1 = center_y + offset_y - (btn_h / 2)
+        bx2 = bx1 + btn_w
+        by2 = by1 + btn_h
 
-        verts = [
-            (explore_x1, explore_y1),
-            (explore_x2, explore_y1),
-            (explore_x2, explore_y2),
-            (explore_x1, explore_y2),
-        ]
+        verts = [(bx1, by1), (bx2, by1), (bx2, by2), (bx1, by2)]
         coords = [(0, 0), (1, 0), (1, 1), (0, 1)]
-        explore_batch = batch_for_shader(explore_shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
+        batch = batch_for_shader(btn_shader, 'TRI_FAN', {"pos": verts, "texCoord": coords})
 
         data_list.append({
-            "shader":  explore_shader,
-            "batch":   explore_batch,
-            "texture": explore_tex,
-            "name":    "Explore_Icon",
-            "pos":     (explore_x1, explore_y1, explore_x2, explore_y2),
+            "shader":  btn_shader,
+            "batch":   batch,
+            "texture": btn_tex,
+            "name":    btn_name,
+            "pos":     (bx1, by1, bx2, by2),
         })
     except Exception as e:
-        print(f"[ERROR] build_detail_content (Explore button): {e}")
+        print(f"[ERROR] build_detail_content (Action button): {e}")
 
     # --- Enlarged Thumbnail (1:1 square, with placeholder fallback) ---
     try:
@@ -462,10 +474,12 @@ def build_detail_content(template_item):
     except Exception as e:
         print(f"[ERROR] build_detail_content (Enlarged thumbnail): {e}")
 
+    
     # --- Detailed description text ---
     build_item_detail_text(data_list, template_item)
 
     return data_list
+
 
 
 def build_loading_progress(template_item, progress):

@@ -2,57 +2,81 @@
 ########################################
 import bpy
 import math
-from mathutils import Vector, Matrix, Quaternion
+from mathutils import Vector, Euler
+from .exp_raycastutils import create_bvh_tree
 
 def spawn_user():
-    """
-    1) If there's an object named 'exp_spawn', move our target object (e.g. 'exp_character')
-       to that location (and optionally rotation).
-    2) Then set up the camera to orbit around 'target armature' using distance/pitch from the scene.
-    """
+    """Spawn the user character in the scene based on the current settings."""
     scene = bpy.context.scene
     arm = scene.target_armature
-    distance = scene.orbit_distance
-    view_distance = scene.zoom_factor
-    pitch = scene.pitch_angle
+    margin = 0.25  # safety margin above the surface
 
     if not arm:
         print("Error: No target armature set in scene.target_armature.")
         return
 
-    # Instead of: spawn_location_obj = bpy.data.objects.get("exp_spawn")
-    # We read the pointer property:
-    spawn_location_obj = scene.spawn_object
+    spawn_obj = scene.spawn_object
+    if spawn_obj:
+        if scene.spawn_use_nearest_z_surface and spawn_obj.type == 'MESH':
+            bvh = create_bvh_tree([spawn_obj])
+            if bvh:
+                # Compute world‐space bounding box Z extents
+                world_bb = [spawn_obj.matrix_world @ Vector(corner) for corner in spawn_obj.bound_box]
+                z_min = min(v.z for v in world_bb)
+                z_max = max(v.z for v in world_bb)
+                origin = spawn_obj.location.copy()
 
-    if spawn_location_obj:
-        print("Moving character to spawn_object location:", spawn_location_obj.name)
-        arm.location = spawn_location_obj.location
-        arm.rotation_euler = spawn_location_obj.rotation_euler
+                # Raycast down from just above top
+                origin_down = Vector((origin.x, origin.y, z_max + 0.001))
+                hit_down = bvh.ray_cast(origin_down, Vector((0, 0, -1)))
+                loc_down = hit_down[0] if hit_down and hit_down[0] else None
+
+                # Raycast up from just below bottom
+                origin_up = Vector((origin.x, origin.y, z_min - 0.001))
+                hit_up = bvh.ray_cast(origin_up, Vector((0, 0, 1)))
+                loc_up = hit_up[0] if hit_up and hit_up[0] else None
+
+                # Choose the hit closest in Z to the origin
+                candidates = [loc for loc in (loc_down, loc_up) if loc]
+                if candidates:
+                    chosen = min(candidates, key=lambda loc: abs(loc.z - origin.z))
+                    arm.location = Vector((origin.x, origin.y, chosen.z + margin))
+                    # Always upright: zero X/Y rotation, keep only Z (yaw)
+                    arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+                    print(f"[spawn_user] surface Z={chosen.z:.3f}, placed at Z={arm.location.z:.3f}")
+                else:
+                    arm.location = origin
+                    arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+                    print("[spawn_user] no surface hit; using origin")
+            else:
+                arm.location = spawn_obj.location.copy()
+                arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+                print("[spawn_user] BVH failed; using origin")
+        else:
+            arm.location = spawn_obj.location.copy()
+            arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+            print("[spawn_user] flag off or non-mesh; using origin")
     else:
-        print("No spawn_object set; using the character's current location.")
+        print("No spawn_object set; character remains in place.")
 
-    # 3) camera logic:
-
-    # Compute world‑space “behind + pitched” direction
-    obj_location = arm.location
-    obj_rotation = arm.matrix_world.to_quaternion()
-    yaw = obj_rotation.to_euler('XYZ').z
-    pitch_rad = math.radians(pitch)
+    # --- camera setup (unchanged) ---
+    obj_loc = arm.location
+    obj_rot = arm.matrix_world.to_quaternion()
+    yaw = obj_rot.to_euler('XYZ').z
+    pitch_rad = math.radians(scene.pitch_angle)
     cam_dir = Vector((
         math.cos(pitch_rad) * math.sin(yaw),
         -math.cos(pitch_rad) * math.cos(yaw),
         math.sin(pitch_rad)
     ))
-    view_position = obj_location + cam_dir * distance
+    view_pos = obj_loc + cam_dir * scene.orbit_distance
 
-    # Apply to every VIEW_3D in the current screen:
     for area in bpy.context.screen.areas:
         if area.type == 'VIEW_3D':
             r3d = area.spaces.active.region_3d
-            r3d.view_location = view_position
+            r3d.view_location = view_pos
             r3d.view_rotation = cam_dir.to_track_quat('Z', 'Y')
-            # combine orbit_distance + zoom_factor
-            r3d.view_distance = distance + view_distance
+            r3d.view_distance = scene.orbit_distance + scene.zoom_factor
 
 #-----------------------------------------------------------
 #remove character to maintain a clean scene character state

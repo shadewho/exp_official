@@ -18,8 +18,8 @@ USER_PROFILE_BASE_URLS = {
 }
 
 # Select the appropriate base URL
-BASE_URL = BASE_URLS.get(ENVIRONMENT, BASE_URLS['development'])
-USER_PROFILE_BASE_URL = USER_PROFILE_BASE_URLS.get(ENVIRONMENT, USER_PROFILE_BASE_URLS['development'])
+BASE_URL = BASE_URLS.get(ENVIRONMENT, BASE_URLS['production'])
+USER_PROFILE_BASE_URL = USER_PROFILE_BASE_URLS.get(ENVIRONMENT, USER_PROFILE_BASE_URLS['production'])
 
 # Define specific endpoints for the blender API
 LOGIN_ENDPOINT = f"{BASE_URL}/api/login"
@@ -38,8 +38,22 @@ EVENTS_BASE_URL = {
     'production': 'https://exploratory.online/events'
 }
 # Get the events URL for the current environment.
-EVENTS_URL = EVENTS_BASE_URL.get(ENVIRONMENT, EVENTS_BASE_URL['development'])
+EVENTS_URL = EVENTS_BASE_URL.get(ENVIRONMENT, EVENTS_BASE_URL['production'])
 EVENTS_ENDPOINT = f"{EVENTS_URL}/api/events_by_stage"
+
+# --- SHOP link ---
+SHOP_BASE_URL = {
+    'development': 'http://127.0.0.1:5000/shop/',
+    'production':  'https://exploratory.online/shop/'
+}
+SHOP_URL = SHOP_BASE_URL.get(ENVIRONMENT, SHOP_BASE_URL['production'])
+
+# DOCS URL
+DOCS_BASE_URL = {
+    'development': 'http://127.0.0.1:5000/docs/',
+    'production':  'https://exploratory.online/docs/'
+}
+DOCS_URL = DOCS_BASE_URL.get(ENVIRONMENT, DOCS_BASE_URL['production'])
 
 if ENVIRONMENT == 'development':
     LOGIN_PAGE_ENDPOINT = "http://127.0.0.1:5000/login"

@@ -4,7 +4,7 @@ import bpy
 from .auth import load_token
 from .helper_functions import format_relative_time
 from .version_info import CURRENT_VERSION
-from .exp_api import check_for_update
+from .exp_api import get_cached_latest_version
 
 class VIEW3D_PT_SubscriptionUsage(bpy.types.Panel):
     bl_label = "Subscription Usage"
@@ -198,55 +198,38 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
-    @classmethod
-    def poll(cls, context):
-        return context.scene.main_category == 'EXPLORE'
-
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
 
-        layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
-        layout.menu("INFO_MT_addon_update", text="Update Available")
-
-        # Audio Control Section
+        # Docs link
+        layout.operator("webapp.open_docs", text="Documentation", icon='HELP')
         layout.separator()
+
+        # Current version
+        layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
+        layout.separator()
+
+        # —— read from cache, no network here! ——
+        latest = get_cached_latest_version()
+        if latest is None:
+            # never fetched (or fetch failed)
+            layout.label(text="Update status unknown", icon='QUESTION')
+            layout.operator("webapp.refresh_version", icon='FILE_REFRESH')
+        elif latest == CURRENT_VERSION:
+            layout.label(text="Exploratory is up to date!", icon='CHECKMARK')
+            layout.operator("webapp.refresh_version", text="Re-check", icon='FILE_REFRESH')
+        else:
+            layout.label(text=f"Update Available: {latest}", icon='ERROR')
+            layout.operator("webapp.update_addon", text="Update Add-on", icon='IMPORT')
+
+        layout.separator()
+
+        # Audio controls (unchanged)…
         box = layout.box()
         box.label(text="Audio", icon='SOUND')
-
         prefs = context.preferences.addons["Exploratory"].preferences
         split = box.split(factor=0.5, align=True)
         col = split.column(align=True)
         icon = 'RADIOBUT_ON' if prefs.enable_audio else 'RADIOBUT_OFF'
-        col.prop(
-            prefs,
-            "enable_audio",
-            text="Master Volume",
-            icon=icon
-        )
-        split.column(align=True).prop(
-            prefs,
-            "audio_level",
-            text="Volume",
-            slider=True
-        )
-
-
-
-class INFO_MT_addon_update(bpy.types.Menu):
-    bl_label = "Update Available"
-    bl_idname = "INFO_MT_addon_update"
-
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text="A new version of the add-on is available!")
-        layout.label(text="Please update the add-on to continue using it.")
-
-
-    def execute(self, context):
-        update_needed = not check_for_update()  # check_for_update returns False if update is required.
-        if update_needed:
-            self.report({'WARNING'}, "A new version is available! Please update the add-on.")
-        else:
-            self.report({'INFO'}, "Your add-on is up-to-date.")
-        return {'FINISHED'}
+        col.prop(prefs, "enable_audio", text="Master Volume", icon=icon)
+        split.column(align=True).prop(prefs, "audio_level", text="Volume", slider=True)

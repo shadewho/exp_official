@@ -1,20 +1,17 @@
 # backend.py
-import os
+
 import bpy
-from bpy.types import Operator
-import requests  # Added missing import
-import shutil
-from .helper_functions import (
- download_blend_file, append_scene_from_blend
-)
-from .auth import load_token, save_token, clear_token, initiate_login, start_local_server, ensure_internet_connection
+from bpy.props import StringProperty
+import requests
+import webbrowser
+from .auth import load_token, clear_token, initiate_login, start_local_server, ensure_internet_connection
 
 import traceback
 import threading
-from .main_config import (LOGIN_ENDPOINT, DOWNLOAD_ENDPOINT, THUMBNAIL_CACHE_FOLDER)
-from .exp_api import login, logout, check_for_update
+from .main_config import (DOWNLOAD_ENDPOINT, DOCS_URL)
+from .version_info import CURRENT_VERSION
+from .exp_api import fetch_latest_version
 from .helper_functions import download_thumbnail, auto_refresh_usage
-
 
 # ----------------------------------------------------------------------------
 # LOGIN/LOGOUT
@@ -26,28 +23,30 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        # First, check for updates before logging in.
-        if not check_for_update():
-            self.report({'WARNING'}, "A new add-on version is available. Please update before logging in.")
-            return {'CANCELLED'}
-
-        # Ensure that there is an active internet connection.
+        # 1) Make sure we're online (will clear token & disable UI if offline)
         if not ensure_internet_connection(context):
             self.report({'ERROR'}, "No internet connection detected. Cannot login.")
             return {'CANCELLED'}
 
-        # Start the callback server on port 8000 in a background thread.
+        # 2) Refresh the cached "latest version" value
+        from .exp_api import update_latest_version_cache, get_cached_latest_version
+        update_latest_version_cache()
+        latest = get_cached_latest_version()
+
+        # 3) If there *is* a newer version, block login with a warning
+        if latest and latest != CURRENT_VERSION:
+            self.report(
+                {'WARNING'},
+                f"New Exploratory version {latest} available. Please update before logging in."
+            )
+            return {'CANCELLED'}
+
+        # 4) All good → proceed with your normal login flow
         threading.Thread(target=start_local_server, args=(8000,), daemon=True).start()
-        # Open the login page; this includes the callback URL as a parameter.
         initiate_login()
         self.report({'INFO'}, "Login page opened. Complete login in your browser.")
-        
-        # Schedule a one-time refresh of usage data after a short delay.
         bpy.app.timers.register(auto_refresh_usage, first_interval=3.0)
-        
         return {'FINISHED'}
-
-
 
 class LOGOUT_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.logout"
@@ -131,3 +130,22 @@ class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
+
+#------------------------------------
+#Documentation Link
+#------------------------------------
+
+class OPEN_DOCS_OT(bpy.types.Operator):
+    bl_idname = "webapp.open_docs"
+    bl_label = "Open Documentation"
+    bl_description = "Open the online documentation"
+
+    url: StringProperty(
+        name="URL",
+        default=DOCS_URL,
+        description="Documentation page URL"
+    )
+
+    def execute(self, context):
+        webbrowser.open(self.url)
+        return {'FINISHED'}

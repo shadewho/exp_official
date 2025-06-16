@@ -31,6 +31,8 @@ ARROW_RIGHT_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "arro
 CLOSE_WINDOW_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "close_page.jpg")
 BACK_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "back_button.jpg")
 EXPLORE_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "explore_button.jpg")
+VISIT_SHOP_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "visit_shop_button.jpg")
+SUBMIT_WORLD_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "submit_world_button.jpg")
 LOADING_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "loading.jpg")
 MISSING_THUMB = os.path.join(os.path.dirname(__file__),"ui_templates", "missing_thumbnail.jpg")
 

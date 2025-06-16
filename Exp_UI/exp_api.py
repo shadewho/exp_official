@@ -350,19 +350,35 @@ def get_usage_data():
         raise Exception(data.get("message", "Failed to fetch usage data"))
     return data
 
-def check_for_update():
+
+
+### Version Control###
+_latest_version_cache: str | None = None
+
+def fetch_latest_version() -> str | None:
+    """
+    Hits the server and returns the latest version string,
+    or None on error.
+    """
     try:
-        url = f"{BASE_URL}/api/addon_version"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                active_version = data.get("version_string")
-                if active_version != CURRENT_VERSION:
-                    bpy.ops.wm.call_menu(name="INFO_MT_addon_update")
-                    return False  # Update is required.
-        else:
-            print("Error checking addon version:", response.text)
+        resp = requests.get(f"{BASE_URL}/api/addon_version", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            return data["version_string"]
     except Exception as e:
-        print("Exception during update check:", e)
-    return True  # No update needed.
+        print("Could not fetch latest version:", e)
+    return None
+
+def update_latest_version_cache() -> None:
+    """
+    Refreshes the in-memory cache.
+    """
+    global _latest_version_cache
+    _latest_version_cache = fetch_latest_version()
+
+def get_cached_latest_version() -> str | None:
+    """
+    Returns the last-fetched version, or None if never fetched/failed.
+    """
+    return _latest_version_cache
