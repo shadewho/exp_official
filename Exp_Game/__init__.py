@@ -14,8 +14,8 @@ from .exp_ui import (
 )
 from .exp_spawn import EXPLORATORY_OT_RemoveCharacter
 from .exp_properties import (
-    register_props,
-    unregister_props,
+    remove_scene_properties,
+    add_scene_properties,
     CharacterActionsPG,
     ProxyMeshEntry,
     EXPLORATORY_OT_AddProxyMesh,
@@ -111,19 +111,17 @@ def register():
     bpy.utils.register_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
-
-    register_props()
-
     bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
-
-
+    
+    # --- Scene Properties ---
+    add_scene_properties()
 
     bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
 
     print("Exploratory Add-on Registered!")
 
 def unregister():
-    unregister_props()
+    remove_scene_properties()
     unregister_interaction_properties()
     unregister_objective_properties()
 
@@ -131,6 +129,7 @@ def unregister():
     del bpy.types.Scene.mobility_game
     bpy.utils.unregister_class(MobilityGameReactionsPG)
     bpy.utils.unregister_class(EXPLORATORY_OT_ResetGame)
+    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveCharacter)
 
     # --- Audio ---
     del bpy.types.Scene.character_audio
@@ -168,16 +167,12 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
 
     # --- Character Actions & Proxy Mesh ---
-
-    if hasattr(bpy.types.Scene, "character_actions"):
-       delattr(bpy.types.Scene, "character_actions")
-       
+    del bpy.types.Scene.character_actions
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
-    bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
-    bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
-    bpy.utils.unregister_class(ProxyMeshEntry)
     bpy.utils.unregister_class(CharacterActionsPG)
-
+    bpy.utils.unregister_class(ProxyMeshEntry)
+    bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
+    bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
     print("Exploratory Add-on Unregistered!")
 
 if __name__ == "__main__":
