@@ -62,7 +62,14 @@ class WEBAPP_OT_RefreshVersion(bpy.types.Operator):
     bl_description = "Fetch the latest add-on version from the server"
 
     def execute(self, context):
+        # 1) refresh the in-memory cache
         update_latest_version_cache()
+
+        # 2) force Blender to repaint the Settings panel
+        if context.area:
+            context.area.tag_redraw()
+
+        # 3) read back and report
         latest = get_cached_latest_version()
         if latest is None:
             self.report({'ERROR'}, "Failed to fetch latest version.")

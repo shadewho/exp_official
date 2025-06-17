@@ -1,12 +1,3 @@
-bl_info = {
-    "name": "UI_TEST_ADDON_3",
-    "blender": (4, 2, 0),
-    "author": "Your Name",
-    "description": "A simple add-on for UI EXP purposes in Blender.",
-    "version": (1, 0, 1),
-}
-
-
 import bpy
 from bpy.app.handlers import persistent
 

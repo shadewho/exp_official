@@ -1,4 +1,4 @@
-# api.py
+# exp_api.py
 import os
 import bpy
 import requests
@@ -361,7 +361,7 @@ def fetch_latest_version() -> str | None:
     or None on error.
     """
     try:
-        resp = requests.get(f"{BASE_URL}/api/addon_version", timeout=5)
+        resp = requests.get(f"{BASE_URL}/api/addon_version", timeout=1)
         resp.raise_for_status()
         data = resp.json()
         if data.get("success"):
