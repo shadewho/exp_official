@@ -88,7 +88,7 @@ def connectivity_check_timer():
 
 def version_check_timer():
     # only hit the network if we have connectivity
-    if is_internet_available(None):
+    if is_internet_available():
         update_latest_version_cache()
     # return seconds until next call (900s = 15min)
     return 900.0

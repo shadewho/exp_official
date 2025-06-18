@@ -7,8 +7,6 @@ import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 from ..main_config import THUMBNAIL_CACHE_FOLDER, PACKAGE_DETAILS_ENDPOINT
-import threading
-import requests
 from ..auth import load_token
 
 # Define the JSON index file for thumbnail caching.
