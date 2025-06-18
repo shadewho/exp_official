@@ -7,54 +7,82 @@ import urllib.request
 
 from .main_config import BASE_URL
 from .version_info import CURRENT_VERSION
-from .exp_api import update_latest_version_cache, get_cached_latest_version, fetch_latest_version
+from .exp_api import update_latest_version_cache, get_cached_latest_version
 
 class WEBAPP_OT_UpdateAddon(bpy.types.Operator):
-    """Download and install the latest Exploratory add-on"""
+    """
+    Download and install the latest Exploratory add-on with confirmation popup
+    """
     bl_idname = "webapp.update_addon"
-    bl_label = "Update Exploratory Add-on"
+    bl_label = "Update Add-on"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
+    version: bpy.props.StringProperty()
+    download_url: bpy.props.StringProperty()
+    update_type: bpy.props.StringProperty()
+    changelog: bpy.props.StringProperty()
+
+    def invoke(self, context, event):
         try:
-            # 1) fetch the active version info
             resp = requests.get(f"{BASE_URL}/api/addon_version", timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            if not data.get("success"):
-                self.report({'ERROR'}, "Could not fetch update info")
+            if not data.get('success'):
+                self.report({'ERROR'}, data.get('message', 'Failed to fetch update info'))
                 return {'CANCELLED'}
 
-            latest = data["version_string"]
-            download_url = data["download_url"]
+            self.version = data['version_string']
+            self.download_url = data['download_url']
+            self.update_type = data.get('update_type', 'full')
+            self.changelog = data.get('changelog', '')
 
-            # 2) check if we're already up-to-date
-            if latest == CURRENT_VERSION:
+            if self.version == CURRENT_VERSION:
                 self.report({'INFO'}, f"Already on {CURRENT_VERSION}")
-                return {'FINISHED'}
+                return {'CANCELLED'}
 
-            # 3) download the zip to a temp file
-            tmp_dir = tempfile.gettempdir()
-            zip_path = os.path.join(tmp_dir, "exploratory_update.zip")
-            urllib.request.urlretrieve(download_url, zip_path)
+            return context.window_manager.invoke_props_dialog(self, width=420)
 
-            # 4) uninstall current add-on
+        except Exception as e:
+            self.report({'ERROR'}, f"Error fetching update info: {e}")
+            return {'CANCELLED'}
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text=f"{self.update_type.capitalize()} Update Available", icon='FILE_TICK')
+
+        row = box.row(align=True)
+        row.label(text="Version:", icon='SORTTIME')
+        row.label(text=self.version)
+
+        if self.changelog:
+            box.separator()
+            box.label(text="Changelog", icon='BOOKMARKS')
+            for line in self.changelog.splitlines():
+                bullet_row = box.row(align=True)
+                bullet_row.label(text=f"• {line}")
+
+        layout.separator()
+        layout.label(text="⏳ This may take a moment…", icon='TIME')
+        layout.label(text="✨ We'll have you back up and running shortly.", icon='INFO')
+
+    def execute(self, context):
+        tmp_dir = tempfile.gettempdir()
+        zip_path = os.path.join(tmp_dir, "exploratory_update.zip")
+
+        try:
+            urllib.request.urlretrieve(self.download_url, zip_path)
             bpy.ops.preferences.addon_remove(module="Exploratory")
-
-            # 5) install & enable the new one
             bpy.ops.preferences.addon_install(filepath=zip_path, overwrite=True)
             bpy.ops.preferences.addon_enable(module="Exploratory")
-
-            # 6) persist preferences
             bpy.ops.wm.save_userpref()
 
-            self.report({'INFO'}, f"Updated to {latest}")
+            self.report({'INFO'}, f"Updated to {self.version}")
             return {'FINISHED'}
 
         except Exception as e:
             self.report({'ERROR'}, f"Update failed: {e}")
             return {'CANCELLED'}
-
 
 class WEBAPP_OT_RefreshVersion(bpy.types.Operator):
     bl_idname = "webapp.refresh_version"
@@ -62,14 +90,7 @@ class WEBAPP_OT_RefreshVersion(bpy.types.Operator):
     bl_description = "Fetch the latest add-on version from the server"
 
     def execute(self, context):
-        # 1) refresh the in-memory cache
         update_latest_version_cache()
-
-        # 2) force Blender to repaint the Settings panel
-        if context.area:
-            context.area.tag_redraw()
-
-        # 3) read back and report
         latest = get_cached_latest_version()
         if latest is None:
             self.report({'ERROR'}, "Failed to fetch latest version.")

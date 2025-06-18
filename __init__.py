@@ -5,7 +5,7 @@ bl_info = {
     "doc_url": "https://exploratory.online/",
     "tracker_url": "https://discord.gg/GJpGAAvMBe",
     "description": "Explore and Create within Blender.",
-    "version": (1, 0, 2),
+    "version": (1, 0, 1),
 }
 
 import bpy

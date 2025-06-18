@@ -220,6 +220,8 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
             layout.operator("webapp.refresh_version", text="Re-check", icon='FILE_REFRESH')
         else:
             layout.label(text=f"Update Available: {latest}", icon='ERROR')
+            # force invoke so invoke_props_dialog() is called instead of execute()
+            layout.operator_context = 'INVOKE_DEFAULT'
             layout.operator("webapp.update_addon", text="Update Add-on", icon='IMPORT')
 
         layout.separator()
