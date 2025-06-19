@@ -1,5 +1,8 @@
+#Exploratory/exp_preferences.py
+
 import bpy
 import os
+from .Exp_UI.prefs_persistence import on_pref_update, on_keep_preferences_update
 
 # ------------------------------------------------------------------------
 # Utility: Where is this addon?
@@ -107,6 +110,16 @@ def draw_action_sound_row(
             colB.prop(prefs, snd_enum,  text="Sound")
 
 
+def chain_updates(*funcs):
+    """
+    Returns a single function that calls each of funcs(self, context)
+    in order.  Use this to combine your domain logic + the JSON save.
+    """
+    def _chained(self, context):
+        for f in funcs:
+            f(self, context)
+    return _chained
+
 # ------------------------------------------------------------------------
 # 1) Keybind Operator
 # ------------------------------------------------------------------------
@@ -153,6 +166,8 @@ def update_idle_action_settings(self, context):
         names_only = [a[0] for a in act_list]
         self["idle_actions"] = names_only
 
+    on_pref_update(self, context)
+
 def update_walk_action_settings(self, context):
     if self.walk_use_default_action:
         self["walk_actions"] = []
@@ -161,6 +176,7 @@ def update_walk_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["walk_actions"] = names_only
+    on_pref_update(self, context)
 
 def update_run_action_settings(self, context):
     if self.run_use_default_action:
@@ -170,6 +186,7 @@ def update_run_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["run_actions"] = names_only
+    on_pref_update(self, context)
 
 def update_jump_action_settings(self, context):
     if self.jump_use_default_action:
@@ -179,6 +196,7 @@ def update_jump_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["jump_actions"] = names_only
+    on_pref_update(self, context)
 
 def update_fall_action_settings(self, context):
     if self.fall_use_default_action:
@@ -188,6 +206,7 @@ def update_fall_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["fall_actions"] = names_only
+    on_pref_update(self, context)
 
 def update_land_action_settings(self, context):
     if self.land_use_default_action:
@@ -197,6 +216,7 @@ def update_land_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["land_actions"] = names_only
+    on_pref_update(self, context)
 
 # ------------------------------------------------------------------------
 # 2b) Update Callbacks (Sounds)
@@ -209,6 +229,7 @@ def update_walk_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["walk_sounds"] = names_only
+    on_pref_update(self, context)
 
 def update_run_sound_settings(self, context):
     if self.run_use_default_sound:
@@ -218,7 +239,8 @@ def update_run_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["run_sounds"] = names_only
-
+    on_pref_update(self, context)
+    
 def update_jump_sound_settings(self, context):
     if self.jump_use_default_sound:
         self["jump_sounds"] = []
@@ -227,6 +249,7 @@ def update_jump_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["jump_sounds"] = names_only
+    on_pref_update(self, context)
 
 def update_fall_sound_settings(self, context):
     if self.fall_use_default_sound:
@@ -236,6 +259,7 @@ def update_fall_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["fall_sounds"] = names_only
+    on_pref_update(self, context)
 
 def update_land_sound_settings(self, context):
     if self.land_use_default_sound:
@@ -245,35 +269,41 @@ def update_land_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["land_sounds"] = names_only
-
+    on_pref_update(self, context)
 # ------------------------------------------------------------------------
 # 3) The actual Addon Preferences
 # ------------------------------------------------------------------------
 class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     bl_idname = "Exploratory"
 
+    keep_preferences: bpy.props.BoolProperty(
+        name="Keep Preferences",
+        description="If unchecked, all saved preferences will be deleted",
+        default=True,
+        update=on_keep_preferences_update
+    )
     # ----------------------------------------------------------------
     # (A) Keybinds + Performance
     # ----------------------------------------------------------------
-    key_forward:  bpy.props.StringProperty(default="W", name="Forward Key")
-    key_backward: bpy.props.StringProperty(default="S", name="Backward Key")
-    key_left:     bpy.props.StringProperty(default="A", name="Left Key")
-    key_right:    bpy.props.StringProperty(default="D", name="Right Key")
-    key_jump:     bpy.props.StringProperty(default="SPACE", name="Jump Key")
-    key_run:      bpy.props.StringProperty(default="LEFT_SHIFT", name="Run Modifier")
-    key_interact: bpy.props.StringProperty(default="LEFTMOUSE", name="Interact Key")
-    key_reset:    bpy.props.StringProperty(default="R", name="Reset Key")
+    key_forward:  bpy.props.StringProperty(default="W", name="Forward Key" ,update=on_pref_update)
+    key_backward: bpy.props.StringProperty(default="S", name="Backward Key",update=on_pref_update)
+    key_left:     bpy.props.StringProperty(default="A", name="Left Key",update=on_pref_update)
+    key_right:    bpy.props.StringProperty(default="D", name="Right Key",update=on_pref_update)
+    key_jump:     bpy.props.StringProperty(default="SPACE", name="Jump Key",update=on_pref_update)
+    key_run:      bpy.props.StringProperty(default="LEFT_SHIFT", name="Run Modifier",update=on_pref_update)
+    key_interact: bpy.props.StringProperty(default="LEFTMOUSE", name="Interact Key",update=on_pref_update)
+    key_reset:    bpy.props.StringProperty(default="R", name="Reset Key",update=on_pref_update)
 
     mouse_sensitivity: bpy.props.FloatProperty(
-        name="Mouse Sensitivity", default=2.0, min=0.0, max=10.0
+        name="Mouse Sensitivity", default=2.0, min=0.0, max=10.0 ,update=on_pref_update
     )
-    performance_mode: bpy.props.BoolProperty(name="Performance Mode", default=False)
+    performance_mode: bpy.props.BoolProperty(name="Performance Mode", default=False, update=on_pref_update)
 
     # ----------------------------------------------------------------
     # (B) Skin
     # ----------------------------------------------------------------
-    skin_use_default: bpy.props.BoolProperty(name="Use Default Skin", default=True)
-    skin_custom_blend: bpy.props.StringProperty(subtype='FILE_PATH', default="")
+    skin_use_default: bpy.props.BoolProperty(name="Use Default Skin", default=True , update=on_pref_update)
+    skin_custom_blend: bpy.props.StringProperty(subtype='FILE_PATH', default="", update=on_pref_update)
 
     # ----------------------------------------------------------------
     # (C) Idle (action only, no sound)
@@ -293,7 +323,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     idle_action_enum_prop: bpy.props.EnumProperty(
         name="Idle Action",
-        items=idle_action_items
+        items=idle_action_items,
+        update=on_pref_update
     )
 
     # ----------------------------------------------------------------
@@ -302,14 +333,16 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     enable_audio: bpy.props.BoolProperty(
         name="Enable Audio",
         description="Global master audio mute/unmute",
-        default=True
+        default=True,
+        update=on_pref_update
     )
     audio_level: bpy.props.FloatProperty(
         name="Audio Volume",
         description="Global master volume (0.0–1.0)",
         default=0.5,
         min=0.0,
-        max=1.0
+        max=1.0,
+        update=on_pref_update
     )
     # ----------------------------------------------------------------
     # (D 2) Walk => separate booleans for Action vs Sound
@@ -331,7 +364,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     walk_action_enum_prop: bpy.props.EnumProperty(
         name="Walk Action",
-        items=walk_action_items
+        items=walk_action_items,
+        update=on_pref_update,
     )
 
     # Sound
@@ -351,7 +385,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     walk_sound_enum_prop: bpy.props.EnumProperty(
         name="Walk Sound",
-        items=walk_sound_items
+        items=walk_sound_items,
+        update=on_pref_update,
     )
 
     # ----------------------------------------------------------------
@@ -373,7 +408,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     run_action_enum_prop: bpy.props.EnumProperty(
         name="Run Action",
-        items=run_action_items
+        items=run_action_items,
+        update=on_pref_update,
     )
 
     run_use_default_sound: bpy.props.BoolProperty(
@@ -392,7 +428,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     run_sound_enum_prop: bpy.props.EnumProperty(
         name="Run Sound",
-        items=run_sound_items
+        items=run_sound_items,
+        update=on_pref_update,
     )
 
     # ----------------------------------------------------------------
@@ -414,7 +451,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     jump_action_enum_prop: bpy.props.EnumProperty(
         name="Jump Action",
-        items=jump_action_items
+        items=jump_action_items,
+        update=on_pref_update,
     )
 
     jump_use_default_sound: bpy.props.BoolProperty(
@@ -433,7 +471,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     jump_sound_enum_prop: bpy.props.EnumProperty(
         name="Jump Sound",
-        items=jump_sound_items
+        items=jump_sound_items,
+        update=on_pref_update,
     )
 
     # ----------------------------------------------------------------
@@ -455,7 +494,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     fall_action_enum_prop: bpy.props.EnumProperty(
         name="Fall Action",
-        items=fall_action_items
+        items=fall_action_items,
+        update=on_pref_update,
     )
 
     fall_use_default_sound: bpy.props.BoolProperty(
@@ -474,7 +514,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     fall_sound_enum_prop: bpy.props.EnumProperty(
         name="Fall Sound",
-        items=fall_sound_items
+        items=fall_sound_items,
+        update=on_pref_update,
     )
 
     # ----------------------------------------------------------------
@@ -496,7 +537,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     land_action_enum_prop: bpy.props.EnumProperty(
         name="Land Action",
-        items=land_action_items
+        items=land_action_items,
+        update=on_pref_update,
     )
 
     land_use_default_sound: bpy.props.BoolProperty(
@@ -515,7 +557,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     land_sound_enum_prop: bpy.props.EnumProperty(
         name="Land Sound",
-        items=land_sound_items
+        items=land_sound_items,
+        update=on_pref_update,
     )
     # ----------------------------------------------------------------
     # (I) Performance
@@ -529,14 +572,21 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             ("HIGH", "High", "Full quality settings (default)"),
             ("CUSTOM", "Custom", "Use custom performance settings")
         ],
-        default="HIGH"
+        default="HIGH",
+        update=on_pref_update,
+        
     )
 
     # ----------------------------------------------------------------
     # DRAW
     # ----------------------------------------------------------------
+
+
     def draw(self, context):
         layout = self.layout
+
+        layout.prop(self, "keep_preferences")
+        layout.separator()
 
         # 1) Keybind box
         box = layout.box()
