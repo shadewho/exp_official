@@ -35,7 +35,6 @@ from .cache_memory_operators import (
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
 from .helper_functions import update_event_stage, auto_refresh_usage
-from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
 
 # List all classes that will be registered.
 classes = (
@@ -62,9 +61,7 @@ classes = (
     POPUP_SOCIAL_DETAILS_OT,
     VOTE_MAP_OT_WebApp,
     VIEW3D_PT_SettingsAndUpdate,
-    OPEN_DOCS_OT,
-    WEBAPP_OT_UpdateAddon,
-    WEBAPP_OT_RefreshVersion
+    OPEN_DOCS_OT
 )
 
 # --- Persistent Handler ---
@@ -87,13 +84,6 @@ def connectivity_check_timer():
         print("[INFO] No internet connection detected. User logged out and UI disabled.")
     return 10.0  # Check every 10 seconds
 
-def version_check_timer():
-    # only hit the network if we have connectivity
-    if is_internet_available():
-        update_latest_version_cache()
-    # return seconds until next call (900s = 15min)
-    return 900.0
-
 # --- Registration ---
 def register():
     # Register the persistent load handler if not already registered.
@@ -107,11 +97,7 @@ def register():
     bpy.app.timers.register(token_expiry_check, first_interval=60.0)
 
     bpy.app.timers.register(auto_refresh_usage, first_interval=1.0)
-    
-    # initial version check on startup
-    if is_internet_available():
-        update_latest_version_cache()
-    bpy.app.timers.register(version_check_timer, first_interval=0.0)
+
 
     # Register the comment and main property group classes.
     bpy.utils.register_class(MyAddonComment)

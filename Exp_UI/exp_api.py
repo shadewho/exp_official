@@ -17,11 +17,10 @@ from .main_config import (
     USAGE_ENDPOINT,
     BASE_URL,
 )
-from .version_info import CURRENT_VERSION
 from .helper_functions import download_blend_file, append_scene_from_blend
 from .auth import load_token, save_token, clear_token, is_internet_available
 from .cache_manager import cache_manager
-from .main_config import PACKAGE_DETAILS_ENDPOINT, THUMBNAIL_CACHE_FOLDER
+from .main_config import PACKAGE_DETAILS_ENDPOINT
 from ..Exp_Game.exp_utilities import get_game_world
 
 def login(username, password):

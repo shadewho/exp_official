@@ -3,8 +3,7 @@ import bpy
 import requests
 import threading
 import urllib.parse
-import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
 
 from .main_config import (
     VALIDATE_TOKEN_ENDPOINT, LOGIN_ENDPOINT, LOGOUT_ENDPOINT, TOKEN_FILE,

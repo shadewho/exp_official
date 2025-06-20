@@ -4,7 +4,7 @@ import bpy
 import requests
 from ..auth import load_token
 from ..main_config import PACKAGES_ENDPOINT, WORLD_DOWNLOADS_FOLDER
-from ..exp_api import download_blend_file, append_scene_from_blend
+from ..exp_api import append_scene_from_blend
 import threading, os, uuid, traceback
 
 # Global download task reference.

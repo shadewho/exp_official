@@ -5,9 +5,7 @@ import json
 import time
 import bpy
 import gpu
-from gpu_extras.batch import batch_for_shader
-from ..main_config import THUMBNAIL_CACHE_FOLDER, PACKAGE_DETAILS_ENDPOINT
-from ..auth import load_token
+from ..main_config import THUMBNAIL_CACHE_FOLDER
 
 # Define the JSON index file for thumbnail caching.
 THUMBNAIL_INDEX_FILE = os.path.join(THUMBNAIL_CACHE_FOLDER, "thumbnail_index.json")

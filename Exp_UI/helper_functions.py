@@ -17,9 +17,10 @@ from .main_config import (
 
 from .image_button_UI.cache import (
     get_cached_path_if_exists,
-    register_thumbnail_in_index, load_token,
+    register_thumbnail_in_index,
     register_metadata_in_index, get_cached_metadata
 )
+from .auth import load_token
 from bpy.app.handlers import persistent
 from datetime import datetime, timezone
 from .cache_manager import filter_cached_data

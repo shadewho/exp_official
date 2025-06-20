@@ -10,7 +10,6 @@ import traceback
 import threading
 from .main_config import (DOWNLOAD_ENDPOINT, DOCS_URL)
 from .version_info import CURRENT_VERSION
-from .exp_api import fetch_latest_version
 from .helper_functions import download_thumbnail, auto_refresh_usage
 
 # ----------------------------------------------------------------------------
