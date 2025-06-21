@@ -1,4 +1,3 @@
-#Exploratory/__init__.py
 bl_info = {
     "name": "Exploratory",
     "blender": (4, 4, 0),
@@ -8,91 +7,86 @@ bl_info = {
     "description": "Explore and Create within Blender.",
     "version": (1, 0, 1),
 }
+
 import bpy
-
-from .Exp_UI.prefs_persistence import (
-    on_pref_update,
-    on_keep_preferences_update,
-    load_prefs_from_json
-)
-
 from .Exp_UI.auth import is_internet_available
 from .Exp_UI.exp_api import update_latest_version_cache
 from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
-# preferences class + operators
+
+# persistence handlers
+from .Exp_UI.prefs_persistence import (
+    apply_prefs,
+    register_prefs_handlers,
+    unregister_prefs_handlers,
+)
+
+# your prefs + operators
 from .exp_preferences import (
     ExploratoryAddonPreferences,
     EXPLORATORY_OT_SetKeybind,
-    EXPLORATORY_OT_BuildCharacter
 )
+from .build_character import EXPLORATORY_OT_BuildCharacter
 
 # submodule APIs
 from . import Exp_Game, Exp_UI
 
 def version_check_timer():
-    # only hit the network if we have connectivity
     if is_internet_available():
         update_latest_version_cache()
-    # return seconds until next call (900s = 15min)
-    return 900.0
+    return 900.0  # run again in 15m
 
 def register():
-    # 0) inject JSON‐save callbacks onto ExploratoryAddonPreferences
-    for name, rna_prop in ExploratoryAddonPreferences.bl_rna.properties.items():
-        if name == "rna_type":
-            continue
-        cb = on_keep_preferences_update if name == "keep_preferences" else on_pref_update
-        try:
-            rna_prop.update = cb
-        except (AttributeError, TypeError):
-            pass
+    # 1) register core classes
+    for cls in (
+        EXPLORATORY_OT_SetKeybind,
+        ExploratoryAddonPreferences,
+        EXPLORATORY_OT_BuildCharacter,
+        WEBAPP_OT_UpdateAddon,
+        WEBAPP_OT_RefreshVersion,
+    ):
+        bpy.utils.register_class(cls)
 
-    # 1) register preferences & keybind/build operators FIRST
-    bpy.utils.register_class(ExploratoryAddonPreferences)
-    bpy.utils.register_class(EXPLORATORY_OT_SetKeybind)
-    bpy.utils.register_class(EXPLORATORY_OT_BuildCharacter)
-    bpy.utils.register_class(WEBAPP_OT_UpdateAddon)
-    bpy.utils.register_class(WEBAPP_OT_RefreshVersion)
+    # 2) restore saved prefs right away
+    apply_prefs()
+    #    and keep it hooked for hot-reloads
+    register_prefs_handlers()
 
-    # initial version check on startup
+    # 3) version check
     if is_internet_available():
         update_latest_version_cache()
     bpy.app.timers.register(version_check_timer, first_interval=0.0)
 
-    # 2) now register submodules (which include your panels)
+    # 4) register your submodules (panels, operators, etc.)
     Exp_Game.register()
     Exp_UI.register()
 
-    # 3) load whatever prefs the user last saved
-    load_prefs_from_json()
-
     print("Exploratory Addon registered.")
 
-
 def unregister():
-    # save prefs before teardown
-    from .Exp_UI.prefs_persistence import save_prefs_to_json
-    save_prefs_to_json()
+    # 1) save & teardown prefs persistence
+    unregister_prefs_handlers()
 
-    # 1) unregister submodules first
+    # 2) unregister submodules first
     Exp_UI.unregister()
     Exp_Game.unregister()
 
-    # 2) then unregister our own classes (in reverse registration order)
-    bpy.utils.unregister_class(WEBAPP_OT_RefreshVersion)
-    bpy.utils.unregister_class(WEBAPP_OT_UpdateAddon)
-    bpy.utils.unregister_class(EXPLORATORY_OT_BuildCharacter)
-    bpy.utils.unregister_class(EXPLORATORY_OT_SetKeybind)
-    bpy.utils.unregister_class(ExploratoryAddonPreferences)
+    # 3) unregister core classes (reverse order)
+    for cls in reversed((
+        WEBAPP_OT_RefreshVersion,
+        WEBAPP_OT_UpdateAddon,
+        EXPLORATORY_OT_BuildCharacter,
+        EXPLORATORY_OT_SetKeybind,
+        ExploratoryAddonPreferences,
+    )):
+        bpy.utils.unregister_class(cls)
 
-    # 3) finally cancel our version‐check timer
+    # 4) stop version timer
     try:
         bpy.app.timers.unregister(version_check_timer)
     except Exception:
         pass
 
     print("Exploratory Addon unregistered.")
-
 
 if __name__ == "__main__":
     register()

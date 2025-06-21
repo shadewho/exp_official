@@ -1,8 +1,6 @@
-#Exploratory/exp_preferences.py
-
 import bpy
+from bpy.props import BoolProperty
 import os
-from .Exp_UI.prefs_persistence import on_pref_update, on_keep_preferences_update
 
 # ------------------------------------------------------------------------
 # Utility: Where is this addon?
@@ -110,16 +108,6 @@ def draw_action_sound_row(
             colB.prop(prefs, snd_enum,  text="Sound")
 
 
-def chain_updates(*funcs):
-    """
-    Returns a single function that calls each of funcs(self, context)
-    in order.  Use this to combine your domain logic + the JSON save.
-    """
-    def _chained(self, context):
-        for f in funcs:
-            f(self, context)
-    return _chained
-
 # ------------------------------------------------------------------------
 # 1) Keybind Operator
 # ------------------------------------------------------------------------
@@ -166,8 +154,6 @@ def update_idle_action_settings(self, context):
         names_only = [a[0] for a in act_list]
         self["idle_actions"] = names_only
 
-    on_pref_update(self, context)
-
 def update_walk_action_settings(self, context):
     if self.walk_use_default_action:
         self["walk_actions"] = []
@@ -176,7 +162,6 @@ def update_walk_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["walk_actions"] = names_only
-    on_pref_update(self, context)
 
 def update_run_action_settings(self, context):
     if self.run_use_default_action:
@@ -186,7 +171,6 @@ def update_run_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["run_actions"] = names_only
-    on_pref_update(self, context)
 
 def update_jump_action_settings(self, context):
     if self.jump_use_default_action:
@@ -196,7 +180,6 @@ def update_jump_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["jump_actions"] = names_only
-    on_pref_update(self, context)
 
 def update_fall_action_settings(self, context):
     if self.fall_use_default_action:
@@ -206,7 +189,6 @@ def update_fall_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["fall_actions"] = names_only
-    on_pref_update(self, context)
 
 def update_land_action_settings(self, context):
     if self.land_use_default_action:
@@ -216,7 +198,6 @@ def update_land_action_settings(self, context):
         act_list = list_actions_in_blend(path)
         names_only = [a[0] for a in act_list]
         self["land_actions"] = names_only
-    on_pref_update(self, context)
 
 # ------------------------------------------------------------------------
 # 2b) Update Callbacks (Sounds)
@@ -229,7 +210,6 @@ def update_walk_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["walk_sounds"] = names_only
-    on_pref_update(self, context)
 
 def update_run_sound_settings(self, context):
     if self.run_use_default_sound:
@@ -239,8 +219,7 @@ def update_run_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["run_sounds"] = names_only
-    on_pref_update(self, context)
-    
+
 def update_jump_sound_settings(self, context):
     if self.jump_use_default_sound:
         self["jump_sounds"] = []
@@ -249,7 +228,6 @@ def update_jump_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["jump_sounds"] = names_only
-    on_pref_update(self, context)
 
 def update_fall_sound_settings(self, context):
     if self.fall_use_default_sound:
@@ -259,7 +237,6 @@ def update_fall_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["fall_sounds"] = names_only
-    on_pref_update(self, context)
 
 def update_land_sound_settings(self, context):
     if self.land_use_default_sound:
@@ -269,41 +246,40 @@ def update_land_sound_settings(self, context):
         snd_list = list_sounds_in_blend(path)
         names_only = [s[0] for s in snd_list]
         self["land_sounds"] = names_only
-    on_pref_update(self, context)
+
 # ------------------------------------------------------------------------
 # 3) The actual Addon Preferences
 # ------------------------------------------------------------------------
 class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     bl_idname = "Exploratory"
 
-    keep_preferences: bpy.props.BoolProperty(
-        name="Keep Preferences",
-        description="If unchecked, all saved preferences will be deleted",
-        default=True,
-        update=on_keep_preferences_update
+    keep_preferences: BoolProperty(
+    name="Keep Preferences",
+    description="If unchecked, all saved preferences will be deleted",
+    default=True,
     )
     # ----------------------------------------------------------------
     # (A) Keybinds + Performance
     # ----------------------------------------------------------------
-    key_forward:  bpy.props.StringProperty(default="W", name="Forward Key" ,update=on_pref_update)
-    key_backward: bpy.props.StringProperty(default="S", name="Backward Key",update=on_pref_update)
-    key_left:     bpy.props.StringProperty(default="A", name="Left Key",update=on_pref_update)
-    key_right:    bpy.props.StringProperty(default="D", name="Right Key",update=on_pref_update)
-    key_jump:     bpy.props.StringProperty(default="SPACE", name="Jump Key",update=on_pref_update)
-    key_run:      bpy.props.StringProperty(default="LEFT_SHIFT", name="Run Modifier",update=on_pref_update)
-    key_interact: bpy.props.StringProperty(default="LEFTMOUSE", name="Interact Key",update=on_pref_update)
-    key_reset:    bpy.props.StringProperty(default="R", name="Reset Key",update=on_pref_update)
+    key_forward:  bpy.props.StringProperty(default="W", name="Forward Key")
+    key_backward: bpy.props.StringProperty(default="S", name="Backward Key")
+    key_left:     bpy.props.StringProperty(default="A", name="Left Key")
+    key_right:    bpy.props.StringProperty(default="D", name="Right Key")
+    key_jump:     bpy.props.StringProperty(default="SPACE", name="Jump Key")
+    key_run:      bpy.props.StringProperty(default="LEFT_SHIFT", name="Run Modifier")
+    key_interact: bpy.props.StringProperty(default="LEFTMOUSE", name="Interact Key")
+    key_reset:    bpy.props.StringProperty(default="R", name="Reset Key")
 
     mouse_sensitivity: bpy.props.FloatProperty(
-        name="Mouse Sensitivity", default=2.0, min=0.0, max=10.0 ,update=on_pref_update
+        name="Mouse Sensitivity", default=2.0, min=0.0, max=10.0
     )
-    performance_mode: bpy.props.BoolProperty(name="Performance Mode", default=False, update=on_pref_update)
+    performance_mode: bpy.props.BoolProperty(name="Performance Mode", default=False)
 
     # ----------------------------------------------------------------
     # (B) Skin
     # ----------------------------------------------------------------
-    skin_use_default: bpy.props.BoolProperty(name="Use Default Skin", default=True , update=on_pref_update)
-    skin_custom_blend: bpy.props.StringProperty(subtype='FILE_PATH', default="", update=on_pref_update)
+    skin_use_default: bpy.props.BoolProperty(name="Use Default Skin", default=True)
+    skin_custom_blend: bpy.props.StringProperty(subtype='FILE_PATH', default="")
 
     # ----------------------------------------------------------------
     # (C) Idle (action only, no sound)
@@ -323,8 +299,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     idle_action_enum_prop: bpy.props.EnumProperty(
         name="Idle Action",
-        items=idle_action_items,
-        update=on_pref_update
+        items=idle_action_items
     )
 
     # ----------------------------------------------------------------
@@ -333,16 +308,14 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     enable_audio: bpy.props.BoolProperty(
         name="Enable Audio",
         description="Global master audio mute/unmute",
-        default=True,
-        update=on_pref_update
+        default=True
     )
     audio_level: bpy.props.FloatProperty(
         name="Audio Volume",
         description="Global master volume (0.0–1.0)",
         default=0.5,
         min=0.0,
-        max=1.0,
-        update=on_pref_update
+        max=1.0
     )
     # ----------------------------------------------------------------
     # (D 2) Walk => separate booleans for Action vs Sound
@@ -364,8 +337,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     walk_action_enum_prop: bpy.props.EnumProperty(
         name="Walk Action",
-        items=walk_action_items,
-        update=on_pref_update,
+        items=walk_action_items
     )
 
     # Sound
@@ -385,8 +357,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     walk_sound_enum_prop: bpy.props.EnumProperty(
         name="Walk Sound",
-        items=walk_sound_items,
-        update=on_pref_update,
+        items=walk_sound_items
     )
 
     # ----------------------------------------------------------------
@@ -408,8 +379,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     run_action_enum_prop: bpy.props.EnumProperty(
         name="Run Action",
-        items=run_action_items,
-        update=on_pref_update,
+        items=run_action_items
     )
 
     run_use_default_sound: bpy.props.BoolProperty(
@@ -428,8 +398,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     run_sound_enum_prop: bpy.props.EnumProperty(
         name="Run Sound",
-        items=run_sound_items,
-        update=on_pref_update,
+        items=run_sound_items
     )
 
     # ----------------------------------------------------------------
@@ -451,8 +420,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     jump_action_enum_prop: bpy.props.EnumProperty(
         name="Jump Action",
-        items=jump_action_items,
-        update=on_pref_update,
+        items=jump_action_items
     )
 
     jump_use_default_sound: bpy.props.BoolProperty(
@@ -471,8 +439,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     jump_sound_enum_prop: bpy.props.EnumProperty(
         name="Jump Sound",
-        items=jump_sound_items,
-        update=on_pref_update,
+        items=jump_sound_items
     )
 
     # ----------------------------------------------------------------
@@ -494,8 +461,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     fall_action_enum_prop: bpy.props.EnumProperty(
         name="Fall Action",
-        items=fall_action_items,
-        update=on_pref_update,
+        items=fall_action_items
     )
 
     fall_use_default_sound: bpy.props.BoolProperty(
@@ -514,8 +480,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     fall_sound_enum_prop: bpy.props.EnumProperty(
         name="Fall Sound",
-        items=fall_sound_items,
-        update=on_pref_update,
+        items=fall_sound_items
     )
 
     # ----------------------------------------------------------------
@@ -537,8 +502,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Action: {n}") for n in arr]
     land_action_enum_prop: bpy.props.EnumProperty(
         name="Land Action",
-        items=land_action_items,
-        update=on_pref_update,
+        items=land_action_items
     )
 
     land_use_default_sound: bpy.props.BoolProperty(
@@ -557,8 +521,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         return [(n, n, f"Sound: {n}") for n in arr]
     land_sound_enum_prop: bpy.props.EnumProperty(
         name="Land Sound",
-        items=land_sound_items,
-        update=on_pref_update,
+        items=land_sound_items
     )
     # ----------------------------------------------------------------
     # (I) Performance
@@ -572,20 +535,19 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             ("HIGH", "High", "Full quality settings (default)"),
             ("CUSTOM", "Custom", "Use custom performance settings")
         ],
-        default="HIGH",
-        update=on_pref_update,
-        
+        default="HIGH"
     )
 
     # ----------------------------------------------------------------
     # DRAW
     # ----------------------------------------------------------------
-
-
     def draw(self, context):
         layout = self.layout
 
-        layout.prop(self, "keep_preferences")
+        # ----------------------------------------------------------------
+        # Persistence toggle
+        # ----------------------------------------------------------------
+        layout.prop(self, "keep_preferences", text="Keep Preferences")
         layout.separator()
 
         # 1) Keybind box
@@ -724,248 +686,3 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             snd_blend="land_custom_blend_sound",
             snd_enum="land_sound_enum_prop"
         )
-
-
-# ------------------------------------------------------------------------
-# 4) The operator that appends skin + actions
-# ------------------------------------------------------------------------
-class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
-    """
-    One operator that:
-      1) Appends the skin (default or custom)
-      2) Appends each action (default or custom)
-      3) Assigns appended actions to scene.character_actions pointers
-    """
-    bl_idname = "exploratory.build_character"
-    bl_label = "Build Character (Skin + Actions)"
-
-    DEFAULT_SKIN_BLEND = os.path.join(
-        get_addon_path(),
-        "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend"
-    )
-    DEFAULT_ANIMS_BLEND = os.path.join(
-        get_addon_path(),
-        "Exp_Game", "exp_assets", "Animations", "exp_animations.blend"
-    )
-
-    DEFAULT_IDLE_NAME = "exp_idle"
-    DEFAULT_WALK_NAME = "exp_walk"
-    DEFAULT_RUN_NAME  = "exp_run"
-    DEFAULT_JUMP_NAME = "exp_jump"
-    DEFAULT_FALL_NAME = "exp_fall"
-    DEFAULT_LAND_NAME = "exp_land"
-
-    def execute(self, context):
-        prefs = context.preferences.addons["Exploratory"].preferences
-        scene = context.scene
-
-        # ─── 1) Skin ───────────────────────────────────────────────────────────
-        skin_blend = (
-            self.DEFAULT_SKIN_BLEND
-            if prefs.skin_use_default
-            else prefs.skin_custom_blend
-        )
-        if scene.character_spawn_lock:
-            self.report(
-                {'INFO'},
-                "Character spawn is locked; skipping skin append."
-            )
-        else:
-            # If the armature already exists in that blend, remove it first
-            try:
-                with bpy.data.libraries.load(skin_blend, link=False) as (df, _):
-                    lib_names = set(df.objects)
-            except Exception as e:
-                self.report({'WARNING'}, f"Could not read {skin_blend}: {e}")
-                lib_names = set()
-
-            existing_arm = scene.target_armature
-            if existing_arm and existing_arm.name in lib_names:
-                bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
-
-            # Append skin objects
-            self.append_all_skin_objects(
-                use_default  = prefs.skin_use_default,
-                custom_blend = prefs.skin_custom_blend
-            )
-
-        # ─── 2) Actions ───────────────────────────────────────────────────────
-        if scene.character_actions_lock:
-            self.report(
-                {'INFO'},
-                "Character actions lock is ON; skipping action assignment."
-            )
-        else:
-            char_actions = scene.character_actions
-
-            def process_action(state_label, use_default, custom_blend,
-                               chosen_name, default_name, target_attr):
-                blend = (
-                    self.DEFAULT_ANIMS_BLEND
-                    if use_default
-                    else custom_blend
-                )
-                action_name = default_name if use_default else chosen_name
-                if not action_name:
-                    print(f"[{state_label}] No action name; skipping.")
-                    return
-
-                # Append if not already loaded
-                if not bpy.data.actions.get(action_name) and os.path.isfile(blend):
-                    with bpy.data.libraries.load(blend, link=False) as (df, dt):
-                        if action_name in df.actions:
-                            dt.actions = [action_name]
-
-                act = bpy.data.actions.get(action_name)
-                if act:
-                    setattr(char_actions, target_attr, act)
-                    print(f"[{state_label}] => {act.name}")
-
-            process_action(
-                "Idle",
-                prefs.idle_use_default_action,
-                prefs.idle_custom_blend_action,
-                prefs.idle_action_enum_prop,
-                self.DEFAULT_IDLE_NAME,
-                "idle_action"
-            )
-            process_action(
-                "Walk",
-                prefs.walk_use_default_action,
-                prefs.walk_custom_blend_action,
-                prefs.walk_action_enum_prop,
-                self.DEFAULT_WALK_NAME,
-                "walk_action"
-            )
-            process_action(
-                "Run",
-                prefs.run_use_default_action,
-                prefs.run_custom_blend_action,
-                prefs.run_action_enum_prop,
-                self.DEFAULT_RUN_NAME,
-                "run_action"
-            )
-            process_action(
-                "Jump",
-                prefs.jump_use_default_action,
-                prefs.jump_custom_blend_action,
-                prefs.jump_action_enum_prop,
-                self.DEFAULT_JUMP_NAME,
-                "jump_action"
-            )
-            process_action(
-                "Fall",
-                prefs.fall_use_default_action,
-                prefs.fall_custom_blend_action,
-                prefs.fall_action_enum_prop,
-                self.DEFAULT_FALL_NAME,
-                "fall_action"
-            )
-            process_action(
-                "Land",
-                prefs.land_use_default_action,
-                prefs.land_custom_blend_action,
-                prefs.land_action_enum_prop,
-                self.DEFAULT_LAND_NAME,
-                "land_action"
-            )
-
-        self.report({'INFO'}, "Build Character complete!")
-        return {'FINISHED'}
-
-    # ----------------------------------------------------------------
-    # Exactly the same method for skin
-    # ----------------------------------------------------------------
-    def append_all_skin_objects(self, use_default, custom_blend):
-        import os
-        import bpy
-        from .exp_preferences import get_addon_path
-
-        scene = bpy.context.scene
-
-        # Decide .blend file
-        if use_default:
-            blend_path = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend")
-        else:
-            blend_path = custom_blend
-
-        if not blend_path or not os.path.isfile(blend_path):
-            self.report({'WARNING'}, f"Invalid blend file: {blend_path}")
-            return
-
-        print(f"[AppendSkin] Checking objects from: {blend_path}")
-
-        with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
-            all_obj_names_in_lib = data_from.objects
-
-        to_append = []
-        existing_armature = None
-
-        for lib_obj_name in all_obj_names_in_lib:
-            if lib_obj_name in bpy.data.objects:
-                print(f"Skipping '{lib_obj_name}' (already in file).")
-                existing = bpy.data.objects.get(lib_obj_name)
-                if existing and existing.type == 'ARMATURE':
-                    existing_armature = existing
-            else:
-                to_append.append(lib_obj_name)
-
-        if not to_append:
-            if existing_armature:
-                scene.target_armature = existing_armature
-                print(f"No new objects appended. Using existing armature '{existing_armature.name}'.")
-            else:
-                print("No objects to append and no existing armature found.")
-            return
-
-        appended_objects = []
-        with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
-            data_to.objects = to_append
-
-        for obj in data_to.objects:
-            if not obj:
-                continue
-            bpy.context.scene.collection.objects.link(obj)
-            appended_objects.append(obj)
-            print(f"Appended: {obj.name}")
-            if obj.type == 'ARMATURE':
-                scene.target_armature = obj
-                print(f"Assigned scene.target_armature => {obj.name}")
-
-        self.ensure_skin_in_scene_collection([o.name for o in appended_objects])
-        print(f"[AppendSkin] Done. Appended {len(appended_objects)} objects from {blend_path}.")
-
-    def ensure_skin_in_scene_collection(self, object_names):
-        scene = bpy.context.scene
-        for name in object_names:
-            if any(o.name == name for o in scene.collection.objects):
-                continue
-            data_obj = bpy.data.objects.get(name)
-            if data_obj:
-                scene.collection.objects.link(data_obj)
-                print(f"Linked '{name}' to scene collection.")
-            else:
-                print(f"Object '{name}' not found in bpy.data.objects.")
-
-    # ----------------------------------------------------------------
-    # Helper: ensures an action is in bpy.data.actions
-    # ----------------------------------------------------------------
-    def ensure_action_in_file(self, blend_path, action_name, state_label):
-        if not blend_path or not os.path.isfile(blend_path):
-            print(f"[{state_label}] Invalid blend path: {blend_path}")
-            return None
-
-        existing = bpy.data.actions.get(action_name)
-        if existing:
-            print(f"[{state_label}] Action '{action_name}' already loaded.")
-            return existing
-
-        print(f"[{state_label}] Appending '{action_name}' from {blend_path}")
-        with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
-            if action_name in data_from.actions:
-                data_to.actions = [action_name]
-            else:
-                print(f"[{state_label}] Action '{action_name}' not found in {blend_path}")
-                return None
-
-        return bpy.data.actions.get(action_name)

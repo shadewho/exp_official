@@ -19,7 +19,6 @@ from .exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references
                           move_armature_and_children_to_scene,
                             revert_to_original_workspace, ensure_timeline_at_zero,
                             ensure_object_mode)  
-from ..exp_preferences import ExploratoryAddonPreferences, get_addon_path
 from .exp_custom_animations import update_all_custom_managers
 from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
 from .exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks

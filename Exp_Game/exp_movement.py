@@ -15,8 +15,6 @@ from .exp_physics import (
 )
 
 from .exp_view import update_view
-from ..exp_preferences import ExploratoryAddonPreferences  # to read user prefs
-
 
 def calculate_movement_direction(keys_pressed, obj):
     """

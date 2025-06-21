@@ -1,102 +1,100 @@
-import bpy
-import os
-import json
+#Exploratory/Exp_UI/prefs_persistence.py
+import bpy, os, json
 
 ADDON_NAME = "Exploratory"
+_applying = False
 
-
-def prefs_json_path() -> str:
-    """
-    Returns the path to the JSON file in the user CONFIG addons directory.
-    """
+def _prefs_file_path() -> str:
     cfg = bpy.utils.user_resource('CONFIG', path="addons", create=True)
     return os.path.join(cfg, f"{ADDON_NAME}_prefs.json")
 
-
-def load_prefs_from_json():
-    """
-    Load preferences from JSON, setting only valid properties.
-    """
-    path = prefs_json_path()
-    if not os.path.isfile(path):
+def write_prefs():
+    global _applying
+    # if we’re currently in apply_prefs(), don’t overwrite
+    if _applying:
         return
 
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"[{ADDON_NAME}] Failed to load prefs JSON: {e}")
+    prefs = bpy.context.preferences.addons[ADDON_NAME].preferences
+
+    # respect the “Keep Preferences” toggle
+    if not getattr(prefs, "keep_preferences", True):
+        path = _prefs_file_path()
+        if os.path.isfile(path):
+            os.remove(path)
         return
 
-    addons = bpy.context.preferences.addons
-    if ADDON_NAME not in addons:
-        return
-
-    prefs = addons[ADDON_NAME].preferences
-
-    for key, value in data.items():
-        # skip unknown props
-        if key not in prefs.bl_rna.properties:
-            continue
-
-        prop = prefs.bl_rna.properties[key]
-        # for enums, only set valid identifiers
-        if prop.type == 'ENUM':
-            valid = [item.identifier for item in prop.enum_items]
-            if value not in valid:
-                continue
-
-        try:
-            setattr(prefs, key, value)
-        except Exception as e:
-            print(f"[{ADDON_NAME}] Could not set preference '{key}' = {value}: {e}")
-
-
-def save_prefs_to_json():
-    """
-    Save all preference properties (except rna_type) to JSON.
-    """
-    addons = bpy.context.preferences.addons
-    if ADDON_NAME not in addons:
-        return
-
-    prefs = addons[ADDON_NAME].preferences
     data = {}
-
     for prop in prefs.bl_rna.properties:
-        name = prop.identifier
-        if name == "rna_type":
+        ident = prop.identifier
+        if prop.is_readonly or ident == "rna_type":
             continue
         try:
-            data[name] = getattr(prefs, name)
+            data[ident] = getattr(prefs, ident)
         except Exception:
-            # skip any property that errors
             pass
 
+    with open(_prefs_file_path(), 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+def read_prefs() -> dict:
+    path = _prefs_file_path()
+    if not os.path.isfile(path):
+        return {}
     try:
-        with open(prefs_json_path(), 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"[{ADDON_NAME}] Failed to save prefs JSON: {e}")
+        return json.loads(open(path, 'r', encoding='utf-8').read())
+    except Exception:
+        return {}
 
+def apply_prefs():
+    global _applying
+    data = read_prefs()
+    if not data:
+        return None
 
-def on_pref_update(self, context):
-    """
-    Callback for most preference updates: write out the JSON immediately.
-    """
-    save_prefs_to_json()
+    prefs = bpy.context.preferences.addons[ADDON_NAME].preferences
 
+    # if user has disabled persistence, skip load
+    if not getattr(prefs, "keep_preferences", True):
+        return None
 
-def on_keep_preferences_update(self, context):
-    """
-    If keep_preferences is False, delete the JSON file. Otherwise save immediately.
-    """
-    path = prefs_json_path()
-    if not getattr(self, 'keep_preferences', True):
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception as e:
-            print(f"[{ADDON_NAME}] Failed to remove prefs JSON: {e}")
-    else:
-        save_prefs_to_json()
+    _applying = True
+    try:
+        # 1) restore file-paths so your update_… callbacks repopulate enums
+        for key, val in data.items():
+            prop = prefs.bl_rna.properties.get(key)
+            if not prop:
+                continue
+            if prop.type == 'STRING' and getattr(prop, 'subtype', '') == 'FILE_PATH':
+                try: setattr(prefs, key, val)
+                except Exception: pass
+
+        # 2) restore everything else (bools, floats, enums, etc.)
+        for key, val in data.items():
+            prop = prefs.bl_rna.properties.get(key)
+            if not prop:
+                continue
+            if prop.type == 'STRING' and getattr(prop, 'subtype', '') == 'FILE_PATH':
+                continue
+            try: setattr(prefs, key, val)
+            except Exception: pass
+
+    finally:
+        _applying = False
+
+    return None  # one-shot timer
+
+def register_prefs_handlers():
+    bpy.app.timers.register(apply_prefs, first_interval=0.1)
+
+def unregister_prefs_handlers():
+    write_prefs()
+    # no need to explicitly unregister apply_prefs since it returns None
+
+#   "walk_custom_blend_action": "C:\Users\spenc\Desktop\Blender Project Saves\Exploratory\armature and action and mesh trial.blend",
+#   "walk_action_enum_prop": "exp_crouch",
+#   "walk_use_default_sound": true,
+#   "walk_custom_blend_sound": ".",
+#   "walk_sound_enum_prop": "",
+#   "run_use_default_action": false,
+#   "run_custom_blend_action": "C:\Users\spenc\Desktop\Blender Project Saves\Exploratory\armature and action and mesh trial.blend",
+#   "run_action_enum_prop": "exp_break_dance",
