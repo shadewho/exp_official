@@ -9,7 +9,6 @@ from bpy.props import StringProperty
 import requests
 from .helper_functions import format_relative_time
 
-
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.like_package"
     bl_label = "Like Package"
@@ -189,6 +188,8 @@ class REFRESH_USAGE_OT_WebApp(bpy.types.Operator):
         addon_data.downloads_used = data.get("downloads_used", 0)
         addon_data.downloads_limit = data.get("downloads_limit", 0)
         addon_data.uploads_used = data.get("uploads_used", 0)
+        addon_data.username    = data.get("username", "")
+        addon_data.profile_url = data.get("profile_url", "")
 
         self.report({'INFO'}, "Subscription usage refreshed")
         return {'FINISHED'}

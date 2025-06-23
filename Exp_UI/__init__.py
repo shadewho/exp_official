@@ -3,7 +3,6 @@ import bpy
 from bpy.app.handlers import persistent
 
 from . exp_api import update_latest_version_cache
-from . auth import is_internet_available
 
 from .auth import token_expiry_check, is_internet_available, clear_token
 # Import operators, panels, and other modules as before.
@@ -12,7 +11,7 @@ from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
     VIEW3D_PT_PackageDisplay_CurrentItem,
-    VIEW3D_PT_SubscriptionUsage,
+    VIEW3D_PT_ProfileAccount,
     VIEW3D_PT_SettingsAndUpdate,)
 from .social_operators import (
     LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
@@ -34,7 +33,7 @@ from .cache_memory_operators import (
 
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
-from .helper_functions import update_event_stage, auto_refresh_usage
+from .helper_functions import update_event_stage, auto_refresh_usage, on_filter_changed
 
 # List all classes that will be registered.
 classes = (
@@ -47,7 +46,7 @@ classes = (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
     VIEW3D_PT_PackageDisplay_CurrentItem,
-    VIEW3D_PT_SubscriptionUsage,
+    VIEW3D_PT_ProfileAccount,
     EXPLORATORY_UL_Comments,
     REFRESH_USAGE_OT_WebApp,
     FETCH_PAGE_THREADED_OT_WebApp,
@@ -108,7 +107,8 @@ def register():
     bpy.types.Scene.selected_event = bpy.props.EnumProperty(
         name="Event",
         description="Select an event to filter packages",
-        items=get_event_items  # Make sure get_event_items is in scope or imported.
+        items=get_event_items,  # Make sure get_event_items is in scope or imported.
+        update=on_filter_changed
     )
 
     # Register UI mode and other scene properties.
@@ -141,7 +141,8 @@ def register():
             ('shop_item', 'Shop', ''),
             ('event', 'Event', 'Playable event maps (voting and winners)')
         ],
-        default='world'
+        default='world',
+        update=on_filter_changed
     )
     bpy.types.Scene.package_sort_by = bpy.props.EnumProperty(
         name="Sort By",
@@ -153,7 +154,8 @@ def register():
             ('random', 'Random', ''),
             ('featured', 'Featured', '')
         ],
-        default='newest'
+        default='newest',
+        update=on_filter_changed
     )
     bpy.types.Scene.event_stage = bpy.props.EnumProperty(
         name="Event Stage",
@@ -164,13 +166,14 @@ def register():
             ('winners', 'Winners', 'Completed events')
         ],
         default='submission',
-        update=update_event_stage
+        update=lambda self, context: (update_event_stage(self, context), on_filter_changed(self, context))
     )
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
         description="Filter packages by name or author",
-        default=""
+        default="",
+        update=on_filter_changed
     )
     bpy.types.Scene.download_code = bpy.props.StringProperty(
         name="Download Code",

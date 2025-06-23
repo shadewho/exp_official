@@ -75,7 +75,8 @@ class WEBAPP_OT_UpdateAddon(bpy.types.Operator):
         # Instructions
         box = layout.box()
         box.label(text="This may take a few minutes.")
-        box.label(text="Be patient and restart Blender when done.")
+        box.label(text="Restart Blender when update is complete.")
+        box.label(text="If the update fails, go to https://exploratory.online/ for the latest version.")
 
     def execute(self, context):
         # 0) Save current prefs

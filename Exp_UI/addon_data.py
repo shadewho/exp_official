@@ -110,6 +110,11 @@ class MyAddonSceneProps(PropertyGroup):
         name="Event Submission ID",
         default=0
     )
+    username: StringProperty(
+        name="Username",
+        description="Logged-in user’s name",
+        default=""
+    )
 
     
     def init_from_package(self, pkg: dict):
@@ -124,8 +129,6 @@ class MyAddonSceneProps(PropertyGroup):
         self.likes = pkg.get("likes", 0)
         self.description = pkg.get("description", "No description")
         self.upload_date = pkg.get("upload_date", "N/A")
-        # Build out the profile link:
-        self.profile_url = f"{USER_PROFILE_BASE_URL}/{self.author}"
         self.download_count = pkg.get("download_count", 0)
         if pkg.get("file_type") == "event":
             self.event_submission_id = pkg.get("submission_id", 0)

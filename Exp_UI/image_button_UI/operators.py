@@ -250,6 +250,8 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         if not replaced:
             master_list.append(pkg)
 
+        self._dirty = True
+
         current_page = context.scene.current_thumbnail_page
         self.update_pagination(context, master_list, current_page)
 
@@ -283,6 +285,8 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
 
         bpy.types.Scene.fetched_packages_data = page_chunks[requested_page - 1]
 
+        self._dirty = True
+        
         if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
             bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
         if context.area:
@@ -387,6 +391,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
     # Internal modal state
     _handler = None
     _timer = None
+    _dirty   = True  # start dirty so first draw builds
 
     # Saved filter values (for monitoring changes)
     last_item_type: str = ""
@@ -407,7 +412,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
     def invoke(self, context, event):
         scene = context.scene
         self._original_area_type = context.area.type
-
+        self._dirty = True  # force initial build
         # If not keeping mode, force the UI mode to BROWSE.
         if not self.keep_mode:
             scene.ui_current_mode = "BROWSE"
@@ -446,11 +451,12 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 self.report({'INFO'}, "3D View context changed – closing UI.")
                 self.cancel(context)
                 return {'CANCELLED'}
-
-            # Always update the draw data.
-            bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-            if context.area:
-                context.area.tag_redraw()
+            
+            if self._dirty:
+                bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
+                if context.area:
+                    context.area.tag_redraw()
+                self._dirty = False
 
             # Check for filter changes by comparing current scene properties with stored ones.
             current_item = scene.package_item_type
@@ -478,6 +484,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
 
                 # Call the threaded fetch operator to refresh the package list.
                 bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=1)
+                self._dirty = True   # mark UI dirty on filter change
                 self.report({'INFO'}, "Filter change detected. Refreshing data.")
 
             # Handle any ongoing loading sequence.
@@ -561,11 +568,13 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                         total_pages = scene.total_thumbnail_pages
                         if page < total_pages:
                             self.begin_loading_for_page(context, page + 1)
+                            self._dirty = True 
                         return {'RUNNING_MODAL'}
                     elif button["name"] == "Left_Arrow":
                         page = scene.current_thumbnail_page
                         if page > 1:
                             self.begin_loading_for_page(context, page - 1)
+                            self._dirty = True 
                         return {'RUNNING_MODAL'}
                     elif button["name"] == "Back_Icon":
                         if scene.ui_current_mode == "DETAIL":

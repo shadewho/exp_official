@@ -6,34 +6,52 @@ from .helper_functions import format_relative_time
 from .version_info import CURRENT_VERSION
 from .exp_api import get_cached_latest_version
 
-class VIEW3D_PT_SubscriptionUsage(bpy.types.Panel):
-    bl_label = "Subscription Usage"
-    bl_idname = "VIEW3D_PT_subscription_usage"
+class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
+    bl_label = "Profile / Account"
+    bl_idname = "VIEW3D_PT_profile_account"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
 
     @classmethod
     def poll(cls, context):
+        # only show our panel when in EXPLORE mode
         return context.scene.main_category == 'EXPLORE'
 
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
+        scene  = context.scene
+
+        # 1) must be logged in
         token = load_token()
-        
         if not token:
-            layout.label(text="Please log in to see usage data", icon='ERROR')
+            layout.label(text="Please log in to access your account", icon='ERROR')
             return
 
+        # 2) safe to show profile link + usage
         addon_data = scene.my_addon_data
+
+        # ——— Profile link ———
+        row = layout.row(align=True)
+        if getattr(addon_data, "profile_url", ""):
+            # show globe + username, just like in Current Item
+            op = row.operator("webapp.open_url", text=addon_data.username, icon='URL')
+            op.url = addon_data.profile_url
+        else:
+            # fallback if you haven’t wired up profile_url yet
+            row.label(text=addon_data.username)
+
+        layout.separator()
+
+        # ——— Subscription Usage ———
         layout.label(text=f"Plan: {addon_data.subscription_tier}")
         layout.label(text=f"Downloads: {addon_data.downloads_used} / {addon_data.downloads_limit}")
         layout.label(text=f"Uploads: {addon_data.uploads_used}")
         remaining = addon_data.downloads_limit - addon_data.downloads_used
         layout.label(text=f"Remaining Downloads: {remaining}")
 
-        layout.operator("webapp.refresh_usage", text="Refresh Usage")
+        # optional “refresh” button
+        layout.operator("webapp.refresh_usage", text="Refresh Usage", icon='FILE_REFRESH')
 
 
 class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
