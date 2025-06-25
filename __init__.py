@@ -60,8 +60,6 @@ def register():
     Exp_Game.register()
     Exp_UI.register()
 
-    print("Exploratory Addon registered.")
-
 def unregister():
     # 1) save & teardown prefs persistence
     unregister_prefs_handlers()
@@ -85,8 +83,6 @@ def unregister():
         bpy.app.timers.unregister(version_check_timer)
     except Exception:
         pass
-
-    print("Exploratory Addon unregistered.")
 
 if __name__ == "__main__":
     register()

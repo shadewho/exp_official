@@ -30,7 +30,6 @@ def center_cursor_in_3d_view(context, margin=50):
     context.window.cursor_warp(adjusted_x, adjusted_y)
 
 
-
 def clear_old_dynamic_references(self):
     """
     Clears any old dynamic references from previous runs,

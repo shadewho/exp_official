@@ -30,6 +30,7 @@ from . import exp_globals
 from .exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.helper_functions import cleanup_downloaded_worlds
 
+
 class ExpModal(bpy.types.Operator):
     """A modal operator that controls third-person movement and camera,
     using a consistent time scale for movement and animation."""
@@ -171,12 +172,6 @@ class ExpModal(bpy.types.Operator):
         if not context.scene.character_audio_lock:
             clean_audio_temp()
 
-
-        # B) Build character
-        result = bpy.ops.exploratory.build_character('EXEC_DEFAULT')
-        if 'FINISHED' not in result:
-            ...
-
         # C) Now build audio
         audio_result = bpy.ops.exploratory.build_audio('EXEC_DEFAULT')
 
@@ -245,30 +240,26 @@ class ExpModal(bpy.types.Operator):
             move_armature_and_children_to_scene(self.target_object, context.scene)
 
 
-        # 7) Hide the cursor
-        
+        # 7) Hide the cursor and confine it to the window ################
+        #MOUSE AND region #################################################
         context.window.cursor_modal_set('NONE')
 
-        if sys.platform.startswith('win'):
-            pass
-            confine_cursor_to_window()
-        elif sys.platform.startswith('linux'):
-            # Call your Linux-specific function here
-            pass
-        elif sys.platform == 'darwin':
-            # Call your macOS-specific function here
-            pass
+        confine_cursor_to_window()
 
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 for region in area.regions:
                     if region.type == 'WINDOW':
-                        cx = region.x + region.width // 2
-                        cy = region.y + region.height // 2
-                        self.last_mouse_x = cx
-                        self.last_mouse_y = cy
+                        self._view_region = region
+                        # compute center once
+                        self._cx = region.x + region.width  // 2
+                        self._cy = region.y + region.height // 2
+                        # init last_mouse for Windows fallback
+                        self.last_mouse_x = self._cx
+                        self.last_mouse_y = self._cy
                         break
                 break
+        #MOUSE AND region #################################################
 
         # 8) Create a timer (runs as fast as possible, interval=0.0)
         self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
@@ -430,8 +421,9 @@ class ExpModal(bpy.types.Operator):
         """Cleanup code when user cancels with ESC or Right-click."""
         
         # Release OS-level cursor confinement (for Windows; add Linux/macOS as needed)
-        if sys.platform.startswith('win'):
+        if sys.platform.startswith('win') or sys.platform.startswith('linux') or sys.platform == 'darwin':
             release_cursor_clip()
+
         
         # Restore the cursor modal state
         context.window.cursor_modal_restore()
@@ -620,54 +612,15 @@ class ExpModal(bpy.types.Operator):
             self.keys_pressed.discard(event.type)
 
     def handle_mouse_move(self, context, event):
-        if sys.platform.startswith('win'):
-            # Windows: Use relative movement, which works well.
-            delta_x = getattr(event, "mouse_dx", event.mouse_x - self.last_mouse_x)
-            delta_y = getattr(event, "mouse_dy", event.mouse_y - self.last_mouse_y)
+        delta_x = getattr(event, "mouse_dx", event.mouse_x - self.last_mouse_x)
+        delta_y = getattr(event, "mouse_dy", event.mouse_y - self.last_mouse_y)
 
-            self.yaw -= delta_x * self.sensitivity
-            self.pitch -= delta_y * self.sensitivity
-            self.pitch = max(-math.pi/2 + 0.1, min(math.pi/2 - 0.1, self.pitch))
+        self.yaw -= delta_x * self.sensitivity
+        self.pitch -= delta_y * self.sensitivity
+        self.pitch = max(-math.pi/2 + 0.1, min(math.pi/2 - 0.1, self.pitch))
 
-            self.last_mouse_x = event.mouse_x
-            self.last_mouse_y = event.mouse_y
-        else:
-            # Other OS (Linux, macOS): Use the cursor warp method.
-            # Try to obtain the 3D View's WINDOW region from the context.
-            region = context.region
-            if region is None:
-                for area in context.screen.areas:
-                    if area.type == 'VIEW_3D':
-                        for reg in area.regions:
-                            if reg.type == 'WINDOW':
-                                region = reg
-                                break
-                        if region:
-                            break
-            # If no valid region is found, exit early.
-            if region is None:
-                return
-
-            # Get region dimensions and calculate the center.
-            region_x, region_y = region.x, region.y
-            width, height = region.width, region.height
-            center_x = region_x + (width // 2)
-            center_y = region_y + (height // 2)
-
-            # Use the absolute mouse position.
-            mouse_abs_x = event.mouse_x
-            mouse_abs_y = event.mouse_y
-
-            # Calculate the delta from the center.
-            delta_x = mouse_abs_x - center_x
-            delta_y = mouse_abs_y - center_y
-
-            self.yaw -= delta_x * self.sensitivity
-            self.pitch -= delta_y * self.sensitivity
-            self.pitch = max(-math.pi/2 + 0.1, min(math.pi/2 - 0.1, self.pitch))
-
-            # Warp the cursor back to the center of the region.
-            context.window.cursor_warp(center_x, center_y)
+        self.last_mouse_x = event.mouse_x
+        self.last_mouse_y = event.mouse_y
 
 
     def handle_jump(self, event):

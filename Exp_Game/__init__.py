@@ -1,4 +1,4 @@
-# init.py
+# Exploratory/Exp_Game/__init__.py
 import bpy
 from .exp_modal import ExpModal
 from .exp_ui import (
@@ -117,8 +117,6 @@ def register():
 
     bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
 
-    print("Exploratory Add-on Registered!")
-
 def unregister():
     remove_scene_properties()
     unregister_interaction_properties()
@@ -172,7 +170,6 @@ def unregister():
     bpy.utils.unregister_class(ProxyMeshEntry)
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
-    print("Exploratory Add-on Unregistered!")
 
 if __name__ == "__main__":
     register()
