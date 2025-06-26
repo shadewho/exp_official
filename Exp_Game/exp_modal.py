@@ -1,10 +1,8 @@
 # File: exp_modal.py
 ########################################
-import os
 import bpy
 import math
 import time
-import sys
 from .exp_physics import update_dynamic_meshes
 from .exp_utilities import get_game_world
 from .exp_movement import move_character
@@ -37,7 +35,7 @@ class ExpModal(bpy.types.Operator):
 
     bl_idname = "view3d.exp_modal"
     bl_label = "Third Person Orbit"
-    bl_options = {'GRAB_CURSOR', 'BLOCKING'}
+    bl_options = { 'BLOCKING'}
 
     # ---------------------------
     # User-Adjustable Properties
@@ -244,8 +242,6 @@ class ExpModal(bpy.types.Operator):
         #MOUSE AND region #################################################
         context.window.cursor_modal_set('NONE')
 
-        confine_cursor_to_window()
-
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 for region in area.regions:
@@ -419,11 +415,6 @@ class ExpModal(bpy.types.Operator):
     def cancel(self, context):
         print(self.launched_from_ui)
         """Cleanup code when user cancels with ESC or Right-click."""
-        
-        # Release OS-level cursor confinement (for Windows; add Linux/macOS as needed)
-        if sys.platform.startswith('win') or sys.platform.startswith('linux') or sys.platform == 'darwin':
-            release_cursor_clip()
-
         
         # Restore the cursor modal state
         context.window.cursor_modal_restore()
@@ -612,15 +603,37 @@ class ExpModal(bpy.types.Operator):
             self.keys_pressed.discard(event.type)
 
     def handle_mouse_move(self, context, event):
-        delta_x = getattr(event, "mouse_dx", event.mouse_x - self.last_mouse_x)
-        delta_y = getattr(event, "mouse_dy", event.mouse_y - self.last_mouse_y)
+        """
+        Always warp the pointer back to the region center each frame,
+        ignoring the synthetic event that warp generates.
+        """
+        # Recompute region center every time (handles window resize / multi-monitor)
+        region = self._view_region
+        cx = region.x + region.width  // 2
+        cy = region.y + region.height // 2
 
-        self.yaw -= delta_x * self.sensitivity
-        self.pitch -= delta_y * self.sensitivity
-        self.pitch = max(-math.pi/2 + 0.1, min(math.pi/2 - 0.1, self.pitch))
+        # If this event is the synthetic warp back, ignore it
+        if abs(event.mouse_x - cx) < 2 and abs(event.mouse_y - cy) < 2:
+            # still update last_mouse_x/y so next real delta is correct
+            self.last_mouse_x = cx
+            self.last_mouse_y = cy
+            return
 
-        self.last_mouse_x = event.mouse_x
-        self.last_mouse_y = event.mouse_y
+        # Compute deltas relative to center
+        dx = event.mouse_x - cx
+        dy = event.mouse_y - cy
+
+        # Apply rotation
+        self.yaw   -= dx * self.sensitivity
+        self.pitch -= dy * self.sensitivity
+        self.pitch  = max(-math.pi/2 + 0.1, min(math.pi/2 - 0.1, self.pitch))
+
+        # Warp pointer back into center of the region
+        context.window.cursor_warp(cx, cy)
+
+        # Record for any other logic that needs last positions
+        self.last_mouse_x = cx
+        self.last_mouse_y = cy
 
 
     def handle_jump(self, event):
