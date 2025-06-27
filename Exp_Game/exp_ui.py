@@ -2,6 +2,7 @@
 import bpy
 from .exp_utilities import (
     get_game_world)
+from ..Exp_UI.main_config import UPLOAD_URL
 # --------------------------------------------------------------------
 # Exploratory Modal Panel
 # --------------------------------------------------------------------
@@ -376,9 +377,6 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
         ######################
         # (A) The Interaction List
         ######################
-        layout.separator()
-        layout.operator("view3d.exp_modal", text="Start Exploratory Modal")
-        layout.separator()
 
         row = layout.row()
         row.template_list(
@@ -813,3 +811,70 @@ class VIEW3D_PT_Objectives(bpy.types.Panel):
             timer_box.prop(objv, "timer_start_value", text="Start Value")
             timer_box.prop(objv, "timer_end_value", text="End Value")
 
+
+
+# ─── Upload Helper Panel ─────────────────────────────────────────────
+class VIEW3D_PT_Exploratory_UploadHelper(bpy.types.Panel):
+    bl_label = "Upload Helper"
+    bl_idname = "VIEW3D_PT_Exploratory_UploadHelper"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.main_category == 'CREATE'
+
+    def draw(self, context):
+        layout = self.layout
+
+        # ——— New header messages ——————————————————————————————
+        layout.label(text="Ready to Upload?", icon='EVENT_UP_ARROW')
+        layout.label(text="See the recommendations below for a quick upload checklist!")
+
+        # ——— Quick Upload link ————————————————————————————
+        row = layout.row(align=True)
+        op = row.operator("wm.url_open", text="Go to Upload Page", icon='URL')
+        op.url = UPLOAD_URL
+
+        # ——— The existing single box —————————————————————————
+        box = layout.box()
+        box.label(text="Save your .blend for accurate file size", icon='FILE_TICK')
+
+        size_mib = context.scene.upload_helper_file_size
+        if not bpy.data.filepath:
+            box.label(text="File not saved yet", icon='ERROR')
+        else:
+            cap = 500.0  # MiB cap
+            pct = (size_mib / cap) * 100 if cap else 0
+            box.label(
+                text=f"{size_mib:.2f} MiB / {cap:.0f} MiB  ({pct:4.1f}% of cap)"
+            )
+
+        box.operator(
+            "exploratory.uploadhelper_refresh_size",
+            text="Refresh Size",
+            icon='FILE_BLEND'
+        )
+
+        # ——— Purge & Pack box ——————————————————————————————
+        purge_box = layout.box()
+        purge_box.label(text="Purge & Pack Assets", icon='PACKAGE')
+        purge_box.label(text="Ensure all images, audio, and other assets")
+        purge_box.label(text="are packed (embedded) in this .blend (no external paths)")
+
+        # ——— Game World Requirement box ——————————————————————
+        gw_box = layout.box()
+        gw_box.label(text="Game World Setup", icon='WORLD')
+        gw_box.label(text="Required: set desired scene as 'Game World'")
+        gw_box.label(text="This indicates what scene will be detected at runtime.")
+        gw_box.label(text="Exploratory N-Panel -> 'Create' Tab -> Set Game World")
+
+        # ——— Optimize box ——————————————————————————————
+        opt_box = layout.box()
+        opt_box.label(text="Optimize for Best Performance", icon='MOD_TRIANGULATE')
+        opt_box.label(text="• Simplify mesh geometry")
+        opt_box.label(text="• Use appropriate image sizes for textures and environments")
+        opt_box.label(text="• Embed audio at needed sample rates and bit-depths")
+        opt_box.label(text="• Use the Exploratory toolset sparingly (only what you need in-scene)")

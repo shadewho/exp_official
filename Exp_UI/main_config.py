@@ -78,8 +78,12 @@ WORLD_DOWNLOADS_FOLDER = os.path.join(ADDON_FOLDER, "World Downloads")
 if not os.path.exists(WORLD_DOWNLOADS_FOLDER):
     os.makedirs(WORLD_DOWNLOADS_FOLDER)
 
-SHOP_DOWNLOADS_FOLDER = os.path.join(ADDON_FOLDER, "Shop Downloads")
-
 THUMBNAIL_CACHE_FOLDER = os.path.join(ADDON_FOLDER, "cache_thumbnails")
 if not os.path.exists(THUMBNAIL_CACHE_FOLDER):
     os.makedirs(THUMBNAIL_CACHE_FOLDER)
+
+UPLOAD_BASE_URL = {
+    'development': 'http://127.0.0.1:5000/upload',
+    'production':  'https://exploratory.online/upload'
+}
+UPLOAD_URL = UPLOAD_BASE_URL.get(ENVIRONMENT, UPLOAD_BASE_URL['production'])
