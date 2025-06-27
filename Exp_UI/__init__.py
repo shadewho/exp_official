@@ -2,8 +2,6 @@
 import bpy
 from bpy.app.handlers import persistent
 
-from . exp_api import update_latest_version_cache
-
 from .auth import token_expiry_check, is_internet_available, clear_token
 # Import operators, panels, and other modules as before.
 from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, DOWNLOAD_CODE_OT_File, OPEN_DOCS_OT
@@ -33,7 +31,7 @@ from .cache_memory_operators import (
 
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
-from .helper_functions import update_event_stage, auto_refresh_usage, on_filter_changed
+from .helper_functions import update_event_stage, auto_refresh_usage
 
 # List all classes that will be registered.
 classes = (
@@ -108,7 +106,6 @@ def register():
         name="Event",
         description="Select an event to filter packages",
         items=get_event_items,  # Make sure get_event_items is in scope or imported.
-        update=on_filter_changed
     )
 
     # Register UI mode and other scene properties.
@@ -142,7 +139,6 @@ def register():
             ('event', 'Event', 'Playable event maps (voting and winners)')
         ],
         default='world',
-        update=on_filter_changed
     )
     bpy.types.Scene.package_sort_by = bpy.props.EnumProperty(
         name="Sort By",
@@ -155,7 +151,6 @@ def register():
             ('featured', 'Featured', '')
         ],
         default='newest',
-        update=on_filter_changed
     )
     bpy.types.Scene.event_stage = bpy.props.EnumProperty(
         name="Event Stage",
@@ -166,14 +161,13 @@ def register():
             ('winners', 'Winners', 'Completed events')
         ],
         default='submission',
-        update=lambda self, context: (update_event_stage(self, context), on_filter_changed(self, context))
+        update=update_event_stage
     )
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
         description="Filter packages by name or author",
         default="",
-        update=on_filter_changed
     )
     bpy.types.Scene.download_code = bpy.props.StringProperty(
         name="Download Code",
@@ -209,6 +203,12 @@ def register():
         min=0.0,
         max=1.0
     )
+    bpy.types.Scene.last_filter_signature = bpy.props.StringProperty(
+        name="Last Filter Signature",
+        description="Filters that produced the cached package list",
+        default=""
+    )
+
 
     # Register all addon classes.
     for cls in classes:
@@ -235,6 +235,7 @@ def unregister():
     del bpy.types.Scene.comment_text
     del bpy.types.Scene.show_loading
     del bpy.types.Scene.download_progress
+    del bpy.types.Scene.last_filter_signature
 
     bpy.utils.unregister_class(MyAddonComment)
     bpy.utils.unregister_class(MyAddonSceneProps)

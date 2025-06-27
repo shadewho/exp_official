@@ -282,22 +282,15 @@ class VOTE_MAP_OT_WebApp(bpy.types.Operator):
         if not token:
             self.report({'ERROR'}, "You must be logged in to vote.")
             return {'CANCELLED'}
-
-        # Debug print to check token
-        print("DEBUG: Token retrieved:", token)
         
         # Ensure header format is correct
         headers = {"Authorization": f"Bearer {token}"}
-        print("DEBUG: Headers being sent:", headers)
         
         vote_url = f"{EVENTS_URL}/vote/{submission_id}"
-        print("DEBUG: Vote URL:", vote_url)
         
         try:
             response = requests.post(vote_url, headers=headers, timeout=5)
-            print("DEBUG: Server response status:", response.status_code)
-            # Try printing raw response text for debugging if JSON fails.
-            print("DEBUG: Response text:", response.text)
+
             response.raise_for_status()
             data = response.json()
             if not data.get("success"):

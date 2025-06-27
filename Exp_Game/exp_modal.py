@@ -8,7 +8,7 @@ from .exp_utilities import get_game_world
 from .exp_movement import move_character
 from .exp_raycastutils import create_bvh_tree
 from .exp_spawn import spawn_user
-from .exp_view import update_view, confine_cursor_to_window, release_cursor_clip, shortest_angle_diff
+from .exp_view import update_view, shortest_angle_diff
 from .exp_animations import AnimationStateManager, set_global_animation_manager
 from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds, 
                         get_global_audio_manager, clean_audio_temp)

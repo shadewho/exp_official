@@ -64,50 +64,55 @@ class CacheManager:
 # Create a singleton instance
 cache_manager = CacheManager()
 
-def ensure_package_data():
+def ensure_package_data(file_type: str, limit: int = 50) -> bool:
     """
-    Example helper that fetches page 1 from the server and stores it in cache_manager.
-    (You can use or ignore this as needed.)
+    Fetch page 1 of `file_type` from the server and store it in cache_manager
+    under cache_manager.package_data[file_type].
+
+    Returns True on success, False otherwise.
     """
     from .exp_api import fetch_packages
     params = {
-        "file_type": "world",
-        "sort_by": "newest",
-        "offset": 0,
-        "limit": 50
+        "file_type":  file_type,       # e.g. "world" or "shop_item"
+        "sort_by":    "newest",
+        "offset":     0,
+        "limit":      limit,
     }
     try:
         data = fetch_packages(params)
-        if data.get("success"):
-            packages = data.get("packages", [])
-            cache_manager.set_package_data({1: packages})
-            return True
-        else:
+        if not data.get("success"):
             return False
-    except Exception as e:
+
+        packages = data.get("packages", [])
+        # Instead of a numeric page key, use file_type as the key
+        cache_manager.set_package_data({file_type: packages})
+        return True
+
+    except Exception:
         return False
 
-def filter_cached_data(file_type, search_query):
+def filter_cached_data(file_type: str, search_query: str) -> list[dict]:
     """
-    Filter the cached package data based on the file_type and search_query.
-    It fetches cached packages from page 1 of the cache.
+    Return the cached packages of `file_type` whose name or uploader
+    matches `search_query`.
 
     Args:
-        file_type (str): The type of package, e.g. "world" or "shop_item".
-        search_query (str): The search query string.
+        file_type (str): e.g. "world" or "shop_item".
+        search_query (str): the user’s filter string.
 
     Returns:
-        list: A list of package dictionaries that match the criteria.
+        list[dict]: all matching package dicts, or an empty list if none.
     """
-    # Get all cached packages from page 1 (or your main cache)
-    all_data = cache_manager.get_package_data().get(1, [])
-    sq = search_query.lower()
-    def matches(pkg):
+    # Grab the preloaded list for this type (or empty if not yet fetched)
+    all_data = cache_manager.get_package_data().get(file_type, [])
+    sq = search_query.lower().strip()
+
+    def matches(pkg: dict) -> bool:
         if pkg.get("file_type") != file_type:
             return False
-        name = pkg.get("package_name", "").lower()
+        name     = pkg.get("package_name", "").lower()
         uploader = pkg.get("uploader", "").lower()
-        if sq and (sq not in name and sq not in uploader):
-            return False
-        return True
+        # If there's a query, require it appear in name or uploader
+        return not sq or (sq in name or sq in uploader)
+
     return [pkg for pkg in all_data if matches(pkg)]

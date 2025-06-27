@@ -473,40 +473,6 @@ def format_relative_time(upload_date_str):
         return f"{years}y"
     
 
-def on_filter_changed(self, context):
-    """
-    Fired whenever any of the filters or page-nav properties change:
-      1) Exit DETAIL mode → go to BROWSE
-      2) Tear down any existing UI overlay
-      3) Clear the master list + paginated slices
-      4) Reset back to page 1
-      5) Re-open the BROWSE UI (which will show your loading spinner & fetch)
-    """
-    scene = context.scene
-
-    # 1) Exit DETAIL mode
-    scene.ui_current_mode = 'BROWSE'
-
-    # 2) Remove any existing thumbnail UI
-    try:
-        bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
-    except Exception:
-        pass
-
-    # 3) Clear in-memory pagination caches
-    if hasattr(scene, 'master_package_list'):
-        scene.master_package_list.clear()
-    scene.fetched_packages_data = []
-    if hasattr(scene, 'all_pages_data'):
-        scene.all_pages_data.clear()
-
-    # 4) Reset to the first page
-    scene.current_thumbnail_page = 1
-
-    # 5) Open the BROWSE UI (it will immediately show your spinner and fetch page 1)
-    bpy.ops.webapp.apply_filters_showui('EXEC_DEFAULT', page_number=1)
-
-
 # -------------------------------------------------------------------
 # Filter Events
 # -------------------------------------------------------------------
@@ -574,3 +540,21 @@ def auto_refresh_usage():
     except Exception as e:
         print("Error auto refreshing usage:", e)
     return None  # Returning None stops the timer
+
+
+
+# -------------------------------------------------------------------
+#keeps the filters and search query in sync 
+# -------------------------------------------------------------------
+def build_filter_signature(scene):
+    """
+    Returns a stable string representing the current UI filters.
+    Extend as you add new filter properties.
+    """
+    return "|".join([
+        scene.package_item_type,
+        scene.package_sort_by,
+        scene.package_search_query.strip(),
+        scene.event_stage,
+        scene.selected_event,
+    ])

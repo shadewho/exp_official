@@ -1,5 +1,4 @@
 # exp_api.py
-import os
 import bpy
 import requests
 import shutil
@@ -19,7 +18,6 @@ from .main_config import (
 )
 from .helper_functions import download_blend_file, append_scene_from_blend
 from .auth import load_token, save_token, clear_token, is_internet_available
-from .cache_manager import cache_manager
 from .main_config import PACKAGE_DETAILS_ENDPOINT
 from ..Exp_Game.exp_utilities import get_game_world
 
@@ -272,8 +270,23 @@ def explore_package(pkg):
             return {'CANCELLED'}, err_msg
 
         download_url = data["download_url"]
-        # 2) Download the file
-        local_blend_path = download_blend_file(download_url)
+
+        # 2) Download the file – forward byte progress → UI
+        def _update_progress(p):
+            """
+            Called from the network thread.  We hop back to Blender’s
+            main thread via bpy.app.timers so it is always safe.
+            """
+            def _in_main():
+                bpy.context.scene.download_progress = p        # 0.0–1.0
+                bpy.types.Scene.package_ui_dirty = True        # flag for redraw
+                return None
+            bpy.app.timers.register(_in_main, first_interval=0.0)
+
+        local_blend_path = download_blend_file(
+            download_url,
+            progress_callback=_update_progress
+        )
         if not local_blend_path:
             err_msg = "Failed to download .blend file."
             print("[ERROR]", err_msg)
@@ -291,17 +304,17 @@ def explore_package(pkg):
                 result = append_scene_from_blend(local_blend_path, scene_name=game_world.name)
             return result, "Scene appended." if result == {'FINISHED'} else "Failed to append scene."
 
-
-        # 4) If it's a shop item, store it in the Shop Downloads folder
+        # 4) Shop items cannot be explored in-Blender
         elif file_type == "shop_item":
-            base_name = os.path.basename(local_blend_path)
-            final_path = os.path.join(SHOP_DOWNLOADS_FOLDER, base_name)
-            print(f"[INFO] Copying from {local_blend_path} to {final_path}")
-            shutil.copy2(local_blend_path, final_path)
-            return {'FINISHED'}, f"Shop item downloaded to: {final_path}"
-        else:
-            print(f"[ERROR] Unknown file_type: {file_type}")
-            return {'CANCELLED'}, "Unknown file type"
+            msg = (
+                "Cannot explore shop items in-Blender; "
+                "please visit https://exploratory.online to purchase and download."
+            )
+            # Log to console
+            print(f"[INFO] {msg}")
+            # If you're inside an Operator you could also do:
+            #    self.report({'INFO'}, msg)
+            return {'CANCELLED'}, msg
 
     except Exception as e:
         traceback.print_exc()

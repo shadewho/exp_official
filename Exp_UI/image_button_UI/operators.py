@@ -6,7 +6,7 @@ from ..auth import load_token, ensure_internet_connection, is_internet_available
 from .drawing import load_image_buttons, draw_image_buttons_callback
 from .utils import viewport_changed
 from .config import THUMBNAILS_PER_PAGE
-from ..helper_functions import download_thumbnail
+from ..helper_functions import download_thumbnail, build_filter_signature
 from ..main_config import PACKAGES_ENDPOINT, EVENTS_URL, SHOP_URL
 from ..exp_api import fetch_packages, fetch_detail_for_file
 import threading
@@ -51,10 +51,17 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
     _timer = None
 
     def execute(self, context):
+        scene = context.scene
+
+        # Force BROWSE mode on every fetch
+        scene.ui_current_mode        = 'BROWSE'
+        scene.current_thumbnail_page = self.page_number
+        scene.show_loading_image     = True
+        
         if not ensure_internet_connection(context):
             self.report({'ERROR'}, "No internet connection detected. Cannot fetch packages.")
             return {'CANCELLED'}
-        scene = context.scene
+        
         file_type = scene.package_item_type  # "world" or "shop_item"
         sort_by = scene.package_sort_by        # "newest", etc.
         search_query = scene.package_search_query.strip()
@@ -152,9 +159,9 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         try:
             params = {
                 "file_type": file_type,
-                "sort_by": sort_by,
-                "offset": 0,
-                "limit": 9999
+                "sort_by":   sort_by,
+                "offset":    0,
+                "limit":     9999
             }
             if search_query:
                 params["search_query"] = search_query
@@ -163,7 +170,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             if file_type == 'event':
                 scene = bpy.context.scene
                 params["event_stage"] = scene.event_stage
-                # If the user has selected a specific event (and it's not the default "0")
                 if hasattr(scene, "selected_event") and scene.selected_event and scene.selected_event != "0":
                     params["selected_event"] = scene.selected_event
 
@@ -173,19 +179,22 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                 return
 
             packages = data.get("packages", [])
+
+            # ——— PRIME THE CACHE FOR THIS file_type ———
+            cache_manager.set_package_data({ file_type: packages })
+
+            # Tell the UI we have the full list
             fetch_page_queue.put(("PACKAGE_LIST", {"packages": packages}))
 
             # Process each package progressively.
             for pkg in packages:
                 thumb_url = pkg.get("thumbnail_url", "")
                 if thumb_url:
-                    # Check cache using file_id (assumed to be unique for each package)
                     package_id = pkg.get("file_id")
-                    cached_thumb = cache_manager.get_thumbnail(package_id)
-                    if cached_thumb and os.path.exists(cached_thumb["file_path"]):
-                        pkg["local_thumb_path"] = cached_thumb["file_path"]
+                    cached = cache_manager.get_thumbnail(package_id)
+                    if cached and os.path.exists(cached["file_path"]):
+                        pkg["local_thumb_path"] = cached["file_path"]
                     else:
-                        # Download and cache the thumbnail; pass file_id for consistent caching.
                         local_path = download_thumbnail(thumb_url, file_id=package_id)
                         pkg["local_thumb_path"] = local_path
                 else:
@@ -194,6 +203,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                 fetch_page_queue.put(("PACKAGE_READY", {"package": pkg, "sort_by": sort_by}))
 
             fetch_page_queue.put(("FETCH_DONE", {"packages": packages, "sort_by": sort_by}))
+
         except Exception as e:
             fetch_page_queue.put(("FETCH_ERROR", {"error": str(e)}))
 
@@ -284,6 +294,8 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         scene.current_thumbnail_page = requested_page
 
         bpy.types.Scene.fetched_packages_data = page_chunks[requested_page - 1]
+
+        scene.last_filter_signature = build_filter_signature(scene)
 
         self._dirty = True
         
@@ -413,6 +425,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         scene = context.scene
         self._original_area_type = context.area.type
         self._dirty = True  # force initial build
+
         # If not keeping mode, force the UI mode to BROWSE.
         if not self.keep_mode:
             scene.ui_current_mode = "BROWSE"
@@ -423,6 +436,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         self.last_search = scene.package_search_query
         self.last_event_stage = scene.event_stage  # Save the initial event stage
         self.last_selected_event = scene.selected_event  # Save the initial selected event
+        self._last_progress = -1.0
 
         # Initialize UI draw data.
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
@@ -457,6 +471,16 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 if context.area:
                     context.area.tag_redraw()
                 self._dirty = False
+            # -------- NEW: rebuild when progress OR flag changes --------
+            cur = scene.download_progress
+            if abs(cur - self._last_progress) > 1e-4:   # progress moved?
+                self._last_progress = cur
+                self._dirty = True                      # force UI rebuild
+
+            if getattr(bpy.types.Scene, "package_ui_dirty", False):
+                bpy.types.Scene.package_ui_dirty = False
+                self._dirty = True
+            # -----------------------------------------------------------------
 
             # Check for filter changes by comparing current scene properties with stored ones.
             current_item = scene.package_item_type
@@ -478,13 +502,17 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 self.last_event_stage = current_event_stage
                 self.last_selected_event = current_selected_event
 
-                # Reset to page one and show a loading indicator.
+                # --- wipe the old grid immediately ---
+                bpy.types.Scene.fetched_packages_data = []     # no thumbnails to draw
+                scene.total_thumbnail_pages = 1
+                scene.selected_thumbnail = ""
+                self._dirty = True                             # force UI rebuild right now
+                # --------------------------------------
+
+                # Reset to page one and show a loading indicator
                 scene.current_thumbnail_page = 1
                 scene.show_loading_image = True
-
-                # Call the threaded fetch operator to refresh the package list.
                 bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=1)
-                self._dirty = True   # mark UI dirty on filter change
                 self.report({'INFO'}, "Filter change detected. Refreshing data.")
 
             # Handle any ongoing loading sequence.
@@ -595,6 +623,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             # Set a loading flag and reset progress (for the UI drawing)
                             scene.download_progress = 0.0
                             scene.ui_current_mode = "LOADING"  # This is only for drawing, not for process control.
+                            self._dirty = True
                             # Immediately start the download process regardless of UI mode.
                             explore_icon_handler(context, download_code)
                         else:
@@ -769,11 +798,21 @@ class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
 
             elif self._step == 1:
                 scene = context.scene
+                
+                # turn panel blank while we fetch
+                bpy.types.Scene.fetched_packages_data = []
+                scene.total_thumbnail_pages = 1
+                scene.selected_thumbnail = ""
+                self._dirty = True
 
                 # Check if the current page is already loaded
                 fetched = getattr(bpy.types.Scene, "fetched_packages_data", [])
+                sig_now = build_filter_signature(scene)
+
                 cache_is_valid = (
-                    fetched and scene.current_thumbnail_page == self.page_number
+                    fetched
+                    and scene.current_thumbnail_page == self.page_number
+                    and scene.last_filter_signature == sig_now
                 )
 
                 # If we have cached data for this page, skip fetching
