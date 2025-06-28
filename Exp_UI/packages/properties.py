@@ -1,5 +1,4 @@
-
-# addon_data.py
+#Exploratory/Exp_UI/packages/properties.py
 import bpy
 from bpy.types import PropertyGroup
 from bpy.props import (
@@ -8,8 +7,6 @@ from bpy.props import (
     StringProperty,
     CollectionProperty
 )
-from .main_config import USER_PROFILE_BASE_URL
-
 class MyAddonComment(PropertyGroup):
     """
     Stores a single comment (author, text, etc.).

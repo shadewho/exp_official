@@ -148,7 +148,7 @@ class WEBAPP_OT_RefreshVersion(bpy.types.Operator):
     bl_description = "Fetch the latest add-on version"
 
     def execute(self, context):
-        from .Exp_UI.exp_api import update_latest_version_cache, get_cached_latest_version
+        from .Exp_UI.version_info import update_latest_version_cache, get_cached_latest_version
         update_latest_version_cache()
         latest = get_cached_latest_version()
         if not latest:

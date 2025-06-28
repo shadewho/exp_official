@@ -1,6 +1,8 @@
-# version_info.py
+#Exploraatory/Exp_UI/version_info.py
 import os
 import ast
+import requests
+from .main_config import BASE_URL
 
 # locate the add-on’s __init__.py (one folder up from this file’s parent)
 _root_dir  = os.path.dirname(os.path.dirname(__file__))
@@ -27,3 +29,35 @@ for node in module.body:
 
 # expose as "X.Y.Z"
 CURRENT_VERSION = ".".join(str(n) for n in _version)
+
+
+### Version Control###
+_latest_version_cache: str | None = None
+
+def fetch_latest_version() -> str | None:
+    """
+    Hits the server and returns the latest version string,
+    or None on error.
+    """
+    try:
+        resp = requests.get(f"{BASE_URL}/api/addon_version", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            return data["version_string"]
+    except Exception as e:
+        print("Could not fetch latest version:", e)
+    return None
+
+def update_latest_version_cache() -> None:
+    """
+    Refreshes the in-memory cache.
+    """
+    global _latest_version_cache
+    _latest_version_cache = fetch_latest_version()
+
+def get_cached_latest_version() -> str | None:
+    """
+    Returns the last-fetched version, or None if never fetched/failed.
+    """
+    return _latest_version_cache

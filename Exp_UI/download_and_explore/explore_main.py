@@ -1,16 +1,18 @@
-#explore_downloads.py
+#Exploratory/Exp_UI/download_and_explore/explore_main.py
 
 import bpy
 import requests
 from ..auth.helpers import load_token
 from ..main_config import PACKAGES_ENDPOINT, WORLD_DOWNLOADS_FOLDER
-from ..exp_api import append_scene_from_blend
+from .append_scene_helper import append_scene_from_blend
 import threading, os, uuid, traceback
 
 # Global download task reference.
 current_download_task = None
 download_progress_value = 0.0
 
+
+#the main download task class that handles the download process
 class DownloadTask:
     def __init__(self, download_code):
         self.download_code = download_code

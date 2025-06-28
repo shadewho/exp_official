@@ -1,18 +1,16 @@
-# backend.py
+#Exploratory/Exp_UI/packages/operators.py
 
 import bpy
-from bpy.props import StringProperty
 import requests
-import webbrowser
-from .auth.helpers import load_token, clear_token
-from .internet.helpers import ensure_internet_connection
-
+from ..auth.helpers import load_token
+from ..internet.helpers import ensure_internet_connection
 import traceback
-from .main_config import (DOWNLOAD_ENDPOINT, DOCS_URL)
-from .helper_functions import download_thumbnail, auto_refresh_usage
+from ..main_config import DOWNLOAD_ENDPOINT
+from ..helper_functions import download_thumbnail
 
 # ----------------------------------------------------------------------------
-# DOWNLOAD CODE
+# DOWNLOAD CODE - this opertator handles downloading a world using a download code 
+#                 and displaying its details in the custom UI.
 # ----------------------------------------------------------------------------
 class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
     bl_idname = "webapp.download_code"
@@ -82,22 +80,3 @@ class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
-
-#------------------------------------
-#Documentation Link
-#------------------------------------
-
-class OPEN_DOCS_OT(bpy.types.Operator):
-    bl_idname = "webapp.open_docs"
-    bl_label = "Open Documentation"
-    bl_description = "Open the online documentation"
-
-    url: StringProperty(
-        name="URL",
-        default=DOCS_URL,
-        description="Documentation page URL"
-    )
-
-    def execute(self, context):
-        webbrowser.open(self.url)
-        return {'FINISHED'}

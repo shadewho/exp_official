@@ -1,10 +1,10 @@
-# panel.py
+#Exploratory/Exp_UI/panel.py
 
 import bpy
 from .auth.helpers import load_token
 from .interface.drawing.utilities import format_relative_time
 from .version_info import CURRENT_VERSION
-from .exp_api import get_cached_latest_version
+from .version_info import get_cached_latest_version
 from .main_config import PROFILE_URL
 
 class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
@@ -211,6 +211,10 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    
+    @classmethod
+    def poll(cls, context):
+        return context.scene.main_category == 'EXPLORE'
 
     def draw(self, context):
         layout = self.layout

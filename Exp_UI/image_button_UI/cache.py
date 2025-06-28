@@ -121,7 +121,7 @@ def get_or_create_texture(img):
     if not img:
         return None
     try:
-        key = img.name  # This might raise ReferenceError if img is invalid.
+        key = img.name 
     except ReferenceError:
         print("[ERROR] Tried to access img.name but the image has been removed.")
         return None

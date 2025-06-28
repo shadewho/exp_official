@@ -26,7 +26,7 @@ from .exp_objectives import update_all_objective_timers, reset_all_objectives
 from .exp_game_reset import capture_scene_state, reset_property_reactions
 from . import exp_globals
 from .exp_globals import stop_all_sounds, update_sound_tasks
-from ..Exp_UI.helper_functions import cleanup_downloaded_worlds
+from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds
 
 
 class ExpModal(bpy.types.Operator):

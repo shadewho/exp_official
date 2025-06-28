@@ -10,7 +10,7 @@ bl_info = {
 
 import bpy
 from .Exp_UI.internet.helpers import is_internet_available
-from .Exp_UI.exp_api import update_latest_version_cache
+from .Exp_UI.version_info import update_latest_version_cache
 from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
 
 # persistence handlers

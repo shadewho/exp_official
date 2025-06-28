@@ -1,7 +1,7 @@
 #Exploratory/Exp_UI/interface/operators/apply_filters.py
 
 import bpy
-from ...helper_functions import  build_filter_signature
+from .utilities import  build_filter_signature
 from ..drawing.draw_master import load_image_buttons
 
 # ----------------------------------------------------------------------------

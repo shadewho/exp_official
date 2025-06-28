@@ -88,13 +88,3 @@ def register_prefs_handlers():
 
 def unregister_prefs_handlers():
     write_prefs()
-    # no need to explicitly unregister apply_prefs since it returns None
-
-#   "walk_custom_blend_action": "C:\Users\spenc\Desktop\Blender Project Saves\Exploratory\armature and action and mesh trial.blend",
-#   "walk_action_enum_prop": "exp_crouch",
-#   "walk_use_default_sound": true,
-#   "walk_custom_blend_sound": ".",
-#   "walk_sound_enum_prop": "",
-#   "run_use_default_action": false,
-#   "run_custom_blend_action": "C:\Users\spenc\Desktop\Blender Project Saves\Exploratory\armature and action and mesh trial.blend",
-#   "run_action_enum_prop": "exp_break_dance",

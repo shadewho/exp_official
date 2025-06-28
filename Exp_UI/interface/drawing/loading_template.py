@@ -1,6 +1,4 @@
 #Exploratory/Exp_UI/interface/drawing/explore_loading.py
-import blf
-import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 from .config import (

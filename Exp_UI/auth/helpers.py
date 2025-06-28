@@ -1,8 +1,10 @@
+#Exploratory/Exp_UI/auth/helpers.py
+
 import os
 import bpy
 import requests
 from ..main_config import (
-    VALIDATE_TOKEN_ENDPOINT, TOKEN_FILE,
+    VALIDATE_TOKEN_ENDPOINT, TOKEN_FILE, USAGE_ENDPOINT
 )
 # -----------------------------------------------------------------------------
 # Token File Helpers
@@ -75,3 +77,25 @@ def token_expiry_check():
         bpy.context.scene.my_addon_data.is_from_webapp = False
         print("[INFO] Your login token has expired. You have been logged out automatically.")
     return 60.0  # Check every 60 seconds
+
+
+
+def get_usage_data():
+    token = load_token()
+    if not token:
+        raise Exception("Not logged in")
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(USAGE_ENDPOINT, headers=headers, timeout=5)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("success"):
+        raise Exception(data.get("message", "Failed to fetch usage data"))
+    return data
+
+def auto_refresh_usage():
+    try:
+        bpy.ops.webapp.refresh_usage('INVOKE_DEFAULT')
+        print("Auto refresh usage operator called.")
+    except Exception as e:
+        print("Error auto refreshing usage:", e)
+    return None  # Returning None stops the timer

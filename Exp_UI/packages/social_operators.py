@@ -1,13 +1,11 @@
-# social_operators.py
+#Exploratory/Exp_UI/packages/social_operators.py
 
-from .auth.helpers import load_token
-from .main_config import USAGE_ENDPOINT, EVENTS_URL
-from .exp_api import like_package, comment_package
+from .utilities import like_package, comment_package
 import bpy
 import webbrowser
 from bpy.props import StringProperty
 import requests
-from .interface.drawing.utilities import format_relative_time
+from ..interface.drawing.utilities import format_relative_time
 
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.like_package"
@@ -105,9 +103,6 @@ class COMMENT_PACKAGE_OT_WebApp(bpy.types.Operator):
             layout.prop(self, "comment_text")
 
 
-
-
-
 class OPEN_URL_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.open_url"
     bl_label = "Open Profile"
@@ -156,43 +151,6 @@ class EXPLORATORY_UL_Comments(bpy.types.UIList):
         elif self.layout_type in {'GRID'}:
             # For GRID layout, just show something minimal
             layout.label(text=item.author)
-
-
-class REFRESH_USAGE_OT_WebApp(bpy.types.Operator):
-    bl_idname = "webapp.refresh_usage"
-    bl_label = "Refresh Subscription Usage"
-
-    def execute(self, context):
-        token = load_token()
-        if not token:
-            self.report({'ERROR'}, "Not logged in")
-            return {'CANCELLED'}
-
-        headers = {"Authorization": f"Bearer {token}"}
-        try:
-            response = requests.get(USAGE_ENDPOINT, headers=headers, timeout=5)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            self.report({'ERROR'}, f"Error fetching usage: {e}")
-            return {'CANCELLED'}
-
-        if not data.get("success"):
-            self.report({'ERROR'}, data.get("message", "Usage data error"))
-            return {'CANCELLED'}
-
-        # Update scene properties with the data from the backend.
-        scene = context.scene
-        addon_data = scene.my_addon_data
-        addon_data.subscription_tier = data.get("subscription_tier", "Free")
-        addon_data.downloads_used = data.get("downloads_used", 0)
-        addon_data.downloads_limit = data.get("downloads_limit", 0)
-        addon_data.uploads_used = data.get("uploads_used", 0)
-        addon_data.username    = data.get("username", "")
-        addon_data.profile_url = data.get("profile_url", "")
-
-        self.report({'INFO'}, "Subscription usage refreshed")
-        return {'FINISHED'}
 
 class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
     bl_idname = "view3d.popup_social_details"
@@ -256,59 +214,3 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
 
         else:
             layout.label(text="No social data available.", icon='INFO')
-
-
-class VOTE_MAP_OT_WebApp(bpy.types.Operator):
-    bl_idname = "webapp.vote_map"
-    bl_label = "Vote for Map"
-    bl_options = {'REGISTER'}
-    
-    skip_popup: bpy.props.BoolProperty(default=False)
-
-    def execute(self, context):
-        scene = context.scene
-        addon_data = scene.my_addon_data
-
-        if scene.package_item_type != 'event' or scene.event_stage != 'voting':
-            self.report({'ERROR'}, "Not in voting stage for an event map.")
-            return {'CANCELLED'}
-
-        submission_id = addon_data.event_submission_id
-        if submission_id <= 0:
-            self.report({'ERROR'}, "No valid submission ID found.")
-            return {'CANCELLED'}
-
-        token = load_token()
-        if not token:
-            self.report({'ERROR'}, "You must be logged in to vote.")
-            return {'CANCELLED'}
-        
-        # Ensure header format is correct
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        vote_url = f"{EVENTS_URL}/vote/{submission_id}"
-        
-        try:
-            response = requests.post(vote_url, headers=headers, timeout=5)
-
-            response.raise_for_status()
-            data = response.json()
-            if not data.get("success"):
-                self.report({'ERROR'}, data.get("message", "Vote failed."))
-                return {'CANCELLED'}
-            self.report({'INFO'}, data.get("message", "Vote cast successfully!"))
-            return {'FINISHED'}
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 400:
-                try:
-                    data = response.json()
-                    self.report({'INFO'}, data.get("message", "Already voted."))
-                except Exception:
-                    self.report({'ERROR'}, "Bad Request")
-                return {'FINISHED'}
-            else:
-                self.report({'ERROR'}, f"Error during vote: {e}")
-                return {'CANCELLED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"Error during vote: {e}")
-            return {'CANCELLED'}

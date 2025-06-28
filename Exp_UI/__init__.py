@@ -1,24 +1,24 @@
 #Exploratory/Exp_UI/__init__.py
 import bpy
 from bpy.app.handlers import persistent
-
+from bpy.props import PointerProperty
 from .internet.helpers import is_internet_available, clear_token
 from .auth.helpers import token_expiry_check
-# Import operators, panels, and other modules as before.
-from .backend import DOWNLOAD_CODE_OT_File, OPEN_DOCS_OT
+
 from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
     VIEW3D_PT_PackageDisplay_CurrentItem,
     VIEW3D_PT_ProfileAccount,
     VIEW3D_PT_SettingsAndUpdate,)
-from .social_operators import (
+
+
+from .packages.social_operators import (
     LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
-    OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp,
-    POPUP_SOCIAL_DETAILS_OT, VOTE_MAP_OT_WebApp
+    OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments,
+    POPUP_SOCIAL_DETAILS_OT
 )
-from .addon_data import MyAddonComment, PackageProps, get_event_items
-from bpy.props import PointerProperty
+from .packages.operators import DOWNLOAD_CODE_OT_File
 
 from .cache_memory_operators import (
     CLEAR_ALL_DATA_OT_WebApp, CLEAR_THUMBNAILS_ONLY_OT_WebApp, 
@@ -27,17 +27,21 @@ from .cache_memory_operators import (
 
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
-from .helper_functions import update_event_stage, auto_refresh_usage
+from .auth.helpers import auto_refresh_usage
 
 #Auth operators
 from .auth.operators import (
-    LOGIN_OT_WebApp, LOGOUT_OT_WebApp,)
+    LOGIN_OT_WebApp, LOGOUT_OT_WebApp, REFRESH_USAGE_OT_WebApp, OPEN_DOCS_OT)
 
 #interface operators
 from .interface.operators.apply_filters import APPLY_FILTERS_SHOWUI_OT
 from .interface.operators.display import PACKAGE_OT_Display
 from .interface.operators.fetch import FETCH_PAGE_THREADED_OT_WebApp
 from .interface.operators.remove import REMOVE_PACKAGE_OT_Display
+
+
+#evemts operators
+from .events.operators import VOTE_MAP_OT_WebApp
 
 # List all classes that will be registered.
 classes = (
@@ -66,8 +70,8 @@ classes = (
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT
 )
-
-
+from .packages.properties import MyAddonComment, PackageProps
+from .events.properties import register as register_event_props, unregister as unregister_event_props
 # --- Persistent Handler ---
 @persistent
 def on_blend_load(dummy):
@@ -90,7 +94,9 @@ def connectivity_check_timer():
 
 # --- Registration ---
 def register():
-    # Register the persistent load handler if not already registered.
+
+    register_event_props()
+
     if on_blend_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_blend_load)
     
@@ -106,13 +112,6 @@ def register():
     bpy.utils.register_class(MyAddonComment)
     bpy.utils.register_class(PackageProps)
     bpy.types.Scene.my_addon_data = PointerProperty(type=PackageProps)
-
-    bpy.types.Scene.fetched_events = bpy.props.PointerProperty(type=bpy.types.PropertyGroup)
-    bpy.types.Scene.selected_event = bpy.props.EnumProperty(
-        name="Event",
-        description="Select an event to filter packages",
-        items=get_event_items,  # Make sure get_event_items is in scope or imported.
-    )
 
     # Register UI mode and other scene properties.
     bpy.types.Scene.ui_current_mode = bpy.props.EnumProperty(
@@ -158,17 +157,6 @@ def register():
         ],
         default='newest',
     )
-    bpy.types.Scene.event_stage = bpy.props.EnumProperty(
-        name="Event Stage",
-        description="Select the current stage for events",
-        items=[
-            ('submission', 'Submit', 'Submission phase'),
-            ('voting', 'Vote', 'Voting phase'),
-            ('winners', 'Winners', 'Completed events')
-        ],
-        default='submission',
-        update=update_event_stage
-    )
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(
         name="Search Query",
@@ -197,11 +185,15 @@ def register():
         default=False
     )
     bpy.types.Scene.comment_text = bpy.props.StringProperty(name="Comment", default="")
+
+    #do i have 2 of these?^^^
     bpy.types.Scene.show_loading = bpy.props.BoolProperty(
         name="Show Loading",
         description="Display the loading indicator",
         default=False
     )
+
+    #get this out of init and put where it belongs!!
     bpy.types.Scene.download_progress = bpy.props.FloatProperty(
         name="Download Progress",
         description="Download progress (0.0 to 1.0)",
@@ -209,12 +201,12 @@ def register():
         min=0.0,
         max=1.0
     )
+    ##is this even used anywhere???? maybe display ops?
     bpy.types.Scene.last_filter_signature = bpy.props.StringProperty(
         name="Last Filter Signature",
         description="Filters that produced the cached package list",
         default=""
     )
-
 
     # Register all addon classes.
     for cls in classes:
@@ -231,10 +223,7 @@ def unregister():
     del bpy.types.Scene.package_item_type
     del bpy.types.Scene.package_sort_by
     del bpy.types.Scene.package_search_query
-    del bpy.types.Scene.event_stage
     del bpy.types.Scene.my_addon_data
-    del bpy.types.Scene.fetched_events
-    del bpy.types.Scene.selected_event
     del bpy.types.Scene.current_thumbnail_page
     del bpy.types.Scene.total_thumbnail_pages
     del bpy.types.Scene.download_code
@@ -254,6 +243,7 @@ def unregister():
     if on_blend_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_blend_load)
 
+    unregister_event_props()
 
 if __name__ == "__main__":
     register()
