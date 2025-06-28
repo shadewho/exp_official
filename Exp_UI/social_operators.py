@@ -1,7 +1,7 @@
 # social_operators.py
 
-from .auth import load_token
-from .main_config import LIKE_PACKAGE_ENDPOINT, COMMENT_PACKAGE_ENDPOINT, USAGE_ENDPOINT, EVENTS_URL
+from .auth.helpers import load_token
+from .main_config import USAGE_ENDPOINT, EVENTS_URL
 from .exp_api import like_package, comment_package
 import bpy
 import webbrowser

@@ -2,12 +2,13 @@
 
 import bpy
 import queue
-from ...auth import load_token, is_internet_available
+from ...auth.helpers import load_token
+from ...internet.helpers import is_internet_available
 from ...main_config import EVENTS_URL, SHOP_URL
 from ...exp_api import fetch_detail_for_file
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import draw_image_buttons_callback
-from ...image_button_UI.explore_downloads import explore_icon_handler
+from ...explore_tasks.explore_downloads import explore_icon_handler
 # A global queue for background fetch results
 fetch_page_queue = queue.Queue()
 load_page_queue = queue.Queue()
@@ -218,7 +219,7 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
                     # Handle specific button actions.
                     if button["name"] == "Close_Icon":
-                        from ...image_button_UI.explore_downloads import current_download_task
+                        from ...explore_tasks.explore_downloads import current_download_task
                         if current_download_task is not None:
                             current_download_task.cancel()
                         self.report({'INFO'}, "Close button clicked! Cancelling download and removing UI...")

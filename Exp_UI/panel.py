@@ -1,7 +1,7 @@
 # panel.py
 
 import bpy
-from .auth import load_token
+from .auth.helpers import load_token
 from .interface.drawing.utilities import format_relative_time
 from .version_info import CURRENT_VERSION
 from .exp_api import get_cached_latest_version

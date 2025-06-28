@@ -1,8 +1,6 @@
 # cache_manager.py
 import threading
 import time
-import os
-from .auth import is_internet_available
 class CacheManager:
     def __init__(self):
         self.package_data = {}      # e.g. {page_number: [package_dict, ...]}

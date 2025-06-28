@@ -7,8 +7,7 @@ from .image_button_UI.cache import save_thumbnail_index
 from .main_config import THUMBNAIL_CACHE_FOLDER
 from .image_button_UI.cache import (
     clear_image_datablocks,
-    save_thumbnail_index,
-    get_cached_metadata
+    save_thumbnail_index
 )
 from .helper_functions import background_fetch_metadata
 from .cache_manager import cache_manager, ensure_package_data

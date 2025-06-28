@@ -18,10 +18,8 @@ from .image_button_UI.cache import (
     register_thumbnail_in_index,
     register_metadata_in_index, get_cached_metadata
 )
-from .auth import load_token
+from .auth.helpers import load_token
 from bpy.app.handlers import persistent
-from .cache_manager import filter_cached_data
-
 
 # ----------------------------------------------------------------------------------
 # Download Helper
@@ -464,6 +462,8 @@ def get_event_items(self, context):
 
 
 
+
+#### what is this doing here??? needs a home!!!
 bpy.types.Scene.selected_event = bpy.props.EnumProperty(
     name="Event",
     description="Select an event to filter packages",
@@ -484,6 +484,9 @@ def auto_refresh_usage():
 
 
 # -------------------------------------------------------------------
+#I DONT THINK THIS IS USED ANYMORE
+#I DONT THINK THIS IS USED ANYMORE
+#I DONT THINK THIS IS USED ANYMORE
 #keeps the filters and search query in sync 
 # -------------------------------------------------------------------
 def build_filter_signature(scene):

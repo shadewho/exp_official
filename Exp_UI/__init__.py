@@ -2,9 +2,10 @@
 import bpy
 from bpy.app.handlers import persistent
 
-from .auth import token_expiry_check, is_internet_available, clear_token
+from .internet.helpers import is_internet_available, clear_token
+from .auth.helpers import token_expiry_check
 # Import operators, panels, and other modules as before.
-from .backend import LOGIN_OT_WebApp, LOGOUT_OT_WebApp, DOWNLOAD_CODE_OT_File, OPEN_DOCS_OT
+from .backend import DOWNLOAD_CODE_OT_File, OPEN_DOCS_OT
 from .panel import (
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
@@ -27,6 +28,10 @@ from .cache_memory_operators import (
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
 from .helper_functions import update_event_stage, auto_refresh_usage
+
+#Auth operators
+from .auth.operators import (
+    LOGIN_OT_WebApp, LOGOUT_OT_WebApp,)
 
 #interface operators
 from .interface.operators.apply_filters import APPLY_FILTERS_SHOWUI_OT

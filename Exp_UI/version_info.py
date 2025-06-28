@@ -1,5 +1,4 @@
 # version_info.py
-
 import os
 import ast
 

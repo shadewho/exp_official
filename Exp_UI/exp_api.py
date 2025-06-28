@@ -1,7 +1,6 @@
 # exp_api.py
 import bpy
 import requests
-import shutil
 import traceback
 from .main_config import (
     LOGIN_ENDPOINT,
@@ -16,7 +15,8 @@ from .main_config import (
     BASE_URL,
 )
 from .helper_functions import download_blend_file, append_scene_from_blend
-from .auth import load_token, save_token, clear_token, is_internet_available
+from .auth.helpers import load_token, save_token, clear_token
+from .internet.helpers import is_internet_available
 from .main_config import PACKAGE_DETAILS_ENDPOINT
 from ..Exp_Game.exp_utilities import get_game_world
 

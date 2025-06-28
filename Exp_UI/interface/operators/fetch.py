@@ -5,14 +5,15 @@ import os
 import threading
 import queue
 
-from ...auth import load_token, ensure_internet_connection, is_internet_available
+from ...auth.helpers import load_token
+from ...internet.helpers import ensure_internet_connection, is_internet_available
 from ...helper_functions import download_thumbnail, build_filter_signature
 from ...exp_api import fetch_packages
 from ...cache_manager import cache_manager, filter_cached_data
 
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import viewport_changed
-from ...image_button_UI.config import THUMBNAILS_PER_PAGE
+from ..drawing.config import THUMBNAILS_PER_PAGE
 
 fetch_page_queue = queue.Queue()
 load_page_queue = queue.Queue()
