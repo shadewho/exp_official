@@ -873,8 +873,9 @@ class VIEW3D_PT_Exploratory_UploadHelper(bpy.types.Panel):
 
         # ——— Optimize box ——————————————————————————————
         opt_box = layout.box()
-        opt_box.label(text="Optimize for Best Performance", icon='MOD_TRIANGULATE')
+        opt_box.label(text="Optimize for Best Performance", icon='OPTIONS')
         opt_box.label(text="• Simplify mesh geometry")
         opt_box.label(text="• Use appropriate image sizes for textures and environments")
-        opt_box.label(text="• Embed audio at needed sample rates and bit-depths")
-        opt_box.label(text="• Use the Exploratory toolset sparingly (only what you need in-scene)")
+        opt_box.label(text="• Pack only files and assets that are needed for the game")
+        opt_box.label(text="• Optimize Exploratory toolset to provide best performance")
+        opt_box.label(text="• Minimize file size for faster loading times")

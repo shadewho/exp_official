@@ -18,7 +18,7 @@ class MyAddonComment(PropertyGroup):
     text: StringProperty(name="Text", default="")
     timestamp: StringProperty(name="Timestamp", default="")
 
-class MyAddonSceneProps(PropertyGroup):
+class PackageProps(PropertyGroup):
     """
     Main property group that keeps track of 
     whether this scene is from Exploratory, 

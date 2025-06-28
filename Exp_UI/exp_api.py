@@ -129,7 +129,7 @@ def fetch_packages(params):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         if data.get("success"):

@@ -2,7 +2,7 @@
 import threading
 import time
 import os
-
+from .auth import is_internet_available
 class CacheManager:
     def __init__(self):
         self.package_data = {}      # e.g. {page_number: [package_dict, ...]}
@@ -72,6 +72,7 @@ def ensure_package_data(file_type: str, limit: int = 50) -> bool:
     Returns True on success, False otherwise.
     """
     from .exp_api import fetch_packages
+
     params = {
         "file_type":  file_type,       # e.g. "world" or "shop_item"
         "sort_by":    "newest",

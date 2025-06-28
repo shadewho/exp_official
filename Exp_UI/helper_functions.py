@@ -20,7 +20,6 @@ from .image_button_UI.cache import (
 )
 from .auth import load_token
 from bpy.app.handlers import persistent
-from datetime import datetime, timezone
 from .cache_manager import filter_cached_data
 
 
@@ -386,9 +385,6 @@ def background_fetch_metadata(package_id):
     thread = threading.Thread(target=_fetch_metadata_worker, args=(package_id,), daemon=True)
     thread.start()
 
-    thread = threading.Thread(target=_fetch_metadata_worker, args=(package_id,), daemon=True)
-    thread.start()
-
 def _fetch_metadata_worker(package_id):
     token = load_token()
     if not token:
@@ -416,60 +412,6 @@ def _fetch_metadata_worker(package_id):
             print(f"[ERROR] Failed to fetch metadata for package {package_id}: {data.get('message', 'Unknown error')}")
     except Exception as e:
         print(f"[ERROR] Exception while fetching metadata for package {package_id}: {e}")
-
-
-
-
-# -------------------------------------------------------------------
-# Time Utils
-# -------------------------------------------------------------------
-
-def format_relative_time(upload_date_str):
-    """
-    Converts an upload date string to a relative format.
-    Example outputs:
-      - "50s" for 50 seconds ago
-      - "2m" for 2 minutes ago
-      - "3h" for 3 hours ago
-      - "5d" for 5 days ago
-      - "1y" for 1 year ago
-
-    This function assumes the upload_date_str is in ISO 8601 format.
-    Adjust the parsing logic if your format differs.
-    """
-    try:
-        # Try ISO format first
-        dt = datetime.fromisoformat(upload_date_str)
-    except Exception:
-        # Fallback: try a common format (adjust as needed)
-        try:
-            dt = datetime.strptime(upload_date_str, "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            # If parsing fails, return the original string
-            return upload_date_str
-
-    # Ensure dt is timezone aware (assume UTC if not provided)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
-    diff = now - dt
-    seconds = diff.total_seconds()
-
-    if seconds < 60:
-        return f"{int(seconds)}s"
-    elif seconds < 3600:
-        minutes = int(seconds / 60)
-        return f"{minutes}m"
-    elif seconds < 86400:
-        hours = int(seconds / 3600)
-        return f"{hours}h"
-    elif seconds < 31536000:  # less than a year
-        days = int(seconds / 86400)
-        return f"{days}d"
-    else:
-        years = int(seconds / 31536000)
-        return f"{years}y"
-    
 
 # -------------------------------------------------------------------
 # Filter Events

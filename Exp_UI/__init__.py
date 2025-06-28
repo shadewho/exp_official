@@ -16,14 +16,9 @@ from .social_operators import (
     OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments, REFRESH_USAGE_OT_WebApp,
     POPUP_SOCIAL_DETAILS_OT, VOTE_MAP_OT_WebApp
 )
-from .addon_data import MyAddonComment, MyAddonSceneProps, get_event_items
+from .addon_data import MyAddonComment, PackageProps, get_event_items
 from bpy.props import PointerProperty
-from .image_button_UI.operators import (
-    FETCH_PAGE_THREADED_OT_WebApp,
-    PACKAGE_OT_Display,
-    REMOVE_PACKAGE_OT_Display,
-    APPLY_FILTERS_SHOWUI_OT
-)
+
 from .cache_memory_operators import (
     CLEAR_ALL_DATA_OT_WebApp, CLEAR_THUMBNAILS_ONLY_OT_WebApp, 
     REFRESH_FILTERS_OT_WebApp, PRELOAD_METADATA_OT_WebApp, preload_metadata_timer
@@ -32,6 +27,12 @@ from .cache_memory_operators import (
 # Import functions from our cache module.
 from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
 from .helper_functions import update_event_stage, auto_refresh_usage
+
+#interface operators
+from .interface.operators.apply_filters import APPLY_FILTERS_SHOWUI_OT
+from .interface.operators.display import PACKAGE_OT_Display
+from .interface.operators.fetch import FETCH_PAGE_THREADED_OT_WebApp
+from .interface.operators.remove import REMOVE_PACKAGE_OT_Display
 
 # List all classes that will be registered.
 classes = (
@@ -60,6 +61,7 @@ classes = (
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT
 )
+
 
 # --- Persistent Handler ---
 @persistent
@@ -95,11 +97,10 @@ def register():
 
     bpy.app.timers.register(auto_refresh_usage, first_interval=1.0)
 
-
     # Register the comment and main property group classes.
     bpy.utils.register_class(MyAddonComment)
-    bpy.utils.register_class(MyAddonSceneProps)
-    bpy.types.Scene.my_addon_data = PointerProperty(type=MyAddonSceneProps)
+    bpy.utils.register_class(PackageProps)
+    bpy.types.Scene.my_addon_data = PointerProperty(type=PackageProps)
 
     bpy.types.Scene.fetched_events = bpy.props.PointerProperty(type=bpy.types.PropertyGroup)
     bpy.types.Scene.selected_event = bpy.props.EnumProperty(
@@ -238,7 +239,7 @@ def unregister():
     del bpy.types.Scene.last_filter_signature
 
     bpy.utils.unregister_class(MyAddonComment)
-    bpy.utils.unregister_class(MyAddonSceneProps)
+    bpy.utils.unregister_class(PackageProps)
 
     # Unregister addon classes in reverse order.
     for cls in reversed(classes):

@@ -87,3 +87,9 @@ UPLOAD_BASE_URL = {
     'production':  'https://exploratory.online/upload'
 }
 UPLOAD_URL = UPLOAD_BASE_URL.get(ENVIRONMENT, UPLOAD_BASE_URL['production'])
+
+PROFILE_BASE_URL = {
+    'development': 'http://127.0.0.1:5000/profile',
+    'production':  'https://exploratory.online/profile'
+}
+PROFILE_URL = PROFILE_BASE_URL.get(ENVIRONMENT, PROFILE_BASE_URL['production'])

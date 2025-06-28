@@ -4,15 +4,13 @@ import bpy
 import os
 import shutil
 from .image_button_UI.cache import save_thumbnail_index
-from .exp_api import fetch_packages
-from .image_button_UI.drawing import load_image_buttons
 from .main_config import THUMBNAIL_CACHE_FOLDER
 from .image_button_UI.cache import (
     clear_image_datablocks,
     save_thumbnail_index,
     get_cached_metadata
 )
-from .helper_functions import download_thumbnail, background_fetch_metadata
+from .helper_functions import background_fetch_metadata
 from .cache_manager import cache_manager, ensure_package_data
 import time
 
@@ -172,26 +170,37 @@ class REFRESH_FILTERS_OT_WebApp(bpy.types.Operator):
 class PRELOAD_METADATA_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.preload_metadata"
     bl_label = "Preload Metadata"
-    bl_description = ("Starts background threads to preload metadata (e.g. JSON and images) "
-                      "for all packages that aren’t already cached.")
+    bl_description = (
+        "Starts background threads to preload metadata (e.g. JSON and images) "
+        "for all packages that aren’t already cached."
+    )
 
     def execute(self, context):
+        scene = context.scene
+
+        # If there's no package data at all, prime the cache for the current type
         if not cache_manager.get_package_data():
-            if not ensure_package_data():
-                self.report({'WARNING'}, "No package data available to preload metadata.")
+            # PASS the file_type (and you can pass a second arg for limit if you like)
+            if not ensure_package_data(scene.package_item_type):
+                self.report(
+                    {'WARNING'},
+                    f"No package data available to preload for “{scene.package_item_type}”."
+                )
                 return {'CANCELLED'}
+
         total_preloaded = 0
         for page, packages in cache_manager.get_package_data().items():
             for pkg in packages:
-                package_id = pkg.get("file_id")
-                if package_id is None:
+                pkg_id = pkg.get("file_id")
+                if pkg_id is None:
                     continue
-                if cache_manager.get_metadata(package_id) is None:
-                    background_fetch_metadata(package_id)
+                # Only spawn a background fetch if we don’t already have metadata
+                if cache_manager.get_metadata(pkg_id) is None:
+                    background_fetch_metadata(pkg_id)
                     total_preloaded += 1
+
         self.report({'INFO'}, f"Started preloading metadata for {total_preloaded} packages.")
         return {'FINISHED'}
-
 
 
 def preload_metadata_timer():
@@ -199,7 +208,7 @@ def preload_metadata_timer():
     Timer callback that calls the PRELOAD_METADATA_OT_WebApp operator to preload metadata.
     In addition, every hour, it validates and refreshes the persistent cache (thumbnails and metadata).
     """
-    import bpy, time
+    import time
 
     scene = bpy.context.scene
     # If game modal is active, skip preloading to avoid hitches.

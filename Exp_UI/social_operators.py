@@ -7,7 +7,7 @@ import bpy
 import webbrowser
 from bpy.props import StringProperty
 import requests
-from .helper_functions import format_relative_time
+from .interface.drawing.utilities import format_relative_time
 
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.like_package"

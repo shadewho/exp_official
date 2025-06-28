@@ -2,9 +2,10 @@
 
 import bpy
 from .auth import load_token
-from .helper_functions import format_relative_time
+from .interface.drawing.utilities import format_relative_time
 from .version_info import CURRENT_VERSION
 from .exp_api import get_cached_latest_version
+from .main_config import PROFILE_URL
 
 class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
     bl_label = "Profile / Account"
@@ -15,7 +16,6 @@ class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # only show our panel when in EXPLORE mode
         return context.scene.main_category == 'EXPLORE'
 
     def draw(self, context):
@@ -30,16 +30,12 @@ class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
 
         # 2) safe to show profile link + usage
         addon_data = scene.my_addon_data
+        username = getattr(addon_data, "username", "User")
 
         # ——— Profile link ———
         row = layout.row(align=True)
-        if getattr(addon_data, "profile_url", ""):
-            # show globe + username, just like in Current Item
-            op = row.operator("webapp.open_url", text=addon_data.username, icon='URL')
-            op.url = addon_data.profile_url
-        else:
-            # fallback if you haven’t wired up profile_url yet
-            row.label(text=addon_data.username)
+        op = row.operator("webapp.open_url", text=username, icon='URL')
+        op.url = PROFILE_URL
 
         layout.separator()
 
