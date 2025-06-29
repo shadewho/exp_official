@@ -1,6 +1,6 @@
 #Exploratory/Exp_UI/interface/drawing/explore_loading.py
 from .utilities import build_text_item
-from ...cache_manager import cache_manager
+from ...cache_system.manager import cache_manager
 def build_loading_progress(template_item, progress):
     """
     Draws a semi-transparent overlay, a centered dark box,

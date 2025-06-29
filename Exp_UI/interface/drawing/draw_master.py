@@ -1,7 +1,7 @@
 #Exploratory/Exp_UI/interface/drawing/draw_master.py
 import bpy
 # the global cache manager at Exp_UI/cache_manager.py
-from ...cache_manager import cache_manager
+from ...cache_system.manager import cache_manager
 from .build_template import build_template_and_close
 from .browse_content import build_browse_content
 from .detail_content import build_detail_content

@@ -20,13 +20,14 @@ from .packages.social_operators import (
 )
 from .packages.operators import DOWNLOAD_CODE_OT_File
 
-from .cache_memory_operators import (
-    CLEAR_ALL_DATA_OT_WebApp, CLEAR_THUMBNAILS_ONLY_OT_WebApp, 
-    REFRESH_FILTERS_OT_WebApp, PRELOAD_METADATA_OT_WebApp, preload_metadata_timer
-)
+from .cache_system.operators.clear import (CLEAR_ALL_DATA_OT_WebApp, CLEAR_THUMBNAILS_ONLY_OT_WebApp)
+from .cache_system.operators.metadata import PRELOAD_METADATA_OT_WebApp
+from .cache_system.operators.refresh import REFRESH_FILTERS_OT_WebApp
+from .cache_system.manager import CacheManager
 
 # Import functions from our cache module.
-from .image_button_UI.cache import preload_in_memory_thumbnails, clear_image_datablocks
+from .cache_system.persistence import clear_image_datablocks
+from .cache_system.preload import preload_in_memory_thumbnails, preload_metadata_timer
 from .auth.helpers import auto_refresh_usage
 
 #Auth operators
@@ -42,6 +43,9 @@ from .interface.operators.remove import REMOVE_PACKAGE_OT_Display
 
 #evemts operators
 from .events.operators import VOTE_MAP_OT_WebApp
+
+from .interface.properties import register as register_ui_props, unregister as unregister_ui_props
+
 
 # List all classes that will be registered.
 classes = (
@@ -113,28 +117,8 @@ def register():
     bpy.utils.register_class(PackageProps)
     bpy.types.Scene.my_addon_data = PointerProperty(type=PackageProps)
 
-    # Register UI mode and other scene properties.
-    bpy.types.Scene.ui_current_mode = bpy.props.EnumProperty(
-        name="UI Current Mode",
-        description="Which UI mode is currently shown",
-        items=[
-            ("BROWSE", "Browse Thumbnails", ""),
-            ("DETAIL", "Item Detail View", ""),
-            ("LOADING", "Loading Progress", ""),
-            ("GAME", "Game Mode", "")
-        ],
-        default="BROWSE"
-    )
-    bpy.types.Scene.show_image_buttons = bpy.props.BoolProperty(
-        name="Show Package Thumbnails",
-        description="Toggle the display of package thumbnail buttons",
-        default=False
-    )
-    bpy.types.Scene.selected_thumbnail = bpy.props.StringProperty(
-        name="Selected Thumbnail",
-        description="Path to the selected thumbnail image",
-        default=""
-    )
+    register_ui_props()
+
     bpy.types.Scene.package_item_type = bpy.props.EnumProperty(
         name="Item Type",
         description="Select a type: World, Shop Item, or Event (maps in voting/winners)",
@@ -179,19 +163,9 @@ def register():
         default=1,
         min=1
     )
-    bpy.types.Scene.show_loading_image = bpy.props.BoolProperty(
-        name="Show Loading",
-        description="Toggle the loading indicator on/off",
-        default=False
-    )
+
     bpy.types.Scene.comment_text = bpy.props.StringProperty(name="Comment", default="")
 
-    #do i have 2 of these?^^^
-    bpy.types.Scene.show_loading = bpy.props.BoolProperty(
-        name="Show Loading",
-        description="Display the loading indicator",
-        default=False
-    )
 
     #get this out of init and put where it belongs!!
     bpy.types.Scene.download_progress = bpy.props.FloatProperty(
@@ -217,9 +191,6 @@ def register():
 
 def unregister():
     # Remove all properties from bpy.types.Scene.
-    del bpy.types.Scene.show_image_buttons
-    del bpy.types.Scene.ui_current_mode
-    del bpy.types.Scene.selected_thumbnail
     del bpy.types.Scene.package_item_type
     del bpy.types.Scene.package_sort_by
     del bpy.types.Scene.package_search_query
@@ -228,7 +199,6 @@ def unregister():
     del bpy.types.Scene.total_thumbnail_pages
     del bpy.types.Scene.download_code
     del bpy.types.Scene.comment_text
-    del bpy.types.Scene.show_loading
     del bpy.types.Scene.download_progress
     del bpy.types.Scene.last_filter_signature
 
@@ -242,7 +212,7 @@ def unregister():
     # Remove the persistent handler if it was registered.
     if on_blend_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_blend_load)
-
+    unregister_ui_props()
     unregister_event_props()
 
 if __name__ == "__main__":

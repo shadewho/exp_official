@@ -39,11 +39,6 @@ def build_text_item(
         "multiline": multiline
     }
 
-# image_button_UI/utils.py
-
-import bpy
-from .config import LAST_VIEWPORT_SIZE, TEMPLATE_ASPECT_RATIO, OFFSET_FACTOR
-
 # ----------------------------------------------------------------------------------
 # Utility Functions
 # ----------------------------------------------------------------------------------

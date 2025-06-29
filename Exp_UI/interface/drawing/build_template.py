@@ -7,9 +7,9 @@ from .config import (
     TEMPLATE_IMAGE_PATH,
     CLOSE_WINDOW_PATH,
 )
-from ...image_button_UI.cache import get_or_load_image, get_or_create_texture
+from ...cache_system.persistence import get_or_load_image, get_or_create_texture
 from .utilities import calculate_free_space, calculate_template_position
-from ...cache_manager import cache_manager
+from ...cache_system.manager import cache_manager
 
 def build_template_and_close():
     """

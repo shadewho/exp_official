@@ -6,7 +6,7 @@ from ..auth.helpers import load_token
 from ..internet.helpers import ensure_internet_connection
 import traceback
 from ..main_config import DOWNLOAD_ENDPOINT
-from ..helper_functions import download_thumbnail
+from ..cache_system.download_helpers import download_thumbnail
 
 # ----------------------------------------------------------------------------
 # DOWNLOAD CODE - this opertator handles downloading a world using a download code 

@@ -58,8 +58,6 @@ def get_event_items(self, context):
 
 
 
-
-#### what is this doing here??? needs a home!!!
 bpy.types.Scene.selected_event = bpy.props.EnumProperty(
     name="Event",
     description="Select an event to filter packages",

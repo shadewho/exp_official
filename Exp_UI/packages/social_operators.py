@@ -4,7 +4,6 @@ from .utilities import like_package, comment_package
 import bpy
 import webbrowser
 from bpy.props import StringProperty
-import requests
 from ..interface.drawing.utilities import format_relative_time
 
 class LIKE_PACKAGE_OT_WebApp(bpy.types.Operator):

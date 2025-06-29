@@ -7,9 +7,9 @@ import queue
 
 from ...auth.helpers import load_token
 from ...internet.helpers import ensure_internet_connection, is_internet_available
-from ...helper_functions import download_thumbnail
+from ...cache_system.download_helpers import download_thumbnail
 from .utilities import build_filter_signature, fetch_packages
-from ...cache_manager import cache_manager, filter_cached_data
+from ...cache_system.manager import cache_manager, filter_cached_data
 
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import viewport_changed

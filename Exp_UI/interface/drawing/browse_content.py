@@ -4,7 +4,7 @@ import os
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
-from ...helper_functions import download_thumbnail
+from ...cache_system.download_helpers import download_thumbnail
 from .config import (
     GRID_COLUMNS,
     GRID_ROWS,
@@ -20,8 +20,8 @@ from .config import (
     THUMBNAIL_TEXT_SIZE_RATIO,
     MISSING_THUMB,
 )
-from ...image_button_UI.cache import get_or_load_image, get_or_create_texture
-from ...cache_manager import cache_manager
+from ...cache_system.persistence import get_or_load_image, get_or_create_texture
+from ...cache_system.manager import cache_manager
 from .utilities import build_text_item
 
 def build_browse_content(template_item):

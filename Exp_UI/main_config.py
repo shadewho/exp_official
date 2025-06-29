@@ -78,7 +78,7 @@ WORLD_DOWNLOADS_FOLDER = os.path.join(ADDON_FOLDER, "World Downloads")
 if not os.path.exists(WORLD_DOWNLOADS_FOLDER):
     os.makedirs(WORLD_DOWNLOADS_FOLDER)
 
-THUMBNAIL_CACHE_FOLDER = os.path.join(ADDON_FOLDER, "cache_thumbnails")
+THUMBNAIL_CACHE_FOLDER = os.path.join(ADDON_FOLDER, "cache_metadata_and_images")
 if not os.path.exists(THUMBNAIL_CACHE_FOLDER):
     os.makedirs(THUMBNAIL_CACHE_FOLDER)
 

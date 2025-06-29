@@ -1,24 +1,18 @@
-# helper_functions.py
+#Exploratory/Exp_UI/cache_system/download_helpers.py
 
 import os
 import requests
-import bpy
-import uuid
-import traceback
 import threading
 from urllib.parse import urlparse
 
-from .main_config import (
-    WORLD_DOWNLOADS_FOLDER, THUMBNAIL_CACHE_FOLDER, PACKAGE_DETAILS_ENDPOINT,
-    EVENTS_ENDPOINT
-)
+from ..main_config import ( THUMBNAIL_CACHE_FOLDER, PACKAGE_DETAILS_ENDPOINT)
 
-from .image_button_UI.cache import (
+from .persistence import (
     get_cached_path_if_exists,
     register_thumbnail_in_index,
     register_metadata_in_index, get_cached_metadata
 )
-from .auth.helpers import load_token
+from ..auth.helpers import load_token
 from bpy.app.handlers import persistent
 
 

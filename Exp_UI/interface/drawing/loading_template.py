@@ -7,8 +7,8 @@ from .config import (
     LOADING_IMAGE_PATH,
     LOADING_IMAGE_SCALE,
 )
-from ...image_button_UI.cache import get_or_load_image, get_or_create_texture
-from ...cache_manager import cache_manager
+from ...cache_system.persistence import get_or_load_image, get_or_create_texture
+from ...cache_system.manager import cache_manager
 
 def build_loading_indicator(template_item):
     """

@@ -1,5 +1,4 @@
-# image_button_UI/cache.py
-
+#Exploratory/Exp_UI/cache_system/persistence.py
 import os
 import json
 import time
@@ -219,29 +218,3 @@ def get_cached_metadata(package_id):
         METADATA_CACHE[package_id] = entry.get("metadata")
         return entry.get("metadata")
     return None
-
-def preload_in_memory_thumbnails():
-    """
-    Preloads thumbnail images from the persistent disk cache (JSON index)
-    into the in-memory cache (LOADED_IMAGES and LOADED_TEXTURES).
-    This function uses bpy.app.timers to load one image per tick, so the UI remains responsive.
-    """
-    index_data = load_thumbnail_index()
-    keys = list(index_data.keys())
-    total = len(keys)
-
-    def load_next_thumbnail():
-        if not keys:
-            return None  # Returning None stops the timer.
-        key = keys.pop(0)
-        entry = index_data.get(key)
-        file_path = entry.get("file_path") if entry else None
-        if file_path and os.path.exists(file_path):
-            # Load the image and create its GPU texture.
-            img = get_or_load_image(file_path)
-            if img:
-                get_or_create_texture(img)
-        # Schedule next tick in 0.1 seconds (adjust as needed).
-        return 0.1
-
-    bpy.app.timers.register(load_next_thumbnail)

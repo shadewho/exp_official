@@ -13,8 +13,8 @@ from .config import (
     VISIT_SHOP_BUTTON_PATH,
     SUBMIT_WORLD_BUTTON_PATH,
 )
-from ...image_button_UI.cache import get_or_load_image, get_or_create_texture
-from ...cache_manager import cache_manager
+from ...cache_system.persistence import get_or_load_image, get_or_create_texture
+from ...cache_system.manager import cache_manager
 def build_detail_content(template_item):
     """
     Build the detail view content, including:

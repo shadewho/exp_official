@@ -1,4 +1,4 @@
-# cache_manager.py
+#Exploratory/Exp_UI/cache_system/manager.py
 import threading
 import time
 class CacheManager:
@@ -69,7 +69,7 @@ def ensure_package_data(file_type: str, limit: int = 50) -> bool:
 
     Returns True on success, False otherwise.
     """
-    from .exp_api import fetch_packages
+    from ..interface.operators.utilities import fetch_packages
 
     params = {
         "file_type":  file_type,       # e.g. "world" or "shop_item"
