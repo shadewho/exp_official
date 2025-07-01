@@ -1,8 +1,9 @@
-#Exploratory/Exp_UI/interface/drawing/browse_content.py
+# File: Exploratory/Exp_UI/interface/drawing/browse_content.py
 
 import os
 import bpy
 import gpu
+import threading
 from gpu_extras.batch import batch_for_shader
 from ...cache_system.download_helpers import download_thumbnail
 from .config import (
@@ -46,7 +47,6 @@ def build_browse_content(template_item):
     scene = bpy.context.scene
     page = scene.current_thumbnail_page
     total_pages = scene.total_thumbnail_pages
-
     visible_packages = packages_data
 
     # --- 2) Grid positioning ---
@@ -73,15 +73,26 @@ def build_browse_content(template_item):
     # --- 3) Build thumbnail items ---
     for index, pkg in enumerate(visible_packages):
         try:
+            pkg_id   = pkg.get("file_id")
             thumb_url = pkg.get("thumbnail_url")
-            local_thumb = pkg.get("local_thumb_path")
 
-            # download or fallback to placeholder
+            # 1) check SQLite cache first
+            record = cache_manager.get_thumbnail(pkg_id) if pkg_id is not None else None
+            if record and os.path.exists(record["file_path"]):
+                local_thumb = record["file_path"]
+            else:
+                local_thumb = pkg.get("local_thumb_path")
+
+            # If it's not on disk, queue a background download with the integer pkg_id, then use placeholder
             if not local_thumb or not os.path.exists(local_thumb):
-                if thumb_url:
-                    local_thumb = download_thumbnail(thumb_url)
-                if not local_thumb or not os.path.exists(local_thumb):
-                    local_thumb = MISSING_THUMB
+                if thumb_url and pkg_id is not None:
+                    threading.Thread(
+                        target=lambda url=thumb_url, fid=pkg_id: download_thumbnail(url, file_id=fid),
+                        daemon=True
+                    ).start()
+                    bpy.app.timers.register(lambda: setattr(bpy.types.Scene, "package_ui_dirty", True), first_interval=0.1)
+
+                local_thumb = MISSING_THUMB
                 pkg["local_thumb_path"] = local_thumb
 
             img = get_or_load_image(local_thumb)
@@ -91,15 +102,15 @@ def build_browse_content(template_item):
             if not tex:
                 raise RuntimeError(f"Could not create texture: {local_thumb}")
 
+            # Grid cell
             row = index // GRID_COLUMNS
             col = index % GRID_COLUMNS
-
             thumb_x1 = thumbs_x1 + col * (thumb_size + spacing_x)
             thumb_x2 = thumb_x1 + thumb_size
-
             thumb_y2 = thumbs_y2 - row * (thumb_size + spacing_y)
             thumb_y1 = thumb_y2 - thumb_size
 
+            # Draw the quad
             shader = gpu.shader.from_builtin('IMAGE')
             verts = [
                 (thumb_x1, thumb_y1),
@@ -118,6 +129,7 @@ def build_browse_content(template_item):
                 "pos":     (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
             })
 
+            # Draw the title + stats
             add_thumbnail_title(
                 data_list,
                 (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
@@ -225,16 +237,16 @@ def build_browse_content(template_item):
 
 
 def add_thumbnail_title(
-    data_list, 
-    thumb_box, 
-    title_text, 
-    likes=0, 
+    data_list,
+    thumb_box,
+    title_text,
+    likes=0,
     download_count=0
 ):
     """
     Draws two lines of text under the thumbnail:
       1) Title (truncated to 20 chars)
-      2) "♥ <likes> | ↓ <download_count>"
+      2) "↓ <download_count> | ♥ <likes>"
     """
     x1, y1, x2, y2 = thumb_box
     thumb_height = (y2 - y1)
@@ -245,7 +257,7 @@ def add_thumbnail_title(
         title_text = title_text[:(max_chars - 3)] + "..."
 
     center_x = (x1 + x2) / 2.0
-    
+
     # 2) Vertical offset from bottom of thumbnail for the title line
     offset_pixels = THUMBNAIL_TEXT_OFFSET_RATIO * thumb_height
     title_y = y1 - offset_pixels
@@ -265,16 +277,15 @@ def add_thumbnail_title(
     )
     data_list.append(text_label)
 
-    # ---- Second line: Likes + Downloads ----
-    # Place it below the title line (e.g., 1.2 * font size below)
+    # ---- Second line: Downloads + Likes ----
     meta_y = title_y - (dynamic_font_size * 1.2)
-    meta_text = f"↓ {download_count} | ♥ {likes} "
+    meta_text = f"↓ {download_count} | ♥ {likes}"
 
     meta_label = build_text_item(
         text=meta_text,
         x=center_x,
         y=meta_y,
-        size=dynamic_font_size * 0.9,  # slightly smaller if you like
+        size=dynamic_font_size * 0.9,
         color=THUMBNAIL_TEXT_COLOR,
         alignment=THUMBNAIL_TEXT_ALIGNMENT,
         multiline=False

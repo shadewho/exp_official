@@ -135,9 +135,15 @@ def build_detail_content(template_item):
 
     # --- Enlarged Thumbnail (1:1 square, with placeholder fallback) ---
     try:
-        sel_path = bpy.context.scene.selected_thumbnail or ""
-        if not os.path.exists(sel_path):
-            sel_path = MISSING_THUMB
+        # 1) check SQLite cache first
+        file_id = bpy.context.scene.my_addon_data.file_id
+        record  = cache_manager.get_thumbnail(file_id) if file_id else None
+        if record and os.path.exists(record["file_path"]):
+            sel_path = record["file_path"]
+        else:
+            sel_path = bpy.context.scene.selected_thumbnail or ""
+            if not os.path.exists(sel_path):
+                sel_path = MISSING_THUMB
 
         img = get_or_load_image(sel_path)
         if not img:

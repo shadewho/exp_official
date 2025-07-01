@@ -1,102 +1,127 @@
-#Exploratory/Exp_UI/cache_system/preload.py
+# File: Exploratory/Exp_UI/cache_system/preload.py
+
 import os
 import time
+import sqlite3
+
 import bpy
+import threading
+from .download_helpers import background_fetch_metadata, download_thumbnail
+from .manager import cache_manager
 from ..main_config import THUMBNAIL_CACHE_FOLDER
-from .persistence import load_thumbnail_index, get_or_load_image, get_or_create_texture
-# Define the JSON index file for thumbnail caching.
-THUMBNAIL_INDEX_FILE = os.path.join(THUMBNAIL_CACHE_FOLDER, "thumbnail_index.json")
+from .db import evict_old_thumbnails, evict_old_metadata, get_thumbnail_path
+from .persistence import get_or_load_image, get_or_create_texture
+from collections import deque
 
-# A dictionary in Python that tracks loaded images in Blender.
-LOADED_IMAGES = {}
-LOADED_TEXTURES = {}
+# module‐level queue of tasks: ('meta', pkg_id) or ('thumb', pkg_id, url)
+_last_validation_time = 0
+_prep_queue: deque[tuple] = deque()
+_queue_populated = False
+BATCH_SIZE = 8
+FILE_TYPES = ['world', 'shop_item', 'event']
 
-# Define a JSON index file for metadata caching.
-METADATA_INDEX_FILE = os.path.join(THUMBNAIL_CACHE_FOLDER, "metadata_index.json")
-
-# In-memory cache for package metadata.
-METADATA_CACHE = {}
-
-import time
-
-_last_validation_time = time.time()
 
 def preload_in_memory_thumbnails():
     """
-    Preloads thumbnail images from the persistent disk cache (JSON index)
-    into the in-memory cache (LOADED_IMAGES and LOADED_TEXTURES).
-    This function uses bpy.app.timers to load one image per tick, so the UI remains responsive.
+    Preloads all thumbnails recorded in the SQLite cache into Blender's GPU textures.
+    Loads one image per timer tick (0.1s) so the UI stays responsive.
     """
-    index_data = load_thumbnail_index()
-    keys = list(index_data.keys())
-    total = len(keys)
+    db_path = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
+    try:
+        conn = sqlite3.connect(db_path, timeout=30)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM thumbnails;")
+        rows = cursor.fetchall()
+    except Exception as e:
+        print(f"[ERROR] preload_in_memory_thumbnails: failed to query DB: {e}")
+        return
+    finally:
+        conn.close()
+
+    paths = [row[0] for row in rows if row and os.path.exists(row[0])]
 
     def load_next_thumbnail():
-        if not keys:
-            return None  # Returning None stops the timer.
-        key = keys.pop(0)
-        entry = index_data.get(key)
-        file_path = entry.get("file_path") if entry else None
-        if file_path and os.path.exists(file_path):
-            # Load the image and create its GPU texture.
-            img = get_or_load_image(file_path)
-            if img:
-                get_or_create_texture(img)
-        # Schedule next tick in 0.1 seconds (adjust as needed).
-        return 0.1
+        if not paths:
+            return None  # stop the timer
+        path = paths.pop(0)
+        img = get_or_load_image(path)
+        if img:
+            get_or_create_texture(img)
+        return 0.1  # schedule next load in 0.1s
 
     bpy.app.timers.register(load_next_thumbnail)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# PRELOAD TIMER ─ tries every tick until the cache is primed, then backs off
+# ──────────────────────────────────────────────────────────────────────────────
 def preload_metadata_timer():
     """
-    Timer callback that calls the PRELOAD_METADATA_OT_WebApp operator to preload metadata.
-    In addition, every hour, it validates and refreshes the persistent cache (thumbnails and metadata).
+    Background heartbeat that (1) keeps the SQLite cache fresh and
+    (2) downloads thumbnails/metadata long before the UI is opened.
+
+    It now:
+      • Rebuilds the work-queue every time the queue is empty.
+      • Processes a small batch each tick so the UI stays responsive.
+      • Backs off automatically once the queue is drained.
     """
-    import time
+    global _last_validation_time, _prep_queue
 
-    scene = bpy.context.scene
-    # If game modal is active, skip preloading to avoid hitches.
-    if scene.ui_current_mode == "GAME":
-        return 10.0  # Delay next check, but do nothing
+    # Skip while the user is in GAME mode.
+    if getattr(bpy.context.scene, "ui_current_mode", "BROWSE") == "GAME":
+        return 60.0
 
-    try:
-        bpy.ops.webapp.preload_metadata('INVOKE_DEFAULT')
-    except Exception as e:
-        print(f"[ERROR] Metadata preload timer: {e}")
+    # ── 1) Rebuild the queue if it’s empty ───────────────────────────────────
+    if not _prep_queue:
+        for ftype in FILE_TYPES:
+            # make sure we have a package list (from SQLite or the server)
+            if not cache_manager.ensure_package_data(ftype):
+                continue
 
-    # --- Begin merged cache validation logic ---
-    global _last_validation_time
-    current_time = time.time()
-    # Run full validation every hour (3600 seconds)
-    if current_time - _last_validation_time > 3600:
-        # Validate the persistent thumbnail JSON cache.
-        from .persistence import load_thumbnail_index, save_thumbnail_index
-        import os
-        index_data = load_thumbnail_index()
-        keys_to_remove = []
-        for key, entry in index_data.items():
-            file_path = entry.get("file_path")
-            last_access = entry.get("last_access", 0)
-            # Example rule: if the file is missing or hasn't been accessed in 7 days.
-            if not file_path or not os.path.exists(file_path) or (current_time - last_access > 7 * 24 * 3600):
-                keys_to_remove.append(key)
-        for key in keys_to_remove:
-            index_data.pop(key, None)
-        save_thumbnail_index(index_data)
-        
-        # Validate the in-memory metadata cache.
-        from .manager import cache_manager
-        for package_id, metadata in list(cache_manager.metadata_cache.items()):
-            metadata_time = metadata.get("last_access", 0)
-            # If metadata is older than 1 day, refresh it.
-            if current_time - metadata_time > 24 * 3600:
-                from .download_helpers import background_fetch_metadata
-                background_fetch_metadata(package_id)
-        
-        _last_validation_time = current_time
+            for pkg in cache_manager.get_package_data().get(ftype, []):
+                pid = pkg.get("file_id")
+                url = pkg.get("thumbnail_url")
 
-    # --- End merged cache validation logic ---
-    
-    # Return the interval (in seconds) for the next call.
-    return 30.0  # This timer will run every 10 seconds.
+                # metadata task
+                if pid and cache_manager.get_metadata(pid) is None:
+                    _prep_queue.append(("meta", pid))
+
+                # thumbnail task
+                local = get_thumbnail_path(pid)
+                if pid and url and (not local or not os.path.exists(local)):
+                    _prep_queue.append(("thumb", pid, url))
+
+    # ── 2) Drain up to BATCH_SIZE tasks ──────────────────────────────────────
+    processed = 0
+    while _prep_queue and processed < BATCH_SIZE:
+        task = _prep_queue.popleft()
+        kind = task[0]
+
+        if kind == "meta":            # ('meta', pid)
+            background_fetch_metadata(task[1])
+        else:                         # ('thumb', pid, url)
+            _, pid, url = task
+            threading.Thread(
+                target=download_thumbnail,
+                args=(url, pid),
+                daemon=True
+            ).start()
+        processed += 1
+
+    # ── 3) Every ~2 min purge stale DB rows + orphaned files ────────────────
+    now = time.time()
+    if now - _last_validation_time > 120:
+        evict_old_thumbnails(max_age_days=7)
+        evict_old_metadata(max_age_days=1)
+        for f in os.listdir(THUMBNAIL_CACHE_FOLDER):
+            path = os.path.join(THUMBNAIL_CACHE_FOLDER, f)
+            if os.path.isfile(path) and (now - os.path.getmtime(path)) > 7*86400:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        _last_validation_time = now
+
+    # ── 4) Tell Blender when to call us again ───────────────────────────────
+    # If there’s still work, tick quickly; otherwise back off.
+    return 5.0 if _prep_queue else 30.0

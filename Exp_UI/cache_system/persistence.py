@@ -1,103 +1,77 @@
-#Exploratory/Exp_UI/cache_system/persistence.py
+# File: Exploratory/Exp_UI/cache_system/persistence.py
+
 import os
 import json
 import time
+import threading
 import bpy
 import gpu
+
+from .db import (
+    register_thumbnail,
+    get_thumbnail_path,
+    bump_thumbnail_access,
+    register_metadata,
+    get_metadata,
+    bump_metadata_access,
+)
 from ..main_config import THUMBNAIL_CACHE_FOLDER
+import logging
+logger = logging.getLogger("Exploratory.cache")
 
-# Define the JSON index file for thumbnail caching.
-THUMBNAIL_INDEX_FILE = os.path.join(THUMBNAIL_CACHE_FOLDER, "thumbnail_index.json")
-
-# A dictionary in Python that tracks loaded images in Blender.
-LOADED_IMAGES = {}
+# In-Blender caches for GPU assets and metadata objects
+LOADED_IMAGES   = {}
 LOADED_TEXTURES = {}
+METADATA_CACHE  = {}
 
-# Define a JSON index file for metadata caching.
-METADATA_INDEX_FILE = os.path.join(THUMBNAIL_CACHE_FOLDER, "metadata_index.json")
+_lock = threading.Lock()
 
-# In-memory cache for package metadata.
-METADATA_CACHE = {}
+# ------------------------------------------------------------------
+# 1) Thumbnail Index Logic (via SQLite)
+# ------------------------------------------------------------------
 
-# ------------------------------------------------------------------------------
-# 1) JSON Index Logic (Thumbnail Cache using file_id as key)
-# ------------------------------------------------------------------------------
-
-def load_thumbnail_index():
-    """Load the thumbnail index from a JSON file."""
-    if not os.path.exists(THUMBNAIL_INDEX_FILE):
-        return {}
-    try:
-        with open(THUMBNAIL_INDEX_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[ERROR] Could not load thumbnail index: {e}")
-        return {}
-
-def save_thumbnail_index(index_data):
-    """Save the thumbnail index to a JSON file."""
-    try:
-        with open(THUMBNAIL_INDEX_FILE, "w", encoding="utf-8") as f:
-            json.dump(index_data, f, indent=2)
-    except Exception as e:
-        print(f"[ERROR] Could not save thumbnail index: {e}")
-
-def register_thumbnail_in_index(key, local_path, thumbnail_url=None):
+def register_thumbnail_in_index(file_id: int, local_path: str, thumbnail_url: str=None):
     """
-    Update the JSON index with the given key, local thumbnail path,
-    and optionally the thumbnail_url.
+    Store or update a thumbnail record in SQLite.
     """
-    index_data = load_thumbnail_index()
-    index_data[str(key)] = {
-        "file_path": local_path,
-        "last_access": time.time(),
-        "thumbnail_url": thumbnail_url
-    }
-    save_thumbnail_index(index_data)
+    register_thumbnail(file_id, local_path, thumbnail_url)
 
-def update_thumbnail_access(file_id):
-    """Bump 'last_access' for the given file_id in the index."""
-    index_data = load_thumbnail_index()
-    key = str(file_id)
-    if key in index_data:
-        index_data[key]["last_access"] = time.time()
-        save_thumbnail_index(index_data)
 
-def get_cached_path_if_exists(key):
+def get_cached_path_if_exists(file_id: int) -> str | None:
     """
-    Return the cached thumbnail file path if it exists in the index and on disk.
-    Otherwise, return None.
+    Return the local thumbnail path if it exists on disk and in the DB,
+    bump its access time, or return None.
     """
-    index_data = load_thumbnail_index()
-    key = str(key)
-    if key in index_data:
-        local_path = index_data[key]["file_path"]
-        if os.path.exists(local_path):
-            update_thumbnail_access(key)
-            return local_path
+    path = get_thumbnail_path(file_id)
+    if path and os.path.exists(path):
+        bump_thumbnail_access(file_id)
+        return path
     return None
 
-# ------------------------------------------------------------------------------
-# 2) Blender GPU Loading
-# ------------------------------------------------------------------------------
+
+def update_thumbnail_access(file_id: int):
+    """
+    Alias for bump_thumbnail_access, so imports work.
+    """
+    bump_thumbnail_access(file_id)
+
+
+# ------------------------------------------------------------------
+# 2) Blender GPU Loading (unchanged)
+# ------------------------------------------------------------------
 
 def get_or_load_image(image_path):
     """
-    Returns a bpy.types.Image corresponding to the given file path.
-    If the image is cached and still valid, returns it.
-    Otherwise, loads it from disk and caches it.
+    Returns a bpy.types.Image for image_path, caching it in LOADED_IMAGES.
     """
     if image_path in LOADED_IMAGES:
-        cached_img = LOADED_IMAGES[image_path]
+        img = LOADED_IMAGES[image_path]
         try:
-            # Try to access a property (like name) to ensure the image is still valid.
-            _ = cached_img.name
+            _ = img.name
         except ReferenceError:
-            # The cached image reference is stale. Remove it from our cache.
-            print(f"[INFO] Cached image for {image_path} is stale. Reloading from disk.")
             del LOADED_IMAGES[image_path]
         else:
-            return cached_img
+            return img
 
     if not os.path.exists(image_path):
         print(f"[ERROR] get_or_load_image: File not found: {image_path}")
@@ -114,15 +88,13 @@ def get_or_load_image(image_path):
 
 def get_or_create_texture(img):
     """
-    Returns a GPU texture for the given image.
-    If the image is not valid, returns None.
+    Returns a GPU texture for img, caching it in LOADED_TEXTURES.
     """
     if not img:
         return None
     try:
-        key = img.name 
+        key = img.name
     except ReferenceError:
-        print("[ERROR] Tried to access img.name but the image has been removed.")
         return None
 
     if key in LOADED_TEXTURES:
@@ -130,91 +102,65 @@ def get_or_create_texture(img):
 
     try:
         tex = gpu.texture.from_image(img)
-    except ReferenceError:
-        print("[ERROR] Failed to create texture because the image is no longer valid.")
+        LOADED_TEXTURES[key] = tex
+        return tex
+    except Exception:
         return None
 
-    LOADED_TEXTURES[key] = tex
-    return tex
 
 def clear_image_datablocks():
     """
-    Clears out our cached images and GPU textures.
-    Iterates over LOADED_IMAGES, removes each image from bpy.data.images (if still present),
-    and then clears both caches.
-    This function should be called when a new blend file is loaded or when you need to refresh the UI.
+    Remove all cached images/textures from Blender and clear our caches.
     """
     global LOADED_IMAGES, LOADED_TEXTURES
-    # Iterate over a copy of the items to avoid modifying the dictionary during iteration.
     for path, img in list(LOADED_IMAGES.items()):
         if img and img.name in bpy.data.images:
             try:
                 bpy.data.images.remove(bpy.data.images[img.name], do_unlink=True)
-                print(f"[INFO] Removed image: {img.name}")
-            except Exception as e:
-                print(f"[ERROR] Could not remove image {img.name}: {e}")
-    # Clear the caches.
+            except Exception:
+                pass
     LOADED_IMAGES.clear()
     LOADED_TEXTURES.clear()
 
-# ------------------------------------------------------------------------------
-# 3) Metadata Cache Setup
-# ------------------------------------------------------------------------------
 
-def load_metadata_index():
-    """Load the metadata cache index from disk."""
-    if not os.path.exists(METADATA_INDEX_FILE):
-        return {}
-    try:
-        with open(METADATA_INDEX_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[ERROR] Could not load metadata index: {e}")
-        return {}
+# ------------------------------------------------------------------
+# 3) Metadata Index Logic (via SQLite)
+# ------------------------------------------------------------------
 
-def save_metadata_index(index):
-    """Save the metadata cache index to disk."""
-    try:
-        with open(METADATA_INDEX_FILE, "w", encoding="utf-8") as f:
-            json.dump(index, f, indent=2)
-    except Exception as e:
-        print(f"[ERROR] Could not save metadata index: {e}")
-
-def register_metadata_in_index(package_id, metadata):
+def register_metadata_in_index(package_id: int, metadata: dict):
     """
-    Save the metadata for a given package ID into the in-memory cache
-    and persist it on disk via the JSON index.
+    Cache metadata in memory and persist as JSON in SQLite.
     """
     METADATA_CACHE[package_id] = metadata
-    index = load_metadata_index()
-    index[str(package_id)] = {
-        "metadata": metadata,
-        "last_access": time.time()
-    }
-    save_metadata_index(index)
+    register_metadata(package_id, json.dumps(metadata))
 
-def update_metadata_access(package_id):
-    """Update the last access time for the given package in the metadata index."""
-    index = load_metadata_index()
-    key = str(package_id)
-    if key in index:
-        index[key]["last_access"] = time.time()
-        save_metadata_index(index)
 
-def get_cached_metadata(package_id):
+def update_metadata_access(package_id: int):
     """
-    Check first in the in-memory cache, then on disk.
-    Returns the metadata if found; otherwise, returns None.
+    Bump the metadata last_access in SQLite.
     """
+    bump_metadata_access(package_id)
+
+
+def get_cached_metadata(package_id: int) -> dict | None:
+    """
+    Return the metadata dict if in-memory or in SQLite, else None.
+    """
+    # In-memory first
     if package_id in METADATA_CACHE:
-        update_metadata_access(package_id)
+        bump_metadata_access(package_id)
         return METADATA_CACHE[package_id]
-    
-    index = load_metadata_index()
-    entry = index.get(str(package_id))
-    if entry:
-        update_metadata_access(package_id)
-        # Optionally, load it into memory:
-        METADATA_CACHE[package_id] = entry.get("metadata")
-        return entry.get("metadata")
+
+    # Then DB
+    data_json = get_metadata(package_id)
+    if data_json:
+        metadata = json.loads(data_json)
+        METADATA_CACHE[package_id] = metadata
+        bump_metadata_access(package_id)
+        return metadata
+
     return None
+
+# Initialize the DB immediately when this module is imported
+from .db import init_db
+init_db()

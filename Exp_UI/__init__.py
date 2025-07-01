@@ -21,7 +21,6 @@ from .packages.social_operators import (
 from .packages.operators import DOWNLOAD_CODE_OT_File
 
 from .cache_system.operators.clear import (CLEAR_ALL_DATA_OT_WebApp, CLEAR_THUMBNAILS_ONLY_OT_WebApp)
-from .cache_system.operators.metadata import PRELOAD_METADATA_OT_WebApp
 from .cache_system.operators.refresh import REFRESH_FILTERS_OT_WebApp
 from .cache_system.manager import CacheManager
 
@@ -68,13 +67,13 @@ classes = (
     CLEAR_THUMBNAILS_ONLY_OT_WebApp,
     CLEAR_ALL_DATA_OT_WebApp,
     REFRESH_FILTERS_OT_WebApp,
-    PRELOAD_METADATA_OT_WebApp,
     POPUP_SOCIAL_DETAILS_OT,
     VOTE_MAP_OT_WebApp,
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT
 )
 from .packages.properties import MyAddonComment, PackageProps
+from .cache_system.db import init_db
 from .events.properties import register as register_event_props, unregister as unregister_event_props
 # --- Persistent Handler ---
 @persistent
@@ -98,6 +97,7 @@ def connectivity_check_timer():
 
 # --- Registration ---
 def register():
+    preload_in_memory_thumbnails()
 
     register_event_props()
 
@@ -105,7 +105,9 @@ def register():
         bpy.app.handlers.load_post.append(on_blend_load)
     
     # Register a timer for preloading metadata.
-    bpy.app.timers.register(preload_metadata_timer, first_interval=30.0)
+    bpy.app.timers.register(preload_metadata_timer, first_interval=5.0)
+
+    bpy.app.timers.register(preload_in_memory_thumbnails, first_interval=5.0)
 
     # Register the token expiry check timer.
     bpy.app.timers.register(token_expiry_check, first_interval=60.0)

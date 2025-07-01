@@ -55,40 +55,61 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         scene.ui_current_mode        = 'BROWSE'
         scene.current_thumbnail_page = self.page_number
         scene.show_loading_image     = True
-        
+
+        # 1) Connectivity check
         if not ensure_internet_connection(context):
             self.report({'ERROR'}, "No internet connection detected. Cannot fetch packages.")
             return {'CANCELLED'}
-        
-        file_type = scene.package_item_type  # "world" or "shop_item"
-        sort_by = scene.package_sort_by        # "newest", etc.
-        search_query = scene.package_search_query.strip()
-        requested_page = self.page_number
 
+        # 2) Determine parameters
+        file_type      = scene.package_item_type
+        sort_by        = scene.package_sort_by
+        search_query   = scene.package_search_query.strip()
+        requested_page = self.page_number
         if sort_by == 'featured':
             file_type = 'featured'
-            
-        # Use the new helper to filter cached data
-        cached_filtered = filter_cached_data(file_type, search_query)
 
+        # ─── NEW: prime in-memory cache from SQLite if available ───
+        from ...cache_system.db import load_package_list
+
+        # 1) Load from SQLite only
+        pkg_list = load_package_list(file_type)
+        if pkg_list:
+            cache_manager.set_package_data({ file_type: pkg_list })
+        # (no else – leave the network work to your _fetch_worker thread below)
+
+
+        # 3) Attempt to filter against the in-memory cache
+        cached_filtered = filter_cached_data(file_type, search_query)
         if cached_filtered:
-            self.report({'INFO'}, f"Using cached data: {len(cached_filtered)} items found for filter '{sort_by}'.")
-            # Immediately finalize UI with available cached data
+            self.report(
+                {'INFO'},
+                f"Using local cache: {len(cached_filtered)} items for filter '{sort_by}'."
+            )
+            # finalize UI immediately with cached data
             self._finalize_data(context, cached_filtered, requested_page, sort_by)
 
-            # If cached data is insufficient for a full page, start a lazy load to fetch missing items
+            # if fewer than a full page, lazily fetch the remainder
             if len(cached_filtered) < THUMBNAILS_PER_PAGE:
-                self.lazy_load_missing_data(file_type, sort_by, search_query, len(cached_filtered))
+                self.lazy_load_missing_data(
+                    file_type, sort_by, search_query, len(cached_filtered)
+                )
             return {'FINISHED'}
-        else:
-            self.report({'INFO'}, "No cached data found; fetching full data from server.")
-            # Proceed with the full server fetch in a background thread
-            threading.Thread(target=self._fetch_worker, args=(file_type, sort_by, search_query), daemon=True).start()
-            scene.show_loading_image = True
-            wm = context.window_manager
-            self._timer = wm.event_timer_add(0.2, window=context.window)
-            wm.modal_handler_add(self)
-            return {'RUNNING_MODAL'}
+
+        # 4) No cache: fetch full list from server in background
+        self.report({'INFO'}, "No cached data; fetching full list from server.")
+        threading.Thread(
+            target=self._fetch_worker,
+            args=(file_type, sort_by, search_query),
+            daemon=True
+        ).start()
+
+        # keep the loading indicator running
+        scene.show_loading_image = True
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.2, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
 
 
     def modal(self, context, event):
