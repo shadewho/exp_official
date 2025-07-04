@@ -26,7 +26,7 @@ from .cache_system.manager import CacheManager
 
 # Import functions from our cache module.
 from .cache_system.persistence import clear_image_datablocks
-from .cache_system.preload import preload_in_memory_thumbnails, preload_metadata_timer
+from .cache_system.preload import start_cache_worker, stop_cache_worker
 from .auth.helpers import auto_refresh_usage
 
 #Auth operators
@@ -45,6 +45,13 @@ from .events.operators import VOTE_MAP_OT_WebApp
 
 from .interface.properties import register as register_ui_props, unregister as unregister_ui_props
 
+
+
+###test db test db###
+from .cache_system.db import (
+    DB_INSPECT_OT_ShowCacheDB,
+    VIEW3D_PT_CacheDB,
+)
 
 # List all classes that will be registered.
 classes = (
@@ -70,11 +77,14 @@ classes = (
     POPUP_SOCIAL_DETAILS_OT,
     VOTE_MAP_OT_WebApp,
     VIEW3D_PT_SettingsAndUpdate,
-    OPEN_DOCS_OT
+    OPEN_DOCS_OT,
+    DB_INSPECT_OT_ShowCacheDB,
+    VIEW3D_PT_CacheDB,
 )
 from .packages.properties import MyAddonComment, PackageProps
 from .cache_system.db import init_db
 from .events.properties import register as register_event_props, unregister as unregister_event_props
+from .events.utilities import on_package_item_type_update
 # --- Persistent Handler ---
 @persistent
 def on_blend_load(dummy):
@@ -97,17 +107,15 @@ def connectivity_check_timer():
 
 # --- Registration ---
 def register():
-    preload_in_memory_thumbnails()
+    #initialize cache!
+    init_db()
+    start_cache_worker()
 
     register_event_props()
 
     if on_blend_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_blend_load)
     
-    # Register a timer for preloading metadata.
-    bpy.app.timers.register(preload_metadata_timer, first_interval=5.0)
-
-    bpy.app.timers.register(preload_in_memory_thumbnails, first_interval=5.0)
 
     # Register the token expiry check timer.
     bpy.app.timers.register(token_expiry_check, first_interval=60.0)
@@ -125,11 +133,12 @@ def register():
         name="Item Type",
         description="Select a type: World, Shop Item, or Event (maps in voting/winners)",
         items=[
-            ('world', 'World', ''),
-            ('shop_item', 'Shop', ''),
-            ('event', 'Event', 'Playable event maps (voting and winners)')
+            ('world',     'World',     ''),
+            ('shop_item', 'Shop',      ''),
+            ('event',     'Event',     'Playable event maps (voting and winners)'),
         ],
         default='world',
+        update=on_package_item_type_update,   # ← hook in your updater here
     )
     bpy.types.Scene.package_sort_by = bpy.props.EnumProperty(
         name="Sort By",
@@ -188,9 +197,6 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    # Preload in-memory thumbnails from the disk cache.
-    preload_in_memory_thumbnails()
-
 def unregister():
     # Remove all properties from bpy.types.Scene.
     del bpy.types.Scene.package_item_type
@@ -216,6 +222,7 @@ def unregister():
         bpy.app.handlers.load_post.remove(on_blend_load)
     unregister_ui_props()
     unregister_event_props()
+    stop_cache_worker()
 
 if __name__ == "__main__":
     register()

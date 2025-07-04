@@ -6,7 +6,7 @@ from .utilities import get_event_items, update_event_stage
 
 
 def register():
-    # 1) Event-stage dropdown
+    # 1) Event-stage dropdown (must match API keys)
     bpy.types.Scene.event_stage = EnumProperty(
         name="Event Stage",
         description="Select the current stage for events",
@@ -19,13 +19,13 @@ def register():
         update=update_event_stage
     )
 
-    # 2) Fetched-events storage (you can replace PropertyGroup with a custom one)
+    # 2) Fetched-events storage
     bpy.types.Scene.fetched_events = PointerProperty(
         name="Fetched Events",
         type=bpy.types.PropertyGroup
     )
 
-    # 3) Selected-event dropdown (will be populated via get_event_items)
+    # 3) Selected-event dropdown
     bpy.types.Scene.selected_event = EnumProperty(
         name="Event",
         description="Select an event to filter packages",

@@ -112,6 +112,11 @@ class PackageProps(PropertyGroup):
         description="Logged-in user’s name",
         default=""
     )
+    file_type: StringProperty(
+        name="File Type",
+        description="Type of package (world, shop_item, event)",
+        default=""
+    )
 
     
     def init_from_package(self, pkg: dict):
@@ -127,6 +132,7 @@ class PackageProps(PropertyGroup):
         self.description = pkg.get("description", "No description")
         self.upload_date = pkg.get("upload_date", "N/A")
         self.download_count = pkg.get("download_count", 0)
+        self.file_type      = pkg.get("file_type", "")
         if pkg.get("file_type") == "event":
             self.event_submission_id = pkg.get("submission_id", 0)
 

@@ -73,19 +73,26 @@ def build_detail_content(template_item):
     except Exception as e:
         print(f"[ERROR] build_detail_content (Back button): {e}")
 
+    # ─── Determine the loaded package’s own type ───────────────────
+    pkg_type = getattr(
+        bpy.context.scene.my_addon_data,
+        "file_type",
+        bpy.context.scene.package_item_type
+    )
+
     # --- Explore / Visit Shop / Submit World Button ---
     try:
-        # pick which image + name
-        if bpy.context.scene.package_item_type == 'shop_item':
+        # pick which image + name based on the loaded package’s own type
+        if pkg_type == 'shop_item':
             btn_img  = get_or_load_image(VISIT_SHOP_BUTTON_PATH)
             btn_name = "Visit_Shop_Icon"
-        elif (bpy.context.scene.package_item_type == 'event'
-              and bpy.context.scene.event_stage == 'submission'):
+        elif pkg_type == 'event' and bpy.context.scene.event_stage == 'submission':
             btn_img  = get_or_load_image(SUBMIT_WORLD_BUTTON_PATH)
             btn_name = "Submit_World_Icon"
         else:
             btn_img  = get_or_load_image(EXPLORE_BUTTON_PATH)
             btn_name = "Explore_Icon"
+
 
         if not btn_img:
             # determine which path we tried

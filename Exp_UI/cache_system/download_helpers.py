@@ -15,8 +15,12 @@ from .db import (
     register_thumbnail,
     get_metadata,
     bump_metadata_access,
-    register_metadata,
+    register_metadata, 
+    init_db
 )
+
+# Immediately create the schema if it doesn’t exist:
+init_db()
 
 # ----------------------------------------------------------------------------------
 # Thumbnail Download Helper
@@ -45,7 +49,7 @@ def download_thumbnail(url, file_id=None):
     local_path = os.path.join(THUMBNAIL_CACHE_FOLDER, local_name)
 
     try:
-        resp = requests.get(url, stream=True, timeout=10)
+        resp = requests.get(url, stream=True, timeout=30)
         resp.raise_for_status()
         os.makedirs(THUMBNAIL_CACHE_FOLDER, exist_ok=True)
         with open(local_path, "wb") as out:
@@ -91,7 +95,7 @@ def _fetch_metadata_worker(package_id):
     headers = {"Authorization": f"Bearer {token}"}
     url = f"{PACKAGE_DETAILS_ENDPOINT}/{package_id}"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:

@@ -42,8 +42,6 @@ def update_event_stage(self, context):
         context.area.tag_redraw()
 
 
-
-
 # Define the selected_event property that uses a dynamic items callback.
 def get_event_items(self, context):
     events_data = context.scene.get("fetched_events_data", {})
@@ -63,3 +61,16 @@ bpy.types.Scene.selected_event = bpy.props.EnumProperty(
     description="Select an event to filter packages",
     items=get_event_items
 )
+
+
+def on_package_item_type_update(self, context):
+    # when the user switches *into* the Event filter, re-fetch the latest events
+    if context.scene.package_item_type == 'event':
+        # this will populate context.scene.fetched_events_data & reset selected_event
+        update_event_stage(self, context)
+        # clear any old package results so that your cache reloads against the new event
+        if hasattr(context.scene, "fetched_packages_data"):
+            context.scene.fetched_packages_data.clear()
+        # trigger immediate redraw
+        if context.area:
+            context.area.tag_redraw()

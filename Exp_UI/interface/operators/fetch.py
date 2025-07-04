@@ -51,17 +51,11 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
 
-        # Force BROWSE mode on every fetch
-        scene.ui_current_mode        = 'BROWSE'
-        scene.current_thumbnail_page = self.page_number
-        scene.show_loading_image     = True
+        # ─── reset pagination state ────────────────────────
+        bpy.types.Scene.master_package_list = []
+        bpy.types.Scene.all_pages_data     = {}
 
-        # 1) Connectivity check
-        if not ensure_internet_connection(context):
-            self.report({'ERROR'}, "No internet connection detected. Cannot fetch packages.")
-            return {'CANCELLED'}
-
-        # 2) Determine parameters
+        # ── 0) Compute your filter parameters ────────────────────────────────
         file_type      = scene.package_item_type
         sort_by        = scene.package_sort_by
         search_query   = scene.package_search_query.strip()
@@ -69,34 +63,52 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         if sort_by == 'featured':
             file_type = 'featured'
 
-        # ─── NEW: prime in-memory cache from SQLite if available ───
+        # ── 0.5) Compute event filters (only for events) ────────────────────
+        event_stage    = scene.event_stage    if file_type == 'event' else ""
+        selected_event = scene.selected_event if file_type == 'event' else ""
+
+        # ── 1) Store them on `self` for your modal() later ──────────────────
+        self._file_type      = file_type
+        self._sort_by        = sort_by
+        self._search_query   = search_query
+        self._page_number    = requested_page
+        self._event_stage    = event_stage
+        self._selected_event = selected_event
+
+        # ── 2) Connectivity check ────────────────────────────────────────────
+        if not ensure_internet_connection(context):
+            self.report({'ERROR'}, "No internet connection detected. Cannot fetch packages.")
+            return {'CANCELLED'}
+
+        # ── 3) Prime in-memory cache from SQLite (with both filters!) ───────
         from ...cache_system.db import load_package_list
-
-        # 1) Load from SQLite only
-        pkg_list = load_package_list(file_type)
+        pkg_list = load_package_list(file_type, event_stage, selected_event)
         if pkg_list:
+            # Annotate and store
+            for pkg in pkg_list:
+                pkg['file_type']      = file_type
+                pkg['event_stage']    = event_stage
+                pkg['selected_event'] = selected_event
             cache_manager.set_package_data({ file_type: pkg_list })
-        # (no else – leave the network work to your _fetch_worker thread below)
 
-
-        # 3) Attempt to filter against the in-memory cache
+        # ── 4) Attempt to filter against the in-memory cache ───────────────
         cached_filtered = filter_cached_data(file_type, search_query)
         if cached_filtered:
             self.report(
                 {'INFO'},
                 f"Using local cache: {len(cached_filtered)} items for filter '{sort_by}'."
             )
-            # finalize UI immediately with cached data
+            # Finalize UI immediately
             self._finalize_data(context, cached_filtered, requested_page, sort_by)
 
-            # if fewer than a full page, lazily fetch the remainder
+            # If fewer than a full page, lazily fetch the remainder
             if len(cached_filtered) < THUMBNAILS_PER_PAGE:
                 self.lazy_load_missing_data(
                     file_type, sort_by, search_query, len(cached_filtered)
                 )
             return {'FINISHED'}
 
-        # 4) No cache: fetch full list from server in background
+        # ── 5) No cache: fetch full list from server in background ─────────
         self.report({'INFO'}, "No cached data; fetching full list from server.")
         threading.Thread(
             target=self._fetch_worker,
@@ -104,7 +116,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             daemon=True
         ).start()
 
-        # keep the loading indicator running
+        # Show loading indicator while we wait
         scene.show_loading_image = True
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.2, window=context.window)
@@ -128,13 +140,15 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                         self._handle_partial_thumb(context, payload)
 
                     elif result_type == "FETCH_DONE":
-                        # Full fetch complete: finalize pagination.
-                        final_list = payload["packages"]
                         sort_by = payload["sort_by"]
-                        self.report({'INFO'}, f"Server fetch done: {len(final_list)} items total.")
+                        self.report({'INFO'}, f"Server fetch done: {len(payload['packages'])} items total.")
 
+                        # stop spinner
                         context.scene.show_loading_image = False
-                        self._finalize_data(context, final_list, self.page_number, sort_by)
+
+                        # **always** take the freshly-cached data and run it through filter_cached_data()
+                        filtered = filter_cached_data(self._file_type, self._search_query)
+                        self._finalize_data(context, filtered, self.page_number, sort_by)
 
                         wm = context.window_manager
                         wm.event_timer_remove(self._timer)
@@ -166,6 +180,11 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         return {'PASS_THROUGH'}
 
     def _fetch_worker(self, file_type, sort_by, search_query):
+        """
+        Background thread to fetch packages (with unified caching + lazy thumbnail download),
+        now tagging each package with file_type, event_stage and selected_event so that
+        filter_cached_data() can correctly display event‐stage‐specific items.
+        """
         token = load_token()
         if not token:
             fetch_page_queue.put(("FETCH_ERROR", {"error": "Not logged in. Fetch cancelled."}))
@@ -176,22 +195,24 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             return
 
         try:
+            # ─── Build request parameters ───────────────────────────────────────────
             params = {
                 "file_type": file_type,
                 "sort_by":   sort_by,
                 "offset":    0,
-                "limit":     9999
+                "limit":     9999,
             }
             if search_query:
                 params["search_query"] = search_query
 
-            # For event files, add filters for event stage and the selected event.
+            # ─── Apply event‐specific filters ─────────────────────────────────────
             if file_type == 'event':
-                scene = bpy.context.scene
-                params["event_stage"] = scene.event_stage
-                if hasattr(scene, "selected_event") and scene.selected_event and scene.selected_event != "0":
-                    params["selected_event"] = scene.selected_event
+                # use the values captured in execute()
+                params["event_stage"]    = self._event_stage
+                if self._selected_event and self._selected_event != "0":
+                    params["selected_event"] = self._selected_event
 
+            # ─── Fetch from server ───────────────────────────────────────────────
             data = fetch_packages(params)
             if not data.get("success"):
                 fetch_page_queue.put(("FETCH_ERROR", {"error": data.get("message", "Unknown error")}))
@@ -199,28 +220,33 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
 
             packages = data.get("packages", [])
 
-            # ——— PRIME THE CACHE FOR THIS file_type ———
-            cache_manager.set_package_data({ file_type: packages })
+            # ─── Annotate each package for unified cache filtering ───────────────
+            for pkg in packages:
+                pkg["file_type"]      = file_type
+                pkg["event_stage"]    = self._event_stage
+                pkg["selected_event"] = self._selected_event
 
-            # Tell the UI we have the full list
+            # ─── Prime the in‐memory cache and notify UI ─────────────────────────
+            cache_manager.set_package_data({file_type: packages})
             fetch_page_queue.put(("PACKAGE_LIST", {"packages": packages}))
 
-            # Process each package progressively.
+            # ─── Download (or load) each thumbnail and stream updates to UI ──────
             for pkg in packages:
+                pkg_id    = pkg.get("file_id")
                 thumb_url = pkg.get("thumbnail_url", "")
-                if thumb_url:
-                    package_id = pkg.get("file_id")
-                    cached = cache_manager.get_thumbnail(package_id)
-                    if cached and os.path.exists(cached["file_path"]):
-                        pkg["local_thumb_path"] = cached["file_path"]
+
+                if thumb_url and pkg_id is not None:
+                    record = cache_manager.get_thumbnail(pkg_id)
+                    if record and os.path.exists(record["file_path"]):
+                        pkg["local_thumb_path"] = record["file_path"]
                     else:
-                        local_path = download_thumbnail(thumb_url, file_id=package_id)
-                        pkg["local_thumb_path"] = local_path
+                        pkg["local_thumb_path"] = download_thumbnail(thumb_url, file_id=pkg_id)
                 else:
                     pkg["local_thumb_path"] = None
 
                 fetch_page_queue.put(("PACKAGE_READY", {"package": pkg, "sort_by": sort_by}))
 
+            # ─── Signal completion ───────────────────────────────────────────────
             fetch_page_queue.put(("FETCH_DONE", {"packages": packages, "sort_by": sort_by}))
 
         except Exception as e:
@@ -284,46 +310,46 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         current_page = context.scene.current_thumbnail_page
         self.update_pagination(context, master_list, current_page)
 
-    def _finalize_data(self, context, all_packages, requested_page, sort_by):
+    def _finalize_data(self, context, packages_to_page, requested_page, sort_by):
         """
-        After the full fetch is complete, sort, chunk, and store the data into
-        scene.all_pages_data and scene.fetched_packages_data.
+        Paginate & display exactly the list you pass in:
+        - `packages_to_page` must already be run through filter_cached_data().
+        - No filtering or event logic here.
         """
         scene = context.scene
-        sorted_list = self._sort_packages(all_packages, sort_by)
-        page_chunks = []
-        for i in range(0, len(sorted_list), THUMBNAILS_PER_PAGE):
-            page_chunks.append(sorted_list[i:i + THUMBNAILS_PER_PAGE])
-        if not page_chunks:
-            page_chunks = [[]]
 
-        total_pages = len(page_chunks)
-        scene.total_thumbnail_pages = total_pages
+        # 1) sort
+        sorted_list = self._sort_packages(packages_to_page, sort_by)
 
-        if not hasattr(bpy.types.Scene, "all_pages_data"):
-            bpy.types.Scene.all_pages_data = {}
-        bpy.types.Scene.all_pages_data.clear()
-        for i, chunk in enumerate(page_chunks, start=1):
-            bpy.types.Scene.all_pages_data[i] = chunk
+        # 2) chunk into pages
+        pages = [
+            sorted_list[i : i + THUMBNAILS_PER_PAGE]
+            for i in range(0, len(sorted_list), THUMBNAILS_PER_PAGE)
+        ]
+        if not pages:
+            pages = [[]]
 
-        if requested_page < 1:
-            requested_page = 1
-        if requested_page > total_pages:
-            requested_page = total_pages
-        scene.current_thumbnail_page = requested_page
+        # 3) record total pages & clamp requested_page
+        total = len(pages)
+        scene.total_thumbnail_pages = total
+        page = max(1, min(requested_page, total))
+        scene.current_thumbnail_page = page
 
-        bpy.types.Scene.fetched_packages_data = page_chunks[requested_page - 1]
+        # 4) stash the page slice for the UI
+        bpy.types.Scene.fetched_packages_data = pages[page - 1]
 
-        scene.last_filter_signature = build_filter_signature(scene)
-
+        # 5) clear the loading spinner and rebuild the UI
+        scene.show_loading_image = False
         self._dirty = True
-        
         if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
             bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
         if context.area:
             context.area.tag_redraw()
 
-        self.report({'INFO'}, f"Pagination done. {len(sorted_list)} items total, {total_pages} pages.")
+        self.report(
+            {'INFO'},
+            f"Pagination done: {len(sorted_list)} items across {total} page(s)."
+        )
 
     def _sort_packages(self, pkgs, sort_by):
         """
@@ -390,9 +416,10 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                 updated_cache = current_cache + new_items
                 cache_manager.set_package_data({file_type: updated_cache})
 
-                # Schedule a re-fetch of the current page so UI repaginates with the new cache
+                # capture the page number so we don’t reference `self` in the timer
+                page = self.page_number
                 bpy.app.timers.register(
-                    lambda: bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=self.page_number),
+                    lambda page=page: bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=page),
                     first_interval=0.1
                 )
             else:

@@ -1,127 +1,223 @@
-# File: Exploratory/Exp_UI/cache_system/preload.py
-
 import os
 import time
+import threading
+import queue
 import sqlite3
 
 import bpy
-import threading
-from .download_helpers import background_fetch_metadata, download_thumbnail
-from .manager import cache_manager
 from ..main_config import THUMBNAIL_CACHE_FOLDER
-from .db import evict_old_thumbnails, evict_old_metadata, get_thumbnail_path
-from .persistence import get_or_load_image, get_or_create_texture
-from collections import deque
+from ..auth.helpers import load_token
 
-# module‐level queue of tasks: ('meta', pkg_id) or ('thumb', pkg_id, url)
-_last_validation_time = 0
-_prep_queue: deque[tuple] = deque()
-_queue_populated = False
-BATCH_SIZE = 8
+from .db import init_db, update_package_list, purge_orphaned_thumbnails
+from .download_helpers import background_fetch_metadata, download_thumbnail
+from .manager import fetch_packages, cache_manager
+from .persistence import clear_image_datablocks
+
+# Path to your SQLite file:
+DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
+
+# What to cache and how often:
 FILE_TYPES = ['world', 'shop_item', 'event']
+SWEEP_INTERVAL = 30.0    # seconds between full list sweeps (5 min)
+BATCH_SIZE     = 16       # how many thumb/meta ops at once
+IDLE_SLEEP     = 30.0     # seconds to sleep when no work
+BUSY_SLEEP     = 1.0      # seconds to sleep when queue still has items
+
+_worker = None  # singleton
 
 
-def preload_in_memory_thumbnails():
-    """
-    Preloads all thumbnails recorded in the SQLite cache into Blender's GPU textures.
-    Loads one image per timer tick (0.1s) so the UI stays responsive.
-    """
-    db_path = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
-    try:
-        conn = sqlite3.connect(db_path, timeout=30)
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM thumbnails;")
-        rows = cursor.fetchall()
-    except Exception as e:
-        print(f"[ERROR] preload_in_memory_thumbnails: failed to query DB: {e}")
-        return
-    finally:
-        conn.close()
+class CacheWorker(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.task_queue = queue.Queue()
+        self.conn = None
+        self.last_sweep = 0.0
+        self.stop_event = threading.Event()
 
-    paths = [row[0] for row in rows if row and os.path.exists(row[0])]
+    def run(self):
+        # 1) Ensure schema and open one DB connection
+        init_db()
+        self.conn = sqlite3.connect(
+            DB_PATH, timeout=30, check_same_thread=False
+        )
+        # optimize for concurrency
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        self.conn.execute("PRAGMA busy_timeout = 30000;")
 
-    def load_next_thumbnail():
-        if not paths:
-            return None  # stop the timer
-        path = paths.pop(0)
-        img = get_or_load_image(path)
-        if img:
-            get_or_create_texture(img)
-        return 0.1  # schedule next load in 0.1s
+        while not self.stop_event.is_set():
+            # 2) Process up to BATCH_SIZE thumbnail/metadata tasks
+            self._process_batch()
 
-    bpy.app.timers.register(load_next_thumbnail)
+            # 3) Periodic full‐list sweep
+            now = time.time()
+            if now - self.last_sweep >= SWEEP_INTERVAL:
+                self._do_full_sweep()
+                self.last_sweep = now
 
+            # 4) Sleep: faster if there's more work, slower if idle
+            if not self.task_queue.empty():
+                time.sleep(BUSY_SLEEP)
+            else:
+                time.sleep(IDLE_SLEEP)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PRELOAD TIMER ─ tries every tick until the cache is primed, then backs off
-# ──────────────────────────────────────────────────────────────────────────────
-def preload_metadata_timer():
-    """
-    Background heartbeat that (1) keeps the SQLite cache fresh and
-    (2) downloads thumbnails/metadata long before the UI is opened.
+    def _process_batch(self):
+        items = []
+        while len(items) < BATCH_SIZE:
+            try:
+                items.append(self.task_queue.get_nowait())
+            except queue.Empty:
+                break
 
-    It now:
-      • Rebuilds the work-queue every time the queue is empty.
-      • Processes a small batch each tick so the UI stays responsive.
-      • Backs off automatically once the queue is drained.
-    """
-    global _last_validation_time, _prep_queue
+        if not items:
+            return
 
-    # Skip while the user is in GAME mode.
-    if getattr(bpy.context.scene, "ui_current_mode", "BROWSE") == "GAME":
-        return 60.0
+        # Batch all DB writes in one transaction
+        with self.conn:
+            for kind, *args in items:
+                if kind == 'meta':
+                    (package_id,) = args
+                    background_fetch_metadata(package_id)
+                elif kind == 'thumb':
+                    package_id, url = args
+                    download_thumbnail(url, package_id)
 
-    # ── 1) Rebuild the queue if it’s empty ───────────────────────────────────
-    if not _prep_queue:
+        # Signal the UI to redraw _once_ after this batch
+        bpy.app.timers.register(
+            lambda: setattr(bpy.types.Scene, "package_ui_dirty", True),
+            first_interval=0.1
+        )
+
+    def _do_full_sweep(self):
+        # 1) Collect all file_ids seen on the server this sweep
+        all_ids: set[int] = set()
+
+        # 2) Fetch and incrementally update each file_type
         for ftype in FILE_TYPES:
-            # make sure we have a package list (from SQLite or the server)
-            if not cache_manager.ensure_package_data(ftype):
+            if not load_token():
+                continue  # skip if logged out
+
+            scene = bpy.context.scene
+            filters = {}
+            if ftype == 'event':
+                filters = {
+                    "event_stage":    scene.event_stage,
+                    "selected_event": scene.selected_event
+                }
+
+            params = {
+                "file_type": ftype,
+                "sort_by":   "newest",
+                "offset":    0,
+                "limit":     9999,
+                **filters
+            }
+
+            try:
+                resp = fetch_packages(params)
+                if not resp.get("success"):
+                    continue
+                remote_pkgs = resp["packages"]
+            except Exception:
                 continue
 
-            for pkg in cache_manager.get_package_data().get(ftype, []):
+            # Track every file_id from the server
+            for pkg in remote_pkgs:
+                pid = pkg.get("file_id")
+                if pid is not None:
+                    all_ids.add(pid)
+
+            # 2a) Update package_list & in-memory cache
+            update_package_list(
+                ftype,
+                remote_pkgs,
+                filters.get("event_stage", ""),
+                filters.get("selected_event", "")
+            )
+            for pkg in remote_pkgs:
+                pkg.update({
+                    "file_type":      ftype,
+                    "event_stage":    filters.get("event_stage", ""),
+                    "selected_event": filters.get("selected_event", "")
+                })
+            cache_manager.set_package_data({ftype: remote_pkgs})
+
+            # 2b) Enqueue any missing or changed metadata or thumbnails
+            for pkg in remote_pkgs:
                 pid = pkg.get("file_id")
                 url = pkg.get("thumbnail_url")
+                if pid is None or not url:
+                    continue
 
-                # metadata task
-                if pid and cache_manager.get_metadata(pid) is None:
-                    _prep_queue.append(("meta", pid))
+                # metadata: only if never cached
+                if cache_manager.get_metadata(pid) is None:
+                    self.task_queue.put(('meta', pid))
 
-                # thumbnail task
-                local = get_thumbnail_path(pid)
-                if pid and url and (not local or not os.path.exists(local)):
-                    _prep_queue.append(("thumb", pid, url))
+                # thumbnail: check if URL changed or missing
+                # Query current DB thumbnail_url & path in one shot
+                cur = self.conn.execute(
+                    "SELECT thumbnail_url, file_path FROM thumbnails WHERE file_id = ? LIMIT 1;",
+                    (pid,)
+                ).fetchone()
 
-    # ── 2) Drain up to BATCH_SIZE tasks ──────────────────────────────────────
-    processed = 0
-    while _prep_queue and processed < BATCH_SIZE:
-        task = _prep_queue.popleft()
-        kind = task[0]
+                db_url, db_path = (cur[0], cur[1]) if cur else (None, None)
 
-        if kind == "meta":            # ('meta', pid)
-            background_fetch_metadata(task[1])
-        else:                         # ('thumb', pid, url)
-            _, pid, url = task
-            threading.Thread(
-                target=download_thumbnail,
-                args=(url, pid),
-                daemon=True
-            ).start()
-        processed += 1
+                # If there's no record, or the URL changed, re-fetch
+                if db_url != url:
+                    # delete old file if it exists
+                    if db_path and os.path.exists(db_path):
+                        try:
+                            os.remove(db_path)
+                        except Exception:
+                            pass
 
-    # ── 3) Every ~2 min purge stale DB rows + orphaned files ────────────────
-    now = time.time()
-    if now - _last_validation_time > 120:
-        evict_old_thumbnails(max_age_days=7)
-        evict_old_metadata(max_age_days=1)
-        for f in os.listdir(THUMBNAIL_CACHE_FOLDER):
-            path = os.path.join(THUMBNAIL_CACHE_FOLDER, f)
-            if os.path.isfile(path) and (now - os.path.getmtime(path)) > 7*86400:
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-        _last_validation_time = now
+                    # enqueue download of the new thumbnail
+                    self.task_queue.put(('thumb', pid, url))
 
-    # ── 4) Tell Blender when to call us again ───────────────────────────────
-    # If there’s still work, tick quickly; otherwise back off.
-    return 5.0 if _prep_queue else 30.0
+        # 3) Prune deleted posts from thumbnails & metadata tables
+        if all_ids:
+            placeholders = ",".join("?" for _ in all_ids)
+            with self.conn:
+                # thumbnails for removed posts
+                self.conn.execute(
+                    f"DELETE FROM thumbnails WHERE file_id NOT IN ({placeholders});",
+                    tuple(all_ids)
+                )
+                # metadata for removed posts
+                self.conn.execute(
+                    f"DELETE FROM metadata WHERE package_id NOT IN ({placeholders});",
+                    tuple(all_ids)
+                )
+
+        # 4) Schedule main-thread cleanup to remove orphaned files & trigger UI refresh
+        bpy.app.timers.register(self._main_cleanup, first_interval=0.1)
+
+
+    def _main_cleanup(self):
+        # purge orphaned files, clear GPU caches, and flag UI
+        try:
+            purge_orphaned_thumbnails()
+            clear_image_datablocks()
+            bpy.types.Scene.package_ui_dirty = True
+        except Exception as e:
+            print(f"[CacheWorker cleanup error] {e}")
+        return None  # one-shot
+    
+
+
+    def stop(self):
+        self.stop_event.set()
+
+
+def start_cache_worker():
+    global _worker
+    if _worker is None:
+        _worker = CacheWorker()
+        _worker.start()
+
+
+def stop_cache_worker():
+    global _worker
+    if _worker is not None:
+        _worker.stop()
+        _worker = None

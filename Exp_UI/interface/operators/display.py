@@ -130,7 +130,18 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 current_sort != self.last_sort_by or
                 current_search != self.last_search or
                 (current_item == 'event' and (current_event_stage != self.last_event_stage or current_selected_event != self.last_selected_event))):
-                
+
+
+                # ALWAYS reset to the Browse tab on any filter change:
+                scene.ui_current_mode    = "BROWSE"
+                scene.selected_thumbnail = ""
+                # 2) rebuild the UI right now
+                self._dirty = True
+                bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
+                if context.area:
+                    context.area.tag_redraw()
+
+
                 # Update the saved values.
                 self.last_item_type = current_item
                 self.last_sort_by = current_sort
