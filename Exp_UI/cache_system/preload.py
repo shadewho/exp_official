@@ -3,12 +3,11 @@ import time
 import threading
 import queue
 import sqlite3
-
+import requests
 import bpy
-from ..main_config import THUMBNAIL_CACHE_FOLDER
+from ..main_config import THUMBNAIL_CACHE_FOLDER, PACKAGES_INDEX_ENDPOINT
 from ..auth.helpers import load_token
-
-from .db import init_db, update_package_list, purge_orphaned_thumbnails
+from .db import init_db, update_package_list, purge_orphaned_thumbnails, load_package_list
 from .download_helpers import background_fetch_metadata, download_thumbnail
 from .manager import fetch_packages, cache_manager
 from .persistence import clear_image_datablocks
@@ -19,12 +18,29 @@ DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
 
 # What to cache and how often:
 FILE_TYPES     = ['world', 'shop_item']
-SWEEP_INTERVAL = 30.0    # seconds between full list sweeps
+SWEEP_INTERVAL = 300.0    # seconds between full list sweeps
 BATCH_SIZE     = 16      # how many thumb/meta ops at once
 IDLE_SLEEP     = 30.0    # seconds to sleep when no work
 BUSY_SLEEP     = 1.0     # seconds to sleep when queue still has items
+DOWNLOAD_LIMIT = 999
 
 _worker = None  # singleton
+
+def fetch_package_index(file_type: str) -> list[dict]:
+    """
+    Hit /api/packages/index to get [{file_id, updated_at}, …].
+    """
+    token = load_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    resp = requests.get(
+        PACKAGES_INDEX_ENDPOINT,
+        headers=headers,
+        params={"file_type": file_type},
+        timeout=30
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("packages", [])
 
 
 class CacheWorker(threading.Thread):
@@ -117,7 +133,7 @@ class CacheWorker(threading.Thread):
                         "event_stage":    stage,
                         "selected_event": evt_id,
                         "offset":         offset,
-                        "limit":          50,
+                        "limit":          DOWNLOAD_LIMIT,
                     }
                     resp = fetch_packages(params)
                     if not resp.get("success"):
@@ -185,29 +201,35 @@ class CacheWorker(threading.Thread):
 
 
     def _do_full_sweep(self):
-        # 0) Preload ALL events (all stages & IDs)
+        # 0) Grab your token exactly once
+        token = load_token()
+        if not token:
+            raise RuntimeError("[CacheWorker] no API token, cannot do full sweep")
+
+        # 1) Preload ALL events (all stages & IDs)
         self._preload_all_events()
 
-        # 1) Re-fetch & update each non-event file_type (world & shop_item)
+        # 2) Re-fetch & update each non-event file_type (world & shop_item)
         for ftype in FILE_TYPES:
-            if not load_token():
-                continue
-
             try:
                 resp = fetch_packages({
                     "file_type": ftype,
                     "sort_by":   "newest",
                     "offset":    0,
-                    "limit":     9999,
+                    "limit":     DOWNLOAD_LIMIT,  # or 999 if you really want “all”
                 })
-                if not resp.get("success"):
-                    continue
-                remote_pkgs = resp["packages"]
-            except Exception:
+            except Exception as e:
+                print(f"[CacheWorker] fetch_packages({ftype}) failed:", e)
                 continue
 
-            # 1a) Persist into SQLite + in-memory cache
-            update_package_list(ftype, remote_pkgs, "", "")
+            if not resp.get("success"):
+                continue
+
+            remote_pkgs = resp["packages"]
+            print(f"[CacheWorker] fetched {len(remote_pkgs)} packages for '{ftype}'")
+
+            # 2a) Incrementally persist into SQLite & in-memory cache
+            update_package_list(ftype, remote_pkgs, event_stage="", selected_event="")
             for pkg in remote_pkgs:
                 pkg.update({
                     "file_type":      ftype,
@@ -216,7 +238,7 @@ class CacheWorker(threading.Thread):
                 })
             cache_manager.set_package_data({ftype: remote_pkgs})
 
-            # 1b) Enqueue metadata & thumbnail downloads
+            # 2b) Enqueue metadata & thumbnail downloads
             for pkg in remote_pkgs:
                 pid = pkg.get("file_id")
                 url = pkg.get("thumbnail_url")
@@ -227,7 +249,7 @@ class CacheWorker(threading.Thread):
                 if cache_manager.get_metadata(pid) is None:
                     self.task_queue.put(('meta', pid))
 
-                # thumbnail
+                # thumbnail (only if URL changed)
                 cur = self.conn.execute(
                     "SELECT thumbnail_url, file_path FROM thumbnails WHERE file_id = ? LIMIT 1;",
                     (pid,)
@@ -235,18 +257,47 @@ class CacheWorker(threading.Thread):
                 db_url, db_path = (cur[0], cur[1]) if cur else (None, None)
                 if db_url != url:
                     if db_path and os.path.exists(db_path):
-                        try: os.remove(db_path)
-                        except: pass
+                        try:
+                            os.remove(db_path)
+                        except:
+                            pass
                     self.task_queue.put(('thumb', pid, url))
 
-        # 2) Determine the full set of “still valid” IDs (world, shop_item, AND events)
-        cursor = self.conn.execute(
-            "SELECT DISTINCT CAST(json_extract(data_json, '$.file_id') AS INTEGER)"
-            "  FROM package_list;"
-        )
+        # 3) Stale-check **event** thumbnails & requeue if URL changed
+        try:
+            import json
+            cursor = self.conn.execute(
+                "SELECT data_json FROM package_list WHERE file_type='event';"
+            )
+            for (data_json_str,) in cursor.fetchall():
+                pkg = json.loads(data_json_str)
+                pkg_id = int(pkg.get("file_id", 0))
+                url    = pkg.get("thumbnail_url")
+
+                row = self.conn.execute(
+                    "SELECT thumbnail_url, file_path FROM thumbnails WHERE file_id = ? LIMIT 1;",
+                    (pkg_id,),
+                ).fetchone()
+                db_url, db_path = (row[0], row[1]) if row else (None, None)
+
+                if url and db_url != url:
+                    if db_path and os.path.exists(db_path):
+                        try:
+                            os.remove(db_path)
+                        except:
+                            pass
+                    self.task_queue.put(('thumb', pkg_id, url))
+        except Exception as e:
+            print(f"[CacheWorker] event thumbnail stale-check error:", e)
+
+        # 4) Determine the full set of “still valid” IDs (world, shop_item, AND events)
+        cursor = self.conn.execute("""
+            SELECT DISTINCT CAST(json_extract(data_json, '$.file_id') AS INTEGER)
+            FROM package_list;
+        """)
         valid_ids = {row[0] for row in cursor.fetchall() if row[0] is not None}
 
-        # 3) Prune any thumbnails/metadata rows not in that valid set
+        # 5) Prune any thumbnails/metadata rows not in that valid set
         if valid_ids:
             placeholders = ",".join("?" for _ in valid_ids)
             with self.conn:
@@ -255,12 +306,13 @@ class CacheWorker(threading.Thread):
                     tuple(valid_ids)
                 )
                 self.conn.execute(
-                    f"DELETE FROM metadata WHERE package_id NOT IN ({placeholders});",
+                    f"DELETE FROM metadata   WHERE package_id NOT IN ({placeholders});",
                     tuple(valid_ids)
                 )
 
-        # 4) Finally schedule your existing on-main-thread cleanup
+        # 6) Finally schedule your existing on-main-thread cleanup
         bpy.app.timers.register(self._main_cleanup, first_interval=0.1)
+
 
         
     def _main_cleanup(self):

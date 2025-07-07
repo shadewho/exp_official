@@ -31,6 +31,8 @@ PACKAGES_ENDPOINT = f"{BASE_URL}/api/packages"
 LIKE_PACKAGE_ENDPOINT = f"{BASE_URL}/api/like"
 COMMENT_PACKAGE_ENDPOINT = f"{BASE_URL}/api/comment"
 USAGE_ENDPOINT = f"{BASE_URL}/api/usage"
+PACKAGES_INDEX_ENDPOINT = f"{PACKAGES_ENDPOINT}/index"
+
 
 # Define specific endpoints for events.
 EVENTS_BASE_URL = {
