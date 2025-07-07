@@ -19,9 +19,8 @@ from .db import (
     init_db
 )
 
-# Immediately create the schema if it doesn’t exist:
+# ─── Ensure our SQLite tables exist before any background thread runs ───
 init_db()
-
 # ----------------------------------------------------------------------------------
 # Thumbnail Download Helper
 # ----------------------------------------------------------------------------------

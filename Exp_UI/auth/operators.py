@@ -11,10 +11,18 @@ from ..internet.helpers import ensure_internet_connection, start_local_server, i
 from ..auth.helpers import clear_token
 from ..auth.helpers import load_token
 from ..main_config import USAGE_ENDPOINT, DOCS_URL
+from ..cache_system.preload import stop_cache_worker, start_cache_worker
 
 # ----------------------------------------------------------------------------
 # LOGIN/LOGOUT
 # ----------------------------------------------------------------------------
+def _restart_cache_worker():
+    # this will be called every second until load_token() returns truthy
+    if load_token():
+        stop_cache_worker()
+        start_cache_worker()
+        return None   # stop the timer
+    return 1.0        # retry in 1s
 
 class LOGIN_OT_WebApp(bpy.types.Operator):
     bl_idname = "webapp.login"
@@ -22,7 +30,7 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        # 1) Make sure we're online (will clear token & disable UI if offline)
+        # 1) Ensure we're online
         if not ensure_internet_connection(context):
             self.report({'ERROR'}, "No internet connection detected. Cannot login.")
             return {'CANCELLED'}
@@ -32,7 +40,7 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
         update_latest_version_cache()
         latest = get_cached_latest_version()
 
-        # 3) If there *is* a newer version, block login with a warning
+        # 3) If there *is* a newer version, block login
         if latest and latest != CURRENT_VERSION:
             self.report(
                 {'WARNING'},
@@ -40,11 +48,17 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
             )
             return {'CANCELLED'}
 
-        # 4) All good → proceed with your normal login flow
+        # 4) Kick off OAuth flow
         threading.Thread(target=start_local_server, args=(8000,), daemon=True).start()
         initiate_login()
         self.report({'INFO'}, "Login page opened. Complete login in your browser.")
+
+        # 5) Refresh usage meter after login
         bpy.app.timers.register(auto_refresh_usage, first_interval=3.0)
+
+        # 6) Restart cache worker *after* token is actually present
+        bpy.app.timers.register(_restart_cache_worker, first_interval=1.0)
+
         return {'FINISHED'}
 
 class LOGOUT_OT_WebApp(bpy.types.Operator):

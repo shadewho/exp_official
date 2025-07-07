@@ -55,7 +55,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         bpy.types.Scene.master_package_list = []
         bpy.types.Scene.all_pages_data     = {}
 
-        # ── 0) Compute your filter parameters ────────────────────────────────
+        # ── 0) Compute filter parameters ────────────────────────────────
         file_type      = scene.package_item_type
         sort_by        = scene.package_sort_by
         search_query   = scene.package_search_query.strip()
@@ -63,11 +63,11 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         if sort_by == 'featured':
             file_type = 'featured'
 
-        # ── 0.5) Compute event filters (only for events) ────────────────────
+        # ── 0.5) Compute event filters ───────────────────────────────────
         event_stage    = scene.event_stage    if file_type == 'event' else ""
         selected_event = scene.selected_event if file_type == 'event' else ""
 
-        # ── 1) Store them on `self` for your modal() later ──────────────────
+        # ── 1) Store for modal later ─────────────────────────────────────
         self._file_type      = file_type
         self._sort_by        = sort_by
         self._search_query   = search_query
@@ -75,54 +75,53 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         self._event_stage    = event_stage
         self._selected_event = selected_event
 
-        # ── 2) Connectivity check ────────────────────────────────────────────
+        # ── 2) Ensure connectivity ───────────────────────────────────────
         if not ensure_internet_connection(context):
             self.report({'ERROR'}, "No internet connection detected. Cannot fetch packages.")
             return {'CANCELLED'}
 
-        # ── 3) Prime in-memory cache from SQLite (with both filters!) ───────
+        # ── 3) Try loading from SQLite cache first ───────────────────────
         from ...cache_system.db import load_package_list
         pkg_list = load_package_list(file_type, event_stage, selected_event)
         if pkg_list:
-            # Annotate and store
             for pkg in pkg_list:
-                pkg['file_type']      = file_type
-                pkg['event_stage']    = event_stage
-                pkg['selected_event'] = selected_event
-            cache_manager.set_package_data({ file_type: pkg_list })
+                pkg.update({
+                    'file_type':      file_type,
+                    'event_stage':    event_stage,
+                    'selected_event': selected_event,
+                })
+            cache_manager.set_package_data({file_type: pkg_list})
 
-        # ── 4) Attempt to filter against the in-memory cache ───────────────
+        # ── 4) Filter against in-memory cache ────────────────────────────
         cached_filtered = filter_cached_data(file_type, search_query)
         if cached_filtered:
             self.report(
                 {'INFO'},
-                f"Using local cache: {len(cached_filtered)} items for filter '{sort_by}'."
+                f"Loaded {len(cached_filtered)} item(s) from cache for '{file_type}' / '{sort_by}'."
             )
-            # Finalize UI immediately
+            # Display immediately
             self._finalize_data(context, cached_filtered, requested_page, sort_by)
-
-            # If fewer than a full page, lazily fetch the remainder
+            # If not a full page, queue any missing items in background
             if len(cached_filtered) < THUMBNAILS_PER_PAGE:
                 self.lazy_load_missing_data(
                     file_type, sort_by, search_query, len(cached_filtered)
                 )
             return {'FINISHED'}
 
-        # ── 5) No cache: fetch full list from server in background ─────────
-        self.report({'INFO'}, "No cached data; fetching full list from server.")
+        # ── 5) Fallback: no cache → fetch from server in background ───────
+        self.report({'INFO'}, "No cached data; fetching from server.")
         threading.Thread(
             target=self._fetch_worker,
             args=(file_type, sort_by, search_query),
             daemon=True
         ).start()
 
-        # Show loading indicator while we wait
+        # Show loading indicator
         scene.show_loading_image = True
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.2, window=context.window)
         wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
-
 
     def modal(self, context, event):
         if event.type == 'TIMER':
@@ -396,7 +395,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         ).start()
 
     def _lazy_load_worker(self, file_type, sort_by, search_query, additional_needed):
-        # Prepare parameters to fetch only the additional needed items.
         params = {
             "file_type": file_type,
             "sort_by":   sort_by,
@@ -407,22 +405,24 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             params["search_query"] = search_query
 
         try:
-            data = fetch_packages(params)
-            if data.get("success"):
-                new_items = data.get("packages", [])
+            resp = fetch_packages(params)
+            if resp.get("not_modified"):
+                # nothing changed → skip
+                print(f"Lazy load: '{file_type}' unchanged; no new items.")
+                return
+            if not resp.get("success"):
+                print("Lazy load failed:", resp.get("message"))
+                return
 
-                # Merge new items with the existing cache for this type
-                current_cache = cache_manager.get_package_data().get(file_type, [])
-                updated_cache = current_cache + new_items
-                cache_manager.set_package_data({file_type: updated_cache})
+            new_items = resp["packages"]
+            current_cache = cache_manager.get_package_data().get(file_type, [])
+            cache_manager.set_package_data({file_type: current_cache + new_items})
 
-                # capture the page number so we don’t reference `self` in the timer
-                page = self.page_number
-                bpy.app.timers.register(
-                    lambda page=page: bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=page),
-                    first_interval=0.1
-                )
-            else:
-                print("Lazy load failed: " + data.get("message", "Unknown error"))
+            # re-fire your page fetch
+            page = self.page_number
+            bpy.app.timers.register(
+                lambda page=page: bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=page),
+                first_interval=0.1
+            )
         except Exception as e:
-            print("Error in lazy load: ", e)
+            print("Error in lazy load:", e)

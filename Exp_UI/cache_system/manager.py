@@ -79,77 +79,21 @@ class CacheManager:
 
     def ensure_package_data(self, file_type: str, page_size: int = 50) -> bool:
         """
-        – Worlds & shop_items: exactly as before, cached by file_type only.
-        – Events: require an explicit event pick, then fetch/cache once per stage (ignore selected_event),
-          and rely on in-memory filtering by selected_event in filter_cached_data().
+        1) If file_type=='event' and no event is selected, clear data and return.
+        2) Try loading from SQLite cache (with both filters).
+        3) Otherwise fetch from server in pages, persist and merge.
         """
         scene = bpy.context.scene
+        event_stage = scene.event_stage    if file_type == 'event' else ""
+        selected_event = scene.selected_event if file_type == 'event' else ""
 
-        # ─── EVENT BRANCH: stage-only caching ───────────────────────────────
-        if file_type == 'event':
-            stage = scene.event_stage
-            selected_event = scene.selected_event
-
-            # 0) If no event is selected, show nothing
-            if not selected_event or selected_event == "0":
-                self.set_package_data({'event': []})
-                return True
-
-            # 1) Try loading the stage-only cache
-            cached = load_package_list('event', stage, '')
-            if cached:
-                for pkg in cached:
-                    pkg.update({
-                        'file_type':   'event',
-                        'event_stage': stage,
-                        # we do NOT store selected_event here
-                    })
-                self.set_package_data({'event': cached})
-                return True
-
-            # 2) No cache yet → fetch the entire stage once
-            all_packages: List[Dict] = []
-            offset = 0
-            while True:
-                params = {
-                    "file_type":   'event',
-                    "event_stage": stage,
-                    "sort_by":     "newest",
-                    "offset":      offset,
-                    "limit":       page_size,
-                }
-                try:
-                    resp = fetch_packages(params)
-                    if not resp.get("success"):
-                        return False
-                except Exception:
-                    return False
-
-                batch = resp.get("packages", [])
-                if not batch:
-                    break
-
-                for pkg in batch:
-                    pkg.update({
-                        'file_type':   'event',
-                        'event_stage': stage,
-                    })
-                all_packages.extend(batch)
-
-                if len(batch) < page_size:
-                    break
-                offset += page_size
-
-            # 3) Persist stage-only list and store in memory
-            save_package_list('event', all_packages, stage, '')
-            self.set_package_data({'event': all_packages})
+        # ── REQUIRE explicit event selection ──────────────────────────────
+        if file_type == 'event' and (not selected_event or selected_event == "0"):
+            # No event chosen → show nothing
+            self.set_package_data({file_type: []})
             return True
 
-        # ─── NON‐EVENT BRANCH: original logic for world/shop_item/etc. ──────
-        event_stage = ""
-        selected_event = ""
-
-        # 1) Attempt to load from cache
+        # ── 1) Attempt to load from SQLite cache ───────────────────────────
         cached = load_package_list(file_type, event_stage, selected_event)
         if cached:
             for pkg in cached:
@@ -161,8 +105,8 @@ class CacheManager:
             self.set_package_data({file_type: cached})
             return True
 
-        # 2) No cache → fetch from server in pages
-        all_packages: List[Dict] = []
+        # ── 2) No cache: fetch full list in pages ─────────────────────────
+        all_packages = []
         offset = 0
         while True:
             params = {
@@ -171,6 +115,10 @@ class CacheManager:
                 "offset":    offset,
                 "limit":     page_size,
             }
+            if file_type == 'event':
+                params["event_stage"]    = event_stage
+                params["selected_event"] = selected_event
+
             try:
                 resp = fetch_packages(params)
                 if not resp.get("success"):
@@ -194,11 +142,10 @@ class CacheManager:
                 break
             offset += page_size
 
-        # 3) Persist + merge
+        # ── 3) Persist + merge ─────────────────────────────────────────────
         save_package_list(file_type, all_packages, event_stage, selected_event)
         self.set_package_data({file_type: all_packages})
         return True
-
 
 # singleton instance
 cache_manager = CacheManager()

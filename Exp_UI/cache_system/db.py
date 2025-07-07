@@ -365,58 +365,82 @@ init_db()
 
 ##TEST VIEW TEST VIEW##
 
+def _build_ascii_table(rows, headers):
+    # Compute column widths
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    # Separator & header
+    sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+    header = "|" + "|".join(f" {headers[i].ljust(widths[i])} " for i in range(len(headers))) + "|"
+    lines = [sep, header, sep]
+    # Rows
+    for row in rows:
+        line = "|" + "|".join(f" {str(row[i]).ljust(widths[i])} " for i in range(len(headers))) + "|"
+        lines.append(line)
+    lines.append(sep)
+    return lines
+
+DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
 class DB_INSPECT_OT_ShowCacheDB(bpy.types.Operator):
     bl_idname = "cache.show_database"
     bl_label = "Show Cache DB"
-    bl_description = "Query and display the cache SQLite DB in a new text block"
+    bl_description = "Display thumbnails, metadata, and package_list tables in a text block"
 
     def execute(self, context):
-        db_path = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
         try:
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
 
-            # 1) list all tables
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = [row[0] for row in cursor.fetchall()]
-
             output_lines = []
-            for table in tables:
-                # 2) get columns
-                cursor.execute(f"PRAGMA table_info({table});")
-                cols_info = cursor.fetchall()
-                cols = [c[1] for c in cols_info]
 
-                # 3) fetch all rows
-                cursor.execute(f"SELECT * FROM {table};")
-                rows = cursor.fetchall()
+            # 1) Thumbnails table
+            cursor.execute("SELECT file_id, file_path, thumbnail_url, last_access FROM thumbnails;")
+            thumbs = cursor.fetchall()
+            output_lines.append("=== thumbnails ===")
+            output_lines.extend(_build_ascii_table(
+                thumbs,
+                ["file_id", "file_path", "thumbnail_url", "last_access"]
+            ))
+            output_lines.append("")
 
-                # 4) compute column widths
-                widths = [len(h) for h in cols]
-                for row in rows:
-                    for i, cell in enumerate(row):
-                        widths[i] = max(widths[i], len(str(cell)))
+            # 2) Metadata table
+            cursor.execute("SELECT package_id, last_access FROM metadata;")
+            meta = cursor.fetchall()
+            output_lines.append("=== metadata ===")
+            output_lines.extend(_build_ascii_table(
+                meta,
+                ["package_id", "last_access"]
+            ))
+            output_lines.append("")
 
-                # 5) build ascii table
-                sep = "+" + "+".join("-"*(w+2) for w in widths) + "+"
-                header = "|" + "|".join(f" {cols[i].ljust(widths[i])} " for i in range(len(cols))) + "|"
+            # 3) Package_list table
+            cursor.execute("SELECT file_type, event_stage, selected_event, data_json FROM package_list;")
+            pkgrows = cursor.fetchall()
+            # For readability, extract package_name and file_id from data_json
+            pkgtable = []
+            for ftype, stage, sel_evt, data_json in pkgrows:
+                try:
+                    data = json.loads(data_json)
+                    pkg_name = data.get("package_name", "")
+                    pkg_id = data.get("file_id", "")
+                except Exception:
+                    pkg_name = ""
+                    pkg_id = ""
+                pkgtable.append((ftype, stage, sel_evt, str(pkg_id), pkg_name))
+            output_lines.append("=== package_list ===")
+            output_lines.extend(_build_ascii_table(
+                pkgtable,
+                ["file_type", "event_stage", "selected_event", "file_id", "package_name"]
+            ))
 
-                output_lines.append(f"Table: {table}")
-                output_lines.append(sep)
-                output_lines.append(header)
-                output_lines.append(sep)
-                for row in rows:
-                    line = "|" + "|".join(f" {str(row[i]).ljust(widths[i])} " for i in range(len(cols))) + "|"
-                    output_lines.append(line)
-                output_lines.append(sep)
-                output_lines.append("")
-
-            # 6) write to Blender Text editor
+            # Write to Blender Text editor
             text_block = bpy.data.texts.get("CacheDB_Inspection") or bpy.data.texts.new("CacheDB_Inspection")
             text_block.clear()
             text_block.write("\n".join(output_lines))
 
-            # 7) open it in the first Text Editor area found
+            # Open in first Text Editor area
             for area in context.window.screen.areas:
                 if area.type == 'TEXT_EDITOR':
                     area.spaces.active.text = text_block
