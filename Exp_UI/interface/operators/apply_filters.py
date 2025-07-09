@@ -3,7 +3,7 @@
 import bpy
 from .utilities import  build_filter_signature
 from ..drawing.draw_master import load_image_buttons
-
+import time
 # ----------------------------------------------------------------------------
 # APPLY_FILTERS_SHOWUI_OT
 #   - An operator that displays the UI first, then fetches packages if needed
@@ -79,6 +79,9 @@ class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
                 # Check if the current page is already loaded
                 fetched = getattr(bpy.types.Scene, "fetched_packages_data", [])
                 sig_now = build_filter_signature(scene)
+                #if we're in Random mode, bump it so it always differs
+                if scene.package_sort_by == 'random':
+                    sig_now = f"{sig_now}:{int(time.time())}"
 
                 cache_is_valid = (
                     fetched

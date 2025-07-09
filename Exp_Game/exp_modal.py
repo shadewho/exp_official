@@ -139,6 +139,18 @@ class ExpModal(bpy.types.Operator):
     # ---------------------------
     def invoke(self, context, event):
         scene = context.scene
+
+        #set UI mode to disable background caching
+        context.scene.ui_current_mode = 'GAME'
+        print(f"[DEBUG] ui_current_mode is now: {context.scene.ui_current_mode}")
+
+        #clear UI if any
+        try:
+            # EXEC_DEFAULT so it doesn’t pop up a dialog
+            bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
+        except Exception as e:
+            print(f"[WARN] remove_package_display failed: {e}")
+
         addon_prefs = context.preferences.addons["Exploratory"].preferences
 
         if not self.launched_from_ui:
@@ -418,7 +430,11 @@ class ExpModal(bpy.types.Operator):
         
         # Restore the cursor modal state
         context.window.cursor_modal_restore()
-        
+
+        #restore UI mode
+        context.scene.ui_current_mode = 'BROWSE'
+        print(f"[DEBUG] ui_current_mode is now: {context.scene.ui_current_mode}")
+
         # Remove the modal timer if it exists
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
@@ -468,8 +484,8 @@ class ExpModal(bpy.types.Operator):
                 override_ctx = get_valid_view3d_override()
                 if override_ctx is not None:
                     with bpy.context.temp_override(**override_ctx):
-                        bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
-                        bpy.ops.view3d.popup_social_details('INVOKE_DEFAULT')
+                        bpy.ops.view3d.add_package_display('INVOKE_REGION_WIN')
+                        bpy.ops.view3d.popup_social_details('INVOKE_REGION_WIN')
                 else:
                     print("No valid VIEW3D context found for UI popups.")
                 return None  # Stop the timer

@@ -1,5 +1,6 @@
 #Exploratory/Exp_UI/__init__.py
 import bpy
+import time
 from bpy.app.handlers import persistent
 from bpy.props import PointerProperty
 from .internet.helpers import is_internet_available, clear_token
@@ -16,7 +17,7 @@ from .panel import (
 from .packages.social_operators import (
     LIKE_PACKAGE_OT_WebApp, COMMENT_PACKAGE_OT_WebApp, 
     OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments,
-    POPUP_SOCIAL_DETAILS_OT
+    POPUP_SOCIAL_DETAILS_OT, COMMENT_PACKAGE_INLINE_OT_WebApp
 )
 from .packages.operators import DOWNLOAD_CODE_OT_File
 
@@ -45,8 +46,6 @@ from .events.operators import VOTE_MAP_OT_WebApp
 
 from .interface.properties import register as register_ui_props, unregister as unregister_ui_props
 
-
-
 ###test db test db###
 from .cache_system.db import (
     DB_INSPECT_OT_ShowCacheDB,
@@ -60,6 +59,7 @@ classes = (
     DOWNLOAD_CODE_OT_File,
     LIKE_PACKAGE_OT_WebApp,
     COMMENT_PACKAGE_OT_WebApp,
+    COMMENT_PACKAGE_INLINE_OT_WebApp,
     OPEN_URL_OT_WebApp,
     VIEW3D_PT_PackageDisplay_Login,
     VIEW3D_PT_PackageDisplay_FilterAndScene,
@@ -105,6 +105,18 @@ def connectivity_check_timer():
         print("[INFO] No internet connection detected. User logged out and UI disabled.")
     return 10.0  # Check every 10 seconds
 
+def on_sort_by_update(self, context):
+    # Whenever the user explicitly picks “Random”:
+    if context.scene.package_sort_by == 'random':
+        # 1️⃣  Bump the signature to something new
+        context.scene.last_filter_signature = str(time.time())
+        # 2️⃣  Reset to page 1
+        context.scene.current_thumbnail_page = 1
+        # 3️⃣  Force a fresh fetch of that first page
+        try:
+            bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=1)
+        except Exception as e:
+            print(f"[ERROR] failed to refresh random page: {e}")
 # --- Registration ---
 def register():
     #initialize cache!
@@ -151,6 +163,7 @@ def register():
             ('featured', 'Featured', '')
         ],
         default='newest',
+        update=on_sort_by_update,
     )
 
     bpy.types.Scene.package_search_query = bpy.props.StringProperty(

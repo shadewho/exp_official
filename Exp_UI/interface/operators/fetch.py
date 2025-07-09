@@ -4,7 +4,8 @@ import bpy
 import os
 import threading
 import queue
-
+import hashlib
+import random
 from ...auth.helpers import load_token
 from ...internet.helpers import ensure_internet_connection, is_internet_available
 from ...cache_system.download_helpers import download_thumbnail
@@ -251,8 +252,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         except Exception as e:
             fetch_page_queue.put(("FETCH_ERROR", {"error": str(e)}))
 
-
-
     def update_pagination(self, context, master_list, current_page, items_per_page=THUMBNAILS_PER_PAGE):
         """
         Sort the master list, chunk it into pages, and update scene properties so that
@@ -351,9 +350,8 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         )
 
     def _sort_packages(self, pkgs, sort_by):
-        """
-        Basic sorting logic. Adjust as needed.
-        """
+        scene = bpy.context.scene
+
         if sort_by == "newest":
             return sorted(pkgs, key=lambda p: p.get("upload_date", ""), reverse=True)
         elif sort_by == "oldest":
@@ -361,12 +359,16 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         elif sort_by == "popular":
             return sorted(pkgs, key=lambda p: p.get("likes", 0), reverse=True)
         elif sort_by == "random":
-            import random
-            new_list = list(pkgs)
-            random.shuffle(new_list)
-            return new_list
+            # Build a stable seed from the current filter signature
+            sig = getattr(scene, "last_filter_signature", "")
+            seed = int(hashlib.sha256(sig.encode('utf-8')).hexdigest(), 16) % (2**32)
+            rng = random.Random(seed)
+            shuffled = list(pkgs)
+            rng.shuffle(shuffled)
+            return shuffled
         else:
-            return pkgs
+            # for any custom sort modes, just return a copy
+            return list(pkgs)
 
     def _get_all_cached_filtered(self, file_type, sort_by, search_query):
         """

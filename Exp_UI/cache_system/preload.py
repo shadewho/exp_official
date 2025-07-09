@@ -5,6 +5,7 @@ import queue
 import sqlite3
 import requests
 import bpy
+from requests.exceptions import RequestException
 from ..main_config import THUMBNAIL_CACHE_FOLDER, PACKAGES_INDEX_ENDPOINT
 from ..auth.helpers import load_token
 from .db import init_db, update_package_list, purge_orphaned_thumbnails, load_package_list
@@ -27,20 +28,20 @@ DOWNLOAD_LIMIT = 999
 _worker = None  # singleton
 
 def fetch_package_index(file_type: str) -> list[dict]:
-    """
-    Hit /api/packages/index to get [{file_id, updated_at}, …].
-    """
     token = load_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    resp = requests.get(
-        PACKAGES_INDEX_ENDPOINT,
-        headers=headers,
-        params={"file_type": file_type},
-        timeout=30
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("packages", [])
+    try:
+        resp = requests.get(
+            PACKAGES_INDEX_ENDPOINT,
+            headers=headers,
+            params={"file_type": file_type},
+            timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json().get("packages", [])
+    except RequestException as e:
+        print(f"[CacheWorker] network error fetching index for {file_type!r}: {e}")
+        return []
 
 
 class CacheWorker(threading.Thread):
@@ -79,6 +80,11 @@ class CacheWorker(threading.Thread):
                 time.sleep(IDLE_SLEEP)
 
     def _process_batch(self):
+        # 0) don’t do any work if we’re in GAME mode
+        if bpy.context.scene.ui_current_mode == 'GAME':
+            print("[CacheWorker] skipping batch: ui_current_mode=GAME")
+            return
+        
         items = []
         while len(items) < BATCH_SIZE:
             try:
@@ -201,7 +207,12 @@ class CacheWorker(threading.Thread):
 
 
     def _do_full_sweep(self):
-        # 0) Grab your token exactly once
+        
+        # 0) bail out immediately when the UI is in GAME
+        if bpy.context.scene.ui_current_mode == 'GAME':
+            print("[CacheWorker] skipping full sweep: ui_current_mode=GAME")
+            return
+
         token = load_token()
         if not token:
             raise RuntimeError("[CacheWorker] no API token, cannot do full sweep")
