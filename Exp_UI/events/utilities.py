@@ -66,11 +66,17 @@ bpy.types.Scene.selected_event = bpy.props.EnumProperty(
 def on_package_item_type_update(self, context):
     # when the user switches *into* the Event filter, re-fetch the latest events
     if context.scene.package_item_type == 'event':
-        # this will populate context.scene.fetched_events_data & reset selected_event
+        # ── ALWAYS force sort_by to ‘newest’ for events ──────────
+        context.scene.package_sort_by = 'newest'
+
+        # Populate fetched_events_data & reset selected_event
         update_event_stage(self, context)
-        # clear any old package results so that your cache reloads against the new event
+
+        # Clear any old package results so the cache reloads against the new event
         if hasattr(context.scene, "fetched_packages_data"):
             context.scene.fetched_packages_data.clear()
-        # trigger immediate redraw
+
+        # Trigger immediate redraw
         if context.area:
             context.area.tag_redraw()
+

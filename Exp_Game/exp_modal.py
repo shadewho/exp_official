@@ -71,6 +71,7 @@ class ExpModal(bpy.types.Operator):
         description="If false, do not revert the workspace when canceling the modal",
         default=True
     )
+    
     # -----------------------------
     # Internal State Variables
     # -----------------------------

@@ -35,7 +35,7 @@ def init_db():
         conn = _get_conn()
         cur  = conn.cursor()
 
-        # 1) Thumbnails table
+        # 1) Thumbnails table (unchanged) …
         cur.execute("""
         CREATE TABLE IF NOT EXISTS thumbnails (
           file_id       INTEGER PRIMARY KEY,
@@ -45,7 +45,7 @@ def init_db():
         );
         """)
 
-        # 2) Metadata table
+        # 2) Metadata table (unchanged) …
         cur.execute("""
         CREATE TABLE IF NOT EXISTS metadata (
           package_id   INTEGER PRIMARY KEY,
@@ -54,24 +54,24 @@ def init_db():
         );
         """)
 
-        # 3) Package lists table with event filters
+        # 3) Package lists table with event filters **and** featured flag
         cur.execute("""
         CREATE TABLE IF NOT EXISTS package_list (
           file_type       TEXT    NOT NULL,
           event_stage     TEXT    NOT NULL DEFAULT '',
           selected_event  TEXT    NOT NULL DEFAULT '',
+          is_featured     INTEGER NOT NULL DEFAULT 0,
           data_json       TEXT    NOT NULL
         );
         """)
-        # Composite index for faster lookups by file_type + filters
+        # Composite index for fast lookups (including featured)
         cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_package_list_filters
-          ON package_list(file_type, event_stage, selected_event);
+          ON package_list(file_type, event_stage, selected_event, is_featured);
         """)
 
         conn.commit()
         conn.close()
-
 def drop_all_tables():
     """
     Drop thumbnails, metadata & package_list tables entirely.
@@ -235,7 +235,8 @@ def save_package_list(
     selected_event: str = ""
 ):
     """
-    Overwrite the cache for this file_type + event_stage + selected_event.
+    Overwrite the cache for this file_type + event_stage + selected_event,
+    recording whether each pkg is featured or not.
     """
     conn = _get_conn()
     with conn:
@@ -244,9 +245,10 @@ def save_package_list(
             (file_type, event_stage, selected_event)
         )
         for pkg in packages:
+            is_feat = 1 if pkg.get("is_featured", False) else 0
             conn.execute(
-                "INSERT INTO package_list (file_type, event_stage, selected_event, data_json) VALUES (?, ?, ?, ?);",
-                (file_type, event_stage, selected_event, json.dumps(pkg))
+                "INSERT INTO package_list (file_type, event_stage, selected_event, is_featured, data_json) VALUES (?, ?, ?, ?, ?);",
+                (file_type, event_stage, selected_event, is_feat, json.dumps(pkg))
             )
 
 def load_package_list(
@@ -301,22 +303,23 @@ def update_package_list(
     selected_event: str = ""
 ):
     """
-    Incrementally update package_list for the given filter:
+    Incrementally update package_list for the given filter,
+    tracking the is_featured flag in each row.
+
+    Steps:
       1) Delete rows whose file_id no longer appears in 'packages'.
-      2) Insert rows for new file_id values.
-      3) Update existing rows only if the JSON changed.
+      2) Insert rows for new file_id values (with is_featured).
+      3) Update existing rows when either data_json or is_featured has changed.
     """
     # 1) Gather existing IDs
     existing = load_package_list(file_type, event_stage, selected_event)
     existing_ids = {int(pkg["file_id"]) for pkg in existing}
-    new_ids = {int(pkg["file_id"]) for pkg in packages}
+    new_ids      = {int(pkg["file_id"]) for pkg in packages}
 
-    to_delete = existing_ids - new_ids
-    to_add    = new_ids - existing_ids
-    # we'll treat everything else as "maybe update"
+    to_delete    = existing_ids - new_ids
+    to_add       = new_ids - existing_ids
     maybe_update = existing_ids & new_ids
 
-    ts = int(time.time())
     with _lock:
         conn = _get_conn()
         cur  = conn.cursor()
@@ -326,34 +329,42 @@ def update_package_list(
             placeholders = ",".join("?" for _ in to_delete)
             cur.execute(f"""
                 DELETE FROM package_list
-                  WHERE file_type=? AND event_stage=? AND selected_event=?
-                    AND json_extract(data_json, '$.file_id') IN ({placeholders});
+                 WHERE file_type=? AND event_stage=? AND selected_event=?
+                   AND json_extract(data_json, '$.file_id') IN ({placeholders});
             """, [file_type, event_stage, selected_event, *to_delete])
 
-        # 3) Insert newly added packages
+        # 3) Insert newly added packages, including is_featured flag
         for pkg in packages:
             fid = int(pkg["file_id"])
             if fid in to_add:
+                is_feat = 1 if pkg.get("is_featured", False) else 0
                 cur.execute(
-                    "INSERT INTO package_list (file_type, event_stage, selected_event, data_json) VALUES (?, ?, ?, ?);",
-                    (file_type, event_stage, selected_event, json.dumps(pkg))
+                    "INSERT INTO package_list (file_type, event_stage, selected_event, is_featured, data_json) "
+                    "VALUES (?, ?, ?, ?, ?);",
+                    (file_type, event_stage, selected_event, is_feat, json.dumps(pkg))
                 )
 
-        # 4) Update changed JSON for existing rows
+        # 4) Update changed JSON or featured‐flag for existing rows
         for pkg in packages:
             fid = int(pkg["file_id"])
             if fid in maybe_update:
-                # compare the stored JSON vs. new JSON
                 cur.execute(
-                    "SELECT data_json FROM package_list WHERE file_type=? AND event_stage=? AND selected_event=? AND json_extract(data_json, '$.file_id')=?;",
+                    "SELECT data_json, is_featured FROM package_list "
+                    "WHERE file_type=? AND event_stage=? AND selected_event=? "
+                    "  AND json_extract(data_json, '$.file_id')=?;",
                     (file_type, event_stage, selected_event, fid)
                 )
                 row = cur.fetchone()
                 new_json = json.dumps(pkg)
-                if row and row[0] != new_json:
+                new_feat = 1 if pkg.get("is_featured", False) else 0
+
+                if not row or row[0] != new_json or row[1] != new_feat:
                     cur.execute(
-                        "UPDATE package_list SET data_json = ? WHERE file_type=? AND event_stage=? AND selected_event=? AND json_extract(data_json, '$.file_id')=?;",
-                        (new_json, file_type, event_stage, selected_event, fid)
+                        "UPDATE package_list "
+                        "SET data_json = ?, is_featured = ? "
+                        "WHERE file_type=? AND event_stage=? AND selected_event=? "
+                        "  AND json_extract(data_json, '$.file_id')=?;",
+                        (new_json, new_feat, file_type, event_stage, selected_event, fid)
                     )
 
         conn.commit()
@@ -415,32 +426,35 @@ class DB_INSPECT_OT_ShowCacheDB(bpy.types.Operator):
             ))
             output_lines.append("")
 
-            # 3) Package_list table
-            cursor.execute("SELECT file_type, event_stage, selected_event, data_json FROM package_list;")
+            # 3) Package_list table (now including is_featured):
+            cursor.execute("""
+                SELECT file_type, event_stage, selected_event, is_featured, data_json
+                  FROM package_list;
+            """)
             pkgrows = cursor.fetchall()
-            # For readability, extract package_name and file_id from data_json
-            pkgtable = []
-            for ftype, stage, sel_evt, data_json in pkgrows:
-                try:
-                    data = json.loads(data_json)
-                    pkg_name = data.get("package_name", "")
-                    pkg_id = data.get("file_id", "")
-                except Exception:
-                    pkg_name = ""
-                    pkg_id = ""
-                pkgtable.append((ftype, stage, sel_evt, str(pkg_id), pkg_name))
-            output_lines.append("=== package_list ===")
-            output_lines.extend(_build_ascii_table(
-                pkgtable,
-                ["file_type", "event_stage", "selected_event", "file_id", "package_name"]
-            ))
 
-            # Write to Blender Text editor
+            output_lines.append("=== package_list ===")
+            # New headers: add 'is_featured'
+            headers = ["file_type", "event_stage", "selected_event", "featured", "file_id", "package_name"]
+            rows = []
+            for ftype, stage, sel_evt, is_feat, data_json in pkgrows:
+                try:
+                    data   = json.loads(data_json)
+                    pid    = str(data.get("file_id", ""))
+                    name   = data.get("package_name", "")
+                except Exception:
+                    pid, name = "", ""
+                # mark featured as Yes/No for readability
+                feat_str = "✔" if is_feat else "✘"
+                rows.append((ftype, stage, sel_evt, feat_str, pid, name))
+
+            output_lines.extend(_build_ascii_table(rows, headers))
+
+            # Write to Blender Text editor, same as before:
             text_block = bpy.data.texts.get("CacheDB_Inspection") or bpy.data.texts.new("CacheDB_Inspection")
             text_block.clear()
             text_block.write("\n".join(output_lines))
 
-            # Open in first Text Editor area
             for area in context.window.screen.areas:
                 if area.type == 'TEXT_EDITOR':
                     area.spaces.active.text = text_block

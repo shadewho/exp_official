@@ -57,12 +57,18 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         bpy.types.Scene.all_pages_data     = {}
 
         # ── 0) Compute filter parameters ────────────────────────────────
-        file_type      = scene.package_item_type
-        sort_by        = scene.package_sort_by
+        file_type = scene.package_item_type
+
+        # Always force events to only ever sort by newest
+        if file_type == 'event':
+            sort_by = 'newest'
+            # keep the UI button in sync
+            scene.package_sort_by = 'newest'
+        else:
+            sort_by = scene.package_sort_by
+
         search_query   = scene.package_search_query.strip()
         requested_page = self.page_number
-        if sort_by == 'featured':
-            file_type = 'featured'
 
         # ── 0.5) Compute event filters ───────────────────────────────────
         event_stage    = scene.event_stage    if file_type == 'event' else ""
@@ -96,13 +102,17 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         # ── 4) Filter against in-memory cache ────────────────────────────
         cached_filtered = filter_cached_data(file_type, search_query)
         if cached_filtered:
+            # only keep featured items when requested
+            if scene.package_sort_by == 'featured':
+                cached_filtered = [pkg for pkg in cached_filtered if pkg.get("is_featured", False)]
+
             self.report(
                 {'INFO'},
                 f"Loaded {len(cached_filtered)} item(s) from cache for '{file_type}' / '{sort_by}'."
             )
-            # Display immediately
+            # display immediately
             self._finalize_data(context, cached_filtered, requested_page, sort_by)
-            # If not a full page, queue any missing items in background
+            # if we need more than the cache has, lazy-load the rest
             if len(cached_filtered) < THUMBNAILS_PER_PAGE:
                 self.lazy_load_missing_data(
                     file_type, sort_by, search_query, len(cached_filtered)
@@ -313,30 +323,36 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         Paginate & display exactly the list you pass in:
         - `packages_to_page` must already be run through filter_cached_data().
         - No filtering or event logic here.
+        - If sort_by=='featured' and there are no items, show nothing.
         """
         scene = context.scene
 
-        # 1) sort
+        # 1) Sort the incoming list
         sorted_list = self._sort_packages(packages_to_page, sort_by)
 
-        # 2) chunk into pages
-        pages = [
-            sorted_list[i : i + THUMBNAILS_PER_PAGE]
-            for i in range(0, len(sorted_list), THUMBNAILS_PER_PAGE)
-        ]
-        if not pages:
-            pages = [[]]
+        # 2) Build pages—but if we're in "featured" mode and got zero items, keep pages empty
+        if sort_by == 'featured' and not sorted_list:
+            pages = []
+        else:
+            pages = [
+                sorted_list[i : i + THUMBNAILS_PER_PAGE]
+                for i in range(0, len(sorted_list), THUMBNAILS_PER_PAGE)
+            ]
 
-        # 3) record total pages & clamp requested_page
+        # 3) Update total pages
         total = len(pages)
         scene.total_thumbnail_pages = total
-        page = max(1, min(requested_page, total))
-        scene.current_thumbnail_page = page
 
-        # 4) stash the page slice for the UI
-        bpy.types.Scene.fetched_packages_data = pages[page - 1]
+        # 4) Clamp & write out the current page + data
+        if total == 0:
+            scene.current_thumbnail_page = 0
+            bpy.types.Scene.fetched_packages_data = []
+        else:
+            page = max(1, min(requested_page, total))
+            scene.current_thumbnail_page = page
+            bpy.types.Scene.fetched_packages_data = pages[page - 1]
 
-        # 5) clear the loading spinner and rebuild the UI
+        # 5) Clear spinner, rebuild UI
         scene.show_loading_image = False
         self._dirty = True
         if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):

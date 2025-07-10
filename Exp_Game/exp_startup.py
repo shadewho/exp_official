@@ -5,6 +5,13 @@ import bpy
 import os
 from ..exp_preferences import get_addon_path
 from .exp_utilities import get_game_world
+
+# ────────────────────────────────────
+# Global for restoring workspace
+# ────────────────────────────────────
+ORIGINAL_WORKSPACE_NAME = None
+
+
 def center_cursor_in_3d_view(context, margin=50):
     """
     Centers the cursor in the 3D View region with a specified margin to prevent it
@@ -245,6 +252,7 @@ def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
     Appends a workspace from game_screen.blend (if not already present)
     and switches the current window to it.
     """
+
     scene = context.scene
 
     # 1) Store the original workspace name (if not already stored)
@@ -282,59 +290,56 @@ def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
     else:
         print(f"Workspace '{workspace_name}' not found after append.")
 
-
 def revert_to_original_workspace(context):
-    wm = context.window_manager
-    # Retrieve the stored original workspace name; if missing, use a fallback.
-    original_name = wm.get("original_workspace_name", "Layout")
-    original_ws = bpy.data.workspaces.get(original_name)
-    if original_ws:
-        print(f"Intended original workspace: '{original_ws.name}'")
-    else:
-        print("Original workspace not found; using fallback 'Layout'")
-        original_ws = bpy.data.workspaces.get("Layout")
-    
-    # Optionally, remove the property from the window manager after use.
-    if "original_workspace_name" in wm:
-        del wm["original_workspace_name"]
+    """
+    Switch back to the workspace we started from, by using the
+    global ORIGINAL_WORKSPACE_NAME slot instead of any scene property.
+    """
+    global ORIGINAL_WORKSPACE_NAME
 
-    # Use a timer callback to delete the game workspace and switch back.
+    # ── 1) Read and clear the saved workspace name
+    original_name = ORIGINAL_WORKSPACE_NAME
+    print(f"[DEBUG] revert_to_original_workspace sees global: {original_name}")
+    ORIGINAL_WORKSPACE_NAME = None
+
+    # ── 2) Resolve a bpy.types.Workspace
+    original_ws = bpy.data.workspaces.get(original_name)
+    if not original_ws:
+        original_ws = bpy.data.workspaces.get("Layout")
+        if not original_ws and bpy.data.workspaces:
+            original_ws = bpy.data.workspaces[0]
+        print(f"[DEBUG] Falling back to workspace: {original_ws.name if original_ws else 'None'}")
+
+    # ── 3) Delete the temporary "exp_game" workspace, then switch back
     def delete_and_revert():
+        # a) delete exp_game if it exists, to avoid clutter
         game_ws = bpy.data.workspaces.get("exp_game")
         if game_ws:
             context.window.workspace = game_ws
-            print("Switched to game workspace for deletion:", game_ws.name)
-
-            override_ctx = bpy.context.copy()
-            override_ctx['window'] = context.window
-            override_ctx['screen'] = context.window.screen
+            override = {
+                'window': context.window,
+                'screen': context.window.screen,
+            }
+            # find a VIEW_3D area/region for the override
             for area in context.window.screen.areas:
                 if area.type == 'VIEW_3D':
-                    override_ctx['area'] = area
+                    override['area'] = area
                     for reg in area.regions:
                         if reg.type == 'WINDOW':
-                            override_ctx['region'] = reg
+                            override['region'] = reg
                             break
                     break
-
-            with bpy.context.temp_override(**override_ctx):
+            with bpy.context.temp_override(**override):
                 bpy.ops.workspace.delete('EXEC_DEFAULT')
-            print("Removed workspace 'exp_game' from the blend file.")
-        else:
-            print("Workspace 'exp_game' not found for deletion.")
 
+        # b) switch back to the original
         if original_ws:
             context.window.workspace = original_ws
-            print("Switched back to original workspace:", original_ws.name)
-        else:
-            fallback_ws = bpy.data.workspaces.get("Layout")
-            if fallback_ws:
-                context.window.workspace = fallback_ws
-                print("Switched to fallback workspace: 'Layout'")
-        return None  # Stop the timer
+            print(f"[DEBUG] Switched back to workspace: {original_ws.name}")
+        return None  # stop the timer
 
+    # register the timer so it runs after the modal cleanup
     bpy.app.timers.register(delete_and_revert, first_interval=0.1)
-
 
 def delayed_invoke_modal(from_ui):
     for window in bpy.context.window_manager.windows:
@@ -360,7 +365,7 @@ def delayed_invoke_modal(from_ui):
 class EXP_GAME_OT_StartGame(bpy.types.Operator):
     bl_idname = "exploratory.start_game"
     bl_label = "Start Game"
-    
+
     launched_from_ui: bpy.props.BoolProperty(
         name="Launched from UI",
         default=False
@@ -369,17 +374,28 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         name="Original Workspace Name",
         default=""
     )
-    
+
     def execute(self, context):
-        
-        # (Optional) Store the original workspace name from the current context.
-        original_workspace = context.window.workspace.name
-        # You could store it elsewhere if needed for later use.
-        
-        # Switch to the custom game workspace (e.g., "exp_game").
+        # ─── 1) Store original workspace globally ───────────────────
+        global ORIGINAL_WORKSPACE_NAME
+        if self.original_workspace_name:
+            ORIGINAL_WORKSPACE_NAME = self.original_workspace_name
+        else:
+            ORIGINAL_WORKSPACE_NAME = context.window.workspace.name
+        print(f"[DEBUG] Global ORIGINAL_WORKSPACE_NAME set to: {ORIGINAL_WORKSPACE_NAME}")
+
+        # ─── 2) Switch into the exp_game workspace ─────────────────
         append_and_switch_to_game_workspace(context, "exp_game")
-        
-        # Delay the modal operator invocation.
-        from_ui_value = self.launched_from_ui
-        bpy.app.timers.register(lambda: delayed_invoke_modal(from_ui_value), first_interval=0.2)
+
+        # ─── 3) Schedule the modal launch without capturing `self` ──
+        # Capture only the Boolean flag
+        from_ui = self.launched_from_ui
+
+        def start_modal():
+            # This runs later in a clean context, calling the helper
+            delayed_invoke_modal(from_ui)
+            return None  # stop the timer
+
+        bpy.app.timers.register(start_modal, first_interval=0.2)
+
         return {'FINISHED'}
