@@ -43,35 +43,47 @@ class MobilityGameReactionsPG(PropertyGroup):
         default="NONE"
     )
 
+    # ─── Reset Game Switch ────────────────────────────────
+    reset_game: bpy.props.BoolProperty(
+        name="Reset Game",
+        default=False,
+        description="If True, fires a full game reset when this reaction triggers"
+    )
+
+
 def execute_mobility_reaction(reaction):
     """
-    Reads the mobility and mesh settings from the reaction, copies them to the scene-level pointer,
-    and then applies the mesh visibility change based on the chosen action.
+    Applies mobility/mesh changes. If reset_game is set, schedules
+    a full game reset via a bpy.app.timers callback so that 
+    handle_interact_trigger can finish updating its flags first.
     """
     scene = bpy.context.scene
-
     if not hasattr(scene, "mobility_game"):
-        print("Scene has no 'mobility_game' pointer! Did you define it in __init__?")
+        print("Scene has no 'mobility_game' pointer!")
         return
 
-    src = reaction.mobility_game_settings  # Reaction-defined settings
-    dst = scene.mobility_game              # Scene-level pointer
+    src = reaction.mobility_game_settings
+    dst = scene.mobility_game
 
-    # Copy mobility settings
+    # Copy over movement locks
     dst.allow_movement = src.allow_movement
     dst.allow_jump     = src.allow_jump
     dst.allow_sprint   = src.allow_sprint
 
-    # Copy the mesh settings
+    # Mesh visibility
     dst.mesh_object = src.mesh_object
     dst.mesh_action = src.mesh_action
-
-    # --- Apply Mesh Visibility Change ---
     if src.mesh_object and src.mesh_action != "NONE":
         if src.mesh_action == "HIDE":
             src.mesh_object.hide_viewport = True
         elif src.mesh_action == "UNHIDE":
             src.mesh_object.hide_viewport = False
         elif src.mesh_action == "TOGGLE":
-            # Toggle: if currently hidden, unhide; otherwise hide.
             src.mesh_object.hide_viewport = not src.mesh_object.hide_viewport
+
+    # Schedule game reset (on next frame)
+    if src.reset_game:
+        bpy.app.timers.register(
+            lambda: bpy.ops.exploratory.reset_game('INVOKE_DEFAULT'),
+            first_interval=0.0
+        )

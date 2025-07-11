@@ -443,7 +443,7 @@ class ExpModal(bpy.types.Operator):
         # Clear any pressed keys
         self.keys_pressed.clear()
         
-        # Reset scene state and user preferences
+        # Restore scene state and user preferences
         restore_user_settings(context.scene)
         stop_all_sounds()
         get_global_audio_state_manager().stop_current_sound()
@@ -465,6 +465,12 @@ class ExpModal(bpy.types.Operator):
         # Revert to the original workspace if the flag is True
         if self.should_revert_workspace:
             revert_to_original_workspace(context)
+
+        if not self.launched_from_ui:
+            bpy.app.timers.register(
+                lambda: bpy.ops.exploratory.reset_game('INVOKE_DEFAULT'),
+                first_interval=0.0
+            )
         
         # If launched from the custom UI, schedule UI popups
         if self.launched_from_ui:
@@ -520,27 +526,41 @@ class ExpModal(bpy.types.Operator):
         if not self.target_object:
             return
 
-         # Move
-        self.z_velocity, self.is_grounded = move_character(
-            op=self,
-            target_object=self.target_object,
-            keys_pressed=self.keys_pressed,
-            bvh_tree=self.bvh_tree,
-            delta_time=self.delta_time,
-            speed=self.speed,
-            gravity=self.gravity,
-            z_velocity=self.z_velocity,
-            jump_timer=self.jump_timer,
-            is_jumping=self.is_jumping,
-            is_grounded=self.is_grounded,
-            jump_duration=self.jump_duration,
-            sensitivity=self.sensitivity,
-            pitch=self.pitch,
-            yaw=self.yaw,
-            context=context,
-            dynamic_bvh_map=self.dynamic_bvh_map,
-            platform_motion_map=self.platform_motion_map
-        )
+        # If we have no static-ground BVH, always apply gravity so the character falls.
+        if self.bvh_tree is None:
+            # 1) apply gravity to vertical velocity
+            self.z_velocity += self.gravity * self.delta_time
+            # 2) move the character vertically
+            self.target_object.location.z += self.z_velocity * self.delta_time
+            # 3) mark as airborne
+            self.is_grounded = False
+
+        else:
+            # Move
+            self.z_velocity, self.is_grounded = move_character(
+                op=self,
+                target_object=self.target_object,
+                keys_pressed=self.keys_pressed,
+                bvh_tree=self.bvh_tree,
+                delta_time=self.delta_time,
+                speed=self.speed,
+                gravity=self.gravity,
+                z_velocity=self.z_velocity,
+                jump_timer=self.jump_timer,
+                is_jumping=self.is_jumping,
+                is_grounded=self.is_grounded,
+                jump_duration=self.jump_duration,
+                sensitivity=self.sensitivity,
+                pitch=self.pitch,
+                yaw=self.yaw,
+                context=context,
+                dynamic_bvh_map=self.dynamic_bvh_map,
+                platform_motion_map=self.platform_motion_map
+            )
+            # ─── Reset any leftover downward speed on landing ───
+            #not sure if neccessary 
+            if self.is_grounded:
+                self.z_velocity = 0.0
 
 
         # Update camera

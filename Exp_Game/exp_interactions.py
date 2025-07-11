@@ -2,13 +2,12 @@
 
 import bpy
 from mathutils import Vector
-from .exp_reactions import (ReactionDefinition, execute_transform_reaction,
+from .exp_reactions import (execute_transform_reaction,
                              schedule_transform, execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
-                             execute_objective_counter_reaction, enum_objective_items,
+                             execute_objective_counter_reaction,
                              execute_objective_timer_reaction, execute_sound_reaction
 )
-
 from .exp_custom_animations import execute_custom_action_reaction
 from .exp_time import get_game_time
 from .exp_objectives import update_all_objective_timers
@@ -32,182 +31,6 @@ def trigger_mode_items(self, context):
         items.insert(1, ("ENTER_ONLY", "Enter Only",
                          "Fire on each new enter/press; resets on release/exit"))
     return items
-
-def update_trigger_type(self, context):
-    # ensure current mode is still valid when trigger_type changes
-    allowed = [item[0] for item in trigger_mode_items(self, context)]
-    if self.trigger_mode not in allowed:
-        # reset to first allowed mode
-        self.trigger_mode = allowed[0]
-
-
-###############################################################################
-# 1) InteractionDefinition
-###############################################################################
-class InteractionDefinition(bpy.types.PropertyGroup):
-    """
-    The main Interaction: each item includes:
-      1) A trigger (trigger_type, etc.)
-      2) A sub-collection of ReactionDefinition
-    """
-    name: bpy.props.StringProperty(
-        name="Name",
-        default="Interaction"
-    )
-    description: bpy.props.StringProperty(
-        name="Description",
-        default="Describe what this interaction does..."
-    )
-
-    # Trigger Type
-    trigger_type: bpy.props.EnumProperty(
-        name="Trigger Type",
-        items=[
-            ("PROXIMITY",       "Proximity",        "Triggers when within distance"),
-            ("COLLISION",       "Collision",        "Triggers on collision"),
-            ("INTERACT",        "Interact Key",     "Triggers on user pressing Interact"),
-            ("OBJECTIVE_UPDATE","Objective Update", "Triggers when an objective changes"),
-            ("TIMER_COMPLETE",  "Timer Complete",   "Fires when an objective’s timer ends"),
-        ],
-        default="PROXIMITY",
-        update=update_trigger_type,  # ← ensure mode stays valid
-    )
-
-    trigger_mode: bpy.props.EnumProperty(
-        name="Trigger Mode",
-        items=trigger_mode_items,  # a Python callback, not a static list
-        default=0,                  # ⟵ must be an integer index into whatever trigger_mode_items() returns
-    )
-    
-    #use character allows users to assign the scene's target_armature as Object A
-    use_character: bpy.props.BoolProperty(
-        name="Use Character",
-        default=False,
-        description="If enabled, Object A is the game characters target_armature"
-    )
-
-    # Proximity Trigger
-    proximity_object_a: bpy.props.PointerProperty(
-        name="Object A",
-        type=bpy.types.Object,
-        description="First object in proximity check"
-    )
-    proximity_object_b: bpy.props.PointerProperty(
-        name="Object B",
-        type=bpy.types.Object,
-        description="Second object in proximity check"
-    )
-    proximity_distance: bpy.props.FloatProperty(
-        name="Distance",
-        default=2.0,
-        description="Distance threshold"
-    )
-
-    # Collision Trigger
-    collision_object_a: bpy.props.PointerProperty(
-        name="Collision Object A",
-        type=bpy.types.Object,
-        description="Which objects must collide to trigger?"
-    )
-    collision_object_b: bpy.props.PointerProperty(
-        name="Collision Object B",
-        type=bpy.types.Object,
-        description="Which objects must collide to trigger?"
-    )
-    collision_margin: bpy.props.FloatProperty(
-        name="Collision Margin",
-        default=0.0,
-        min=0.0,
-        description="Extra distance for collision checks. 0 means exact bounding-box overlap."
-    )
-
-    trigger_cooldown: bpy.props.FloatProperty(
-        name="Trigger Cooldown",
-        default=0.0,
-        min=0.0,
-        description="Time in seconds before we can re-fire if we remain inside (used only if trigger_mode=COOLDOWN)."
-    )
-
-    interact_object: bpy.props.PointerProperty(
-        name="Interact Object",
-        type=bpy.types.Object,
-        description="Which object must the player be near to trigger INTERACT?"
-    )
-    interact_distance: bpy.props.FloatProperty(
-        name="Interact Distance",
-        default=2.0,
-        min=0.0,
-        description="How close the player must be to interact_object (in Blender units)."
-    )
-    trigger_delay: bpy.props.FloatProperty(
-    name="Trigger Delay",
-    default=0.0,
-    min=0.0,
-    description="Delay (sec) before the reaction fires after the trigger is detected."
-)
-
-
-    #####Objectives Trigger Properties #####
-    objective_index: bpy.props.EnumProperty(
-        name="Objective",
-        description="Which objective do we monitor?",
-        items=enum_objective_items,  # a function that enumerates scene.objectives
-        default=None
-    )
-
-    objective_condition: bpy.props.EnumProperty(
-        name="Condition",
-        items=[
-            ("CHANGED",    "Changed",    "Fires whenever the current_value changes in any direction"),
-            ("INCREASED",  "Increased",  "Fires only if the current_value goes up"),
-            ("DECREASED",  "Decreased",  "Fires only if the current_value goes down"),
-            ("EQUALS",     "Equals",     "Fire if current_value == Condition Value"),
-            ("AT_LEAST",   "At Least",   "Fire if current_value >= Condition Value"),
-        ],
-        default="CHANGED"
-    )
-
-    objective_condition_value: bpy.props.IntProperty(
-        name="Condition Value",
-        default=5,
-        min=0,
-        description="Used if Condition is EQUALS or AT_LEAST"
-    )
-
-    last_known_count: bpy.props.IntProperty(
-        name="Last Known Count",
-        default=-1,
-        description="(internal) tracks the previous count so we can detect changes"
-    )
-    timer_objective_index: bpy.props.EnumProperty(
-        name="Timer Objective",
-        items=enum_objective_items,  # same function you use for objective listing
-        description="Which objective’s timer we watch for completion"
-    )
-
-
-
-##backend trigger properties
-    is_in_zone: bpy.props.BoolProperty(
-        name="Is In Zone",
-        default=False,
-        description="Are we currently in proximity or collision?"
-    )
-
-    has_fired: bpy.props.BoolProperty(
-        name="Has Fired",
-        default=False
-    )
-    last_trigger_time: bpy.props.FloatProperty(
-        name="Last Trigger Time",
-        default=0.0
-    )
-
-
-    # Sub-collection for Reactions
-    reactions: bpy.props.CollectionProperty(type=ReactionDefinition)
-    reactions_index: bpy.props.IntProperty(default=0)
-
 
 ###############################################################################
 # 2) Operators for Adding/Removing Interactions
@@ -790,24 +613,3 @@ def handle_timer_complete_trigger(inter):
 
             objv.timer_active = False
             objv.just_finished = False
-
-
-###############################################################################
-# 9) Registration Helpers
-###############################################################################
-def register_interaction_properties():
-    """
-    Attaches the top-level CollectionProperty `custom_interactions` to the Scene,
-    where each item is an InteractionDefinition that holds ReactionDefinition.
-    """
-    bpy.types.Scene.custom_interactions = bpy.props.CollectionProperty(type=InteractionDefinition)
-    bpy.types.Scene.custom_interactions_index = bpy.props.IntProperty(default=0)
-
-
-def unregister_interaction_properties():
-    del bpy.types.Scene.custom_interactions
-    del bpy.types.Scene.custom_interactions_index
-
-
-
-

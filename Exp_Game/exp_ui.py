@@ -429,7 +429,7 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
             box.prop(inter, "proximity_object_b", text="Object B")
 
         elif inter.trigger_type == "COLLISION":
-            box.prop(inter, "use_character", text="Use Character?")
+            box.prop(inter, "use_character", text="Use Character as Object A")
             if inter.use_character:
                 char = context.scene.target_armature
                 box.label(text=f"Object A: {char.name if char else '—'}")
@@ -583,23 +583,50 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
                 box2.label(text="No property detected or invalid path.")
 
 
-        #custom transform reaction ----------
+        # ─── Custom Transform Reaction ────────────────────────────────
         elif reaction.reaction_type == "TRANSFORM":
-            box2.prop_search(reaction, "transform_object", bpy.context.scene, "objects", text="Object")
+            # 1) Use Character or manual object
+            box2.prop(reaction, "use_character", text="Use Character as Target")
+            if reaction.use_character:
+                char = context.scene.target_armature
+                box2.label(
+                    text=f"Character: {char.name if char else '—'}",
+                    icon='ARMATURE_DATA'
+                )
+            else:
+                box2.prop_search(
+                    reaction, "transform_object",
+                    context.scene, "objects",
+                    text="Object"
+                )
 
-            # 1) The new transform mode dropdown
+            # 2) Transform Mode dropdown
             box2.prop(reaction, "transform_mode", text="Mode")
 
-            # 2) If "TO_OBJECT" => show target object pointer
+            # 3) If “To Object” mode, pick target + choose channels
             if reaction.transform_mode == "TO_OBJECT":
-                box2.prop_search(reaction, "transform_to_object", bpy.context.scene, "objects", text="To Object")
+                # Object picker
+                box2.prop_search(
+                    reaction, "transform_to_object",
+                    context.scene, "objects",
+                    text="To Object"
+                )
 
-            # Show location/rotation/scale fields if relevant
-            if reaction.transform_mode in {"OFFSET","TO_LOCATION","LOCAL_OFFSET"}:
+                # Vertical, full‐word toggles
+                box2.separator()
+                col = box2.column(align=True)
+                col.label(text="Copy Channels:")
+                col.prop(reaction, "transform_use_location", text="Location")
+                col.prop(reaction, "transform_use_rotation", text="Rotation")
+                col.prop(reaction, "transform_use_scale",    text="Scale")
+
+            # 4) For other modes, show manual Location/Rotation/Scale
+            if reaction.transform_mode in {"OFFSET", "LOCAL_OFFSET", "TO_LOCATION"}:
                 box2.prop(reaction, "transform_location", text="Location")
                 box2.prop(reaction, "transform_rotation", text="Rotation")
-                box2.prop(reaction, "transform_scale", text="Scale")
+                box2.prop(reaction, "transform_scale",    text="Scale")
 
+            # 5) Always show Duration
             box2.prop(reaction, "transform_duration", text="Duration")
 
 
@@ -676,6 +703,10 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
             box2.label(text="Mesh Visibility Trigger")
             box2.prop(mg, "mesh_object", text="Mesh Object")
             box2.prop(mg, "mesh_action", text="Action")
+
+            box2.separator()
+            box2.label(text="Game Reset")
+            box2.prop(mg, "reset_game", text="Reset Game")
 
         # ===============================
         # Sound Reaction

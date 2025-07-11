@@ -1,3 +1,5 @@
+#Exploratory/Exp_Game/exp_game_reset.py
+
 import bpy
 from .exp_time import init_time
 from .exp_objectives import reset_all_objectives
@@ -100,18 +102,22 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             self.report({'WARNING'}, "No active ExpModal found.")
             return {'CANCELLED'}
 
-        # 1) Actually restore transforms & scene data:
+        # ─── 0) Reset the game clock first ───────────────────────────
+        #    so that any "last_trigger_time" stamps use the new zero baseline.
+        init_time()
+
+        # ─── 1) Restore all transforms & scene data ──────────────────
         restore_scene_state(modal_op, context)
 
-        # 2) Reset interactions, tasks, time, etc.
+        # ─── 2) Reset interactions, tasks, objectives, and properties ─
+        #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
         reset_all_interactions(context.scene)
         reset_all_tasks()
         reset_all_objectives(context.scene)
         reset_property_reactions(context.scene)
-        init_time()
-        clear_all_text()
 
-        # 3) Re-spawn if you want
+        # ─── 3) Clear any on-screen text and respawn the user ───────
+        clear_all_text()
         spawn_user()
 
         self.report({'INFO'}, "Game fully reset.")

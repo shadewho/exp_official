@@ -30,16 +30,16 @@ from .exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY
                         EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
                         EXP_AUDIO_OT_LoadCharacterAudioFile
 )
+
+from .exp_interaction_definition import InteractionDefinition, register_interaction_properties, unregister_interaction_properties
+
 from .exp_interactions import (
-    InteractionDefinition,
     EXPLORATORY_OT_AddInteraction,
     EXPLORATORY_OT_RemoveInteraction,
     EXPLORATORY_OT_AddReactionToInteraction,
     EXPLORATORY_OT_RemoveReactionFromInteraction,
-    register_interaction_properties,
-    unregister_interaction_properties,
 )
-from .exp_reactions import ReactionDefinition
+from .exp_reaction_definition import ReactionDefinition
 from .exp_objectives import (
     ObjectiveDefinition,
     EXPLORATORY_OT_AddObjective,
