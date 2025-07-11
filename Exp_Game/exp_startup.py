@@ -432,3 +432,6 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         bpy.app.timers.register(start_modal, first_interval=0.2)
 
         return {'FINISHED'}
+    
+
+    

@@ -1,6 +1,9 @@
 #exp_utilities.py
 
 import bpy
+
+
+#---------------Game World---------------------------
 def set_game_world(scene):
     """Store the name of the designated game world in a text datablock."""
     txt = bpy.data.texts.get("GAME_WORLD")

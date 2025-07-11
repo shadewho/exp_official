@@ -23,10 +23,12 @@ from .exp_reactions import update_transform_tasks, update_property_tasks, reset_
 from .exp_time import init_time, update_time, get_game_time
 from .exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text, show_controls_info
 from .exp_objectives import update_all_objective_timers, reset_all_objectives
-from .exp_game_reset import capture_scene_state, reset_property_reactions
+from .exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
+                              restore_initial_session_state, capture_initial_character_state, restore_scene_state)
 from . import exp_globals
 from .exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds
+from .exp_performance import init_performance_state, update_performance_culling
 
 
 class ExpModal(bpy.types.Operator):
@@ -35,7 +37,7 @@ class ExpModal(bpy.types.Operator):
 
     bl_idname = "view3d.exp_modal"
     bl_label = "Third Person Orbit"
-    bl_options = { 'BLOCKING'}
+    bl_options = {'BLOCKING'}
 
     # ---------------------------
     # User-Adjustable Properties
@@ -111,6 +113,10 @@ class ExpModal(bpy.types.Operator):
     pref_right_key:    str = "D"
     pref_jump_key:     str = "SPACE"
     pref_run_key:      str = "LEFT_SHIFT"
+    pref_interact_key: str = "LEFTMOUSE"
+    pref_reset_key:    str = "R"
+    pref_end_game_key: str = "ESC"
+    
 
     # ---------------------------------
     # Initialization For Dynamic Mesh
@@ -140,6 +146,9 @@ class ExpModal(bpy.types.Operator):
     # ---------------------------
     def invoke(self, context, event):
         scene = context.scene
+
+        # ─── Capture both camera/character state ───────
+        capture_initial_cam_state(self, context)
 
         #set UI mode to disable background caching
         context.scene.ui_current_mode = 'GAME'
@@ -202,7 +211,8 @@ class ExpModal(bpy.types.Operator):
         self.pref_jump_key     = addon_prefs.key_jump
         self.pref_run_key      = addon_prefs.key_run
         self.pref_interact_key = addon_prefs.key_interact
-        self.pref_reset_key = addon_prefs.key_reset
+        self.pref_reset_key    = addon_prefs.key_reset
+        self.pref_end_game_key = addon_prefs.key_end_game
 
         #intialize the movement and game settings
         scene.mobility_game.allow_movement = True
@@ -220,6 +230,12 @@ class ExpModal(bpy.types.Operator):
 
         # 4C) Spawn the user/object if needed
         spawn_user()
+
+        #capture character state after spawning
+        capture_initial_character_state(self, context)
+
+        # ── Initialize cull state ─────────────────────────────
+        init_performance_state(self, context)
 
         #4D Game time
         init_time()  # Start the game clock at 0
@@ -324,14 +340,14 @@ class ExpModal(bpy.types.Operator):
         # 11) Clear any previously pressed keys
         self.keys_pressed.clear()
 
+
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
 
         """Called repeatedly by Blender for each event (mouse, keyboard, timer, etc.)."""
-        # A) Possibly cancel with Right Mouse or ESC
-        
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        # 1) End game when user presses the assigned end-game key
+        if event.type == self.pref_end_game_key and event.value == 'PRESS':
             self.cancel(context)
             return {'CANCELLED'}
 
@@ -353,6 +369,8 @@ class ExpModal(bpy.types.Operator):
             # Update Dynamic Mesh Data (moved to exp_physics) ---
             update_dynamic_meshes(self)
 
+            # ── Run distance‐based hide/unhide ────────────────────
+            update_performance_culling(self, context)
 
             # update movement real time (holding keys)
             mg = context.scene.mobility_game
@@ -466,12 +484,21 @@ class ExpModal(bpy.types.Operator):
         if self.should_revert_workspace:
             revert_to_original_workspace(context)
 
+
+        #reset --------------------reset --------#
         if not self.launched_from_ui:
-            bpy.app.timers.register(
-                lambda: bpy.ops.exploratory.reset_game('INVOKE_DEFAULT'),
-                first_interval=0.0
+            restore_scene_state(self, context)
+
+        if not self.launched_from_ui:
+            bpy.ops.exploratory.reset_game(
+                'INVOKE_DEFAULT',
+                skip_restore=True
             )
-        
+        #reset --------------------reset --------#
+
+        # ─── Restore camera (always) and character (if launched_from_ui) ──
+        restore_initial_session_state(self, context)
+
         # If launched from the custom UI, schedule UI popups
         if self.launched_from_ui:
             # Helper function: find a valid VIEW_3D area and WINDOW region.

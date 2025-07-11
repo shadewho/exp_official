@@ -146,6 +146,11 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 self.DEFAULT_LAND_NAME,
                 "land_action"
             )
+            
+        # ─── Deselect everything so the character has no outline ─────────
+        # (clears both the selection and the active object)
+        bpy.ops.object.select_all(action='DESELECT')
+        context.view_layer.objects.active = None
 
         self.report({'INFO'}, "Build Character complete!")
         return {'FINISHED'}

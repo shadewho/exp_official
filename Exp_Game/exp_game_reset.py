@@ -94,7 +94,14 @@ def reset_property_reactions(scene):
 
 class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
     bl_idname = "exploratory.reset_game"
-    bl_label = "Reset Game"
+    bl_label  = "Reset Game"
+
+    # new property: skip the restore step when True
+    skip_restore: bpy.props.BoolProperty(
+        name="Skip Restore",
+        description="If true, do not restore transforms (used when called on cancel)",
+        default=False,
+    )
 
     def execute(self, context):
         modal_op = exp_globals.ACTIVE_MODAL_OP
@@ -106,8 +113,9 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         #    so that any "last_trigger_time" stamps use the new zero baseline.
         init_time()
 
-        # ─── 1) Restore all transforms & scene data ──────────────────
-        restore_scene_state(modal_op, context)
+        # 1) only restore the scene if skip_restore is False
+        if not self.skip_restore:
+            restore_scene_state(modal_op, context)
 
         # ─── 2) Reset interactions, tasks, objectives, and properties ─
         #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
@@ -137,3 +145,66 @@ def setattr_recursive(scene, dotted_path, value):
     for p in parts[:-1]:
         target = getattr(target, p)
     setattr(target, parts[-1], value)
+
+
+
+
+#--------------------------------------------------------
+#reset the state of the armature and the view 3d camera
+#--------------------------------------------------------
+def capture_initial_cam_state(modal_op, context):
+    """
+    Capture just the VIEW_3D camera state into modal_op._initial_session_state
+    so we can restore it later.
+    """
+    # start fresh
+    modal_op._initial_session_state = {}
+
+    # find the first 3D View and record its view settings
+    for area in context.screen.areas:
+        if area.type == 'VIEW_3D':
+            r3d = area.spaces.active.region_3d
+            modal_op._initial_session_state["cam_loc"]  = r3d.view_location.copy()
+            modal_op._initial_session_state["cam_rot"]  = r3d.view_rotation.copy()
+            modal_op._initial_session_state["cam_dist"] = r3d.view_distance
+            break
+
+
+def capture_initial_character_state(modal_op, context):
+    """
+    After spawn_user() has positioned the character, capture its final transform.
+    """
+    arm = context.scene.target_armature
+    if arm:
+        modal_op._initial_session_state["char_loc"] = arm.location.copy()
+        modal_op._initial_session_state["char_rot"] = arm.rotation_euler.copy()
+
+
+def restore_initial_session_state(modal_op, context):
+    """
+    Restore camera always; restore character only when
+    modal_op.launched_from_ui is False.
+    """
+    state = getattr(modal_op, "_initial_session_state", None)
+    if not state:
+        return
+
+    # ─── A) Restore camera on every VIEW_3D ────────────────────────
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                r3d = area.spaces.active.region_3d
+                # camera
+                if "cam_loc" in state:
+                    r3d.view_location = state["cam_loc"]
+                if "cam_rot" in state:
+                    r3d.view_rotation = state["cam_rot"]
+                if "cam_dist" in state:
+                    r3d.view_distance = state["cam_dist"]
+
+    # ─── B) Restore character only when NOT launched_from_ui ───────
+    if not getattr(modal_op, "launched_from_ui", False):
+        arm = context.scene.target_armature
+        if arm and "char_loc" in state and "char_rot" in state:
+            arm.location       = state["char_loc"]
+            arm.rotation_euler = state["char_rot"]

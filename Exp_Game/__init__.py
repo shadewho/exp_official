@@ -10,7 +10,8 @@ from .exp_ui import (
     EXPLORATORY_UL_ReactionsInInteraction,
     VIEW3D_PT_Objectives,
     EXPLORATORY_UL_Objectives,
-    VIEW3D_PT_Exploratory_UploadHelper
+    VIEW3D_PT_Exploratory_UploadHelper,
+    VIEW3D_PT_Exploratory_Performance
 )
 
 from .exp_spawn import EXPLORATORY_OT_RemoveCharacter
@@ -47,6 +48,11 @@ from .exp_objectives import (
     register_objective_properties,
     unregister_objective_properties
 )
+
+from .exp_performance import (
+    register   as register_performance,
+    unregister as unregister_performance
+)
 from .exp_mobility_and_game_reactions import MobilityGameReactionsPG
 from .exp_game_reset import EXPLORATORY_OT_ResetGame
 from .exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
@@ -82,6 +88,8 @@ def register():
     bpy.utils.register_class(VIEW3D_PT_Objectives) 
     #6 Uploads
     bpy.utils.register_class(VIEW3D_PT_Exploratory_UploadHelper)
+
+    bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
 
     bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
 
@@ -123,6 +131,9 @@ def register():
 
     bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
 
+    # ─── Performance Culling ──────────────────────────────────
+    register_performance()
+
     register_upload_helper()
 
 def unregister():
@@ -157,6 +168,7 @@ def unregister():
     bpy.utils.unregister_class(ExploratoryPanel)
     bpy.utils.unregister_class(VIEW3D_PT_Objectives)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_UploadHelper)
+    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Performance)
     bpy.utils.unregister_class(EXPLORATORY_UL_Objectives)
     bpy.utils.unregister_class(ExploratoryCharacterPanel)
     bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
@@ -179,6 +191,9 @@ def unregister():
     bpy.utils.unregister_class(ProxyMeshEntry)
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
+
+     # ─── Performance Culling ──────────────────────────────────
+    unregister_performance()
 
     unregister_upload_helper()
 

@@ -259,7 +259,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
 # Proxy Meshes (only visible in Create mode)
 # --------------------------------------------------------------------
 class ExploratoryProxyMeshPanel(bpy.types.Panel):
-    bl_label = "Proxy Meshes"
+    bl_label = "Proxy Mesh and Spawn"
     bl_idname = "VIEW3D_PT_exploratory_proxy"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -910,3 +910,45 @@ class VIEW3D_PT_Exploratory_UploadHelper(bpy.types.Panel):
         opt_box.label(text="• Pack only files and assets that are needed for the game")
         opt_box.label(text="• Optimize Exploratory toolset to provide best performance")
         opt_box.label(text="• Minimize file size for faster loading times")
+
+
+class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
+    bl_label = "Performance"
+    bl_idname = "VIEW3D_PT_exploratory_performance"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.main_category == 'CREATE'
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        layout.label(text="Cull Distance Entries")
+        row = layout.row()
+        row.template_list(
+            "EXP_PERFORMANCE_UL_List", "",
+            scene, "performance_entries",
+            scene, "performance_entries_index",
+            rows=4
+        )
+        col = row.column(align=True)
+        col.operator("exploratory.add_performance_entry", icon='ADD', text="")
+        op = col.operator("exploratory.remove_performance_entry", icon='REMOVE', text="")
+        op.index = scene.performance_entries_index
+
+        # detail for selected
+        idx = scene.performance_entries_index
+        if 0 <= idx < len(scene.performance_entries):
+            entry = scene.performance_entries[idx]
+            box = layout.box()
+            box.prop(entry, "name")
+            box.prop(entry, "use_collection")
+            if entry.use_collection:
+                box.prop(entry, "target_collection", text="Collection")
+            else:
+                box.prop(entry, "target_object", text="Object")
+            box.prop(entry, "cull_distance")
