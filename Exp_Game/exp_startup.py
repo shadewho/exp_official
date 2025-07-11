@@ -10,6 +10,7 @@ from .exp_utilities import get_game_world
 # Global for restoring workspace
 # ────────────────────────────────────
 ORIGINAL_WORKSPACE_NAME = None
+ORIGINAL_SCENE_NAME     = None
 
 
 def center_cursor_in_3d_view(context, margin=50):
@@ -341,6 +342,30 @@ def revert_to_original_workspace(context):
     # register the timer so it runs after the modal cleanup
     bpy.app.timers.register(delete_and_revert, first_interval=0.1)
 
+def revert_to_original_scene(context):
+    """
+    Switch back to the scene we started from, using either:
+      1) the name stored on WindowManager by explore_icon_handler, or
+      2) the global ORIGINAL_SCENE_NAME passed into EXP_GAME_OT_StartGame.
+    """
+    global ORIGINAL_SCENE_NAME
+
+    # 1) Try to pull from the window_manager (and remove it)
+    orig_name = context.window_manager.pop('original_scene', None)
+
+    # 2) If that wasn't set (or was already popped), fall back to the global
+    if not orig_name:
+        orig_name = ORIGINAL_SCENE_NAME
+
+    # 3) Clear the global so it won't persist
+    ORIGINAL_SCENE_NAME = None
+
+    # 4) If that scene still exists, switch back to it
+    if orig_name and orig_name in bpy.data.scenes:
+        context.window.scene = bpy.data.scenes[orig_name]
+        print(f"[DEBUG] Switched back to original scene: {orig_name}")
+    else:
+        print(f"[DEBUG] Original scene '{orig_name}' not found; skipping scene revert.")
 def delayed_invoke_modal(from_ui):
     for window in bpy.context.window_manager.windows:
         if window.workspace.name == "exp_game":
@@ -374,28 +399,36 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         name="Original Workspace Name",
         default=""
     )
+    original_scene_name: bpy.props.StringProperty(
+        name="Original Scene Name",
+        default=""
+    )
 
     def execute(self, context):
-        # ─── 1) Store original workspace globally ───────────────────
-        global ORIGINAL_WORKSPACE_NAME
+        global ORIGINAL_WORKSPACE_NAME, ORIGINAL_SCENE_NAME
+
+        # ─── Store original workspace ───────────────────────────
         if self.original_workspace_name:
             ORIGINAL_WORKSPACE_NAME = self.original_workspace_name
         else:
             ORIGINAL_WORKSPACE_NAME = context.window.workspace.name
-        print(f"[DEBUG] Global ORIGINAL_WORKSPACE_NAME set to: {ORIGINAL_WORKSPACE_NAME}")
+        print(f"[DEBUG] ORIGINAL_WORKSPACE_NAME = {ORIGINAL_WORKSPACE_NAME}")
 
-        # ─── 2) Switch into the exp_game workspace ─────────────────
+        # ─── Store original scene ───────────────────────────────
+        if self.original_scene_name:
+            ORIGINAL_SCENE_NAME = self.original_scene_name
+        else:
+            ORIGINAL_SCENE_NAME = context.window.scene.name
+        print(f"[DEBUG] ORIGINAL_SCENE_NAME     = {ORIGINAL_SCENE_NAME}")
+
+        # ─── Switch into the exp_game workspace ────────────────
         append_and_switch_to_game_workspace(context, "exp_game")
 
-        # ─── 3) Schedule the modal launch without capturing `self` ──
-        # Capture only the Boolean flag
+        # ─── Schedule the modal launch ─────────────────────────
         from_ui = self.launched_from_ui
-
         def start_modal():
-            # This runs later in a clean context, calling the helper
             delayed_invoke_modal(from_ui)
-            return None  # stop the timer
-
+            return None
         bpy.app.timers.register(start_modal, first_interval=0.2)
 
         return {'FINISHED'}

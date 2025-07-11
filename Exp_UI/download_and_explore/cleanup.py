@@ -87,10 +87,6 @@ def cleanup_downloaded_worlds():
         except ReferenceError:
             pass
 
-
-##Not sure if this is used ##
-##Not sure if this is used ##
-##Not sure if this is used ##
 #-------------------------------------
 #clear the World Download temp folder
 #-------------------------------------

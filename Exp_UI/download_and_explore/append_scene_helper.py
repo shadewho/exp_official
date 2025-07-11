@@ -49,28 +49,51 @@ def append_scene_from_blend(local_blend_path, scene_name=None):
         else:
             return {'CANCELLED'}, None
     else:
-        # If no specific scene is specified, check for a text datablock called "GAME_WORLD".
         if "GAME_WORLD" in text_names:
+            # Temporarily rename any existing “GAME_WORLD” in the current file
+            old_txt = bpy.data.texts.get("GAME_WORLD")
+            if old_txt:
+                old_txt.name = "OLD_GAME_WORLD_TEMP"
             try:
-                # Load the GAME_WORLD text datablock.
-                with bpy.data.libraries.load(local_blend_path, link=False) as (data_from2, data_to2):
-                    data_to2.texts = ["GAME_WORLD"]
+                # Load the downloaded file’s GAME_WORLD text into a fresh datablock
+                with bpy.data.libraries.load(local_blend_path, link=False) as (src, dst):
+                    dst.texts = ["GAME_WORLD"]
+                    loaded = list(dst.texts)  # e.g. ["GAME_WORLD"]
 
-                game_world_text = bpy.data.texts.get("GAME_WORLD")
-                if game_world_text:
-                    inferred_scene_name = game_world_text.as_string().strip()
-                    if inferred_scene_name in scene_names:
-                        chosen_scene_name = inferred_scene_name
+                loaded_name = loaded[0] if loaded else None
+                new_txt = bpy.data.texts.get(loaded_name) if loaded_name else None
+
+                if new_txt:
+                    inferred = new_txt.as_string().strip()
+                    # remove the loaded marker so it doesn’t stick around
+                    bpy.data.texts.remove(new_txt)
+
+                    # restore the original text’s name
+                    if old_txt:
+                        old_txt.name = "GAME_WORLD"
+
+                    # only accept it if it matches one of the scenes
+                    if inferred in scene_names:
+                        chosen_scene_name = inferred
                     else:
-                        return {'CANCELLED'}, None
+                        chosen_scene_name = scene_names[0]
                 else:
+                    # nothing loaded → fallback
+                    if old_txt:
+                        old_txt.name = "GAME_WORLD"
                     chosen_scene_name = scene_names[0]
-            except Exception as e:
+
+            except Exception:
                 traceback.print_exc()
+                # on error, restore and fallback
+                if old_txt:
+                    old_txt.name = "GAME_WORLD"
                 chosen_scene_name = scene_names[0]
+
         else:
-            # Default to the first available scene
+            # no marker in that file → just use the first scene
             chosen_scene_name = scene_names[0]
+
 
     # Step 4: Build file paths for the append operator.
     append_filepath = os.path.join(local_blend_path, "Scene", chosen_scene_name)

@@ -15,8 +15,8 @@ from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds,
 from .exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene,
-                            revert_to_original_workspace, ensure_timeline_at_zero,
-                            ensure_object_mode)  
+                            revert_to_original_workspace, revert_to_original_scene,
+                            ensure_timeline_at_zero, ensure_object_mode)  
 from .exp_custom_animations import update_all_custom_managers
 from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
 from .exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
@@ -454,8 +454,11 @@ class ExpModal(bpy.types.Operator):
                 original = self._proxy_mesh_original_states.get(entry.mesh_object.name)
                 if original is not None:
                     entry.mesh_object.hide_viewport = original
+                    
         # Cleanup scene and temporary blend file
         cleanup_downloaded_worlds()
+
+        revert_to_original_scene(context)
 
         clear_all_text()
 

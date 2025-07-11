@@ -150,35 +150,54 @@ def timer_finish_download():
         
         # Wait until the appended scene is available before launching the game modal.
         def check_scene():
+            # Have we appended yet?
             scene_obj = bpy.data.scenes.get(appended_scene_name)
             if scene_obj:
-                # Here, capture the original workspace name before switching scenes.
-                original_workspace = bpy.context.window.workspace.name
-                bpy.context.window.scene = scene_obj  # Set the appended scene as active.
-                print("Appended scene detected. Launching game via start game operator.")
+                # ——— 1) Pull original scene name off the WindowManager ———
+                wm = bpy.context.window_manager
+                orig_scene = wm.get('original_scene')
+                if 'original_scene' in wm:
+                    del wm['original_scene']
+
+                # ——— 2) Capture the original workspace name ———
+                orig_ws = bpy.context.window.workspace.name
+
+                # ——— 3) Switch into the newly appended scene ———
+                bpy.context.window.scene = scene_obj
                 bpy.context.scene.ui_current_mode = "GAME"
-                view3d_area = next((area for area in bpy.context.window.screen.areas if area.type == 'VIEW_3D'), None)
+                print(f"[DEBUG] Launching game; original_scene={orig_scene!r}, original_workspace={orig_ws!r}")
+
+                # ——— 4) Find a VIEW_3D area & region for context override ———
+                view3d_area = next((a for a in bpy.context.window.screen.areas if a.type == 'VIEW_3D'), None)
                 if view3d_area:
-                    view3d_region = next((region for region in view3d_area.regions if region.type == 'WINDOW'), None)
+                    view3d_region = next((r for r in view3d_area.regions if r.type == 'WINDOW'), None)
                     if view3d_region:
                         override = bpy.context.copy()
-                        override['area'] = view3d_area
-                        override['region'] = view3d_region
-                        
+                        override.update({
+                            'window': bpy.context.window,
+                            'screen': bpy.context.window.screen,
+                            'area': view3d_area,
+                            'region': view3d_region,
+                        })
+
+                        # ——— 5) Invoke the fullscreen start_game operator ———
                         with bpy.context.temp_override(**override):
                             bpy.ops.exploratory.start_game(
-                                'INVOKE_DEFAULT', 
-                                launched_from_ui=True, 
-                                original_workspace_name=original_workspace
+                                'INVOKE_DEFAULT',
+                                launched_from_ui=True,
+                                original_workspace_name=orig_ws,
+                                original_scene_name=orig_scene
                             )
                     else:
                         print("No valid VIEW_3D region found.")
                 else:
                     print("No VIEW_3D area found for context override.")
-                return None  # Stop the timer.
-            else:
-                print("Waiting for appended scene...")
-                return 1.0  # Check again in 1 second.
+
+                return None  # stop polling
+
+            # not ready yet → try again in 1s
+            print("Waiting for appended scene…")
+            return 1.0
 
         bpy.app.timers.register(check_scene)
 
@@ -186,10 +205,16 @@ def timer_finish_download():
 def explore_icon_handler(context, download_code):
     """
     Called when the Explore Icon is clicked.
-    It starts a background download task and registers a timer callback to poll
-    the task until completion.
+    It stores the original scene on the window_manager, then
+    kicks off the download task exactly as before.
     """
     global current_download_task
+
+    # 1) Store the name of the scene you were on
+    context.window_manager['original_scene'] = context.window.scene.name
+    print(f"[DEBUG] Stored original scene = {context.window_manager['original_scene']!r}")
+
+    # 2) Kick off the download + timer as before
     if download_code:
         current_download_task = DownloadTask(download_code)
         threading.Thread(target=current_download_task.run, daemon=True).start()

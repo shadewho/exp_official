@@ -29,7 +29,7 @@ from .cache_system.manager import CacheManager
 from .cache_system.persistence import clear_image_datablocks
 from .cache_system.preload import start_cache_worker, stop_cache_worker
 from .auth.helpers import auto_refresh_usage
-
+from .download_and_explore.cleanup import cleanup_world_downloads
 #Auth operators
 from .auth.operators import (
     LOGIN_OT_WebApp, LOGOUT_OT_WebApp, REFRESH_USAGE_OT_WebApp, OPEN_DOCS_OT)
@@ -86,6 +86,7 @@ from .cache_system.db import init_db
 from .events.properties import register as register_event_props, unregister as unregister_event_props
 from .events.utilities import on_package_item_type_update
 # --- Persistent Handler ---
+
 @persistent
 def on_blend_load(dummy):
     """
@@ -119,6 +120,13 @@ def on_sort_by_update(self, context):
             print(f"[ERROR] failed to refresh random page: {e}")
 # --- Registration ---
 def register():
+
+    #Clear out the World Downloads folder every time we register
+    try:
+        cleanup_world_downloads() 
+    except Exception as e:
+        print(f"[INFO] Failed to clear downloads folder at register: {e}")
+
     #initialize cache!
     init_db()
     start_cache_worker()
