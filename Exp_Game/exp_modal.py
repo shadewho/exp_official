@@ -28,7 +28,7 @@ from .exp_game_reset import (capture_scene_state, reset_property_reactions, capt
 from . import exp_globals
 from .exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds
-from .exp_performance import init_performance_state, update_performance_culling
+from .exp_performance import init_performance_state, update_performance_culling, restore_performance_state
 
 
 class ExpModal(bpy.types.Operator):
@@ -494,6 +494,9 @@ class ExpModal(bpy.types.Operator):
                 'INVOKE_DEFAULT',
                 skip_restore=True
             )
+        if not self.launched_from_ui:
+            restore_performance_state(self, context)
+
         #reset --------------------reset --------#
 
         # ─── Restore camera (always) and character (if launched_from_ui) ──

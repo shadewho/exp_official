@@ -914,10 +914,10 @@ class VIEW3D_PT_Exploratory_UploadHelper(bpy.types.Panel):
 
 class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
     bl_label = "Performance"
-    bl_idname = "VIEW3D_PT_exploratory_performance"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    bl_idname = "VIEW3D_PT_exploratory_performance"
 
     @classmethod
     def poll(cls, context):
@@ -925,30 +925,55 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
+        scene  = context.scene
 
         layout.label(text="Cull Distance Entries")
         row = layout.row()
         row.template_list(
-            "EXP_PERFORMANCE_UL_List", "",
+            "EXP_PERFORMANCE_UL_List", "", 
             scene, "performance_entries",
             scene, "performance_entries_index",
             rows=4
         )
         col = row.column(align=True)
         col.operator("exploratory.add_performance_entry", icon='ADD', text="")
-        op = col.operator("exploratory.remove_performance_entry", icon='REMOVE', text="")
-        op.index = scene.performance_entries_index
+        rem = col.operator("exploratory.remove_performance_entry", icon='REMOVE', text="")
+        rem.index = scene.performance_entries_index
 
-        # detail for selected
         idx = scene.performance_entries_index
         if 0 <= idx < len(scene.performance_entries):
             entry = scene.performance_entries[idx]
             box = layout.box()
+
             box.prop(entry, "name")
+
+            # ─── trigger selector ───────────────────────
+            box.prop(entry, "trigger_type", text="Trigger Type")
+            if entry.trigger_type == 'BOX':
+                box.prop(entry, "trigger_mesh", text="Trigger Mesh")
+                box.prop(entry, "hide_trigger_mesh", text="Hide Trigger Mesh on Start")
+
+            # ─── cull target ─────────────────────────────
             box.prop(entry, "use_collection")
             if entry.use_collection:
                 box.prop(entry, "target_collection", text="Collection")
+                row_excl = box.row()
+                row_excl.enabled = (entry.trigger_type != 'BOX')
+                row_excl.prop(entry, "exclude_collection", text="Exclude Entire Collection")
             else:
                 box.prop(entry, "target_object", text="Object")
-            box.prop(entry, "cull_distance")
+
+            # grey‐out cull_distance when BOX
+            row_dist = box.row()
+            row_dist.enabled = (entry.trigger_type == 'RADIAL')
+            row_dist.prop(entry, "cull_distance")
+
+            # ─── placeholder ────────────────────────────
+            box.separator()
+            box.prop(entry, "has_placeholder")
+            if entry.has_placeholder:
+                box.prop(entry, "placeholder_use_collection", text="Placeholder Uses Collection")
+                if entry.placeholder_use_collection:
+                    box.prop(entry, "placeholder_collection", text="Placeholder Collection")
+                else:
+                    box.prop(entry, "placeholder_object", text="Placeholder Object")
