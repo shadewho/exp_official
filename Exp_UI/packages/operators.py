@@ -49,8 +49,7 @@ class DOWNLOAD_CODE_OT_File(bpy.types.Operator):
 
             # Inspect the package details
             package_details = data.get("package", data)
-            print("Package Details:", package_details)
-
+            
             # Initialize the scene property group with these details.
             context.scene.my_addon_data.init_from_package(package_details)
             # store the real package type so detail_content.py can pick it up

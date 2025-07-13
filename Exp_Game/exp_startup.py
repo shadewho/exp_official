@@ -90,7 +90,6 @@ def ensure_timeline_at_zero():
     scene = bpy.context.scene
     if scene.frame_current != 0:
         scene.frame_current = 0
-        print("Timeline frame reset to 0.")
 
 
 def record_user_settings(scene):
@@ -123,8 +122,6 @@ def record_user_settings(scene):
             key = str(area.as_pointer())
             original_settings["viewport_lens"][key] = area.spaces.active.lens
 
-    print("User settings recorded:", original_settings)
-
 
 def apply_performance_settings(scene, performance_level):
     """
@@ -136,7 +133,6 @@ def apply_performance_settings(scene, performance_level):
     """
     # If the user chose CUSTOM, do nothing.
     if performance_level == "CUSTOM":
-        print("Custom performance mode selected; skipping performance settings.")
         return
 
     # Force the render engine to Eevee Next.
@@ -192,7 +188,6 @@ def restore_user_settings(scene):
     """
     original_settings = scene.get("exploratory_original_settings")
     if not original_settings:
-        print("No settings were recorded; nothing to restore.")
         return
 
     # Restore the render engine type:
@@ -217,8 +212,6 @@ def restore_user_settings(scene):
                 if key in viewport_lens:
                     area.spaces.active.lens = viewport_lens[key]
 
-    print("User settings restored:", original_settings)
-
     # Optionally, remove the custom property after restoring settings.
     del scene["exploratory_original_settings"]
 
@@ -239,13 +232,11 @@ def move_armature_and_children_to_scene(target_armature, destination_scene):
             if sc != destination_scene:
                 try:
                     sc.collection.objects.unlink(obj)
-                    print(f"Unlinked {obj.name} from scene {sc.name}")
                 except Exception:
                     pass
         # Link the object to the destination scene if it's not already there.
         if not any(o == obj for o in destination_scene.collection.objects):
             destination_scene.collection.objects.link(obj)
-            print(f"Linked {obj.name} to scene {destination_scene.name}")
 
 
 def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
@@ -260,7 +251,6 @@ def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
     if "original_workspace_name" not in scene:
         original_ws = context.window.workspace
         scene["original_workspace_name"] = original_ws.name
-        print("Stored original workspace:", original_ws.name)
     else:
         print("Original workspace already stored as:", scene["original_workspace_name"])
 
@@ -279,7 +269,6 @@ def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
                 directory=directory,
                 filename=workspace_name
             )
-            print(f"Appended workspace '{workspace_name}' from {blend_path}")
         except Exception as e:
             print(f"Failed to append workspace '{workspace_name}': {e}")
 
@@ -287,7 +276,6 @@ def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
     new_ws = bpy.data.workspaces.get(workspace_name)
     if new_ws:
         context.window.workspace = new_ws
-        print("Switched to new workspace:", new_ws.name)
     else:
         print(f"Workspace '{workspace_name}' not found after append.")
 
@@ -300,7 +288,6 @@ def revert_to_original_workspace(context):
 
     # ── 1) Read and clear the saved workspace name
     original_name = ORIGINAL_WORKSPACE_NAME
-    print(f"[DEBUG] revert_to_original_workspace sees global: {original_name}")
     ORIGINAL_WORKSPACE_NAME = None
 
     # ── 2) Resolve a bpy.types.Workspace
@@ -309,7 +296,6 @@ def revert_to_original_workspace(context):
         original_ws = bpy.data.workspaces.get("Layout")
         if not original_ws and bpy.data.workspaces:
             original_ws = bpy.data.workspaces[0]
-        print(f"[DEBUG] Falling back to workspace: {original_ws.name if original_ws else 'None'}")
 
     # ── 3) Delete the temporary "exp_game" workspace, then switch back
     def delete_and_revert():
@@ -336,7 +322,6 @@ def revert_to_original_workspace(context):
         # b) switch back to the original
         if original_ws:
             context.window.workspace = original_ws
-            print(f"[DEBUG] Switched back to workspace: {original_ws.name}")
         return None  # stop the timer
 
     # register the timer so it runs after the modal cleanup
@@ -363,7 +348,6 @@ def revert_to_original_scene(context):
     # 4) If that scene still exists, switch back to it
     if orig_name and orig_name in bpy.data.scenes:
         context.window.scene = bpy.data.scenes[orig_name]
-        print(f"[DEBUG] Switched back to original scene: {orig_name}")
     else:
         print(f"[DEBUG] Original scene '{orig_name}' not found; skipping scene revert.")
 def delayed_invoke_modal(from_ui):
@@ -388,6 +372,8 @@ def delayed_invoke_modal(from_ui):
 #Append workspace then start the game
 #########################################
 class EXP_GAME_OT_StartGame(bpy.types.Operator):
+    """Fullscreen Game Start"""
+    
     bl_idname = "exploratory.start_game"
     bl_label = "Start Game"
 
@@ -412,14 +398,12 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
             ORIGINAL_WORKSPACE_NAME = self.original_workspace_name
         else:
             ORIGINAL_WORKSPACE_NAME = context.window.workspace.name
-        print(f"[DEBUG] ORIGINAL_WORKSPACE_NAME = {ORIGINAL_WORKSPACE_NAME}")
 
         # ─── Store original scene ───────────────────────────────
         if self.original_scene_name:
             ORIGINAL_SCENE_NAME = self.original_scene_name
         else:
             ORIGINAL_SCENE_NAME = context.window.scene.name
-        print(f"[DEBUG] ORIGINAL_SCENE_NAME     = {ORIGINAL_SCENE_NAME}")
 
         # ─── Switch into the exp_game workspace ────────────────
         append_and_switch_to_game_workspace(context, "exp_game")
@@ -434,4 +418,3 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         return {'FINISHED'}
     
 
-    

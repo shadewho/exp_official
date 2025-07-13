@@ -87,7 +87,6 @@ def async_download_blend_file(url, progress_callback, task):
         with open(local_path, "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):
                 if task.cancelled:
-                    print("[INFO] Download cancelled. Removing incomplete file.")
                     file.close()
                     if os.path.exists(local_path):
                         os.remove(local_path)
@@ -130,17 +129,14 @@ def timer_finish_download():
 
     # If the task was cancelled or no file was downloaded, clear downloads.
     if current_download_task.cancelled or not current_download_task.local_blend_path:
-        print("[INFO] DownloadTask was cancelled or no file was downloaded. Clearing downloads folder.")
         clear_world_downloads_folder()
         current_download_task = None
         return None
 
-    print("Download finished. Attempting to append scene from:", current_download_task.local_blend_path)
     result, appended_scene_name = append_scene_from_blend(current_download_task.local_blend_path)
     if result == {'FINISHED'} and appended_scene_name:
         bpy.context.scene["appended_scene_name"] = appended_scene_name
         bpy.context.scene["world_blend_path"] = current_download_task.local_blend_path
-        print("Scene appended; now waiting for it to be available...")
         
         # Remove the custom UI.
         bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
@@ -165,7 +161,6 @@ def timer_finish_download():
                 # ——— 3) Switch into the newly appended scene ———
                 bpy.context.window.scene = scene_obj
                 bpy.context.scene.ui_current_mode = "GAME"
-                print(f"[DEBUG] Launching game; original_scene={orig_scene!r}, original_workspace={orig_ws!r}")
 
                 # ——— 4) Find a VIEW_3D area & region for context override ———
                 view3d_area = next((a for a in bpy.context.window.screen.areas if a.type == 'VIEW_3D'), None)
@@ -212,7 +207,6 @@ def explore_icon_handler(context, download_code):
 
     # 1) Store the name of the scene you were on
     context.window_manager['original_scene'] = context.window.scene.name
-    print(f"[DEBUG] Stored original scene = {context.window_manager['original_scene']!r}")
 
     # 2) Kick off the download + timer as before
     if download_code:

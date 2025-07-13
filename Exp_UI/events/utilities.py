@@ -13,7 +13,6 @@ from ..main_config import (
 def fetch_events_by_stage():
     # Build the URL. (Adjust BASE_URL if necessary so that it points to your website's API.)
     url = EVENTS_ENDPOINT
-    print(url)
 
     try:
         response = requests.get(url, timeout=5)
@@ -21,10 +20,8 @@ def fetch_events_by_stage():
         if data.get("success"):
             return data  # Expected to have keys: 'submission', 'vote', 'winners'
         else:
-            print("Event fetch error:", data.get("message"))
             return {}
     except Exception as e:
-        print("Error fetching events by stage:", e)
         return {}
     
 def update_event_stage(self, context):

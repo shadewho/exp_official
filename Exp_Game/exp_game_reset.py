@@ -41,12 +41,9 @@ def capture_scene_state(self, context):
         "allow_sprint":   mg.allow_sprint,
     }
 
-    print("capture_scene_state: Done capturing all transforms + some scene props.")
-
 def restore_scene_state(modal_op, context):
     state = getattr(modal_op, "_initial_game_state", None)
     if not state:
-        print("No stored state found—cannot restore.")
         return
 
     # A) Per-object transforms

@@ -339,10 +339,7 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
     )
 
     def execute(self, context):
-        print("Starting custom text preview operator...")
-        
-        # Clear any existing text reactions.
-        print("Clearing all existing text reactions.")
+    
         clear_all_text()
         
         # Get a reference time.
@@ -353,21 +350,15 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
         interactions = getattr(context.scene, "custom_interactions", None)
         custom_text_count = 0
         if interactions:
-            print(f"Found {len(interactions)} custom interactions in the scene.")
             for inter in interactions:
-                print("Processing interaction:", inter.name)
                 for reaction in inter.reactions:
                     if reaction.reaction_type == "CUSTOM_UI_TEXT":
-                        print("  -> Found custom UI text reaction:", reaction.name,
-                              "Subtype:", reaction.custom_text_subtype)
                         # Local import to avoid circular dependency.
                         from .exp_reactions import execute_custom_ui_text_reaction
                         execute_custom_ui_text_reaction(reaction)
                         custom_text_count += 1
         else:
             print("No custom interactions found in the scene.")
-
-        print(f"Total custom UI text reactions found and added: {custom_text_count}")
 
         # For previewing objective counters and timer displays, override the text field with dummy text.
         for item in _reaction_texts:
@@ -383,12 +374,9 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
                     item["text"] = f"{prefix}42{suffix}"
                 else:
                     item["text"] = f"{prefix}{suffix}"
-                print(f"Set dummy objective counter text: {item['text']}")
             elif subtype == "OBJECTIVE_TIMER_DISPLAY":
                 item["text"] = "00:00s"
-                print(f"Set dummy timer text: {item['text']}")
 
-        print("Total preview text reactions in _reaction_texts:", len(_reaction_texts))
         
         # Ensure the draw handler is registered so that text is drawn.
         from .exp_custom_ui import register_ui_draw
@@ -401,7 +389,6 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
         # ----------------------------------------------------------------
         # Register a timer callback that clears all preview text after the duration.
         def clear_preview():
-            print("Timer reached: clearing preview text items...")
             clear_all_text()
             # Request redraw on all VIEW_3D areas.
             for area in bpy.context.screen.areas:

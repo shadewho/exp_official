@@ -139,7 +139,6 @@ def build_browse_content(template_item):
             )
 
         except Exception as e:
-            print(f"[ERROR] build_browse_content thumbnail #{index} skipped: {e}")
             continue
 
     # --- 4) If there's more than 1 page, draw arrows ---

@@ -347,7 +347,6 @@ class AnimationStateManager:
 
         act = bpy.data.actions.get(action_name)
         if not act:
-            print(f"start_action: Action '{action_name}' not found!")
             return
 
         # If not loop => one_time_in_progress

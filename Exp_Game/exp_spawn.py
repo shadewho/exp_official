@@ -43,19 +43,15 @@ def spawn_user():
                     arm.location = Vector((origin.x, origin.y, chosen.z + margin))
                     # Always upright: zero X/Y rotation, keep only Z (yaw)
                     arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
-                    print(f"[spawn_user] surface Z={chosen.z:.3f}, placed at Z={arm.location.z:.3f}")
                 else:
                     arm.location = origin
                     arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
-                    print("[spawn_user] no surface hit; using origin")
             else:
                 arm.location = spawn_obj.location.copy()
                 arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
-                print("[spawn_user] BVH failed; using origin")
         else:
             arm.location = spawn_obj.location.copy()
             arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
-            print("[spawn_user] flag off or non-mesh; using origin")
     else:
         print("No spawn_object set; character remains in place.")
 

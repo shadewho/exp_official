@@ -84,7 +84,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 )
                 action_name = default_name if use_default else chosen_name
                 if not action_name:
-                    print(f"[{state_label}] No action name; skipping.")
                     return
 
                 # Append if not already loaded
@@ -96,7 +95,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 act = bpy.data.actions.get(action_name)
                 if act:
                     setattr(char_actions, target_attr, act)
-                    print(f"[{state_label}] => {act.name}")
 
             process_action(
                 "Idle",
@@ -146,7 +144,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 self.DEFAULT_LAND_NAME,
                 "land_action"
             )
-            
+
         # ─── Deselect everything so the character has no outline ─────────
         # (clears both the selection and the active object)
         bpy.ops.object.select_all(action='DESELECT')
@@ -175,8 +173,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             self.report({'WARNING'}, f"Invalid blend file: {blend_path}")
             return
 
-        print(f"[AppendSkin] Checking objects from: {blend_path}")
-
         with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
             all_obj_names_in_lib = data_from.objects
 
@@ -185,7 +181,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
 
         for lib_obj_name in all_obj_names_in_lib:
             if lib_obj_name in bpy.data.objects:
-                print(f"Skipping '{lib_obj_name}' (already in file).")
                 existing = bpy.data.objects.get(lib_obj_name)
                 if existing and existing.type == 'ARMATURE':
                     existing_armature = existing
@@ -195,7 +190,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         if not to_append:
             if existing_armature:
                 scene.target_armature = existing_armature
-                print(f"No new objects appended. Using existing armature '{existing_armature.name}'.")
             else:
                 print("No objects to append and no existing armature found.")
             return
@@ -209,13 +203,10 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 continue
             bpy.context.scene.collection.objects.link(obj)
             appended_objects.append(obj)
-            print(f"Appended: {obj.name}")
             if obj.type == 'ARMATURE':
                 scene.target_armature = obj
-                print(f"Assigned scene.target_armature => {obj.name}")
 
         self.ensure_skin_in_scene_collection([o.name for o in appended_objects])
-        print(f"[AppendSkin] Done. Appended {len(appended_objects)} objects from {blend_path}.")
 
     def ensure_skin_in_scene_collection(self, object_names):
         scene = bpy.context.scene
@@ -225,7 +216,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             data_obj = bpy.data.objects.get(name)
             if data_obj:
                 scene.collection.objects.link(data_obj)
-                print(f"Linked '{name}' to scene collection.")
             else:
                 print(f"Object '{name}' not found in bpy.data.objects.")
 
@@ -234,20 +224,16 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     # ----------------------------------------------------------------
     def ensure_action_in_file(self, blend_path, action_name, state_label):
         if not blend_path or not os.path.isfile(blend_path):
-            print(f"[{state_label}] Invalid blend path: {blend_path}")
             return None
 
         existing = bpy.data.actions.get(action_name)
         if existing:
-            print(f"[{state_label}] Action '{action_name}' already loaded.")
             return existing
 
-        print(f"[{state_label}] Appending '{action_name}' from {blend_path}")
         with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
             if action_name in data_from.actions:
                 data_to.actions = [action_name]
             else:
-                print(f"[{state_label}] Action '{action_name}' not found in {blend_path}")
                 return None
 
         return bpy.data.actions.get(action_name)

@@ -32,15 +32,14 @@ from .exp_performance import init_performance_state, update_performance_culling,
 
 
 class ExpModal(bpy.types.Operator):
-    """A modal operator that controls third-person movement and camera,
-    using a consistent time scale for movement and animation."""
+    """Windowed (minimized) game start."""
 
     bl_idname = "view3d.exp_modal"
     bl_label = "Third Person Orbit"
     bl_options = {'BLOCKING'}
 
     # ---------------------------
-    # User-Adjustable Properties
+    #  Properties
     # ---------------------------
     speed: bpy.props.FloatProperty(
         name="Speed",
@@ -152,7 +151,6 @@ class ExpModal(bpy.types.Operator):
 
         #set UI mode to disable background caching
         context.scene.ui_current_mode = 'GAME'
-        print(f"[DEBUG] ui_current_mode is now: {context.scene.ui_current_mode}")
 
         #clear UI if any
         try:
@@ -444,16 +442,13 @@ class ExpModal(bpy.types.Operator):
         self.target_object.location = delta_mat @ loc
 
     def cancel(self, context):
-        print(self.launched_from_ui)
-        """Cleanup code when user cancels with ESC or Right-click."""
         
         # Restore the cursor modal state
         context.window.cursor_modal_restore()
 
         #restore UI mode
         context.scene.ui_current_mode = 'BROWSE'
-        print(f"[DEBUG] ui_current_mode is now: {context.scene.ui_current_mode}")
-
+        
         # Remove the modal timer if it exists
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)

@@ -109,7 +109,6 @@ def append_scene_from_blend(local_blend_path, scene_name=None):
             filename=chosen_scene_name
         )
     except Exception as e:
-        print("[EXCEPTION] Exception during bpy.ops.wm.append:")
         traceback.print_exc()
         return {'CANCELLED'}, None
 

@@ -74,7 +74,6 @@ def get_or_load_image(image_path):
             return img
 
     if not os.path.exists(image_path):
-        print(f"[ERROR] get_or_load_image: File not found: {image_path}")
         return None
 
     try:
@@ -82,7 +81,6 @@ def get_or_load_image(image_path):
         LOADED_IMAGES[image_path] = img
         return img
     except RuntimeError:
-        print(f"[ERROR] Failed to load image: {image_path}")
         return None
 
 

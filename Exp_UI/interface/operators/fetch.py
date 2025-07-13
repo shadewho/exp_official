@@ -426,10 +426,8 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             resp = fetch_packages(params)
             if resp.get("not_modified"):
                 # nothing changed → skip
-                print(f"Lazy load: '{file_type}' unchanged; no new items.")
                 return
             if not resp.get("success"):
-                print("Lazy load failed:", resp.get("message"))
                 return
 
             new_items = resp["packages"]

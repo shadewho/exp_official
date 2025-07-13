@@ -11,7 +11,6 @@ def set_game_world(scene):
         txt = bpy.data.texts.new("GAME_WORLD")
     txt.clear()
     txt.write(scene.name)
-    print(f"Game world set to: {scene.name}")
 
 def get_game_world():
     """Retrieve the game world scene from the text datablock."""

@@ -40,7 +40,6 @@ def fetch_package_index(file_type: str) -> list[dict]:
         resp.raise_for_status()
         return resp.json().get("packages", [])
     except RequestException as e:
-        print(f"[CacheWorker] network error fetching index for {file_type!r}: {e}")
         return []
 
 
@@ -82,7 +81,6 @@ class CacheWorker(threading.Thread):
     def _process_batch(self):
         # 0) don’t do any work if we’re in GAME mode
         if bpy.context.scene.ui_current_mode == 'GAME':
-            print("[CacheWorker] skipping batch: ui_current_mode=GAME")
             return
         
         items = []
@@ -114,13 +112,11 @@ class CacheWorker(threading.Thread):
     def _preload_all_events(self):
         # 1) guard: only if we have a valid token
         if not load_token():
-            print("[CacheWorker] _preload_all_events skipped: no valid token")
             return
 
         # 2) fetch events; JSON has 'success' + one list per stage
         events = fetch_events_by_stage()
         if not events.get("success"):
-            print("[CacheWorker] _preload_all_events skipped: API returned no success")
             return
 
         # 3) loop only your three known stages
@@ -165,7 +161,6 @@ class CacheWorker(threading.Thread):
                 if all_pkgs:
                     update_package_list("event", all_pkgs, stage, evt_id)
                     cache_manager.set_package_data({"event": all_pkgs})
-                    print(f"[PRELOAD] stage={stage!r}, event_id={evt_id!r}: preloaded {len(all_pkgs)} packages")
 
                     # 3c) enqueue metadata & thumbnail fetch for each package
                     for pkg in all_pkgs:
@@ -185,7 +180,6 @@ class CacheWorker(threading.Thread):
                             "DELETE FROM package_list WHERE file_type='event' AND event_stage=?;",
                             (stage,)
                         )
-                        print(f"[PRUNE] stage={stage!r}: cleared all old entries")
                     else:
                         placeholders = ",".join("?" for _ in active_ids)
                         sql = (
@@ -195,12 +189,10 @@ class CacheWorker(threading.Thread):
                             f"   AND selected_event NOT IN ({placeholders});"
                         )
                         self.conn.execute(sql, (stage, *active_ids))
-                        print(f"[PRUNE] stage={stage!r}: kept {len(active_ids)} active events, removed stale entries")
 
             sub = len(events.get("submission", []))
             vote = len(events.get("voting", []))
             win = len(events.get("winners", []))
-            print(f"[PRUNE COMPLETE] stages now → submission:{sub}, voting:{vote}, winners:{win}")
         except Exception as e:
             print(f"[CacheWorker] _preload_all_events prune error: {e}")
 
@@ -210,7 +202,6 @@ class CacheWorker(threading.Thread):
         
         # 0) bail out immediately when the UI is in GAME
         if bpy.context.scene.ui_current_mode == 'GAME':
-            print("[CacheWorker] skipping full sweep: ui_current_mode=GAME")
             return
 
         token = load_token()
@@ -230,14 +221,12 @@ class CacheWorker(threading.Thread):
                     "limit":     DOWNLOAD_LIMIT,  # or 999 if you really want “all”
                 })
             except Exception as e:
-                print(f"[CacheWorker] fetch_packages({ftype}) failed:", e)
                 continue
 
             if not resp.get("success"):
                 continue
 
             remote_pkgs = resp["packages"]
-            print(f"[CacheWorker] fetched {len(remote_pkgs)} packages for '{ftype}'")
 
             # 2a) Incrementally persist into SQLite & in-memory cache
             update_package_list(ftype, remote_pkgs, event_stage="", selected_event="")

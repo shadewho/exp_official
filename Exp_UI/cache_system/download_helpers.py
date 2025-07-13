@@ -74,7 +74,6 @@ def background_fetch_metadata(package_id):
     if existing is not None:
         # Already have it in SQLite
         bump_metadata_access(package_id)
-        print(f"[INFO] Metadata for {package_id} from DB, skipping fetch.")
         return
 
     thread = threading.Thread(
@@ -88,7 +87,6 @@ def background_fetch_metadata(package_id):
 def _fetch_metadata_worker(package_id):
     token = load_token()
     if not token:
-        print("[ERROR] Cannot fetch metadata; not logged in.")
         return
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -98,11 +96,9 @@ def _fetch_metadata_worker(package_id):
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print(f"[ERROR] Metadata request failed: {e}")
         return
 
     if not data.get("success"):
-        print(f"[ERROR] Server error fetching metadata: {data.get('message')}")
         return
 
     # Attach local thumbnail if present

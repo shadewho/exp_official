@@ -72,7 +72,6 @@ def cleanup_downloaded_worlds():
             file_path = os.path.join(WORLD_DOWNLOADS_FOLDER, filename)
             try:
                 os.remove(file_path)
-                print(f"Deleted file: {file_path}")
             except Exception as e:
                 print(f"Error deleting {file_path}: {e}")
     else:
@@ -104,7 +103,5 @@ def cleanup_world_downloads(dummy=None):
         if os.path.isfile(file_path):
             try:
                 os.remove(file_path)
-                print(f"[INFO] Removed leftover file: {file_path}")
             except OSError as e:
                 print(f"[WARNING] Could not remove {file_path}: {e}")
-        # If you expect subdirectories, handle them here too
