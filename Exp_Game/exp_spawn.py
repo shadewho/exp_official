@@ -53,7 +53,7 @@ def spawn_user():
             arm.location = spawn_obj.location.copy()
             arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
     else:
-        print("No spawn_object set; character remains in place.")
+        print("No spawn_object set!")
 
     # --- camera setup (unchanged) ---
     obj_loc = arm.location

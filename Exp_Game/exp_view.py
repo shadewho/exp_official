@@ -1,4 +1,4 @@
-#Exploratory.Exp_Game/exp_view.py
+#Exploratory/Exp_Game/exp_view.py
 
 import mathutils
 import math

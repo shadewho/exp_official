@@ -68,39 +68,41 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
 
         # ─── 2) Actions ───────────────────────────────────────────────────────
         if scene.character_actions_lock:
-            self.report(
-                {'INFO'},
-                "Character actions lock is ON; skipping action assignment."
-            )
+            self.report({'INFO'}, "Character actions lock is ON; skipping action assignment.")
         else:
             char_actions = scene.character_actions
 
             def process_action(state_label, use_default, custom_blend,
-                               chosen_name, default_name, target_attr):
-                blend = (
-                    self.DEFAULT_ANIMS_BLEND
-                    if use_default
-                    else custom_blend
-                )
-                action_name = default_name if use_default else chosen_name
+                               enum_prop_name, default_name, target_attr):
+                # 1) pick the .blend file
+                blend = self.DEFAULT_ANIMS_BLEND if use_default else custom_blend
+                # 2) defer reading the enum until we know we need it
+                if use_default:
+                    action_name = default_name
+                else:
+                    action_name = getattr(prefs, enum_prop_name)
                 if not action_name:
                     return
 
-                # Append if not already loaded
+                # 3) load it if it isn’t already present
                 if not bpy.data.actions.get(action_name) and os.path.isfile(blend):
                     with bpy.data.libraries.load(blend, link=False) as (df, dt):
                         if action_name in df.actions:
                             dt.actions = [action_name]
 
+                # 4) assign it to your scene pointers
                 act = bpy.data.actions.get(action_name)
                 if act:
                     setattr(char_actions, target_attr, act)
+                else:
+                    print(f"[{state_label}] not found in {blend!r}")
 
+            # call it, passing the *name* of the enum prop (string), not its value
             process_action(
                 "Idle",
                 prefs.idle_use_default_action,
                 prefs.idle_custom_blend_action,
-                prefs.idle_action_enum_prop,
+                "idle_action_enum_prop",
                 self.DEFAULT_IDLE_NAME,
                 "idle_action"
             )
@@ -108,7 +110,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 "Walk",
                 prefs.walk_use_default_action,
                 prefs.walk_custom_blend_action,
-                prefs.walk_action_enum_prop,
+                "walk_action_enum_prop",
                 self.DEFAULT_WALK_NAME,
                 "walk_action"
             )
@@ -116,7 +118,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 "Run",
                 prefs.run_use_default_action,
                 prefs.run_custom_blend_action,
-                prefs.run_action_enum_prop,
+                "run_action_enum_prop",
                 self.DEFAULT_RUN_NAME,
                 "run_action"
             )
@@ -124,7 +126,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 "Jump",
                 prefs.jump_use_default_action,
                 prefs.jump_custom_blend_action,
-                prefs.jump_action_enum_prop,
+                "jump_action_enum_prop",
                 self.DEFAULT_JUMP_NAME,
                 "jump_action"
             )
@@ -132,7 +134,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 "Fall",
                 prefs.fall_use_default_action,
                 prefs.fall_custom_blend_action,
-                prefs.fall_action_enum_prop,
+                "fall_action_enum_prop",
                 self.DEFAULT_FALL_NAME,
                 "fall_action"
             )
@@ -140,11 +142,10 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 "Land",
                 prefs.land_use_default_action,
                 prefs.land_custom_blend_action,
-                prefs.land_action_enum_prop,
+                "land_action_enum_prop",
                 self.DEFAULT_LAND_NAME,
                 "land_action"
             )
-
         # ─── Deselect everything so the character has no outline ─────────
         # (clears both the selection and the active object)
         bpy.ops.object.select_all(action='DESELECT')
@@ -157,10 +158,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     # Exactly the same method for skin
     # ----------------------------------------------------------------
     def append_all_skin_objects(self, use_default, custom_blend):
-        import os
-        import bpy
-        from .exp_preferences import get_addon_path
-
+        
         scene = bpy.context.scene
 
         # Decide .blend file

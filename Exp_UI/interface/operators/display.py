@@ -85,7 +85,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         context.window_manager.modal_handler_add(self)
         if context.area:
             context.area.tag_redraw()
-        self.report({'INFO'}, "Package UI displayed.")
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
@@ -98,7 +97,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         if event.type == 'TIMER':
             # If the 3D View area has changed type, cancel the modal.
             if (not context.area) or (context.area.type != self._original_area_type):
-                self.report({'INFO'}, "3D View context changed – closing UI.")
                 self.cancel(context)
                 return {'CANCELLED'}
             
@@ -160,7 +158,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                 scene.current_thumbnail_page = 1
                 scene.show_loading_image = True
                 bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=1)
-                self.report({'INFO'}, "Filter change detected. Refreshing data.")
 
             # Handle any ongoing loading sequence.
             if self._do_loading:
@@ -233,7 +230,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                         from ...download_and_explore.explore_main import current_download_task
                         if current_download_task is not None:
                             current_download_task.cancel()
-                        self.report({'INFO'}, "Close button clicked! Cancelling download and removing UI...")
                         return self.cancel(context)
 
                     elif button["name"] == "Template":
@@ -253,7 +249,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                         return {'RUNNING_MODAL'}
                     elif button["name"] == "Back_Icon":
                         if scene.ui_current_mode == "DETAIL":
-                            self.report({'INFO'}, "Back button clicked -> BROWSE.")
                             scene.ui_current_mode = "BROWSE"
                             scene.selected_thumbnail = ""
                             bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
@@ -290,7 +285,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                     else:
                         # Handle clicking a thumbnail in BROWSE mode.
                         if scene.ui_current_mode == "BROWSE":
-                            self.report({'INFO'}, f"Thumbnail '{button['name']}' clicked in BROWSE!")
                             selected_pkg = next((p for p in packages_list if p.get("package_name") == button["name"]), None)
                             if selected_pkg:
                                 file_id = selected_pkg.get("file_id", 0)
@@ -325,7 +319,6 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         if context.area:
             context.area.tag_redraw()
             bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-        self.report({'INFO'}, "Package UI closed.")
         return {'CANCELLED'}
 
     def begin_loading_for_page(self, context, new_page):

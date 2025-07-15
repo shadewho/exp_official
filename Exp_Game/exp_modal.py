@@ -92,7 +92,7 @@ class ExpModal(bpy.types.Operator):
     jump_key_released: bool = True
 
     # Rotation smoothing for character turning
-    rotation_smoothness: float = 0.30 #higher value = faster turn
+    rotation_smoothness: float = 0.65 #higher value = faster turn
 
     # References to objects / data
     target_object = None
@@ -384,14 +384,16 @@ class ExpModal(bpy.types.Operator):
                 if self.pref_run_key in self.keys_pressed:
                     self.keys_pressed.remove(self.pref_run_key)
 
-            # D) Movement, jumping, etc.
-            self.update_movement_and_gravity(context)
-            self.update_jumping(context)
 
-            # E) update custom actions, transform tasks, etc.
+
+            # D) update custom actions, transform tasks, etc.
             update_all_custom_managers(self.delta_time)
             update_transform_tasks()
             update_property_tasks()
+
+            # E) Movement, jumping, etc.
+            self.update_movement_and_gravity(context)
+            self.update_jumping(context)
 
             # F) Check interactions
             check_interactions(context)

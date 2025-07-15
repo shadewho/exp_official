@@ -106,10 +106,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             if scene.package_sort_by == 'featured':
                 cached_filtered = [pkg for pkg in cached_filtered if pkg.get("is_featured", False)]
 
-            self.report(
-                {'INFO'},
-                f"Loaded {len(cached_filtered)} item(s) from cache for '{file_type}' / '{sort_by}'."
-            )
             # display immediately
             self._finalize_data(context, cached_filtered, requested_page, sort_by)
             # if we need more than the cache has, lazy-load the rest
@@ -120,7 +116,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             return {'FINISHED'}
 
         # ── 5) Fallback: no cache → fetch from server in background ───────
-        self.report({'INFO'}, "No cached data; fetching from server.")
         threading.Thread(
             target=self._fetch_worker,
             args=(file_type, sort_by, search_query),
@@ -151,7 +146,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
 
                     elif result_type == "FETCH_DONE":
                         sort_by = payload["sort_by"]
-                        self.report({'INFO'}, f"Server fetch done: {len(payload['packages'])} items total.")
 
                         # stop spinner
                         context.scene.show_loading_image = False
@@ -359,11 +353,6 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
         if context.area:
             context.area.tag_redraw()
-
-        self.report(
-            {'INFO'},
-            f"Pagination done: {len(sorted_list)} items across {total} page(s)."
-        )
 
     def _sort_packages(self, pkgs, sort_by):
         scene = bpy.context.scene

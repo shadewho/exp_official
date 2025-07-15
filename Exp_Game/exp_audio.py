@@ -140,27 +140,35 @@ class CharacterAudioStateManager:
         if not prefs.enable_audio:
             return
 
+        # 1) Find the right pointer on scene.character_audio
         prop_name = AUDIO_PROPS_MAP.get(state)
         if not prop_name:
             return
-
         audio_pg = getattr(bpy.context.scene, "character_audio", None)
         if not audio_pg:
             return
-
         sound_data = getattr(audio_pg, prop_name, None)
-        if not sound_data:
+        if not sound_data or not sound_data.packed_file:
+            # no sound assigned or nothing packed
             return
 
-        device = aud.Device()
-        if sound_data.factory:
-            handle = device.play(sound_data.factory)
-        else:
-            abs_path = bpy.path.abspath(sound_data.filepath or "")
-            if not os.path.isfile(abs_path):
-                return
-            handle = device.play(aud.Sound(abs_path))
+        # 2) Extract the packed bytes to temp_sounds
+        addon_root     = get_addon_path()
+        temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
+        os.makedirs(temp_sounds_dir, exist_ok=True)
 
+        temp_path = extract_packed_sound(sound_data, temp_sounds_dir)
+        if not temp_path:
+            return
+
+        # 3) Play via aud.Sound(temp_path)
+        device = aud.Device()
+        try:
+            handle = device.play(aud.Sound(temp_path))
+        except Exception:
+            return
+
+        # 4) Figure out duration
         duration = getattr(sound_data, "sound_duration", None)
         if duration is None:
             try:
@@ -168,13 +176,17 @@ class CharacterAudioStateManager:
             except Exception:
                 duration = 2.0
 
+        # 5) Store for looping logic
         self.current_sound_start_time = get_game_time()
-        self.current_sound_duration = duration
+        self.current_sound_duration   = duration
 
+        # 6) Apply volume, pitch, loop settings
         handle.loop_count = 0
-        handle.volume = prefs.audio_level
-        handle.pitch = sound_data.sound_speed
+        handle.volume     = prefs.audio_level
+        handle.pitch      = sound_data.sound_speed
+
         self.current_handle = handle
+
 
 
 ##############################################################################
@@ -198,39 +210,37 @@ class AUDIO_OT_TestSoundPointer(bpy.types.Operator):
     sound_slot: bpy.props.StringProperty(default="walk_sound")
 
     def execute(self, context):
-        prefs = context.preferences.addons["Exploratory"].preferences
+        prefs   = context.preferences.addons["Exploratory"].preferences
         audio_pg = getattr(context.scene, "character_audio", None)
         if not audio_pg:
             self.report({'WARNING'}, "scene.character_audio not found.")
             return {'CANCELLED'}
 
         sound_data = getattr(audio_pg, self.sound_slot, None)
-        if not sound_data:
-            self.report({'WARNING'}, f"No Sound assigned to {self.sound_slot}")
+        if not sound_data or not sound_data.packed_file:
+            self.report({'WARNING'}, f"No packed sound assigned to {self.sound_slot}")
             return {'CANCELLED'}
 
         if not prefs.enable_audio:
             self.report({'INFO'}, "Audio is disabled in Preferences.")
             return {'CANCELLED'}
 
-        device = aud.Device()
-        if sound_data.factory:
-            handle = device.play(sound_data.factory)
-            handle.volume = prefs.audio_level
-            handle.pitch = sound_data.sound_speed
-            self.report({'INFO'}, f"Playing in-memory sound: {sound_data.name}")
-            return {'FINISHED'}
+        # ── ALWAYS extract the packed bytes to a temp file ──
+        addon_root = get_addon_path()
+        temp_dir   = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
+        os.makedirs(temp_dir, exist_ok=True)
 
-        abs_path = bpy.path.abspath(sound_data.filepath or "")
-        if not os.path.isfile(abs_path):
-            self.report({'ERROR'}, f"File not found: {abs_path}")
+        temp_path = extract_packed_sound(sound_data, temp_dir)
+        if not temp_path:
+            self.report({'ERROR'}, "Failed to extract packed sound.")
             return {'CANCELLED'}
 
+        # Play via aud.Sound(temp_path)
         try:
-            handle = device.play(aud.Sound(abs_path))
+            handle = aud.Device().play(aud.Sound(temp_path))
             handle.volume = prefs.audio_level
-            handle.pitch = sound_data.sound_speed
-            self.report({'INFO'}, f"Playing fallback file: {abs_path}")
+            handle.pitch  = sound_data.sound_speed
+            self.report({'INFO'}, f"Playing packed sound: {sound_data.name}")
             return {'FINISHED'}
         except Exception as ex:
             self.report({'ERROR'}, f"aud error: {ex}")
@@ -491,7 +501,7 @@ class EXP_AUDIO_OT_TestReactionSound(bpy.types.Operator):
 # Pack all sounds to the blend file
 # ------------------------------------------------------------------------
 class EXP_AUDIO_OT_PackAllSounds(bpy.types.Operator):
-    """Pack every Sound datablock into this .blend file"""
+    """Pack every Sound datablock into this .blend and refresh its in-memory factory"""
     bl_idname = "exp_audio.pack_all_sounds"
     bl_label = "Pack All Sounds"
 
@@ -501,8 +511,15 @@ class EXP_AUDIO_OT_PackAllSounds(bpy.types.Operator):
             # only pack if it’s external and not already packed
             if snd.filepath and not snd.packed_file:
                 snd.pack()
+                # ── NEW ── clear the old external path and rebuild the factory
+                snd.filepath = ""
+                snd.factory_update()
                 packed += 1
-        self.report({'INFO'}, f"Packed {packed} sound(s) into blend")
+
+        self.report(
+            {'INFO'},
+            f"Packed {packed} sound(s) into blend and refreshed factories"
+        )
         return {'FINISHED'}
     
 
