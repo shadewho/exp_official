@@ -673,9 +673,6 @@ def execute_sound_reaction(r):
     if not temp_path:
         return
 
-    # Overwrite sound_data.filepath so aud can load it properly
-    sound_data.filepath = temp_path
-
     # 6) Prepare the aud device
     device = aud.Device()
 

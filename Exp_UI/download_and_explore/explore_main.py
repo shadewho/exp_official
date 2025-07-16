@@ -117,84 +117,105 @@ def clear_world_downloads_folder():
 
 def timer_finish_download():
     global current_download_task, download_progress_value
-    bpy.context.scene.download_progress = download_progress_value
 
+    scene = bpy.context.scene
+    # Update progress bar
+    scene.download_progress = download_progress_value
+
+    # 1) Wait for a valid task
     if current_download_task is None:
-        return None  # No task; stop timer.
+        return None      # nothing to do
     if not current_download_task.done:
-        return 0.1  # Poll again in 0.1 seconds.
+        return 0.1       # poll again shortly
     if current_download_task.error:
         current_download_task = None
-        return None  # Stop timer.
+        return None      # stop on error
 
-    # If the task was cancelled or no file was downloaded, clear downloads.
+    # 2) Handle cancellation or missing file
     if current_download_task.cancelled or not current_download_task.local_blend_path:
         clear_world_downloads_folder()
         current_download_task = None
         return None
 
+    # 3) Snapshot existing datablocks just *once*, before we append
+    scene["initial_datablocks"] = {
+        "actions": list(bpy.data.actions.keys()),
+        "images":  list(bpy.data.images.keys()),
+        "sounds":  list(bpy.data.sounds.keys()),
+        "meshes":  list(bpy.data.meshes.keys()),   # ← new
+        "objects": list(bpy.data.objects.keys()),  # ← optional, if you want object-level diffs
+    }
+
+    # 4) Append the downloaded blend
     result, appended_scene_name = append_scene_from_blend(current_download_task.local_blend_path)
-    if result == {'FINISHED'} and appended_scene_name:
-        bpy.context.scene["appended_scene_name"] = appended_scene_name
-        bpy.context.scene["world_blend_path"] = current_download_task.local_blend_path
-        
-        # Remove the custom UI.
-        bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
-        if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
-            bpy.types.Scene.gpu_image_buttons_data.clear()
-        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-        
-        # Wait until the appended scene is available before launching the game modal.
-        def check_scene():
-            # Have we appended yet?
-            scene_obj = bpy.data.scenes.get(appended_scene_name)
-            if scene_obj:
-                # ——— 1) Pull original scene name off the WindowManager ———
-                wm = bpy.context.window_manager
-                orig_scene = wm.get('original_scene')
-                if 'original_scene' in wm:
-                    del wm['original_scene']
+    if result != {'FINISHED'} or not appended_scene_name:
+        print(f"[ERROR] append_scene_from_blend failed: {result}")
+        clear_world_downloads_folder()
+        current_download_task = None
+        return None
 
-                # ——— 2) Capture the original workspace name ———
-                orig_ws = bpy.context.window.workspace.name
+    # 5) Record scene metadata
+    scene["appended_scene_name"] = appended_scene_name
+    scene["world_blend_path"]     = current_download_task.local_blend_path
 
-                # ——— 3) Switch into the newly appended scene ———
-                bpy.context.window.scene = scene_obj
-                bpy.context.scene.ui_current_mode = "GAME"
+    # 6) Compute which datablocks arrived with that append
+    init = scene["initial_datablocks"]
+    scene["appended_datablocks"] = {
+        "actions": [a for a in bpy.data.actions.keys() if a not in init["actions"]],
+        "images":  [i for i in bpy.data.images.keys()  if i not in init["images"]],
+        "sounds":  [s for s in bpy.data.sounds.keys()  if s not in init["sounds"]],
+        "meshes":  [m for m in bpy.data.meshes.keys()  if m not in init["meshes"]],
+        "objects": [o for o in bpy.data.objects.keys() if o not in init["objects"]],
+    }
 
-                # ——— 4) Find a VIEW_3D area & region for context override ———
-                view3d_area = next((a for a in bpy.context.window.screen.areas if a.type == 'VIEW_3D'), None)
-                if view3d_area:
-                    view3d_region = next((r for r in view3d_area.regions if r.type == 'WINDOW'), None)
-                    if view3d_region:
-                        override = bpy.context.copy()
-                        override.update({
-                            'window': bpy.context.window,
-                            'screen': bpy.context.window.screen,
-                            'area': view3d_area,
-                            'region': view3d_region,
-                        })
+    # 7) Clean up the temporary UI
+    bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
+    if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
+        bpy.types.Scene.gpu_image_buttons_data.clear()
+    bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
 
-                        # ——— 5) Invoke the fullscreen start_game operator ———
-                        with bpy.context.temp_override(**override):
-                            bpy.ops.exploratory.start_game(
-                                'INVOKE_DEFAULT',
-                                launched_from_ui=True,
-                                original_workspace_name=orig_ws,
-                                original_scene_name=orig_scene
-                            )
-                    else:
-                        print("No valid VIEW_3D region found.")
-                else:
-                    print("No VIEW_3D area found for context override.")
-
-                return None  # stop polling
-
-            # not ready yet → try again in 1s
+    # 8) Wait until the new scene really exists, then launch the game
+    def check_scene():
+        scene_obj = bpy.data.scenes.get(appended_scene_name)
+        if not scene_obj:
             print("Waiting for appended scene…")
             return 1.0
 
-        bpy.app.timers.register(check_scene)
+        # pull and clear original scene/workspace
+        wm = bpy.context.window_manager
+        orig_scene = wm.pop('original_scene', None)
+        orig_ws    = bpy.context.window.workspace.name
+
+        # switch into it
+        bpy.context.window.scene = scene_obj
+        scene_obj.ui_current_mode = "GAME"
+
+        # find a VIEW_3D override
+        view3d = next((a for a in bpy.context.window.screen.areas if a.type == 'VIEW_3D'), None)
+        if view3d:
+            region = next((r for r in view3d.regions if r.type == 'WINDOW'), None)
+            if region:
+                override = {
+                    'window': bpy.context.window,
+                    'screen': bpy.context.window.screen,
+                    'area':   view3d,
+                    'region': region,
+                }
+                with bpy.context.temp_override(**override):
+                    bpy.ops.exploratory.start_game(
+                        'INVOKE_DEFAULT',
+                        launched_from_ui=True,
+                        original_workspace_name=orig_ws,
+                        original_scene_name=orig_scene
+                    )
+        return None
+
+    bpy.app.timers.register(check_scene)
+
+    # 9) Done—clear the task so we don’t re-enter
+    current_download_task = None
+    return None
+
 
 
 def explore_icon_handler(context, download_code):

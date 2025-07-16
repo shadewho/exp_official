@@ -11,6 +11,7 @@ from bpy.app.handlers import persistent
 
 
 #remove the world temp file and appended scene - called in game modal cancel()
+#i dont think the object/mesh deltion flow is neccessary here
 def cleanup_downloaded_worlds():
 
     # Try to get the active scene and the stored appended scene name.
@@ -85,7 +86,77 @@ def cleanup_downloaded_worlds():
                     del scene[key]
         except ReferenceError:
             pass
+        
+def cleanup_downloaded_datablocks():
+    """
+    Force-remove all datablocks and geometry that were appended with the last scene,
+    without regard to user count or fake users.
+    Called after cleanup_downloaded_worlds() and revert_to_original_scene().
+    """
+    scene = bpy.context.scene
+    appended = scene.get("appended_datablocks", {})
+    if not appended:
+        return
 
+    # 1) Actions
+    for name in appended.get("actions", []):
+        act = bpy.data.actions.get(name)
+        if act:
+            try:
+                act.user_clear()
+                act.use_fake_user = False
+                bpy.data.actions.remove(act)
+            except Exception as e:
+                print(f"Error removing action '{name}': {e}")
+
+    # 2) Images
+    for name in appended.get("images", []):
+        img = bpy.data.images.get(name)
+        if img:
+            try:
+                img.user_clear()
+                img.use_fake_user = False
+                if img.packed_file:
+                    img.unpack(method='REMOVE')
+                bpy.data.images.remove(img)
+            except Exception as e:
+                print(f"Error removing image '{name}': {e}")
+
+    # 3) Sounds
+    for name in appended.get("sounds", []):
+        snd = bpy.data.sounds.get(name)
+        if snd:
+            try:
+                snd.user_clear()
+                snd.use_fake_user = False
+                bpy.data.sounds.remove(snd)
+            except Exception as e:
+                print(f"Error removing sound '{name}': {e}")
+
+    # 4) Objects
+    for name in appended.get("objects", []):
+        obj = bpy.data.objects.get(name)
+        if obj:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except Exception as e:
+                print(f"Error removing object '{name}': {e}")
+
+    # 5) Mesh datablocks
+    for name in appended.get("meshes", []):
+        mesh = bpy.data.meshes.get(name)
+        if mesh:
+            try:
+                mesh.user_clear()
+                mesh.use_fake_user = False
+                bpy.data.meshes.remove(mesh)
+            except Exception as e:
+                print(f"Error removing mesh '{name}': {e}")
+
+    # 6) Clean up bookkeeping
+    for key in ("appended_datablocks", "initial_datablocks"):
+        if key in scene:
+            del scene[key]
 #-------------------------------------
 #clear the World Download temp folder
 #-------------------------------------

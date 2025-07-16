@@ -27,7 +27,7 @@ from .exp_game_reset import (capture_scene_state, reset_property_reactions, capt
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
 from . import exp_globals
 from .exp_globals import stop_all_sounds, update_sound_tasks
-from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds
+from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
 from .exp_performance import init_performance_state, update_performance_culling, restore_performance_state
 
 
@@ -469,11 +469,13 @@ class ExpModal(bpy.types.Operator):
                 original = self._proxy_mesh_original_states.get(entry.mesh_object.name)
                 if original is not None:
                     entry.mesh_object.hide_viewport = original
-                    
-        # Cleanup scene and temporary blend file
-        cleanup_downloaded_worlds()
 
-        revert_to_original_scene(context)
+        #-----------------------------------------------
+        ### Cleanup scene and temporary blend file ###
+        revert_to_original_scene(context)   #1
+        cleanup_downloaded_worlds()         #2
+        cleanup_downloaded_datablocks()     #3
+        #-----------------------------------------------
 
         clear_all_text()
 
@@ -584,11 +586,6 @@ class ExpModal(bpy.types.Operator):
                 dynamic_bvh_map=self.dynamic_bvh_map,
                 platform_motion_map=self.platform_motion_map
             )
-            # ─── Reset any leftover downward speed on landing ───
-            #not sure if neccessary 
-            if self.is_grounded:
-                self.z_velocity = 0.0
-
 
         # Update camera
         update_view(
