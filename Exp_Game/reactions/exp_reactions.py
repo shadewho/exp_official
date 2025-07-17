@@ -3,14 +3,14 @@ import bpy
 import time
 import os
 import aud
-from .exp_globals import _sound_tasks, SoundTask
+from ..audio.exp_globals import _sound_tasks, SoundTask
 import mathutils
 from mathutils import Vector, Euler, Matrix
-from .exp_time import get_game_time
-from .exp_animations import get_global_animation_manager
+from ..props_and_utils.exp_time import get_game_time
+from ..animations.exp_animations import get_global_animation_manager
 from . import exp_custom_ui
-from .exp_audio import extract_packed_sound
-from ..exp_preferences import get_addon_path
+from ..audio.exp_audio import extract_packed_sound
+from ...exp_preferences import get_addon_path
 
 # ------------------------------
 # TransformTask + Manager
@@ -525,7 +525,7 @@ def reset_all_tasks():
 
 
 def execute_char_action_reaction(r):
-    from .exp_animations import get_global_animation_manager
+    from ..animations.exp_animations import get_global_animation_manager
     mgr = get_global_animation_manager()
     if not mgr or not r.char_action_ref:
         return

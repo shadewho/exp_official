@@ -1,6 +1,6 @@
 # File: exp_ui.py
 import bpy
-from .exp_utilities import (
+from .props_and_utils.exp_utilities import (
     get_game_world)
 from ..Exp_UI.main_config import UPLOAD_URL
 # --------------------------------------------------------------------
@@ -928,6 +928,10 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
         scene  = context.scene
 
         layout.label(text="Cull Distance Entries")
+        self._draw_entry_list(layout, scene)
+        self._draw_entry_details(layout, scene)
+
+    def _draw_entry_list(self, layout, scene):
         row = layout.row()
         row.template_list(
             "EXP_PERFORMANCE_UL_List", "", 
@@ -940,40 +944,54 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
         rem = col.operator("exploratory.remove_performance_entry", icon='REMOVE', text="")
         rem.index = scene.performance_entries_index
 
+    def _draw_entry_details(self, layout, scene):
         idx = scene.performance_entries_index
-        if 0 <= idx < len(scene.performance_entries):
-            entry = scene.performance_entries[idx]
-            box = layout.box()
+        if not (0 <= idx < len(scene.performance_entries)):
+            return
 
-            box.prop(entry, "name")
+        entry = scene.performance_entries[idx]
+        box = layout.box()
+        box.label(text=f"Entry: {entry.name}")
 
-            # ─── trigger selector ───────────────────────
-            box.prop(entry, "trigger_type", text="Trigger Type")
-            if entry.trigger_type == 'BOX':
-                box.prop(entry, "trigger_mesh", text="Trigger Mesh")
-                box.prop(entry, "hide_trigger_mesh", text="Hide Trigger Mesh on Start")
+        # ─── Name & Enable ─────────────────────────────────────────
+        box.prop(entry, "name", text="Label")
 
-            # ─── cull target ─────────────────────────────
-            box.prop(entry, "use_collection")
-            if entry.use_collection:
-                box.prop(entry, "target_collection", text="Collection")
-                row_excl = box.row()
-                row_excl.enabled = (entry.trigger_type != 'BOX')
-                row_excl.prop(entry, "exclude_collection", text="Exclude Entire Collection")
+        # ─── Trigger Settings ──────────────────────────────────────
+        trigger_box = box.box()
+        trigger_box.label(text="Trigger Settings")
+        trigger_box.prop(entry, "trigger_type", text="Mode")
+        if entry.trigger_type == 'BOX':
+            trigger_box.prop(entry, "trigger_mesh", text="Bounding Mesh")
+            trigger_box.prop(entry, "hide_trigger_mesh", text="Hide Mesh During Game")
+
+        # ─── Target Selection ──────────────────────────────────────
+        target_box = box.box()
+        target_box.label(text="Cull Target")
+        target_box.prop(entry, "use_collection", text="Cull a Collection?")
+        if entry.use_collection:
+            target_box.prop(entry, "target_collection", text="Collection")
+            excl = target_box.row()
+            excl.enabled = (entry.trigger_type != 'BOX')
+            excl.prop(entry, "exclude_collection", text="Hide Entire Collection")
+        else:
+            target_box.prop(entry, "target_object", text="Object")
+
+        # ─── Distance Settings ─────────────────────────────────────
+        dist_box = box.box()
+        dist_box.label(text="Distance Settings")
+        # Only allow numeric distance for RADIAL mode
+        dist_row = dist_box.row()
+        dist_row.enabled = (entry.trigger_type == 'RADIAL')
+        dist_row.prop(entry, "cull_distance", text="Cull Radius")
+
+        # ─── Placeholder Options ───────────────────────────────────
+        if entry.has_placeholder:
+            ph_box = box.box()
+            ph_box.label(text="Placeholder Settings")
+            ph_box.prop(entry, "placeholder_use_collection", text="Use Collection as Placeholder")
+            if entry.placeholder_use_collection:
+                ph_box.prop(entry, "placeholder_collection", text="Placeholder Collection")
             else:
-                box.prop(entry, "target_object", text="Object")
-
-            # grey‐out cull_distance when BOX
-            row_dist = box.row()
-            row_dist.enabled = (entry.trigger_type == 'RADIAL')
-            row_dist.prop(entry, "cull_distance")
-
-            # ─── placeholder ────────────────────────────
-            box.separator()
-            box.prop(entry, "has_placeholder")
-            if entry.has_placeholder:
-                box.prop(entry, "placeholder_use_collection", text="Placeholder Uses Collection")
-                if entry.placeholder_use_collection:
-                    box.prop(entry, "placeholder_collection", text="Placeholder Collection")
-                else:
-                    box.prop(entry, "placeholder_object", text="Placeholder Object")
+                ph_box.prop(entry, "placeholder_object", text="Placeholder Object")
+        else:
+            box.prop(entry, "has_placeholder", text="Enable Placeholder")

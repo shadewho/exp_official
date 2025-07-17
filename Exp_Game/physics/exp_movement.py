@@ -1,7 +1,5 @@
 # File: exp_movement.py
 
-import math
-import mathutils
 from mathutils import Vector
 
 # We import relevant helpers from exp_physics:

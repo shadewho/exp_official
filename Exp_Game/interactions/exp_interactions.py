@@ -2,17 +2,17 @@
 
 import bpy
 from mathutils import Vector
-from .exp_reactions import (execute_transform_reaction,
+from ..reactions.exp_reactions import (execute_transform_reaction,
                              schedule_transform, execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
                              execute_objective_counter_reaction,
                              execute_objective_timer_reaction, execute_sound_reaction
 )
-from .exp_custom_animations import execute_custom_action_reaction
-from .exp_time import get_game_time
-from .exp_objectives import update_all_objective_timers
-from .exp_mobility_and_game_reactions import execute_mobility_reaction
-from . import exp_custom_ui
+from ..animations.exp_custom_animations import execute_custom_action_reaction
+from ..props_and_utils.exp_time import get_game_time
+from ..systems.exp_objectives import update_all_objective_timers
+from ..reactions.exp_mobility_and_game_reactions import execute_mobility_reaction
+from ..reactions import exp_custom_ui
 
 # Global list to hold pending trigger tasks.
 _pending_trigger_tasks = []

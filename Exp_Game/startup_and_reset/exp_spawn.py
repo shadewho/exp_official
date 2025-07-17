@@ -3,7 +3,7 @@
 import bpy
 import math
 from mathutils import Vector, Euler
-from .exp_raycastutils import create_bvh_tree
+from ..physics.exp_raycastutils import create_bvh_tree
 
 def spawn_user():
     """Spawn the user character in the scene based on the current settings."""

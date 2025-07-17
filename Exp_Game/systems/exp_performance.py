@@ -130,8 +130,8 @@ class PerformanceEntry(PropertyGroup):
     exclude_collection: BoolProperty(
         name="Exclude Entire Collection",
         description=(
-            "When culling a collection radially, exclude the whole thing "
-            "from the view-layer instead of hiding each object individually"
+            "When enabled, hides the whole collection at once "
+            "instead of culling its objects one by one"
         ),
         default=True,
     )
@@ -190,7 +190,7 @@ class PerformanceEntry(PropertyGroup):
 class EXP_PERFORMANCE_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            layout.prop(item, "name", text="", emboss=False, icon='OUTLINER_OB_EMPTY')
+            layout.prop(item, "name", text="", emboss=False, icon='VIEW_PERSPECTIVE')
         elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text=item.name)

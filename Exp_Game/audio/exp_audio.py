@@ -2,11 +2,11 @@ import bpy
 import os
 import aud
 from bpy.types import PropertyGroup
-from .exp_animations import AnimState
-from ..exp_preferences import get_addon_path
+from ..animations.exp_animations import AnimState
+from ...exp_preferences import get_addon_path
 import shutil
 import time
-from .exp_time import get_game_time
+from ..props_and_utils.exp_time import get_game_time
 from bpy.props import StringProperty, IntProperty
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty, IntProperty

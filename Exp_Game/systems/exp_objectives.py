@@ -1,6 +1,6 @@
 # File: exp_objectives.py
 import bpy
-from .exp_time import get_game_time
+from ..props_and_utils.exp_time import get_game_time
 
 # File: exp_objectives.py
 

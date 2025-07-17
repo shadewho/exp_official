@@ -1,6 +1,6 @@
 import bpy
 import enum
-from .exp_time import get_game_time
+from ..props_and_utils.exp_time import get_game_time
 
 
 _global_anim_manager = None

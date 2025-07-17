@@ -1,7 +1,7 @@
 # File: exp_custom_animations.py
 
 import bpy
-from .exp_time import get_game_time  # <-- Import your game_time system
+from ..props_and_utils.exp_time import get_game_time  # <-- Import your game_time system
 
 # A global dictionary: object_name -> CustomActionManager
 _custom_managers = {}

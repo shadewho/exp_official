@@ -7,7 +7,7 @@
 import bpy
 import blf
 import time
-from .exp_time import get_game_time
+from ..props_and_utils.exp_time import get_game_time
 
 _ui_draw_handler = None
 

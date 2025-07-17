@@ -1,5 +1,5 @@
 import bpy
-from .exp_reaction_definition import ReactionDefinition, enum_objective_items
+from ..reactions.exp_reaction_definition import ReactionDefinition, enum_objective_items
 from .exp_interactions import trigger_mode_items
 
 

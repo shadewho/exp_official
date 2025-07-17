@@ -4,7 +4,7 @@ import math
 import mathutils
 from mathutils import Vector
 from .exp_raycastutils import BVHTree, create_bvh_tree
-from .exp_interactions import approximate_bounding_sphere_radius
+from ..interactions.exp_interactions import approximate_bounding_sphere_radius
 
 
 def apply_gravity(z_velocity, gravity, dt):

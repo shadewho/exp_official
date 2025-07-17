@@ -3,8 +3,8 @@
 
 import bpy
 import os
-from ..exp_preferences import get_addon_path
-from .exp_utilities import get_game_world
+from ...exp_preferences import get_addon_path
+from ..props_and_utils.exp_utilities import get_game_world
 
 # ────────────────────────────────────
 # Global for restoring workspace

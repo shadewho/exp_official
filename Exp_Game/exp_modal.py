@@ -3,33 +3,33 @@
 import bpy
 import math
 import time
-from .exp_physics import update_dynamic_meshes
-from .exp_utilities import get_game_world
-from .exp_movement import move_character
-from .exp_raycastutils import create_bvh_tree
-from .exp_spawn import spawn_user
-from .exp_view import update_view, shortest_angle_diff
-from .exp_animations import AnimationStateManager, set_global_animation_manager
-from .exp_audio import (get_global_audio_state_manager, clear_temp_sounds, 
+from .physics.exp_physics import update_dynamic_meshes
+from .props_and_utils.exp_utilities import get_game_world
+from .physics.exp_movement import move_character
+from .physics.exp_raycastutils import create_bvh_tree
+from .startup_and_reset.exp_spawn import spawn_user
+from .physics.exp_view import update_view, shortest_angle_diff
+from .animations.exp_animations import AnimationStateManager, set_global_animation_manager
+from .audio.exp_audio import (get_global_audio_state_manager, clear_temp_sounds, 
                         get_global_audio_manager, clean_audio_temp)
-from .exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
+from .startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene,
                             revert_to_original_workspace, revert_to_original_scene,
                             ensure_timeline_at_zero, ensure_object_mode)  
-from .exp_custom_animations import update_all_custom_managers
-from .exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
-from .exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
-from .exp_time import init_time, update_time, get_game_time
-from .exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text, show_controls_info
-from .exp_objectives import update_all_objective_timers, reset_all_objectives
-from .exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
+from .animations.exp_custom_animations import update_all_custom_managers
+from .interactions.exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
+from .reactions.exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
+from .props_and_utils.exp_time import init_time, update_time, get_game_time
+from .reactions.exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text, show_controls_info
+from .systems.exp_objectives import update_all_objective_timers, reset_all_objectives
+from .startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
-from . import exp_globals
-from .exp_globals import stop_all_sounds, update_sound_tasks
+from .audio import exp_globals
+from .audio.exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
-from .exp_performance import init_performance_state, update_performance_culling, restore_performance_state
-
+from .systems.exp_performance import init_performance_state, update_performance_culling, restore_performance_state
+from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -146,6 +146,7 @@ class ExpModal(bpy.types.Operator):
     def invoke(self, context, event):
         scene = context.scene
 
+        self.just_warped = False
         # ─── Capture both camera/character state ───────
         capture_initial_cam_state(self, context)
 
@@ -264,28 +265,11 @@ class ExpModal(bpy.types.Operator):
             set_global_animation_manager(self.animation_manager)
             move_armature_and_children_to_scene(self.target_object, context.scene)
 
-
-        # 7) Hide the cursor and confine it to the window ################
-        #MOUSE AND region #################################################
-        context.window.cursor_modal_set('NONE')
-
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                for region in area.regions:
-                    if region.type == 'WINDOW':
-                        self._view_region = region
-                        # compute center once
-                        self._cx = region.x + region.width  // 2
-                        self._cy = region.y + region.height // 2
-                        # init last_mouse for Windows fallback
-                        self.last_mouse_x = self._cx
-                        self.last_mouse_y = self._cy
-                        break
-                break
-        #MOUSE AND region #################################################
+        # 7) Setup modal cursor region and hide the system cursor
+        setup_cursor_region(context, self)
 
         # 8) Create a timer (runs as fast as possible, interval=0.0)
-        self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
+        self._timer = context.window_manager.event_timer_add(1/60.0, window=context.window)
         self._last_time = time.time()
 
         # 9) Add ourselves to Blender’s modal event loop
@@ -421,7 +405,7 @@ class ExpModal(bpy.types.Operator):
 
         # D) Mouse move => camera rotation
         elif event.type == 'MOUSEMOVE':
-            self.handle_mouse_move(context, event)
+            handle_mouse_move(self, context, event)
 
         return {'RUNNING_MODAL'}
     
@@ -652,11 +636,17 @@ class ExpModal(bpy.types.Operator):
             if not mg.allow_jump:
                 return
             if event.value == 'PRESS':
-                if self.is_grounded and not self.is_jumping and not self.jump_cooldown:
+                # only jump on the first press, when key was released before
+                if (self.jump_key_released and
+                    self.is_grounded and
+                    not self.is_jumping and
+                    not self.jump_cooldown):
                     self.is_jumping = True
                     self.z_velocity = 7.0
                     self.jump_key_released = False
+
             elif event.value == 'RELEASE':
+                # mark that the key is now free to trigger again
                 self.jump_key_released = True
 
 
@@ -665,40 +655,6 @@ class ExpModal(bpy.types.Operator):
             self.keys_pressed.add(event.type)
         elif event.value == 'RELEASE':
             self.keys_pressed.discard(event.type)
-
-    def handle_mouse_move(self, context, event):
-        """
-        Always warp the pointer back to the region center each frame,
-        ignoring the synthetic event that warp generates.
-        """
-        # Recompute region center every time (handles window resize / multi-monitor)
-        region = self._view_region
-        cx = region.x + region.width  // 2
-        cy = region.y + region.height // 2
-
-        # If this event is the synthetic warp back, ignore it
-        if abs(event.mouse_x - cx) < 2 and abs(event.mouse_y - cy) < 2:
-            # still update last_mouse_x/y so next real delta is correct
-            self.last_mouse_x = cx
-            self.last_mouse_y = cy
-            return
-
-        # Compute deltas relative to center
-        dx = event.mouse_x - cx
-        dy = event.mouse_y - cy
-
-        # Apply rotation
-        self.yaw   -= dx * self.sensitivity
-        self.pitch -= dy * self.sensitivity
-        self.pitch  = max(-math.pi/2 + 0.1, min(math.pi/2 - 0.1, self.pitch))
-
-        # Warp pointer back into center of the region
-        context.window.cursor_warp(cx, cy)
-
-        # Record for any other logic that needs last positions
-        self.last_mouse_x = cx
-        self.last_mouse_y = cy
-
 
     def handle_jump(self, event):
         """Manage jump start, cooldown, etc."""

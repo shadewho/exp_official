@@ -15,8 +15,8 @@ from .exp_ui import (
 )
 
 
-from .exp_spawn import EXPLORATORY_OT_RemoveCharacter
-from .exp_properties import (
+from .startup_and_reset.exp_spawn import EXPLORATORY_OT_RemoveCharacter
+from .props_and_utils.exp_properties import (
     remove_scene_properties,
     add_scene_properties,
     CharacterActionsPG,
@@ -25,24 +25,25 @@ from .exp_properties import (
     EXPLORATORY_OT_RemoveProxyMesh,
     EXPLORATORY_UL_ProxyMeshList,
 )
-from .exp_custom_ui import EXPLORE_OT_PreviewCustomText
-from .exp_utilities import EXPLORATORY_OT_SetGameWorld
-from .exp_startup import EXP_GAME_OT_StartGame
-from .exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
+
+from .reactions.exp_custom_ui import EXPLORE_OT_PreviewCustomText
+from .props_and_utils.exp_utilities import EXPLORATORY_OT_SetGameWorld
+from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
+from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
                         EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
                         EXP_AUDIO_OT_LoadCharacterAudioFile
 )
 
-from .exp_interaction_definition import InteractionDefinition, register_interaction_properties, unregister_interaction_properties
+from .interactions.exp_interaction_definition import InteractionDefinition, register_interaction_properties, unregister_interaction_properties
 
-from .exp_interactions import (
+from .interactions.exp_interactions import (
     EXPLORATORY_OT_AddInteraction,
     EXPLORATORY_OT_RemoveInteraction,
     EXPLORATORY_OT_AddReactionToInteraction,
     EXPLORATORY_OT_RemoveReactionFromInteraction,
 )
-from .exp_reaction_definition import ReactionDefinition
-from .exp_objectives import (
+from .reactions.exp_reaction_definition import ReactionDefinition
+from .systems.exp_objectives import (
     ObjectiveDefinition,
     EXPLORATORY_OT_AddObjective,
     EXPLORATORY_OT_RemoveObjective,
@@ -50,13 +51,13 @@ from .exp_objectives import (
     unregister_objective_properties
 )
 
-from .exp_performance import (
+from .systems.exp_performance import (
     register   as register_performance,
     unregister as unregister_performance
 )
-from .exp_mobility_and_game_reactions import MobilityGameReactionsPG
-from .exp_game_reset import EXPLORATORY_OT_ResetGame
-from .exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
+from .reactions.exp_mobility_and_game_reactions import MobilityGameReactionsPG
+from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
+from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
 
 
 def register():

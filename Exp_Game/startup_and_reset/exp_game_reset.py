@@ -1,13 +1,13 @@
 #Exploratory/Exp_Game/exp_game_reset.py
 
 import bpy
-from .exp_time import init_time
-from .exp_objectives import reset_all_objectives
-from .exp_reactions import reset_all_tasks, _set_property_value
-from .exp_interactions import reset_all_interactions
-from .exp_spawn import spawn_user
-from . import exp_globals
-from .exp_custom_ui import clear_all_text
+from ..props_and_utils.exp_time import init_time
+from ..systems.exp_objectives import reset_all_objectives
+from ..reactions.exp_reactions import reset_all_tasks, _set_property_value
+from ..interactions.exp_interactions import reset_all_interactions
+from ..startup_and_reset.exp_spawn import spawn_user
+from ..audio import exp_globals
+from ..reactions.exp_custom_ui import clear_all_text
 
 def capture_scene_state(self, context):
     """

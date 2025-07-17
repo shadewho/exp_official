@@ -4,7 +4,7 @@
 # It's intentionally minimal to avoid circular imports.
 import aud
 import bpy
-from .exp_time import get_game_time
+from ..props_and_utils.exp_time import get_game_time
 
 
 

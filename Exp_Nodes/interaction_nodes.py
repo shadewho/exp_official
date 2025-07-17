@@ -1,7 +1,7 @@
 #interaction_nodes.py
 import bpy
 from bpy.types import Node
-from ..Exp_Game.exp_interactions import InteractionDefinition
+from ..Exp_Game.interactions.exp_interactions import InteractionDefinition
 
 # --- Callback for populating the dropdown list from scene.custom_interactions ---
 def enum_interaction_items_callback(self, context):
