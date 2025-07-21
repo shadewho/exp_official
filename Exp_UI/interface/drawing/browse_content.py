@@ -134,8 +134,10 @@ def build_browse_content(template_item):
                 data_list,
                 (thumb_x1, thumb_y1, thumb_x2, thumb_y2),
                 pkg.get("package_name", "NoName"),
-                pkg.get("likes", 0),
-                pkg.get("download_count", 0),
+                likes          = pkg.get("likes", 0),
+                download_count = pkg.get("download_count", 0),
+                price          = pkg.get("price"),
+                file_type      = pkg.get("file_type")       
             )
 
         except Exception as e:
@@ -240,53 +242,48 @@ def add_thumbnail_title(
     thumb_box,
     title_text,
     likes=0,
-    download_count=0
+    download_count=0,
+    price=None,           # NEW
+    file_type="world"     # NEW  ('shop_item', 'world', 'event', …)
 ):
     """
-    Draws two lines of text under the thumbnail:
-      1) Title (truncated to 20 chars)
-      2) "↓ <download_count> | ♥ <likes>"
+    Two lines of text under every thumbnail:
+      1) Title  (max 20 chars)
+      2) "↓ dls | ♥ likes"  or
+         "↓ dls | ♥ likes | $price"  when file_type == 'shop_item'
     """
     x1, y1, x2, y2 = thumb_box
-    thumb_height = (y2 - y1)
+    thumb_h        = y2 - y1
 
-    # 1) Truncate title at 20 chars, adding "..."
-    max_chars = 20
-    if len(title_text) > max_chars:
-        title_text = title_text[:(max_chars - 3)] + "..."
+    # ── 1) title line ──────────────────────────────────────────────
+    title = (title_text[:17] + "...") if len(title_text) > 20 else title_text
+    cx    = (x1 + x2) / 2
+    title_y = y1 - THUMBNAIL_TEXT_OFFSET_RATIO * thumb_h
+    font_sz = THUMBNAIL_TEXT_SIZE_RATIO * thumb_h
 
-    center_x = (x1 + x2) / 2.0
+    data_list.append(build_text_item(
+        text       = title,
+        x          = cx,
+        y          = title_y,
+        size       = font_sz,
+        color      = THUMBNAIL_TEXT_COLOR,
+        alignment  = THUMBNAIL_TEXT_ALIGNMENT,
+        multiline  = False
+    ))
 
-    # 2) Vertical offset from bottom of thumbnail for the title line
-    offset_pixels = THUMBNAIL_TEXT_OFFSET_RATIO * thumb_height
-    title_y = y1 - offset_pixels
+    # ── 2) meta line (downloads | likes | price?) ──────────────────
+    if file_type == "shop_item" and price is not None:
+        meta = f"↓ {download_count} | ♥ {likes} | ${int(price)}"
+    else:
+        meta = f"↓ {download_count} | ♥ {likes}"
 
-    # 3) Font size
-    dynamic_font_size = THUMBNAIL_TEXT_SIZE_RATIO * thumb_height
+    data_list.append(build_text_item(
+        text       = meta,
+        x          = cx,
+        y          = title_y - font_sz * 1.2,
+        size       = font_sz * 0.9,
+        color      = THUMBNAIL_TEXT_COLOR,
+        alignment  = THUMBNAIL_TEXT_ALIGNMENT,
+        multiline  = False
+    ))
 
-    # ---- First line: Title ----
-    text_label = build_text_item(
-        text=title_text,
-        x=center_x,
-        y=title_y,
-        size=dynamic_font_size,
-        color=THUMBNAIL_TEXT_COLOR,
-        alignment=THUMBNAIL_TEXT_ALIGNMENT,
-        multiline=False
-    )
-    data_list.append(text_label)
-
-    # ---- Second line: Downloads + Likes ----
-    meta_y = title_y - (dynamic_font_size * 1.2)
-    meta_text = f"↓ {download_count} | ♥ {likes}"
-
-    meta_label = build_text_item(
-        text=meta_text,
-        x=center_x,
-        y=meta_y,
-        size=dynamic_font_size * 0.9,
-        color=THUMBNAIL_TEXT_COLOR,
-        alignment=THUMBNAIL_TEXT_ALIGNMENT,
-        multiline=False
-    )
-    data_list.append(meta_label)

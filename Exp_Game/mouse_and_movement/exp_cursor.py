@@ -1,66 +1,65 @@
-# Exploratory/mouse_and_movement/exp_cursor.py
-# Optimised for Blender 4.5+ raw-input; safe fallback for ≤ 4.4
-
-# Exploratory/mouse_and_movement/exp_cursor.py
-# Blender 4.5+ only – uses relative-pointer events (no fallback paths)
+# File: Exploratory/Exp_Game/mouse_and_movement/exp_cursor.py
 
 import bpy
 import math
+import sys
+
+# ─── Windows-only cursor confinement ────────────────────────────────────────────
+if sys.platform == 'win32':
+    import ctypes
+    import ctypes.wintypes
+
+    def confine_cursor_to_window():
+        hwnd = ctypes.windll.user32.GetActiveWindow()
+        rect = ctypes.wintypes.RECT()
+        ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect))
+        # client→screen top-left
+        pt = ctypes.wintypes.POINT(rect.left, rect.top)
+        ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        rect.left, rect.top = pt.x, pt.y
+        # client→screen bottom-right
+        pt = ctypes.wintypes.POINT(rect.right, rect.bottom)
+        ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        rect.right, rect.bottom = pt.x, pt.y
+        ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
+
+    def release_cursor_clip():
+        ctypes.windll.user32.ClipCursor(None)
+
+else:
+    def confine_cursor_to_window(): pass
+    def release_cursor_clip():    pass
 
 
-# ─────────────────────────────────────────────
-# Utility
-# ─────────────────────────────────────────────
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(v, hi))
-
-
-# ─────────────────────────────────────────────
-# Setup – call from ExpModal.invoke()
-# ─────────────────────────────────────────────
-def setup_cursor_region(ctx, op):
+def setup_cursor_region(context, operator):
     """
-    • Locates the VIEW_3D window region.
-    • Records its centre (op._cx / op._cy).
-    • Hides the OS cursor.
+    Hide the system cursor, lock it in modal, and on Windows
+    confine it to the Blender window. Initialize raw-delta state.
     """
-    ctx.window.cursor_modal_set('HAND')  # invisible cursor; change to 'HAND' if desired
-
-    for area in ctx.screen.areas:
-        if area.type != 'VIEW_3D':
-            continue
-        for region in area.regions:
-            if region.type == 'WINDOW':
-                op._reg = region
-                op._cx  = region.x + region.width  // 2
-                op._cy  = region.y + region.height // 2
-                return
-    raise RuntimeError("VIEW_3D WINDOW region not found")
+    context.window.cursor_modal_set('HAND')
+    confine_cursor_to_window()
+    operator.last_mouse_x = None
+    operator.last_mouse_y = None
 
 
-# ─────────────────────────────────────────────
-# Mouse-move handler – call from ExpModal.modal()
-# ─────────────────────────────────────────────
-def handle_mouse_move(op, ctx, evt):
+def handle_mouse_move(operator, context, event):
     """
-    Raw relative-pointer events (Blender 4.5+):
-      • Apply deltas to yaw/pitch.
-      • Clamp pitch.
-      • Update camera immediately.
-      • Warp OS cursor back to centre so the arrow never drifts.
+    Record the first MOUSEMOVE, then compute dx/dy on each move,
+    apply yaw/pitch, clamp pitch, and update last_mouse_x/_y.
     """
-    if evt.is_mouse_absolute:
-        # Raw input disabled – nothing to do (addon targets 4.5+ raw mode only).
+    if operator.last_mouse_x is None or operator.last_mouse_y is None:
+        operator.last_mouse_x = event.mouse_x
+        operator.last_mouse_y = event.mouse_y
         return
 
-    # Relative motion (pixels since previous event)
-    dx = evt.mouse_x - evt.mouse_prev_x
-    dy = evt.mouse_y - evt.mouse_prev_y
+    dx = event.mouse_x - operator.last_mouse_x
+    dy = event.mouse_y - operator.last_mouse_y
 
-    # Apply to camera orientation
-    op.yaw   -= dx * op.sensitivity
-    op.pitch -= dy * op.sensitivity
-    op.pitch  = _clamp(op.pitch, -math.pi / 2 + 0.1,  math.pi / 2 - 0.1)
+    operator.yaw   -= dx * operator.sensitivity
+    operator.pitch -= dy * operator.sensitivity
 
-    # Keep OS pointer fixed in the window centre
-    ctx.window.cursor_warp(op._cx, op._cy)
+    operator.pitch = max(-math.pi/2 + 0.1,
+                         min(math.pi/2 - 0.1, operator.pitch))
+
+    operator.last_mouse_x = event.mouse_x
+    operator.last_mouse_y = event.mouse_y

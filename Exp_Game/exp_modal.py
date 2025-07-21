@@ -29,14 +29,14 @@ from .audio import exp_globals
 from .audio.exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
 from .systems.exp_performance import init_performance_state, update_performance_culling, restore_performance_state
-from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move
+from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move, release_cursor_clip
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
 
     bl_idname = "view3d.exp_modal"
     bl_label = "Third Person Orbit"
-    bl_options = {'BLOCKING'}
+    bl_options = {'BLOCKING', 'GRAB_CURSOR'}
 
     # ---------------------------
     #  Properties
@@ -146,7 +146,6 @@ class ExpModal(bpy.types.Operator):
     def invoke(self, context, event):
         scene = context.scene
 
-        self.just_warped = False
         # ─── Capture both camera/character state ───────
         capture_initial_cam_state(self, context)
 
@@ -269,7 +268,7 @@ class ExpModal(bpy.types.Operator):
         setup_cursor_region(context, self)
 
         # 8) Create a timer (runs as fast as possible, interval=0.0)
-        self._timer = context.window_manager.event_timer_add(1/60.0, window=context.window)
+        self._timer = context.window_manager.event_timer_add(1.0/60.0, window=context.window)
         self._last_time = time.time()
 
         # 9) Add ourselves to Blender’s modal event loop
@@ -430,6 +429,7 @@ class ExpModal(bpy.types.Operator):
     def cancel(self, context):
         
         # Restore the cursor modal state
+        release_cursor_clip()
         context.window.cursor_modal_restore()
 
         #restore UI mode

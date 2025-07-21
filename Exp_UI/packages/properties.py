@@ -80,6 +80,12 @@ class PackageProps(PropertyGroup):
         default=0
     )
 
+    price: bpy.props.FloatProperty(
+        name="Price (USD)",
+        description="Price of a shop item",
+        default=0.0,
+        precision=2
+    )
 
     subscription_tier: StringProperty(
         name="Subscription Tier",
@@ -133,6 +139,8 @@ class PackageProps(PropertyGroup):
         self.upload_date = pkg.get("upload_date", "N/A")
         self.download_count = pkg.get("download_count", 0)
         self.file_type      = pkg.get("file_type", "")
+        raw_price = pkg.get("price")          # may be None / string / float
+        self.price = float(raw_price) if raw_price not in (None, "") else 0.0
         if pkg.get("file_type") == "event":
             self.event_submission_id = pkg.get("submission_id", 0)
 

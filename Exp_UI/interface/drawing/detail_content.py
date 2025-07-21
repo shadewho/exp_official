@@ -223,6 +223,8 @@ def build_item_detail_text(data_list, template_item):
     likes = addon_data.likes
     upload_date = addon_data.upload_date
     download_count = addon_data.download_count  
+    price_float    = addon_data.price
+    file_type      = addon_data.file_type
 
     # Heart symbol
     heart_char = "♥"
@@ -230,20 +232,33 @@ def build_item_detail_text(data_list, template_item):
     upload_date_formatted = format_relative_time(upload_date)
 
     # Add blank lines between items for spacing
+    # Build the lines, inserting Price only for shop_item
     lines = [
         f"Title: {title}",
-        "",  # blank line
+        "",
         f"Author: {author}",
-        "",  # blank line
+        "",
         f"Description: {description}",
-        "",  # blank line
+        "",
         f"Likes: {heart_char} {likes}",
-        "",  # blank line
-        f"Downloads: {download_count}",  # <--- Insert the new line
-        "",  # blank line
+        "",
+        f"Downloads: {download_count}",
+    ]
+
+    # Insert Price line for shop_item
+    if file_type == "shop_item":
+        # whole‐integer USD
+        price_int = int(price_float)
+        lines += [
+            "",
+            f"Price: ${price_int}",
+        ]
+
+    # Finally the uploaded timestamp
+    lines += [
+        "",
         f"Uploaded: {upload_date_formatted} ago",
         ""
-
     ]
 
     x1, y1, x2, y2 = template_item["pos"]

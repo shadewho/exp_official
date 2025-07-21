@@ -2,6 +2,7 @@
 
 import bpy
 import queue
+import urllib.parse
 from ...auth.helpers import load_token
 from ...internet.helpers import is_internet_available
 from ...main_config import EVENTS_URL, SHOP_URL
@@ -278,8 +279,15 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             url=EVENTS_URL
                         )
                         return {'RUNNING_MODAL'}
+                    
                     elif button["name"] == "Visit_Shop_Icon":
-                        bpy.ops.webapp.open_url('INVOKE_DEFAULT', url=SHOP_URL)
+                        # Build a shop URL that searches for the current package_name
+                        pkg_name = context.scene.my_addon_data.package_name or ""
+                        # URL‐encode the title so spaces & punctuation are handled
+                        encoded = urllib.parse.quote_plus(pkg_name)
+                        # Append the search params; note submit_search left empty as per your example
+                        shop_url = f"{SHOP_URL}?search_query={encoded}&submit_search=&category=shop_item"
+                        bpy.ops.webapp.open_url('INVOKE_DEFAULT', url=shop_url)
                         return {'RUNNING_MODAL'}
                     
                     else:
