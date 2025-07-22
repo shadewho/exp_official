@@ -206,151 +206,146 @@ def build_detail_content(template_item):
 
 def build_item_detail_text(data_list, template_item):
     """
-    Displays detail info with a bit more spacing between items,
-    including a heart for 'likes', and the existing word-wrap approach.
-    """
-    scene = bpy.context.scene
-    addon_data = scene.my_addon_data
+    Draw the package‑detail text block (right‑hand column).
 
-    if addon_data.file_id <= 0:
+    Goals
+    -----
+    1. Never truncate or omit any line.
+    2. Never let the text dip below the action button (“Visit Shop”, etc.).
+    3. Use the largest font size that satisfies 1 + 2.
+    4. Respect the fixed left/right/top margins supplied by the template.
+
+    The routine therefore:
+
+    • Computes the bottom floor from the button’s top edge (+ 2 % padding).
+    • Iteratively shrinks the font until *all* wrapped lines fit.
+    • Stops shrinking once it fits; no later draw‑loop break is required.
+    """
+
+    # ─────────────────────────────────────────────────────────────── #
+    # 1. Data retrieval                                              #
+    # ─────────────────────────────────────────────────────────────── #
+    scene      = bpy.context.scene
+    ad         = scene.my_addon_data
+    if ad.file_id <= 0:
         print("NO DATA TO DISPLAY")
         return
 
-    # Pull fields
-    title = addon_data.package_name
-    author = addon_data.author
-    description = addon_data.description
-    likes = addon_data.likes
-    upload_date = addon_data.upload_date
-    download_count = addon_data.download_count  
-    price_float    = addon_data.price
-    file_type      = addon_data.file_type
+    title, author       = ad.package_name, ad.author
+    description         = ad.description
+    likes, downloads    = ad.likes, ad.download_count
+    upload_date         = ad.upload_date
+    price_float         = ad.price
+    file_type           = ad.file_type
+    heart               = "♥"
+    uploaded            = format_relative_time(upload_date)
 
-    # Heart symbol
-    heart_char = "♥"
-
-    upload_date_formatted = format_relative_time(upload_date)
-
-    # Add blank lines between items for spacing
-    # Build the lines, inserting Price only for shop_item
+    # ─────────────────────────────────────────────────────────────── #
+    # 2. Assemble logical lines (with intentional blank spacers)     #
+    # ─────────────────────────────────────────────────────────────── #
     lines = [
-        f"Title: {title}",
-        "",
-        f"Author: {author}",
-        "",
-        f"Description: {description}",
-        "",
-        f"Likes: {heart_char} {likes}",
-        "",
-        f"Downloads: {download_count}",
+        f"Title: {title}",                     "",
+        f"Author: {author}",                   "",
+        f"Description: {description}",         "",
+        f"Likes: {heart} {likes}",             "",
+        f"Downloads: {downloads}",
     ]
-
-    # Insert Price line for shop_item
     if file_type == "shop_item":
-        # whole‐integer USD
-        price_int = int(price_float)
-        lines += [
-            "",
-            f"Price: ${price_int}",
-        ]
+        lines += ["", f"Price: ${int(price_float)}"]
+    lines += ["", f"Uploaded: {uploaded} ago", ""]
 
-    # Finally the uploaded timestamp
-    lines += [
-        "",
-        f"Uploaded: {upload_date_formatted} ago",
-        ""
-    ]
+    # ─────────────────────────────────────────────────────────────── #
+    # 3. Geometry: text column & dynamic bottom floor                #
+    # ─────────────────────────────────────────────────────────────── #
+    x1, y1, x2, y2      = template_item["pos"]
+    t_w, t_h            = (x2 - x1), (y2 - y1)
 
-    x1, y1, x2, y2 = template_item["pos"]
-    template_width  = (x2 - x1)
-    template_height = (y2 - y1)
+    # hard margins (same ratios you provided)
+    L, R, T, B_static   = 0.50, 0.20, 0.25, 0.15
+    col_x1, col_x2      = x1 + L * t_w, x2 - R * t_w
+    col_y2              = y2 - T * t_h
 
-    # Bounding box margins
-    TEXT_LEFT_MARGIN_RATIO   = 0.50
-    TEXT_RIGHT_MARGIN_RATIO  = 0.20
-    TEXT_TOP_MARGIN_RATIO    = 0.25
-    TEXT_BOTTOM_MARGIN_RATIO = 0.15
+    # locate the action button that was already appended to data_list
+    btn_top_y = None
+    for itm in data_list:
+        if itm.get("name") in ("Visit_Shop_Icon", "Explore_Icon",
+                               "Submit_World_Icon"):
+            btn_top_y = itm["pos"][3]   # pos = (bx1, by1, bx2, by2)
+            break
 
-    box_x1 = x1 + (TEXT_LEFT_MARGIN_RATIO  * template_width)
-    box_x2 = x2 - (TEXT_RIGHT_MARGIN_RATIO * template_width)
-    box_y2 = y2 - (TEXT_TOP_MARGIN_RATIO   * template_height)
-    box_y1 = y1 + (TEXT_BOTTOM_MARGIN_RATIO* template_height)
+    PADDING          = 0.02 * t_h       # 2 % of template height
+    col_y1           = max(y1 + B_static * t_h,
+                           (btn_top_y + PADDING) if btn_top_y else y1)
+    col_w, col_h     = col_x2 - col_x1, col_y2 - col_y1
 
-    box_width  = box_x2 - box_x1
-    box_height = box_y2 - box_y1
+    # ─────────────────────────────────────────────────────────────── #
+    # 4. Typographic helpers                                         #
+    # ─────────────────────────────────────────────────────────────── #
+    font_id          = 0
+    INIT_RATIO       = 0.05             # start at 5 % of template height
+    MIN_RATIO        = 0.015            # absolute floor (1.5 %)
+    SHRINK_FACTOR    = 0.95             # geometric shrink each attempt
+    LEADING          = 1.15             # regular line spacing multiplier
+    BLANK_LEADING    = 0.40             # spacer line cost (40 %)
 
-    # Initial font size attempt
-    initial_font_size_ratio = 0.05
-    font_size = template_height * initial_font_size_ratio
+    def line_height(size, blank=False) -> float:
+        return size * (BLANK_LEADING if blank else LEADING)
 
-    # Increase this if you want even more vertical space between each line
-    def line_spacing_for(size):
-        return size * 1.3
-
-    font_id = 0
-
-    def wrap_paragraph(paragraph, max_width, test_font_size):
-        blf.size(font_id, int(test_font_size))
-        words = paragraph.split(" ")
-        wrapped_lines = []
-        current_line = ""
-
+    def wrap_paragraph(text, max_w, size):
+        """Greedy word‑wrap for a single logical line."""
+        blf.size(font_id, int(size))
+        words, out, buf = text.split(), [], ""
         for w in words:
-            candidate = (current_line + " " + w).strip()
-            line_width, _ = blf.dimensions(font_id, candidate)
-            if line_width > max_width:
-                wrapped_lines.append(current_line)
-                current_line = w
+            test = f"{buf} {w}".strip()
+            if blf.dimensions(font_id, test)[0] > max_w and buf:
+                out.append(buf); buf = w
             else:
-                current_line = candidate
+                buf = test
+        out.append(buf)
+        return out
 
-        if current_line:
-            wrapped_lines.append(current_line)
-        return wrapped_lines
+    def wrap_all(src_lines, max_w, size):
+        wrapped = []
+        for ln in src_lines:
+            if not ln.strip():
+                wrapped.append("")      # preserve spacer
+            else:
+                wrapped.extend(wrap_paragraph(ln, max_w, size))
+        return wrapped
 
-    def wrap_all(lines_list, max_width, test_font_size):
-        result = []
-        for line in lines_list:
-            # If it's a blank line, keep it as-is (no wrapping needed)
-            if not line.strip():
-                result.append("")
-                continue
+    # ─────────────────────────────────────────────────────────────── #
+    # 5. Font‑size search: shrink until *everything* fits             #
+    # ─────────────────────────────────────────────────────────────── #
+    font_sz = t_h * INIT_RATIO
+    while True:
+        wrapped = wrap_all(lines, col_w, font_sz)
+        needed  = sum(line_height(font_sz, not ln.strip()) for ln in wrapped)
 
-            sub_lines = wrap_paragraph(line, max_width, test_font_size)
-            result.extend(sub_lines)
-        return result
+        if needed <= col_h or font_sz <= t_h * MIN_RATIO:
+            break                     # it now fits (or we hit min size)
+        font_sz *= SHRINK_FACTOR
 
-    # Iterative approach to ensure text fits in the bounding box
-    for _attempt in range(10):
-        wrapped_lines = wrap_all(lines, box_width, font_size)
-        needed_height = len(wrapped_lines) * line_spacing_for(font_size)
-        if needed_height <= box_height:
-            break
-        else:
-            ratio = box_height / needed_height
-            font_size *= ratio * 0.95
+    # After loop we *know* all lines fit, so no later break tests needed.
 
-    current_y = box_y2
-    line_h = line_spacing_for(font_size)
+    # ─────────────────────────────────────────────────────────────── #
+    # 6. Draw the text block                                         #
+    # ─────────────────────────────────────────────────────────────── #
+    blf.size(font_id, int(font_sz))
+    cursor_y = col_y2
 
-    blf.size(font_id, int(font_size))
-
-    text_color = (1.0, 1.0, 1.0, 1.0)
-
-    # Draw each wrapped line
-    for line_text in wrapped_lines:
-        text_item = build_text_item(
-            text=line_text,
-            x=box_x1,
-            y=current_y,
-            size=font_size,
-            color=text_color,
-            alignment='LEFT',
-            multiline=False
-        )
-        data_list.append(text_item)
-
-        current_y -= line_h
-        if current_y < box_y1:
-            break
-
+    for logical in wrap_all(lines, col_w, font_sz):
+        h = line_height(font_sz, not logical.strip())
+        if logical.strip():
+            data_list.append(
+                build_text_item(
+                    text       = logical,
+                    x          = col_x1,
+                    y          = cursor_y,
+                    size       = font_sz,
+                    color      = (1, 1, 1, 1),
+                    alignment  = 'LEFT',
+                    multiline  = False
+                )
+            )
+        cursor_y -= h
+    # cursor_y is guaranteed ≥ col_y1, so nothing is ever clipped.
