@@ -2,6 +2,7 @@
 
 import os
 import bpy
+import math  
 import gpu
 import threading
 from gpu_extras.batch import batch_for_shader
@@ -137,7 +138,9 @@ def build_browse_content(template_item):
                 likes          = pkg.get("likes", 0),
                 download_count = pkg.get("download_count", 0),
                 price          = pkg.get("price"),
-                file_type      = pkg.get("file_type")       
+                file_type      = pkg.get("file_type"),   
+                vote_count     = pkg.get("vote_count", 0),
+                rating         = pkg.get("rating", 0.0),    
             )
 
         except Exception as e:
@@ -243,8 +246,10 @@ def add_thumbnail_title(
     title_text,
     likes=0,
     download_count=0,
-    price=None,           # NEW
-    file_type="world"     # NEW  ('shop_item', 'world', 'event', …)
+    price=None,
+    file_type="world",
+    vote_count = 0,
+    rating=0.0
 ):
     """
     Two lines of text under every thumbnail:
@@ -271,9 +276,13 @@ def add_thumbnail_title(
         multiline  = False
     ))
 
-    # ── 2) meta line (downloads | likes | price?) ──────────────────
+    # ── 2) meta line --------------------------------------------------
     if file_type == "shop_item" and price is not None:
-        meta = f"↓ {download_count} | ♥ {likes} | ${int(price)}"
+        # round up to the nearest integer, no float
+        whole = int(math.ceil(rating))
+        meta  = f"↓ {download_count} | ⭐ {whole}/5 | ${int(price)}"
+    elif file_type == "event": 
+        meta = f"↓ {download_count} | ♥ {likes} | ⭐ {vote_count}"
     else:
         meta = f"↓ {download_count} | ♥ {likes}"
 
@@ -286,4 +295,3 @@ def add_thumbnail_title(
         alignment  = THUMBNAIL_TEXT_ALIGNMENT,
         multiline  = False
     ))
-

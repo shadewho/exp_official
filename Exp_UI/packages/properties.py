@@ -5,7 +5,8 @@ from bpy.props import (
     BoolProperty,
     IntProperty,
     StringProperty,
-    CollectionProperty
+    CollectionProperty,
+    FloatProperty
 )
 class MyAddonComment(PropertyGroup):
     """
@@ -113,6 +114,19 @@ class PackageProps(PropertyGroup):
         name="Event Submission ID",
         default=0
     )
+    vote_count: IntProperty(
+        name        = "Vote Count",
+        description = "Votes (events only)",
+        default     = 0
+    )
+    rating: FloatProperty(
+        name="Rating",
+        description="Average review rating (0.0–5.0)",
+        default=0.0,
+        min=0.0,
+        max=5.0,
+        precision=1
+    )
     username: StringProperty(
         name="Username",
         description="Logged-in user’s name",
@@ -141,8 +155,15 @@ class PackageProps(PropertyGroup):
         self.file_type      = pkg.get("file_type", "")
         raw_price = pkg.get("price")          # may be None / string / float
         self.price = float(raw_price) if raw_price not in (None, "") else 0.0
+        if pkg.get("file_type") == "shop_item":
+            self.rating = float(pkg.get("rating", 0.0))
+        else:
+            self.rating = 0.0
         if pkg.get("file_type") == "event":
-            self.event_submission_id = pkg.get("submission_id", 0)
+            self.vote_count           = pkg.get("vote_count", 0)
+            self.event_submission_id  = pkg.get("submission_id", 0)
+        else:
+            self.vote_count = 0
 
 
 # This property will hold the entire events data fetched from the backend.

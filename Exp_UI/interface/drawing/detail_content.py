@@ -15,6 +15,8 @@ from .config import (
 )
 from ...cache_system.persistence import get_or_load_image, get_or_create_texture
 from ...cache_system.manager import cache_manager
+from .fonts import get_font_id
+
 def build_detail_content(template_item):
     """
     Build the detail view content, including:
@@ -239,6 +241,7 @@ def build_item_detail_text(data_list, template_item):
     file_type           = ad.file_type
     heart               = "♥"
     uploaded            = format_relative_time(upload_date)
+    votes               = ad.vote_count
 
     # ─────────────────────────────────────────────────────────────── #
     # 2. Assemble logical lines (with intentional blank spacers)     #
@@ -252,6 +255,8 @@ def build_item_detail_text(data_list, template_item):
     ]
     if file_type == "shop_item":
         lines += ["", f"Price: ${int(price_float)}"]
+    if file_type == "event":                 # ← add these three lines
+        lines += ["", f"Votes: ★ {votes}"]   # ←
     lines += ["", f"Uploaded: {uploaded} ago", ""]
 
     # ─────────────────────────────────────────────────────────────── #
@@ -261,7 +266,7 @@ def build_item_detail_text(data_list, template_item):
     t_w, t_h            = (x2 - x1), (y2 - y1)
 
     # hard margins (same ratios you provided)
-    L, R, T, B_static   = 0.50, 0.20, 0.25, 0.15
+    L, R, T, B_static   = 0.50, 0.05, 0.25, 0.15
     col_x1, col_x2      = x1 + L * t_w, x2 - R * t_w
     col_y2              = y2 - T * t_h
 
@@ -281,7 +286,7 @@ def build_item_detail_text(data_list, template_item):
     # ─────────────────────────────────────────────────────────────── #
     # 4. Typographic helpers                                         #
     # ─────────────────────────────────────────────────────────────── #
-    font_id          = 0
+    font_id          = get_font_id()
     INIT_RATIO       = 0.05             # start at 5 % of template height
     MIN_RATIO        = 0.015            # absolute floor (1.5 %)
     SHRINK_FACTOR    = 0.95             # geometric shrink each attempt

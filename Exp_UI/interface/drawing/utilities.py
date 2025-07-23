@@ -6,9 +6,13 @@ import gpu
 from .config import LAST_VIEWPORT_SIZE, TEMPLATE_ASPECT_RATIO, OFFSET_FACTOR
 from datetime import datetime, timezone
 from gpu_extras.batch import batch_for_shader
+from .fonts import get_font_id 
 # ------------------------------------------------------------------------
 # Text Drawing Utilities
 # ------------------------------------------------------------------------
+
+CUSTOM_FONT_ID = get_font_id()
+
 def build_text_item(
     text, 
     x, 
@@ -250,7 +254,7 @@ def draw_text_item(item):
     alignment_mode = item["alignment"]
     multiline = item["multiline"]
 
-    font_id = 2  # or any other channel if you prefer
+    font_id = CUSTOM_FONT_ID  # or any other channel if you prefer
     blf.color(font_id, r, g, b, a)
     blf.size(font_id, int(size))
 

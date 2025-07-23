@@ -10,7 +10,7 @@ TEMPLATE_ASPECT_RATIO = 2.0
 OFFSET_FACTOR = 0.1
 THUMBNAIL_SPACING_FACTOR = 0.2
 
-THUMBNAIL_TEXT_OFFSET_RATIO = 0.12 # 5% of thumbnail height
+THUMBNAIL_TEXT_OFFSET_RATIO = 0.16 # 5% of thumbnail height
 THUMBNAIL_TEXT_SIZE_RATIO   = 0.12  # 12% of thumbnail height as font size
 
 THUMBNAIL_TEXT_SIZE = 14            # Font size for thumbnail titles
@@ -38,4 +38,7 @@ SUBMIT_WORLD_BUTTON_PATH = os.path.join(os.path.dirname(__file__), "ui_templates
 LOADING_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "ui_templates", "loading.jpg")
 MISSING_THUMB = os.path.join(os.path.dirname(__file__),"ui_templates", "missing_thumbnail.jpg")
 
+CUSTOM_FONT_PATH      = os.path.join(os.path.dirname(__file__),
+                                     "custom_font",      # folder you created
+                                     "MartianMono_SemiExpanded-SemiBold.ttf")  # exact filename
 LAST_VIEWPORT_SIZE = {"width": 0, "height": 0}
