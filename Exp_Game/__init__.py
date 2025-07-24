@@ -130,6 +130,7 @@ def register():
     
     # --- Scene Properties ---
     add_scene_properties()
+    
 
     bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
 

@@ -108,15 +108,29 @@ def get_or_create_texture(img):
 
 def clear_image_datablocks():
     """
-    Remove all cached images/textures from Blender and clear our caches.
+    Remove every image GPU resource we ever loaded and
+    empty the in‑memory lookup tables – **without** raising
+    ReferenceError even if the datablock vanished when the
+    new .blend was opened.
     """
     global LOADED_IMAGES, LOADED_TEXTURES
+
     for path, img in list(LOADED_IMAGES.items()):
-        if img and img.name in bpy.data.images:
-            try:
-                bpy.data.images.remove(bpy.data.images[img.name], do_unlink=True)
-            except Exception:
-                pass
+        try:
+            # Accessing img.name fails if the datablock is already gone.
+            img_name = img.name
+        except ReferenceError:
+            # Datablock died during the file switch – just forget it.
+            pass
+        else:
+            # Datablock is still alive → remove it cleanly
+            if img_name in bpy.data.images:
+                try:
+                    bpy.data.images.remove(bpy.data.images[img_name],
+                                           do_unlink=True)
+                except Exception:
+                    pass
+
     LOADED_IMAGES.clear()
     LOADED_TEXTURES.clear()
 

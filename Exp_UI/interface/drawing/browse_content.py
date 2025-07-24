@@ -223,7 +223,7 @@ def build_browse_content(template_item):
     # --- 5) Page label ---
     try:
         page_label = f"Page {page} / {total_pages}"
-        text_size = template_height * 0.03
+        text_size = template_height * 0.035
         text_y = y1 + 0.01 * template_height
         data_list.append({
             "type":     "text",
@@ -261,7 +261,7 @@ def add_thumbnail_title(
     thumb_h        = y2 - y1
 
     # ── 1) title line ──────────────────────────────────────────────
-    title = (title_text[:17] + "...") if len(title_text) > 20 else title_text
+    title = (title_text[:20] + "...") if len(title_text) > 20 else title_text
     cx    = (x1 + x2) / 2
     title_y = y1 - THUMBNAIL_TEXT_OFFSET_RATIO * thumb_h
     font_sz = THUMBNAIL_TEXT_SIZE_RATIO * thumb_h
@@ -278,11 +278,10 @@ def add_thumbnail_title(
 
     # ── 2) meta line --------------------------------------------------
     if file_type == "shop_item" and price is not None:
-        # round up to the nearest integer, no float
-        whole = int(math.ceil(rating))
-        meta  = f"↓ {download_count} | ⭐ {whole}/5 | ${int(price)}"
+        # show average review rating instead of ♥ likes
+        meta = f"↓ {download_count} | ★ {rating:.1f}/5 | ${int(price)}"
     elif file_type == "event": 
-        meta = f"↓ {download_count} | ♥ {likes} | ⭐ {vote_count}"
+        meta = f"↓ {download_count} | ♥ {likes} | ★ {vote_count}"
     else:
         meta = f"↓ {download_count} | ♥ {likes}"
 

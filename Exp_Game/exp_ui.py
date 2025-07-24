@@ -672,6 +672,7 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
             # ── E) Appearance ──────────────────────────────────────────────────────
             style_box = box2.box()
             style_box.label(text="Appearance")
+            style_box.prop(reaction, "custom_text_font",  text="Font")
             style_box.prop(reaction, "custom_text_color", text="Color")
 
             # ── F) Preview Button ───────────────────────────────────────────────────

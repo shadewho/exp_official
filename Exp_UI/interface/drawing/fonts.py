@@ -1,34 +1,41 @@
-"""
-fonts.py – minimal, cross‑platform font loader for the UI.
-
-• Loads the single Sono‑Medium.ttf shipped with the add‑on.
-• If the file is missing, uses Blender’s default font (ID 0).
-• No platform‑specific logic, no hard‑coded slashes.
-
-Import get_font_id() wherever you call blf.size / blf.dimensions / blf.draw.
-"""
-
+# ────────── Exploratory/Exp_UI/interface/drawing/fonts.py ──────────
 import os
 import blf
-from .config import CUSTOM_FONT_PATH   # path is already built with os.path.join
+from .config import CUSTOM_FONT_PATH
 
-# Cached ID so we load only once
-_FONT_ID: int | None = None
+_FONT_ID: int | None = None             # cache once per *file*
 
+def _is_font_id_alive(fid: int) -> bool:
+    """
+    Quick probe: try to measure the width of a single space.
+    If the underlying datablock was freed, blf.dimensions raises
+    a RuntimeError, telling us the ID is toast.
+    """
+    try:
+        blf.dimensions(fid, " ")
+        return True
+    except RuntimeError:
+        return False
+
+def reset_font():
+    """Call this when a new .blend is loaded."""
+    global _FONT_ID
+    _FONT_ID = None                      # forces reload on next access
 
 def get_font_id() -> int:
     """
-    Return the blf font‑ID that every UI draw call should use.
-    Loads Sono‑Medium.ttf once per Blender session.
+    Returns a valid blf font‑ID at all times.
+    Reloads automatically after a file change.
     """
     global _FONT_ID
-    if _FONT_ID is not None:
+
+    if _FONT_ID is not None and _is_font_id_alive(_FONT_ID):
         return _FONT_ID
 
+    # Either first use *or* cached ID became invalid  (re‑)load
     if os.path.exists(CUSTOM_FONT_PATH):
         _FONT_ID = blf.load(CUSTOM_FONT_PATH)
     else:
-        # Bundled file missing – fall back to Blender’s default
-        _FONT_ID = 0
+        _FONT_ID = 0                     # Blender’s default
 
     return _FONT_ID

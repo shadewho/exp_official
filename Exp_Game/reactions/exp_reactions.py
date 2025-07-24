@@ -570,7 +570,8 @@ def execute_custom_ui_text_reaction(r):
             margin_y=my,
             scale=scale,
             end_time=e_time,
-            color=color
+            color=color,
+            font_name = r.custom_text_font,
         )
         item["subtype"] = "STATIC"
 
@@ -607,7 +608,9 @@ def execute_custom_ui_text_reaction(r):
             margin_y=r.custom_text_margin_y,
             scale=r.custom_text_scale,
             end_time=e_time,
-            color=tuple(r.custom_text_color)
+            color=tuple(r.custom_text_color),
+            font_name = r.custom_text_font,
+
         )
         item["subtype"] = "OBJECTIVE"
         item["objective_index"] = r.text_objective_index
@@ -634,6 +637,7 @@ def execute_custom_ui_text_reaction(r):
             scale=r.custom_text_scale,
             end_time=e_time,
             color=tuple(r.custom_text_color),
+            font_name = r.custom_text_font,
         )
         item["subtype"] = "OBJECTIVE_TIMER_DISPLAY"
         item["objective_index"] = r.text_objective_index

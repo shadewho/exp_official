@@ -2,7 +2,7 @@
 
 import bpy
 from .exp_mobility_and_game_reactions import MobilityGameReactionsPG
-
+from .exp_fonts import discover_fonts 
 #---custom propertys--#
 def update_property_data_path(self, context):
     """
@@ -249,6 +249,14 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Text Value",
         default="Hello World"
     )
+
+    custom_text_font: bpy.props.EnumProperty(
+        name        = "Font",
+        description = "Font for this text reaction (Default = Blender’s built‑in font)",
+        items       = lambda _self, _ctx: discover_fonts(),
+        default     = 0                    #  ←  just change this line
+    )
+
     custom_text_anchor: bpy.props.EnumProperty(
         name="Anchor",
         items=[

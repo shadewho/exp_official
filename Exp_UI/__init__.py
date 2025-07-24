@@ -85,16 +85,41 @@ from .packages.properties import MyAddonComment, PackageProps
 from .cache_system.db import init_db
 from .events.properties import register as register_event_props, unregister as unregister_event_props
 from .events.utilities import on_package_item_type_update
-# --- Persistent Handler ---
+from .interface.drawing.fonts import reset_font 
+from .interface.operators.fetch import fetch_page_queue
+
 
 @persistent
 def on_blend_load(dummy):
     """
-    This handler is called when a new blend file is loaded.
-    It clears out our cached image datablocks so that stale references are not used.
+    Runs after every successful File → Open.
+    • Purges GPU images safely
+    • Invalidates cached font so the next draw reloads it
+    • Clears stale background‑fetch tasks
+    • Flags the modal draw‑loop to rebuild its data list
     """
-    print("[INFO] New blend file loaded; clearing image datablocks.")
-    clear_image_datablocks()
+    print("[INFO] New blend file loaded – full UI reset.")
+
+    # 1. image/texture cleanup – wrapped so an error can’t abort the rest
+    try:
+        clear_image_datablocks()
+    except Exception as e:
+        print(f"[WARN] clear_image_datablocks failed: {e!s}")
+
+    # 2. make sure font‑ID is re‑loaded in the new file
+    reset_font()
+
+    # 3. drop any queued fetch tasks that still point to the old RNA
+    try:
+        fetch_page_queue.queue.clear()
+    except Exception:
+        pass
+
+    # 4. empty the old draw data & request a fresh build
+    if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
+        bpy.types.Scene.gpu_image_buttons_data.clear()
+
+    bpy.types.Scene.package_ui_dirty = True   # modal operator sees this
 
 def connectivity_check_timer():
     if not is_internet_available():

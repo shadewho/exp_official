@@ -240,8 +240,10 @@ def build_item_detail_text(data_list, template_item):
     price_float         = ad.price
     file_type           = ad.file_type
     heart               = "♥"
+    star                = "★"
     uploaded            = format_relative_time(upload_date)
     votes               = ad.vote_count
+    rating               = ad.rating
 
     # ─────────────────────────────────────────────────────────────── #
     # 2. Assemble logical lines (with intentional blank spacers)     #
@@ -254,7 +256,7 @@ def build_item_detail_text(data_list, template_item):
         f"Downloads: {downloads}",
     ]
     if file_type == "shop_item":
-        lines += ["", f"Price: ${int(price_float)}"]
+        lines += ["", f"Rating: {star} {rating:.1f}/5", "", f"Price: ${int(price_float)}"]
     if file_type == "event":                 # ← add these three lines
         lines += ["", f"Votes: ★ {votes}"]   # ←
     lines += ["", f"Uploaded: {uploaded} ago", ""]
@@ -287,8 +289,8 @@ def build_item_detail_text(data_list, template_item):
     # 4. Typographic helpers                                         #
     # ─────────────────────────────────────────────────────────────── #
     font_id          = get_font_id()
-    INIT_RATIO       = 0.05             # start at 5 % of template height
-    MIN_RATIO        = 0.015            # absolute floor (1.5 %)
+    INIT_RATIO       = 0.075             # start at 5 % of template height
+    MIN_RATIO        = 0.0325            # absolute floor (1.5 %)
     SHRINK_FACTOR    = 0.95             # geometric shrink each attempt
     LEADING          = 1.15             # regular line spacing multiplier
     BLANK_LEADING    = 0.40             # spacer line cost (40 %)

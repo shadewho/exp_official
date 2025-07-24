@@ -206,7 +206,8 @@ class CacheWorker(threading.Thread):
 
         token = load_token()
         if not token:
-            raise RuntimeError("[CacheWorker] no API token, cannot do full sweep")
+            print("[CacheWorker] no API token, skipping full sweep until login")
+            return
 
         # 1) Preload ALL events (all stages & IDs)
         self._preload_all_events()

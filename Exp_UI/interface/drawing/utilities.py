@@ -40,7 +40,8 @@ def build_text_item(
         "size": size,
         "color": color,
         "alignment": alignment,
-        "multiline": multiline
+        "multiline": multiline,
+        "font_id":   get_font_id(),
     }
 
 # ----------------------------------------------------------------------------------
@@ -254,7 +255,7 @@ def draw_text_item(item):
     alignment_mode = item["alignment"]
     multiline = item["multiline"]
 
-    font_id = CUSTOM_FONT_ID  # or any other channel if you prefer
+    font_id = item.get("font_id", CUSTOM_FONT_ID)
     blf.color(font_id, r, g, b, a)
     blf.size(font_id, int(size))
 

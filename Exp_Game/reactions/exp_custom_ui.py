@@ -7,8 +7,8 @@
 import bpy
 import blf
 import time
-from ..props_and_utils.exp_time import get_game_time
-
+from ..props_and_utils.exp_time import get_game_time 
+from ..reactions.exp_fonts import get_font_id_by_name
 _ui_draw_handler = None
 
 _reaction_texts = []  # store ratio-based data
@@ -21,7 +21,8 @@ def add_text_reaction(
     margin_y,
     scale,
     end_time=None,
-    color=(1,1,1,1)
+    color=(1,1,1,1),
+    font_name="DEFAULT"
 ):
     item = {
         "text": text_str,
@@ -31,6 +32,7 @@ def add_text_reaction(
         "scale": scale,
         "end_time": end_time,
         "color": color,
+        "font_name":  font_name
     }
     _reaction_texts.append(item)
     return item  # <--- return it so we can modify it further
@@ -175,7 +177,7 @@ def draw_ui_callback():
 
     # ------------------------------------------------------------------------
     # Define maximum font size at the reference resolution and scale it.
-    base_max_font_px = 180  # maximum font size when scale_int is 20 at the ref resolution
+    base_max_font_px = 240  # maximum font size when scale_int is 20 at the ref resolution
     max_font_px = base_max_font_px * scale_factor
 
     # ------------------------------------------------------------------------
@@ -192,14 +194,14 @@ def draw_ui_callback():
         mx_px = margin_x_int * grid_unit
         my_px = margin_y_int * grid_unit_y
 
-        # Use the integer scale (value from 0 to 20) to compute font size.
+        # Use the integer scale (value from 0 to 30) to compute font size.
         scale_int = it["scale"]  # integer in the range [0, 20]
         font_size_px = int((scale_int / 20.0) * max_font_px)
         if font_size_px < 10:
             font_size_px = 10  # Ensure a minimum for legibility
 
         color_rgba = it["color"]
-        font_id = 0  # Default Blender font
+        font_id = get_font_id_by_name(it.get("font_name", "DEFAULT"))
         blf.size(font_id, font_size_px)
 
         # Get the dimensions of the text.

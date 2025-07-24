@@ -36,7 +36,7 @@ def setup_cursor_region(context, operator):
     Hide the system cursor, lock it in modal, and on Windows
     confine it to the Blender window. Initialize raw-delta state.
     """
-    context.window.cursor_modal_set('HAND')
+    context.window.cursor_modal_set('NONE')
     confine_cursor_to_window()
     operator.last_mouse_x = None
     operator.last_mouse_y = None
