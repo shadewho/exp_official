@@ -12,22 +12,46 @@ _DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
 _lock   = threading.Lock()
 
 def _get_conn():
-    # Ensure the cache directory exists
     os.makedirs(THUMBNAIL_CACHE_FOLDER, exist_ok=True)
-
-    # Open the SQLite database, allowing other threads up to 30s to release locks
     conn = sqlite3.connect(
         _DB_PATH,
-        timeout=30,             # how long the Python layer will wait for a lock
-        check_same_thread=False # allow use from multiple threads
+        timeout=30,
+        check_same_thread=False
     )
-    # Use write-ahead logging for concurrent readers
     conn.execute("PRAGMA journal_mode=WAL;")
-    # Normal synchronous mode (a good trade-off for performance)
     conn.execute("PRAGMA synchronous=NORMAL;")
-    # **CRUCIAL**: if the DB is locked, wait up to 30 000 ms before giving up
     conn.execute("PRAGMA busy_timeout = 30000;")
+
+    _ensure_schema(conn)          # <── NEW: make 100 % sure the tables exist
     return conn
+
+def _ensure_schema(conn):
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS thumbnails (
+          file_id       INTEGER PRIMARY KEY,
+          file_path     TEXT    NOT NULL,
+          thumbnail_url TEXT,
+          last_access   INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS metadata (
+          package_id   INTEGER PRIMARY KEY,
+          data_json    TEXT    NOT NULL,
+          last_access  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS package_list (
+          file_type      TEXT    NOT NULL,
+          event_stage    TEXT    NOT NULL DEFAULT '',
+          selected_event TEXT    NOT NULL DEFAULT '',
+          is_featured    INTEGER NOT NULL DEFAULT 0,
+          data_json      TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_package_list_filters
+          ON package_list(file_type, event_stage, selected_event, is_featured);
+    """)
+    conn.commit()
 
 def init_db():
     """Create thumbnails, metadata & package_list tables if they don’t exist."""
@@ -208,11 +232,20 @@ def register_metadata(package_id: int, data_json: str):
 def get_metadata(package_id: int) -> str | None:
     with _lock:
         conn = _get_conn()
-        row = conn.execute(
-          "SELECT data_json FROM metadata WHERE package_id = ? LIMIT 1;",
-          (package_id,)
-        ).fetchone()
-        conn.close()
+        try:
+            row = conn.execute(
+                "SELECT data_json FROM metadata WHERE package_id=? LIMIT 1;",
+                (package_id,)
+            ).fetchone()
+        except sqlite3.OperationalError as e:
+            # Table vanished or DB was deleted while Blender is running
+            if "no such table" in str(e).lower():
+                _ensure_schema(conn)
+                row = None
+            else:
+                raise
+        finally:
+            conn.close()
     return row[0] if row else None
 
 def bump_metadata_access(package_id: int):
@@ -226,7 +259,7 @@ def bump_metadata_access(package_id: int):
         conn.commit()
         conn.close()
 
-# --- Package list ops with event filters ---
+# --- Package list ops with event filters ---------------------------------
 
 def save_package_list(
     file_type: str,
@@ -241,15 +274,36 @@ def save_package_list(
     conn = _get_conn()
     with conn:
         conn.execute(
-            "DELETE FROM package_list WHERE file_type=? AND event_stage=? AND selected_event=?;",
+            "DELETE FROM package_list "
+            "WHERE file_type=? AND event_stage=? AND selected_event=?;",
             (file_type, event_stage, selected_event)
         )
         for pkg in packages:
             is_feat = 1 if pkg.get("is_featured", False) else 0
             conn.execute(
-                "INSERT INTO package_list (file_type, event_stage, selected_event, is_featured, data_json) VALUES (?, ?, ?, ?, ?);",
+                "INSERT INTO package_list "
+                "(file_type, event_stage, selected_event, is_featured, data_json) "
+                "VALUES (?, ?, ?, ?, ?);",
                 (file_type, event_stage, selected_event, is_feat, json.dumps(pkg))
             )
+
+# -------------------- ONE‑SHOT TRACE WRAPPER ------------------------------
+
+import functools, traceback, logging
+logging.basicConfig(level=logging.ERROR)                     # <— add once
+_log = logging.getLogger("Exploratory.mac.debug")
+
+_original_save = save_package_list                           # keep ref
+
+def _save_wrapper(*a, **kw):
+    try:
+        return _original_save(*a, **kw)
+    except Exception:
+        _log.error("save_package_list FAILED:\n%s", traceback.format_exc())
+        raise                                         # re‑raise so caller sees it too
+
+globals()["save_package_list"] = _save_wrapper
+# -------------------------------------------------------------------------
 
 def load_package_list(
     file_type: str,
@@ -371,6 +425,7 @@ def update_package_list(
         conn.close()
 
 init_db()
+
 
 
 

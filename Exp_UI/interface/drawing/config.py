@@ -42,3 +42,11 @@ CUSTOM_FONT_PATH      = os.path.join(os.path.dirname(__file__),
                                      "custom_font",      # folder you created
                                      "AstaSans-Bold.ttf")  # exact filename
 LAST_VIEWPORT_SIZE = {"width": 0, "height": 0}
+
+
+
+# ── Loading animation (individual PNG frames) ─────────────────────
+LOADING_FRAMES_DIR = os.path.join(
+    os.path.dirname(__file__), "ui_templates", "loading_frames"
+)
+LOADING_FPS        = 10

@@ -7,6 +7,8 @@ from .config import LAST_VIEWPORT_SIZE, TEMPLATE_ASPECT_RATIO, OFFSET_FACTOR
 from datetime import datetime, timezone
 from gpu_extras.batch import batch_for_shader
 from .fonts import get_font_id 
+import time                        # <-- NEW
+from . import animated_sequence    # <-- NEW (sits beside explore_loading.py)
 # ------------------------------------------------------------------------
 # Text Drawing Utilities
 # ------------------------------------------------------------------------
@@ -210,29 +212,56 @@ def draw_image_buttons_callback():
     if not data:
         return
 
-    # Draw items of type "rect" first.
+    # ────────────────────────────────────────────────────────────────────
+    # 1) Rectangles (solid‑colour quads)
+    # ────────────────────────────────────────────────────────────────────
     for item in data:
         if item.get("type") == "rect":
             shader = gpu.shader.from_builtin('UNIFORM_COLOR')
             shader.bind()
-            shader.uniform_float("color", item.get("color", (1.0, 1.0, 1.0, 1.0)))
+            shader.uniform_float("color", item.get("color", (1, 1, 1, 1)))
             x1, y1, x2, y2 = item.get("pos")
-            vertices = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": vertices})
+            verts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": verts})
             batch.draw(shader)
 
-    # Draw non-text items that are not rectangles.
+    # ────────────────────────────────────────────────────────────────────
+    # 2) Images:  static PNG/JPG       and       animated PNG sequence
+    # ────────────────────────────────────────────────────────────────────
     for item in data:
-        if item.get("type") not in {"text", "rect"}:
-            shader = item.get("shader")
-            batch_obj = item.get("batch")
-            gpu_texture = item.get("texture")
-            if shader and batch_obj and gpu_texture:
-                shader.bind()
-                shader.uniform_sampler("image", gpu_texture)
-                batch_obj.draw(shader)
+        t = item.get("type")
 
-    # Then draw text items.
+        # Skip rects (handled) and text (handled later)
+        if t in {"rect", "text"}:
+            continue
+
+        # ---- animated frame sequence ----------------------------------
+        if t == "frame_seq":
+            n_frames = item["_n_frames"]
+            fps      = item["_fps"]
+            frame_ix = int(time.time() * fps) % n_frames
+            tex      = animated_sequence._texture_for(frame_ix)
+
+            shader   = item["shader"]
+            batch    = item["batch"]
+
+            shader.bind()
+            shader.uniform_sampler("image", tex)
+            batch.draw(shader)
+            continue  # handled, go to next item
+
+        # ---- existing static image path -------------------------------
+        shader = item.get("shader")
+        batch  = item.get("batch")
+        tex    = item.get("texture")
+        if shader and batch and tex:
+            shader.bind()
+            shader.uniform_sampler("image", tex)
+            batch.draw(shader)
+
+    # ────────────────────────────────────────────────────────────────────
+    # 3) Text labels
+    # ────────────────────────────────────────────────────────────────────
     for item in data:
         if item.get("type") == "text":
             draw_text_item(item)

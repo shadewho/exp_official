@@ -1,11 +1,11 @@
 bl_info = {
     "name": "Exploratory",
-    "blender": (4, 4, 0),
+    "blender": (4, 5, 0),
     "author": "Spencer Shade",
     "doc_url": "https://exploratory.online/",
     "tracker_url": "https://discord.gg/GJpGAAvMBe",
     "description": "Explore and Create within Blender.",
-    "version": (1, 0, 2),
+    "version": (1, 0, 1),
 }
 
 import bpy

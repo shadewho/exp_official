@@ -635,8 +635,6 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
             # 1) Subtype selector
             box2.prop(reaction, "custom_text_subtype", text="Subtype")
             subtype = reaction.custom_text_subtype
-            box2.label(text="Note: Preview custom text in fullscreen mode for best results.")
-
             # ── A) Content ─────────────────────────────────────────────────────────
             content_box = box2.box()
             content_box.label(text="Text Content")
@@ -677,6 +675,7 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
 
             # ── F) Preview Button ───────────────────────────────────────────────────
             box2.separator()
+            box2.label(text="Note: Preview custom text in fullscreen mode for best results.")
             box2.operator("exploratory.preview_custom_text", text="Preview Text")
 
 

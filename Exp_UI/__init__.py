@@ -49,8 +49,7 @@ from .interface.properties import register as register_ui_props, unregister as u
 ###test db test db###
 from .cache_system.db import (
     DB_INSPECT_OT_ShowCacheDB,
-    VIEW3D_PT_CacheDB,
-)
+    VIEW3D_PT_CacheDB,)
 
 # List all classes that will be registered.
 classes = (
@@ -79,7 +78,7 @@ classes = (
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT,
     DB_INSPECT_OT_ShowCacheDB,
-    VIEW3D_PT_CacheDB,
+    VIEW3D_PT_CacheDB
 )
 from .packages.properties import MyAddonComment, PackageProps
 from .cache_system.db import init_db

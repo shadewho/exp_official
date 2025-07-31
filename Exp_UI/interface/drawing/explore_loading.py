@@ -1,6 +1,7 @@
 #Exploratory/Exp_UI/interface/drawing/explore_loading.py
 from .utilities import build_text_item
 from ...cache_system.manager import cache_manager
+from .animated_sequence import build_loading_frames
 def build_loading_progress(template_item, progress):
     """
     Draws a semi-transparent overlay, a centered dark box,
@@ -38,6 +39,21 @@ def build_loading_progress(template_item, progress):
     box_y1 = center_y - (box_h / 2)
     box_y2 = center_y + (box_h / 2)
 
+
+    # ────────── Loading animation (20 PNG frames) ──────────
+    spinner_side = box_w * 0.28               # 35 % of the box width
+    data_list.append(
+        build_loading_frames(
+            center_x,                         # centre of the box
+            center_y - box_h * 0.05,          # slight upward nudge
+            spinner_side                      # size in pixels
+        )
+    )
+    spinner_cy        = center_y - box_h * 0.05          # same centre you gave the spinner
+    spinner_top_y     = spinner_cy + spinner_side / 2
+    spinner_bottom_y  = spinner_cy - spinner_side / 2
+    # ───────────────────────────────────────────────────────
+
     # Dark background box
     data_list.append({
         "type": "rect",
@@ -45,13 +61,14 @@ def build_loading_progress(template_item, progress):
         "color": (0.1, 0.1, 0.1, 0.9)
     })
 
+
     # -------------------------------------------------------
     # 3) "Loading..." Title Text
     # -------------------------------------------------------
     title_font_size = min(box_w, box_h) * 0.15
     title_x = (box_x1 + box_x2) / 2
     # Slightly below the top edge of the box
-    title_y = box_y2 - (title_font_size * 1.5)
+    title_y = spinner_top_y + title_font_size * 0.6   # 0.6 × font‑size gap
 
     data_list.append(build_text_item(
         text="Loading...",
@@ -94,7 +111,7 @@ def build_loading_progress(template_item, progress):
     # -------------------------------------------------------
     percent_font_size = bar_height * 0.7
     percent_x = (bar_x1 + bar_x2) / 2
-    percent_y = bar_y1 + (bar_height / 2) - (percent_font_size / 2)
+    percent_y = spinner_bottom_y - percent_font_size * 0.6
 
     data_list.append(build_text_item(
         text=f"{int(progress * 100)}%",
@@ -112,8 +129,7 @@ def build_loading_progress(template_item, progress):
     message_text = "Your game will begin momentarily..."
     message_font_size = box_h * 0.10  # or tweak to taste
     message_x = (box_x1 + box_x2) / 2
-    # Place it just below the bar
-    message_y = bar_y1 - (message_font_size * 1.5)
+    message_y = percent_y - message_font_size * 1.6
 
     data_list.append(build_text_item(
         text=message_text,
