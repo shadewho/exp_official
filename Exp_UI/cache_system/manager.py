@@ -8,29 +8,51 @@ from .persistence import (
     update_thumbnail_access,
 )
 from ..interface.operators.utilities import fetch_packages
-from .db import save_package_list, load_package_list
+from .db import save_package_list, load_package_list, update_package_list
 from typing import List, Dict
 
+
+def dedupe_by_id(seq: List[Dict]) -> List[Dict]:
+    seen, out = set(), []
+    for item in seq:
+        try:
+            fid = int(item.get("file_id", -1))   # '878' and 878 are the same
+        except Exception:
+            fid = -1
+        if fid not in seen:
+            seen.add(fid)
+            out.append(item)
+    return out
+
+
 class CacheManager:
+    """
+    Keeps in-memory package lists + metadata, thread-safe.
+    """
+
     def __init__(self):
-        # Holds full package lists keyed by file_type
         self.package_data: Dict[str, List[Dict]] = {}
-        # In-memory metadata cache
         self.metadata_cache: Dict[int, dict] = {}
         self.lock = threading.Lock()
 
+    # ──────────────────────────────────────────────────────────────────
+    #  Package lists
+    # ──────────────────────────────────────────────────────────────────
     def set_package_data(self, data: Dict[str, List[Dict]]) -> None:
         """
-        Merge new lists into memory, replacing only specified file_types.
+        Merge new lists into memory, replacing only the specified file_types,
+        **and ensure no duplicate file_ids can exist inside any list**.
         """
         with self.lock:
             for ftype, pkg_list in data.items():
-                self.package_data[ftype] = pkg_list
+                self.package_data[ftype] = dedupe_by_id(pkg_list)
 
     def get_package_data(self) -> Dict[str, List[Dict]]:
-        """Return the entire package_data dict."""
+        """
+        Return a shallow copy so callers can’t mutate our internal cache.
+        """
         with self.lock:
-            return dict(self.package_data)
+            return {k: v[:] for k, v in self.package_data.items()}
 
     def get_metadata(self, package_id: int) -> dict | None:
         """
@@ -143,7 +165,7 @@ class CacheManager:
             offset += page_size
 
         # ── 3) Persist + merge ─────────────────────────────────────────────
-        save_package_list(file_type, all_packages, event_stage, selected_event)
+        update_package_list(file_type, all_packages, event_stage, selected_event)
         self.set_package_data({file_type: all_packages})
         return True
 

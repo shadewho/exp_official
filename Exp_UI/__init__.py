@@ -151,9 +151,7 @@ def register():
     except Exception as e:
         print(f"[INFO] Failed to clear downloads folder at register: {e}")
 
-    #initialize cache!
     init_db()
-    start_cache_worker()
 
     register_event_props()
 
@@ -241,6 +239,10 @@ def register():
     # Register all addon classes.
     for cls in classes:
         bpy.utils.register_class(cls)
+
+    # ── finally start the background cache thread ───────────────────
+    start_cache_worker()
+
 
 def unregister():
     # Remove all properties from bpy.types.Scene.

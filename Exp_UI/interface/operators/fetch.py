@@ -15,7 +15,7 @@ from ...cache_system.manager import cache_manager, filter_cached_data
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import viewport_changed
 from ..drawing.config import THUMBNAILS_PER_PAGE
-
+from ...cache_system.db import update_package_list
 fetch_page_queue = queue.Queue()
 load_page_queue = queue.Queue()
 
@@ -51,6 +51,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
+        
 
         # ─── reset pagination state ────────────────────────
         bpy.types.Scene.master_package_list = []
@@ -229,9 +230,18 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
                 pkg["file_type"]      = file_type
                 pkg["event_stage"]    = self._event_stage
                 pkg["selected_event"] = self._selected_event
+                
 
             # ─── Prime the in‐memory cache and notify UI ─────────────────────────
             cache_manager.set_package_data({file_type: packages})
+
+            # Persist this batch straight away
+            update_package_list(
+                file_type,
+                packages,
+                self._event_stage,
+                self._selected_event
+            )
             fetch_page_queue.put(("PACKAGE_LIST", {"packages": packages}))
 
             # ─── Download (or load) each thumbnail and stream updates to UI ──────
@@ -402,6 +412,7 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
         ).start()
 
     def _lazy_load_worker(self, file_type, sort_by, search_query, additional_needed):
+        scene = bpy.context.scene
         params = {
             "file_type": file_type,
             "sort_by":   sort_by,
@@ -422,6 +433,13 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
             new_items = resp["packages"]
             current_cache = cache_manager.get_package_data().get(file_type, [])
             cache_manager.set_package_data({file_type: current_cache + new_items})
+
+            update_package_list(
+                file_type,
+                current_cache + new_items,
+                "" if file_type != 'event' else scene.event_stage,
+                "" if file_type != 'event' else scene.selected_event
+            )
 
             # re-fire your page fetch
             page = self.page_number

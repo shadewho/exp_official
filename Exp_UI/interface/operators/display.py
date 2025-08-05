@@ -1,7 +1,6 @@
 #Exploratory/Exp_UI/interface/operators/display.py
 
 import bpy
-import queue
 import urllib.parse
 from ...auth.helpers import load_token
 from ...internet.helpers import is_internet_available
@@ -10,9 +9,7 @@ from .utilities import fetch_detail_for_file
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import draw_image_buttons_callback
 from ...download_and_explore.explore_main import explore_icon_handler
-# A global queue for background fetch results
-fetch_page_queue = queue.Queue()
-load_page_queue = queue.Queue()
+
 
 # ------------------------------------------------------------------------
 # PACKAGE_OT_Display

@@ -41,17 +41,22 @@ def _ensure_schema(conn):
         );
 
         CREATE TABLE IF NOT EXISTS package_list (
+          file_id        INTEGER NOT NULL,
           file_type      TEXT    NOT NULL,
           event_stage    TEXT    NOT NULL DEFAULT '',
           selected_event TEXT    NOT NULL DEFAULT '',
           is_featured    INTEGER NOT NULL DEFAULT 0,
           data_json      TEXT    NOT NULL
         );
+                       
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_package
+          ON package_list(file_id, file_type, event_stage, selected_event);
 
         CREATE INDEX IF NOT EXISTS idx_package_list_filters
           ON package_list(file_type, event_stage, selected_event, is_featured);
     """)
     conn.commit()
+
 
 def init_db():
     """Create thumbnails, metadata & package_list tables if they don’t exist."""
@@ -81,11 +86,12 @@ def init_db():
         # 3) Package lists table with event filters **and** featured flag
         cur.execute("""
         CREATE TABLE IF NOT EXISTS package_list (
-          file_type       TEXT    NOT NULL,
-          event_stage     TEXT    NOT NULL DEFAULT '',
-          selected_event  TEXT    NOT NULL DEFAULT '',
-          is_featured     INTEGER NOT NULL DEFAULT 0,
-          data_json       TEXT    NOT NULL
+          file_id        INTEGER NOT NULL,
+          file_type      TEXT    NOT NULL,
+          event_stage    TEXT    NOT NULL DEFAULT '',
+          selected_event TEXT    NOT NULL DEFAULT '',
+          is_featured    INTEGER NOT NULL DEFAULT 0,
+          data_json      TEXT    NOT NULL
         );
         """)
         # Composite index for fast lookups (including featured)
@@ -268,42 +274,36 @@ def save_package_list(
     selected_event: str = ""
 ):
     """
-    Overwrite the cache for this file_type + event_stage + selected_event,
-    recording whether each pkg is featured or not.
+    Overwrite the cache for this (file_type , event_stage , selected_event)
+    in one atomic transaction.  The global `_lock` guarantees that only one
+    thread can write at a time, eliminating the “database is locked” error.
     """
-    conn = _get_conn()
-    with conn:
-        conn.execute(
-            "DELETE FROM package_list "
-            "WHERE file_type=? AND event_stage=? AND selected_event=?;",
-            (file_type, event_stage, selected_event)
-        )
-        for pkg in packages:
-            is_feat = 1 if pkg.get("is_featured", False) else 0
+    with _lock:
+        conn = _get_conn()
+        with conn:                                                     # BEGIN … COMMIT
+            # 1) Remove the old rows for this filter set
             conn.execute(
-                "INSERT INTO package_list "
-                "(file_type, event_stage, selected_event, is_featured, data_json) "
-                "VALUES (?, ?, ?, ?, ?);",
-                (file_type, event_stage, selected_event, is_feat, json.dumps(pkg))
+                "DELETE FROM package_list "
+                "WHERE file_type=? AND event_stage=? AND selected_event=?;",
+                (file_type, event_stage, selected_event)
             )
 
-# -------------------- ONE‑SHOT TRACE WRAPPER ------------------------------
-
-import functools, traceback, logging
-logging.basicConfig(level=logging.ERROR)                     # <— add once
-_log = logging.getLogger("Exploratory.mac.debug")
-
-_original_save = save_package_list                           # keep ref
-
-def _save_wrapper(*a, **kw):
-    try:
-        return _original_save(*a, **kw)
-    except Exception:
-        _log.error("save_package_list FAILED:\n%s", traceback.format_exc())
-        raise                                         # re‑raise so caller sees it too
-
-globals()["save_package_list"] = _save_wrapper
-# -------------------------------------------------------------------------
+            # 2) Insert the new list
+            for pkg in packages:
+                conn.execute(
+                    "INSERT INTO package_list ("
+                    "  file_id, file_type, event_stage, selected_event,"
+                    "  is_featured, data_json"
+                    ") VALUES (?,?,?,?,?,?);",
+                    (
+                        int(pkg["file_id"]),
+                        file_type,
+                        event_stage,
+                        selected_event,
+                        1 if pkg.get("is_featured", False) else 0,
+                        json.dumps(pkg)
+                    )
+                )
 
 def load_package_list(
     file_type: str,
@@ -357,77 +357,91 @@ def update_package_list(
     selected_event: str = ""
 ):
     """
-    Incrementally update package_list for the given filter,
-    tracking the is_featured flag in each row.
+    Incrementally sync the table with *packages* **while holding _lock** so
+    two threads can’t collide.
 
-    Steps:
-      1) Delete rows whose file_id no longer appears in 'packages'.
-      2) Insert rows for new file_id values (with is_featured).
-      3) Update existing rows when either data_json or is_featured has changed.
+    • delete rows whose file_id vanished  
+    • insert rows whose file_id is new  
+    • update rows whose JSON or featured-flag changed
     """
-    # 1) Gather existing IDs
-    existing = load_package_list(file_type, event_stage, selected_event)
-    existing_ids = {int(pkg["file_id"]) for pkg in existing}
-    new_ids      = {int(pkg["file_id"]) for pkg in packages}
 
-    to_delete    = existing_ids - new_ids
-    to_add       = new_ids - existing_ids
-    maybe_update = existing_ids & new_ids
+    # ── GUARD ─────
+    if not packages:
+        return  # keep old data intact
+    # ──────────────
 
+    # --- Work out the changes ------------------------------------------
+    existing       = load_package_list(file_type, event_stage, selected_event)
+    existing_ids   = {int(p["file_id"]) for p in existing}
+    new_ids        = {int(p["file_id"]) for p in packages}
+
+    ids_to_remove  = existing_ids - new_ids
+    ids_to_insert  = new_ids - existing_ids
+    ids_maybe_edit = existing_ids & new_ids
+
+    # --- One write-locked transaction ----------------------------------
     with _lock:
         conn = _get_conn()
         cur  = conn.cursor()
 
-        # 2) Delete missing packages
-        if to_delete:
-            placeholders = ",".join("?" for _ in to_delete)
+        # 1) Delete vanished packages
+        if ids_to_remove:
+            placeholders = ",".join("?" for _ in ids_to_remove)
             cur.execute(f"""
                 DELETE FROM package_list
                  WHERE file_type=? AND event_stage=? AND selected_event=?
-                   AND json_extract(data_json, '$.file_id') IN ({placeholders});
-            """, [file_type, event_stage, selected_event, *to_delete])
+                   AND file_id IN ({placeholders});
+            """, (file_type, event_stage, selected_event, *ids_to_remove))
 
-        # 3) Insert newly added packages, including is_featured flag
+        # 2) Insert newcomers
+        inserted = set()  # prevents a second INSERT for the same (file_id, …)
         for pkg in packages:
             fid = int(pkg["file_id"])
-            if fid in to_add:
-                is_feat = 1 if pkg.get("is_featured", False) else 0
+            if fid in ids_to_insert and fid not in inserted:
                 cur.execute(
-                    "INSERT INTO package_list (file_type, event_stage, selected_event, is_featured, data_json) "
-                    "VALUES (?, ?, ?, ?, ?);",
-                    (file_type, event_stage, selected_event, is_feat, json.dumps(pkg))
+                    "INSERT INTO package_list ("
+                    "  file_id, file_type, event_stage, selected_event,"
+                    "  is_featured, data_json"
+                    ") VALUES (?,?,?,?,?,?);",
+                    (
+                        fid,
+                        file_type,
+                        event_stage,
+                        selected_event,
+                        1 if pkg.get('is_featured', False) else 0,
+                        json.dumps(pkg)
+                    )
                 )
+                inserted.add(fid)   # remember we handled this file_id
 
-        # 4) Update changed JSON or featured‐flag for existing rows
+
+        # 3) Update rows whose JSON or featured flag changed
         for pkg in packages:
             fid = int(pkg["file_id"])
-            if fid in maybe_update:
+            if fid in ids_maybe_edit:
                 cur.execute(
                     "SELECT data_json, is_featured FROM package_list "
-                    "WHERE file_type=? AND event_stage=? AND selected_event=? "
-                    "  AND json_extract(data_json, '$.file_id')=?;",
-                    (file_type, event_stage, selected_event, fid)
+                    "WHERE file_id=? AND file_type=? AND event_stage=? "
+                    "  AND selected_event=?;",
+                    (fid, file_type, event_stage, selected_event)
                 )
                 row = cur.fetchone()
                 new_json = json.dumps(pkg)
                 new_feat = 1 if pkg.get("is_featured", False) else 0
 
-                if not row or row[0] != new_json or row[1] != new_feat:
+                if (row is None) or (row[0] != new_json) or (row[1] != new_feat):
                     cur.execute(
                         "UPDATE package_list "
-                        "SET data_json = ?, is_featured = ? "
-                        "WHERE file_type=? AND event_stage=? AND selected_event=? "
-                        "  AND json_extract(data_json, '$.file_id')=?;",
-                        (new_json, new_feat, file_type, event_stage, selected_event, fid)
+                        "SET data_json=?, is_featured=? "
+                        "WHERE file_id=? AND file_type=? AND event_stage=? "
+                        "  AND selected_event=?;",
+                        (new_json, new_feat, fid,
+                         file_type, event_stage, selected_event)
                     )
 
-        conn.commit()
-        conn.close()
+        conn.commit()   # finishes the transaction
 
 init_db()
-
-
-
 
 ##TEST VIEW TEST VIEW##
 
