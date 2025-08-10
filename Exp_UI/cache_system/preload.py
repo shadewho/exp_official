@@ -1,3 +1,5 @@
+#Exploratory/Exp_UI/cache_system/preload.py
+
 import os
 import time
 import threading
@@ -19,9 +21,9 @@ DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
 
 # What to cache and how often:
 FILE_TYPES     = ['world', 'shop_item']
-SWEEP_INTERVAL = 300.0    # seconds between full list sweeps
+SWEEP_INTERVAL = 600.0    #300.0 # seconds between full list sweeps
 BATCH_SIZE     = 16      # how many thumb/meta ops at once
-IDLE_SLEEP     = 30.0    # seconds to sleep when no work
+IDLE_SLEEP     = 60.0    #30.0 # seconds to sleep when no work
 BUSY_SLEEP     = 1.0     # seconds to sleep when queue still has items
 DOWNLOAD_LIMIT = 999
 
@@ -82,7 +84,7 @@ class CacheWorker(threading.Thread):
         # 0) don’t do any work if we’re in GAME mode
         if bpy.context.scene.ui_current_mode == 'GAME':
             return
-        
+
         items = []
         while len(items) < BATCH_SIZE:
             try:
@@ -93,17 +95,16 @@ class CacheWorker(threading.Thread):
         if not items:
             return
 
-        # Batch writes in one transaction
-        with self.conn:
-            for kind, *args in items:
-                if kind == 'meta':
-                    (pkg_id,) = args
-                    background_fetch_metadata(pkg_id)
-                elif kind == 'thumb':
-                    pkg_id, url = args
-                    download_thumbnail(url, pkg_id)
+        # Process each job individually.
+        for kind, *args in items:
+            if kind == 'meta':
+                (pkg_id,) = args
+                background_fetch_metadata(pkg_id)
+            elif kind == 'thumb':
+                pkg_id, url = args
+                download_thumbnail(url, pkg_id)
 
-        # Trigger one-shot UI redraw
+        # Schedule a UI refresh so new thumbnails appear.
         bpy.app.timers.register(
             lambda: setattr(bpy.types.Scene, "package_ui_dirty", True),
             first_interval=0.1
@@ -199,7 +200,13 @@ class CacheWorker(threading.Thread):
 
 
     def _do_full_sweep(self):
-        
+        # ── DEBUG ────────────────────────────────────────────────
+        print(
+            f"[DEBUG sweep] {time.strftime('%H:%M:%S')}  "
+            f"mode={bpy.context.scene.ui_current_mode!s}  "
+            f"token={bool(load_token())}"
+        )
+        # ─────────────────────────────────────────────────────────
         # 0) bail out immediately when the UI is in GAME
         if bpy.context.scene.ui_current_mode == 'GAME':
             return
@@ -334,6 +341,9 @@ def start_cache_worker():
     if _worker is None:
         _worker = CacheWorker()
         _worker.start()
+
+        # Force the first sweep in the next loop iteration
+        _worker.last_sweep = time.time() - (SWEEP_INTERVAL + 1)
 
 
 def stop_cache_worker():

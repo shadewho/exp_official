@@ -1,4 +1,24 @@
 #Exploratory/Exp_UI/__init__.py
+
+
+# ##### BEGIN GPL LICENSE BLOCK #####
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU General Public License
+#  as published by the Free Software Foundation; either version 2
+#  of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+#
+# ##### END GPL LICENSE BLOCK #####
+
 import bpy
 import time
 from bpy.app.handlers import persistent
@@ -47,9 +67,9 @@ from .events.operators import VOTE_MAP_OT_WebApp
 from .interface.properties import register as register_ui_props, unregister as unregister_ui_props
 
 ###test db test db###
-from .cache_system.db import (
-    DB_INSPECT_OT_ShowCacheDB,
-    VIEW3D_PT_CacheDB,)
+# from .cache_system.db import (
+#     DB_INSPECT_OT_ShowCacheDB,
+#     VIEW3D_PT_CacheDB,)
 
 # List all classes that will be registered.
 classes = (
@@ -77,8 +97,10 @@ classes = (
     VOTE_MAP_OT_WebApp,
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT,
-    DB_INSPECT_OT_ShowCacheDB,
-    VIEW3D_PT_CacheDB
+
+    #test db test db
+    # DB_INSPECT_OT_ShowCacheDB,
+    # VIEW3D_PT_CacheDB
 )
 from .packages.properties import MyAddonComment, PackageProps
 from .cache_system.db import init_db
@@ -97,7 +119,11 @@ def on_blend_load(dummy):
     • Clears stale background‑fetch tasks
     • Flags the modal draw‑loop to rebuild its data list
     """
-    print("[INFO] New blend file loaded – full UI reset.")
+    # Force Browse mode on every file-open
+    try:
+        bpy.context.scene.ui_current_mode = 'BROWSE'
+    except Exception as e:
+        print(f"[WARN] Could not set UI mode to Browse on load: {e}")
 
     # 1. image/texture cleanup – wrapped so an error can’t abort the rest
     try:
@@ -119,6 +145,7 @@ def on_blend_load(dummy):
         bpy.types.Scene.gpu_image_buttons_data.clear()
 
     bpy.types.Scene.package_ui_dirty = True   # modal operator sees this
+    print("[INFO] New blend file loaded – full UI reset.")
 
 def connectivity_check_timer():
     if not is_internet_available():

@@ -4,7 +4,10 @@ import bpy
 import math
 import sys
 
+_IS_MAC = (sys.platform == 'darwin')
+
 # ─── Windows-only cursor confinement ────────────────────────────────────────────
+
 if sys.platform == 'win32':
     import ctypes
     import ctypes.wintypes
@@ -29,6 +32,15 @@ if sys.platform == 'win32':
 else:
     def confine_cursor_to_window(): pass
     def release_cursor_clip():    pass
+
+
+def ensure_cursor_hidden_if_mac(context):
+    """On macOS, defensively keep the cursor hidden while the modal is running."""
+    if _IS_MAC:
+        try:
+            context.window.cursor_modal_set('NONE')
+        except Exception:
+            pass
 
 
 def setup_cursor_region(context, operator):
@@ -63,3 +75,5 @@ def handle_mouse_move(operator, context, event):
 
     operator.last_mouse_x = event.mouse_x
     operator.last_mouse_y = event.mouse_y
+
+    ensure_cursor_hidden_if_mac(context)

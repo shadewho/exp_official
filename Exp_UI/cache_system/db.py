@@ -8,13 +8,16 @@ import json
 import bpy
 from ..main_config import THUMBNAIL_CACHE_FOLDER
 
-_DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
-_lock   = threading.Lock()
+_lock = threading.Lock()                   # keep the lock
+
+def _db_path():                            # ← NEW helper (always fresh)
+    return os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
+
 
 def _get_conn():
     os.makedirs(THUMBNAIL_CACHE_FOLDER, exist_ok=True)
     conn = sqlite3.connect(
-        _DB_PATH,
+        _db_path(),
         timeout=30,
         check_same_thread=False
     )
@@ -266,7 +269,7 @@ def bump_metadata_access(package_id: int):
         conn.close()
 
 # --- Package list ops with event filters ---------------------------------
-
+###not used anymore, replaced by manager.py methods
 def save_package_list(
     file_type: str,
     packages: list[dict],
@@ -323,26 +326,36 @@ def load_package_list(
     return [ json.loads(r[0]) for r in rows ] if rows else []
 
 
-# ------------------------------------------------------------------
-# Cache‐invalidator for the package_list table
-# ------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+#  Add this near the other module-level constants (top of the file is fine)
+# ─────────────────────────────────────────────────────────────────────────────
+# Files that must NEVER be deleted from THUMBNAIL_CACHE_FOLDER
+PROTECTED_FILES = {
+    "cache.db",        # main database
+    "cache.db-wal",    # Write-Ahead Log (appears while a connection is open)
+    "cache.db-shm",    # shared-memory index for WAL mode
+}
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  purge_orphaned_thumbnails
+# ─────────────────────────────────────────────────────────────────────────────
 def purge_orphaned_thumbnails():
     """
-    Delete any files on-disk in THUMBNAIL_CACHE_FOLDER
-    that are not present in the thumbnails table.
+    Delete stray *image* files from THUMBNAIL_CACHE_FOLDER but leave the
+    SQLite database (and its WAL/SHM journals) untouched.
     """
-
-    # 1) Gather all paths recorded in SQLite
+    # 1) Paths that SHOULD exist (every row in the thumbnails table)
     with _lock:
         conn = _get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM thumbnails;")
-        recorded = {row[0] for row in cursor.fetchall()}
+        recorded = {row[0] for row in conn.execute(
+            "SELECT file_path FROM thumbnails;"
+        ).fetchall()}
         conn.close()
 
-    # 2) Remove any file on disk not in the recorded set
+    # 2) Remove files on disk that aren’t referenced *and* aren’t protected
     for fname in os.listdir(THUMBNAIL_CACHE_FOLDER):
+        if fname in PROTECTED_FILES:
+            continue                                       # ← keep DB files
         path = os.path.join(THUMBNAIL_CACHE_FOLDER, fname)
         if os.path.isfile(path) and path not in recorded:
             try:
@@ -366,9 +379,18 @@ def update_package_list(
     """
 
     # ── GUARD ─────
+    # ── EMPTY LIST: nuke everything for this filter set ─────────────────
     if not packages:
-        return  # keep old data intact
-    # ──────────────
+        with _lock:
+            conn = _get_conn()
+            conn.execute(
+                "DELETE FROM package_list "
+                "WHERE file_type=? AND event_stage=? AND selected_event=?;",
+                (file_type, event_stage, selected_event)
+            )
+            conn.commit()
+            conn.close()
+        return
 
     # --- Work out the changes ------------------------------------------
     existing       = load_package_list(file_type, event_stage, selected_event)
@@ -462,7 +484,7 @@ def _build_ascii_table(rows, headers):
     lines.append(sep)
     return lines
 
-DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
+DB_PATH = _db_path()   # optional convenience constant
 class DB_INSPECT_OT_ShowCacheDB(bpy.types.Operator):
     bl_idname = "cache.show_database"
     bl_label = "Show Cache DB"
@@ -470,7 +492,7 @@ class DB_INSPECT_OT_ShowCacheDB(bpy.types.Operator):
 
     def execute(self, context):
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(_db_path())
             cursor = conn.cursor()
 
             output_lines = []

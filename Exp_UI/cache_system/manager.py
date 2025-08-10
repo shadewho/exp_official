@@ -8,7 +8,7 @@ from .persistence import (
     update_thumbnail_access,
 )
 from ..interface.operators.utilities import fetch_packages
-from .db import save_package_list, load_package_list, update_package_list
+from .db import save_package_list, load_package_list
 from typing import List, Dict
 
 
@@ -165,7 +165,7 @@ class CacheManager:
             offset += page_size
 
         # ── 3) Persist + merge ─────────────────────────────────────────────
-        update_package_list(file_type, all_packages, event_stage, selected_event)
+        save_package_list(file_type, all_packages, event_stage, selected_event)
         self.set_package_data({file_type: all_packages})
         return True
 

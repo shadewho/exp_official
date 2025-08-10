@@ -15,7 +15,6 @@ from .db import (
     get_metadata,
     bump_metadata_access,
 )
-from ..main_config import THUMBNAIL_CACHE_FOLDER
 import logging
 logger = logging.getLogger("Exploratory.cache")
 

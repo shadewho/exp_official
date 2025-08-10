@@ -29,7 +29,7 @@ from .audio import exp_globals
 from .audio.exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
 from .systems.exp_performance import init_performance_state, update_performance_culling, restore_performance_state
-from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move, release_cursor_clip
+from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move, release_cursor_clip, ensure_cursor_hidden_if_mac
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -405,6 +405,9 @@ class ExpModal(bpy.types.Operator):
         # D) Mouse move => camera rotation
         elif event.type == 'MOUSEMOVE':
             handle_mouse_move(self, context, event)
+            
+            #Hide cursor on macOS
+            ensure_cursor_hidden_if_mac(context)
 
         return {'RUNNING_MODAL'}
     
