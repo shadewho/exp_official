@@ -16,7 +16,6 @@ with open(_init_path, "r", encoding="utf-8") as f:
 
 module = ast.parse(src, _init_path)
 for node in module.body:
-    # find: bl_info = { ... }
     if isinstance(node, ast.Assign):
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id == "bl_info":

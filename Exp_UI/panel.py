@@ -40,15 +40,30 @@ class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
         layout.separator()
 
         # ——— Subscription Usage ———
-        layout.label(text=f"Plan: {addon_data.subscription_tier}")
-        layout.label(text=f"Downloads: {addon_data.downloads_used} / {addon_data.downloads_limit}")
-        layout.label(text=f"Uploads: {addon_data.uploads_used}")
-        remaining = addon_data.downloads_limit - addon_data.downloads_used
-        layout.label(text=f"Remaining Downloads: {remaining}")
+        tier = getattr(addon_data, "subscription_tier", "Tier 1")
+        used = int(getattr(addon_data, "downloads_used", 0))
+        limit = int(getattr(addon_data, "downloads_limit", 0))
+        scope = getattr(addon_data, "downloads_scope", "daily")  # "lifetime" or "daily"
+        uploads_used = int(getattr(addon_data, "uploads_used", 0))
+
+        layout.label(text=f"Plan: {tier}")
+
+        # Label text depends on scope
+        if scope == "lifetime":
+            layout.label(text=f"Lifetime Downloads: {used} / {limit}")
+        else:
+            layout.label(text=f"Daily Downloads: {used} / {limit}")
+
+        layout.label(text=f"Uploads: {uploads_used}")
+
+        remaining = max(0, limit - used)
+        if scope == "lifetime":
+            layout.label(text=f"Remaining Lifetime Downloads: {remaining}")
+        else:
+            layout.label(text=f"Remaining Daily Downloads: {remaining}")
 
         # optional “refresh” button
         layout.operator("webapp.refresh_usage", text="Refresh Usage", icon='FILE_REFRESH')
-
 
 class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
     bl_label = "Login / Logout"

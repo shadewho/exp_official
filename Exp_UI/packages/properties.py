@@ -100,6 +100,11 @@ class PackageProps(PropertyGroup):
         name="Downloads Limit",
         default=0
     )
+    downloads_scope: StringProperty(
+        name="Downloads Scope",
+        description="Indicates whether downloads are lifetime or daily",
+        default="daily"
+    )
     uploads_used: IntProperty(
         name="Uploads Used",
         default=0

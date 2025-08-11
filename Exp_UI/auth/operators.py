@@ -102,12 +102,14 @@ class REFRESH_USAGE_OT_WebApp(bpy.types.Operator):
         # Update scene properties with the data from the backend.
         scene = context.scene
         addon_data = scene.my_addon_data
+
         addon_data.subscription_tier = data.get("subscription_tier", "Free")
-        addon_data.downloads_used = data.get("downloads_used", 0)
-        addon_data.downloads_limit = data.get("downloads_limit", 0)
-        addon_data.uploads_used = data.get("uploads_used", 0)
-        addon_data.username    = data.get("username", "")
-        addon_data.profile_url = data.get("profile_url", "")
+        addon_data.downloads_used    = int(data.get("downloads_used", 0))
+        addon_data.downloads_limit   = int(data.get("downloads_limit", 0))
+        addon_data.downloads_scope   = data.get("downloads_scope", "daily")  # ← NEW
+        addon_data.uploads_used      = int(data.get("uploads_used", 0))
+        addon_data.username          = data.get("username", "")
+        addon_data.profile_url       = data.get("profile_url", "")
 
         self.report({'INFO'}, "Subscription usage refreshed")
         return {'FINISHED'}
