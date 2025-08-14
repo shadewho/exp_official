@@ -66,10 +66,12 @@ from .events.operators import VOTE_MAP_OT_WebApp
 
 from .interface.properties import register as register_ui_props, unregister as unregister_ui_props
 
-###test db test db###
-from .cache_system.db import (
-    DB_INSPECT_OT_ShowCacheDB,
-    VIEW3D_PT_CacheDB,)
+from .open_addon_prefs import OPEN_ADDON_PREFS_OT
+
+#test db
+# from .cache_system.db import (
+#     DB_INSPECT_OT_ShowCacheDB,
+#     VIEW3D_PT_CacheDB,)
 
 # List all classes that will be registered.
 classes = (
@@ -97,10 +99,11 @@ classes = (
     VOTE_MAP_OT_WebApp,
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT,
+    OPEN_ADDON_PREFS_OT,
 
-    #test db test db
-    DB_INSPECT_OT_ShowCacheDB,
-    VIEW3D_PT_CacheDB
+    # #test db
+    # DB_INSPECT_OT_ShowCacheDB,
+    # VIEW3D_PT_CacheDB
 )
 from .packages.properties import MyAddonComment, PackageProps
 from .cache_system.db import init_db
@@ -108,7 +111,6 @@ from .events.properties import register as register_event_props, unregister as u
 from .events.utilities import on_package_item_type_update
 from .interface.drawing.fonts import reset_font 
 from .interface.operators.fetch import fetch_page_queue
-
 
 @persistent
 def on_blend_load(dummy):

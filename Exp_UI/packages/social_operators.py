@@ -90,9 +90,9 @@ class COMMENT_PACKAGE_OT_WebApp(bpy.types.Operator):
 
 
 class COMMENT_PACKAGE_INLINE_OT_WebApp(bpy.types.Operator):
-    """Inline comment operator: no popup, for use in the social-details panel."""
+    """Inline operator for Exploratory item comments."""
     bl_idname = "webapp.comment_package_inline"
-    bl_label = "Comment on Item (Inline)"
+    bl_label = "Add Comment"
 
     comment_text: bpy.props.StringProperty(name="Comment", default="")
 
@@ -183,54 +183,56 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
         layout.separator()
 
         if addon_data.file_id > 0:
-            # — Info Box —
+            # — Main Info Box —
             box = layout.box()
-            box.label(text=f"Title: {addon_data.package_name}", icon='BOOKMARKS')
+            # Title: use a more "title-like" icon
+            box.label(text=f"Title: {addon_data.package_name}")
             box.label(text=f"Description: {addon_data.description}")
-            box.label(
-                text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago"
-            )
-            box.label(
-                text=f"Downloads: {addon_data.download_count}", icon='IMPORT'
-            )
-            row = box.row(align=True)
-            row.label(text="Author:")
+            box.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
+            box.label(text=f"Downloads: {addon_data.download_count}", icon='IMPORT')
+
+            # Author row (no "Author:" label; clickable with web icon if URL exists)
+            author_row = box.row(align=True)
             if addon_data.profile_url:
-                op = row.operator("webapp.open_url", text=addon_data.author)
+                op = author_row.operator("webapp.open_url", text=addon_data.author, icon='URL')
                 op.url = addon_data.profile_url
             else:
-                row.label(text=addon_data.author)
+                author_row.label(text=addon_data.author)
 
-            layout.separator()
+            # --- Action buttons (inside the box, left-aligned) ---
+            # Make them wider via scale_x and group them in sub-rows so they don't span full width
+            btn_row = box.row(align=True)
+            btn_row.alignment = 'LEFT'
 
-            # Vote vs. Like
+            like_group = btn_row.row(align=True)
+            like_group.scale_x = 1.8  # widen
+            like_op = like_group.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
+            like_op.skip_popup = True
+            like_op.launched_from_persistent = True
+
             if scene.package_item_type == 'event' and scene.event_stage == 'voting':
-                vop = layout.row().operator("webapp.vote_map", text="★ Vote")
-                vop.skip_popup = True
-            else:
-                lop = layout.row().operator(
-                    "webapp.like_package", text=f"♥ {addon_data.likes}"
-                )
-                lop.skip_popup = True
-                lop.launched_from_persistent = True
+                vote_group = btn_row.row(align=True)
+                vote_group.scale_x = 1.8  # widen to match like button
+                vote_op = vote_group.operator("webapp.vote_map", text="★ Vote")
+                vote_op.skip_popup = True
 
-            layout.separator()
-            layout.label(text="Comments:", icon='COMMUNITY')
+            # Comments header + list
+            box.separator()
+            box.label(text="Comments:", icon='COMMUNITY')
 
-            # Traditional UIList with scrollbar, showing up to 5 rows
-            row = layout.row()
-            row.template_list(
+            list_row = box.row()
+            list_row.template_list(
                 "EXPLORATORY_UL_Comments", "",
                 addon_data, "comments",
                 addon_data, "active_comment_index",
                 rows=5
             )
 
-            layout.separator()
             # Inline entry for new comment
-            row = layout.row(align=True)
-            row.prop(scene, "comment_text", text="", emboss=True)
-            row.operator("webapp.comment_package_inline", text="", icon='ADD')
+            entry = box.row(align=True)
+            entry.prop(scene, "comment_text", text="", emboss=True)
+            entry.operator("webapp.comment_package_inline", text="", icon='ADD')
 
         else:
             layout.label(text="No social data available.", icon='INFO')
+

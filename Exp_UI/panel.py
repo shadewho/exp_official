@@ -174,47 +174,55 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
 
         # Only show details if in DETAIL mode and we have a valid file_id
         if scene.ui_current_mode == "DETAIL" and addon_data.file_id > 0:
-            # 1) Title
-            layout.label(text=f"Title: {addon_data.package_name}")
+            # — Main Info Box (same order/feel as popup) —
+            box = layout.box()
 
-            # 2) Author
-            row = layout.row(align=True)
-            row.label(text="Author:")
+            # Title (more “title-like” icon)
+            box.label(text=f"Title: {addon_data.package_name}")
+            box.label(text=f"Description: {addon_data.description}")
+            box.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
+            box.label(text=f"Downloads: {addon_data.download_count}", icon='IMPORT')
+
+            # Author (no "Author:" label; clickable with web icon if URL exists)
+            author_row = box.row(align=True)
             if addon_data.profile_url:
-                op = row.operator("webapp.open_url", text=addon_data.author)
+                op = author_row.operator("webapp.open_url", text=addon_data.author, icon='URL')
                 op.url = addon_data.profile_url
             else:
-                row.label(text=addon_data.author)
+                author_row.label(text=addon_data.author)
 
-            # 3) Description
-            layout.label(text=f"Description: {addon_data.description}")
+            # Action buttons — inside the box, left-aligned, widened
+            btn_row = box.row(align=True)
+            btn_row.alignment = 'LEFT'
 
-            # 4) Upload Date
-            layout.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
-            
-            # 4.5) Download Count
-            layout.label(text=f"Downloads: {addon_data.download_count}")
+            like_group = btn_row.row(align=True)
+            like_group.scale_x = 1.8  # widen but not full-width
+            like_op = like_group.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
+            like_op.skip_popup = True
+            # panel is persistent, so keep counts in sync just like popup
+            like_op.launched_from_persistent = True
 
-            # 5) Either show the vote/favorite button or the like button:
-            row = layout.row(align=True)
             if scene.package_item_type == 'event' and scene.event_stage == 'voting':
-                # Show "Favorite" button with a star icon (★)
-                vote_op = row.operator("webapp.vote_map", text="★ Vote")
+                vote_group = btn_row.row(align=True)
+                vote_group.scale_x = 1.8
+                vote_op = vote_group.operator("webapp.vote_map", text="★ Vote")
                 vote_op.skip_popup = True
-            else:
-                like_op = row.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
-                like_op.skip_popup = True
 
-            # 6) Comments
-            layout.label(text="Comments:")
-            row = layout.row()
-            row.template_list(
+            # Comments
+            box.separator()
+            box.label(text="Comments:", icon='COMMUNITY')
+
+            list_row = box.row()
+            list_row.template_list(
                 "EXPLORATORY_UL_Comments", "",
                 addon_data, "comments",
                 addon_data, "active_comment_index",
                 rows=5
             )
-            layout.operator("webapp.comment_package", text="Add Comment", icon='ADD').skip_popup = False
+
+            entry = box.row(align=True)
+            entry.prop(scene, "comment_text", text="", emboss=True)
+            entry.operator("webapp.comment_package_inline", text="", icon='ADD')
 
         else:
             layout.label(text="No active item to display.", icon='INFO')
@@ -238,24 +246,22 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
         layout.operator("webapp.open_docs", text="Documentation", icon='HELP')
         layout.separator()
 
-        # Current version
-        layout.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
-        layout.separator()
+        # Version info in its own box
+        ver_box = layout.box()
+        ver_box.label(text="Add-on Version", icon='FILE_BLEND')
+        ver_box.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
 
-        # —— read from cache, no network here! ——
         latest = get_cached_latest_version()
         if latest is None:
-            # never fetched (or fetch failed)
-            layout.label(text="Update status unknown", icon='QUESTION')
-            layout.operator("webapp.refresh_version", icon='FILE_REFRESH')
+            ver_box.label(text="Update status unknown", icon='QUESTION')
+            ver_box.operator("webapp.refresh_version", icon='FILE_REFRESH')
         elif latest == CURRENT_VERSION:
-            layout.label(text="Exploratory is up to date!", icon='CHECKMARK')
-            layout.operator("webapp.refresh_version", text="Re-check", icon='FILE_REFRESH')
+            ver_box.label(text="Exploratory is up to date!", icon='CHECKMARK')
+            ver_box.operator("webapp.refresh_version", text="Re-check", icon='FILE_REFRESH')
         else:
-            layout.label(text=f"Update Available: {latest}", icon='ERROR')
-            # force invoke so invoke_props_dialog() is called instead of execute()
-            layout.operator_context = 'INVOKE_DEFAULT'
-            layout.operator("webapp.update_addon", text="Update Add-on", icon='IMPORT')
+            ver_box.label(text=f"Update Available: {latest}", icon='ERROR')
+            ver_box.operator_context = 'INVOKE_DEFAULT'
+            ver_box.operator("webapp.update_addon", text="Update Add-on", icon='IMPORT')
 
         layout.separator()
 
@@ -268,3 +274,16 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
         icon = 'RADIOBUT_ON' if prefs.enable_audio else 'RADIOBUT_OFF'
         col.prop(prefs, "enable_audio", text="Master Volume", icon=icon)
         split.column(align=True).prop(prefs, "audio_level", text="Volume", slider=True)
+
+        layout.separator()
+
+        # Adjust Persistent Settings box
+        prefs_box = layout.box()
+        prefs_box.label(text="Adjust Persistent Settings", icon='PREFERENCES')
+        prefs_box.operator("wm.open_addon_prefs", text="Open Add-on Preferences")
+
+        # Bullet list (using label with indentation for a bullet-like effect)
+        prefs_box.label(text="• Change skins and audio")
+        prefs_box.label(text="• Change performance settings")
+        prefs_box.label(text="• Change key binds and sensitivity")
+        prefs_box.label(text="• Find \"Exploratory\" and adjust settings")
