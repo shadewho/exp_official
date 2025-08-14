@@ -194,10 +194,12 @@ class POPUP_SOCIAL_DETAILS_OT(bpy.types.Operator):
                 text=f"Downloads: {addon_data.download_count}", icon='IMPORT'
             )
             row = box.row(align=True)
-            row.label(text=f"Author: {addon_data.author}")
+            row.label(text="Author:")
             if addon_data.profile_url:
-                op = row.operator("webapp.open_url", text="Profile")
+                op = row.operator("webapp.open_url", text=addon_data.author)
                 op.url = addon_data.profile_url
+            else:
+                row.label(text=addon_data.author)
 
             layout.separator()
 

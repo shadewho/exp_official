@@ -9,19 +9,30 @@ from .persistence import (
 )
 from ..interface.operators.utilities import fetch_packages
 from .db import save_package_list, load_package_list
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 
-def dedupe_by_id(seq: List[Dict]) -> List[Dict]:
-    seen, out = set(), []
+def _dedupe_for_list(file_type: str, seq: List[Dict]) -> List[Dict]:
+    """
+    For world/shop_item: dedupe by file_id
+    For event: dedupe by (file_id, selected_event) so the same file can
+               exist in different events without being dropped.
+    """
+    seen: set[Tuple[int, str] | int] = set()
+    out: List[Dict] = []
     for item in seq:
         try:
-            fid = int(item.get("file_id", -1))   # '878' and 878 are the same
+            fid = int(item.get("file_id", -1))
         except Exception:
             fid = -1
-        if fid not in seen:
-            seen.add(fid)
-            out.append(item)
+        if file_type == "event":
+            key = (fid, str(item.get("selected_event", "")))
+        else:
+            key = fid
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
     return out
 
 
@@ -29,7 +40,6 @@ class CacheManager:
     """
     Keeps in-memory package lists + metadata, thread-safe.
     """
-
     def __init__(self):
         self.package_data: Dict[str, List[Dict]] = {}
         self.metadata_cache: Dict[int, dict] = {}
@@ -40,30 +50,31 @@ class CacheManager:
     # ──────────────────────────────────────────────────────────────────
     def set_package_data(self, data: Dict[str, List[Dict]]) -> None:
         """
-        Merge new lists into memory, replacing only the specified file_types,
-        **and ensure no duplicate file_ids can exist inside any list**.
+        Replace the list for each file_type key in 'data'.
+        Always dedup appropriately.
         """
         with self.lock:
             for ftype, pkg_list in data.items():
-                self.package_data[ftype] = dedupe_by_id(pkg_list)
+                self.package_data[ftype] = _dedupe_for_list(ftype, pkg_list)
+
+    def merge_package_data(self, file_type: str, more: List[Dict]) -> None:
+        """
+        Merge 'more' into the existing list for 'file_type' (union + dedupe).
+        Useful for aggregating events across multiple event IDs/stages.
+        """
+        with self.lock:
+            base = self.package_data.get(file_type, [])
+            combined = base + more
+            self.package_data[file_type] = _dedupe_for_list(file_type, combined)
 
     def get_package_data(self) -> Dict[str, List[Dict]]:
-        """
-        Return a shallow copy so callers can’t mutate our internal cache.
-        """
         with self.lock:
             return {k: v[:] for k, v in self.package_data.items()}
 
     def get_metadata(self, package_id: int) -> dict | None:
-        """
-        Return metadata from memory or SQLite.
-        Loads from SQLite into the in-memory cache on first access.
-        """
         with self.lock:
             if package_id in self.metadata_cache:
                 return self.metadata_cache[package_id]
-
-        # Fallback to SQLite
         from .persistence import get_cached_metadata
         data = get_cached_metadata(package_id)
         if data is not None:
@@ -72,17 +83,11 @@ class CacheManager:
         return data
 
     def set_metadata(self, package_id: int, metadata: dict) -> None:
-        """Store metadata in memory (persisted separately)."""
         with self.lock:
             self.metadata_cache[package_id] = metadata
 
     # ─── Thumbnail Methods (SQLite-backed) ─────────────────────────────────────
-
     def get_thumbnail(self, file_id: int) -> dict | None:
-        """
-        Return {'file_path': path} if cached in SQLite, bump access.
-        Otherwise None.
-        """
         path = get_cached_path_if_exists(file_id)
         if path:
             update_thumbnail_access(file_id)
@@ -90,32 +95,21 @@ class CacheManager:
         return None
 
     def set_thumbnail(self, file_id: int, local_path: str, thumbnail_url: str | None = None) -> None:
-        """Persist a thumbnail record."""
         register_thumbnail_in_index(file_id, local_path, thumbnail_url)
 
     def update_thumbnail_access(self, file_id: int) -> None:
-        """Bump the thumbnail last_access timestamp."""
         update_thumbnail_access(file_id)
 
     # ─── Package List Methods (SQLite-backed, unified + event filters) ─────────
-
     def ensure_package_data(self, file_type: str, page_size: int = 50) -> bool:
-        """
-        1) If file_type=='event' and no event is selected, clear data and return.
-        2) Try loading from SQLite cache (with both filters).
-        3) Otherwise fetch from server in pages, persist and merge.
-        """
         scene = bpy.context.scene
         event_stage = scene.event_stage    if file_type == 'event' else ""
         selected_event = scene.selected_event if file_type == 'event' else ""
 
-        # ── REQUIRE explicit event selection ──────────────────────────────
         if file_type == 'event' and (not selected_event or selected_event == "0"):
-            # No event chosen → show nothing
             self.set_package_data({file_type: []})
             return True
 
-        # ── 1) Attempt to load from SQLite cache ───────────────────────────
         cached = load_package_list(file_type, event_stage, selected_event)
         if cached:
             for pkg in cached:
@@ -127,7 +121,6 @@ class CacheManager:
             self.set_package_data({file_type: cached})
             return True
 
-        # ── 2) No cache: fetch full list in pages ─────────────────────────
         all_packages = []
         offset = 0
         while True:
@@ -164,10 +157,10 @@ class CacheManager:
                 break
             offset += page_size
 
-        # ── 3) Persist + merge ─────────────────────────────────────────────
         save_package_list(file_type, all_packages, event_stage, selected_event)
         self.set_package_data({file_type: all_packages})
         return True
+
 
 # singleton instance
 cache_manager = CacheManager()

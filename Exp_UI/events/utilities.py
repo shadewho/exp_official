@@ -52,14 +52,6 @@ def get_event_items(self, context):
     return items
 
 
-
-bpy.types.Scene.selected_event = bpy.props.EnumProperty(
-    name="Event",
-    description="Select an event to filter packages",
-    items=get_event_items
-)
-
-
 def on_package_item_type_update(self, context):
     # when the user switches *into* the Event filter, re-fetch the latest events
     if context.scene.package_item_type == 'event':

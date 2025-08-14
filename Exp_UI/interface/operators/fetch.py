@@ -227,9 +227,11 @@ class FETCH_PAGE_THREADED_OT_WebApp(bpy.types.Operator):
 
             # ─── Annotate each package for unified cache filtering ───────────────
             for pkg in packages:
-                pkg["file_type"]      = file_type
-                pkg["event_stage"]    = self._event_stage
-                pkg["selected_event"] = self._selected_event
+                pkg["file_type"]   = file_type
+                # Prefer truth from server if provided; fall back to our request
+                pkg["event_stage"] = self._event_stage
+                actual_eid = pkg.get("event_id")
+                pkg["selected_event"] = str(actual_eid) if actual_eid is not None else self._selected_event
                 
 
             # ─── Prime the in‐memory cache and notify UI ─────────────────────────

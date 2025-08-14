@@ -52,7 +52,9 @@ class LOGIN_OT_WebApp(bpy.types.Operator):
         threading.Thread(target=start_local_server, args=(8000,), daemon=True).start()
         initiate_login()
         self.report({'INFO'}, "Login page opened. Complete login in your browser.")
-
+        
+        # Force UI to browse mode on login
+        context.scene.ui_current_mode = 'BROWSE'
         # 5) Refresh usage meter after login
         bpy.app.timers.register(auto_refresh_usage, first_interval=3.0)
 

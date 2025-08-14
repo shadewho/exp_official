@@ -33,7 +33,7 @@ class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
 
     def invoke(self, context, event):
         scene = context.scene
-
+        
         # 1) Ensure the thumbnail UI is visible.
         result = bpy.ops.view3d.add_package_display('INVOKE_DEFAULT')
         if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):

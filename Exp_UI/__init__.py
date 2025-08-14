@@ -67,9 +67,9 @@ from .events.operators import VOTE_MAP_OT_WebApp
 from .interface.properties import register as register_ui_props, unregister as unregister_ui_props
 
 ###test db test db###
-# from .cache_system.db import (
-#     DB_INSPECT_OT_ShowCacheDB,
-#     VIEW3D_PT_CacheDB,)
+from .cache_system.db import (
+    DB_INSPECT_OT_ShowCacheDB,
+    VIEW3D_PT_CacheDB,)
 
 # List all classes that will be registered.
 classes = (
@@ -99,8 +99,8 @@ classes = (
     OPEN_DOCS_OT,
 
     #test db test db
-    # DB_INSPECT_OT_ShowCacheDB,
-    # VIEW3D_PT_CacheDB
+    DB_INSPECT_OT_ShowCacheDB,
+    VIEW3D_PT_CacheDB
 )
 from .packages.properties import MyAddonComment, PackageProps
 from .cache_system.db import init_db
@@ -154,6 +154,7 @@ def connectivity_check_timer():
         if bpy.context.scene.get("my_addon_data"):
             bpy.context.scene.my_addon_data.is_from_webapp = False
         bpy.context.scene.ui_current_mode = "GAME"
+        print ("GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME ")
         print("[INFO] No internet connection detected. User logged out and UI disabled.")
     return 10.0  # Check every 10 seconds
 

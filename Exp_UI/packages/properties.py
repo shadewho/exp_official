@@ -8,6 +8,8 @@ from bpy.props import (
     CollectionProperty,
     FloatProperty
 )
+from ..main_config import USER_PROFILE_BASE_URL
+
 class MyAddonComment(PropertyGroup):
     """
     Stores a single comment (author, text, etc.).
@@ -160,6 +162,10 @@ class PackageProps(PropertyGroup):
         self.file_type      = pkg.get("file_type", "")
         raw_price = pkg.get("price")          # may be None / string / float
         self.price = float(raw_price) if raw_price not in (None, "") else 0.0
+
+        base = USER_PROFILE_BASE_URL.rstrip('/')
+        self.profile_url = f"{base}/{self.author}" if self.author.strip() else ""
+
         if pkg.get("file_type") == "shop_item":
             self.rating = float(pkg.get("rating", 0.0))
         else:

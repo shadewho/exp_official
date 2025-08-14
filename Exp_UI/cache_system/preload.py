@@ -21,9 +21,9 @@ DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
 
 # What to cache and how often:
 FILE_TYPES     = ['world', 'shop_item']
-SWEEP_INTERVAL = 600.0    #300.0 # seconds between full list sweeps
+SWEEP_INTERVAL = 120.0    #600.0 # seconds between full list sweeps
 BATCH_SIZE     = 16      # how many thumb/meta ops at once
-IDLE_SLEEP     = 60.0    #30.0 # seconds to sleep when no work
+IDLE_SLEEP     = 30.0    #60.0 # seconds to sleep when no work
 BUSY_SLEEP     = 1.0     # seconds to sleep when queue still has items
 DOWNLOAD_LIMIT = 999
 
@@ -54,37 +54,24 @@ class CacheWorker(threading.Thread):
         self.stop_event = threading.Event()
 
     def run(self):
-        # 1) Ensure schema and open one DB connection
         init_db()
-        self.conn = sqlite3.connect(
-            DB_PATH, timeout=30, check_same_thread=False
-        )
+        self.conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
         self.conn.execute("PRAGMA busy_timeout = 30000;")
-        
 
         while not self.stop_event.is_set():
-            # 2) Process thumbnail/metadata tasks
             self._process_batch()
 
-            # 3) Periodic full‐list sweep (including preloading all events)
             now = time.time()
             if now - self.last_sweep >= SWEEP_INTERVAL:
                 self._do_full_sweep()
                 self.last_sweep = now
 
-            # 4) Sleep based on queue load
-            if not self.task_queue.empty():
-                time.sleep(BUSY_SLEEP)
-            else:
-                time.sleep(IDLE_SLEEP)
+            time.sleep(BUSY_SLEEP if not self.task_queue.empty() else IDLE_SLEEP)
 
     def _process_batch(self):
-        # 0) don’t do any work if we’re in GAME mode
-        if bpy.context.scene.ui_current_mode == 'GAME':
-            return
-
+        # ❌ Previously: bailed out in GAME mode. We want background to keep working.
         items = []
         while len(items) < BATCH_SIZE:
             try:
@@ -95,7 +82,6 @@ class CacheWorker(threading.Thread):
         if not items:
             return
 
-        # Process each job individually.
         for kind, *args in items:
             if kind == 'meta':
                 (pkg_id,) = args
@@ -104,31 +90,30 @@ class CacheWorker(threading.Thread):
                 pkg_id, url = args
                 download_thumbnail(url, pkg_id)
 
-        # Schedule a UI refresh so new thumbnails appear.
+        # Mark UI dirty if it exists; harmless if no UI.
         bpy.app.timers.register(
             lambda: setattr(bpy.types.Scene, "package_ui_dirty", True),
             first_interval=0.1
         )
 
     def _preload_all_events(self):
-        # 1) guard: only if we have a valid token
         if not load_token():
             return
 
-        # 2) fetch events; JSON has 'success' + one list per stage
         events = fetch_events_by_stage()
         if not events.get("success"):
             return
 
-        # 3) loop only your three known stages
-        for stage in ("submission", "voting", "winners"):
-            ev_list = events.get(stage, [])
-            for ev in ev_list:
-                evt_id   = str(ev["id"])
-                all_pkgs = []
-                offset   = 0
+        # Aggregate ALL events across stages into one memory union
+        mem_union: list[dict] = []
 
-                # 3a) page through every package for this (stage, event)
+        for stage in ("submission", "voting", "winners"):
+            ev_list = events.get(stage, []) or []
+            for ev in ev_list:
+                evt_id = str(ev["id"])
+                all_pkgs = []
+                offset = 0
+
                 while True:
                     params = {
                         "file_type":      "event",
@@ -145,7 +130,6 @@ class CacheWorker(threading.Thread):
                     if not batch:
                         break
 
-                    # annotate and collect
                     for pkg in batch:
                         pkg.update({
                             "file_type":      "event",
@@ -158,20 +142,22 @@ class CacheWorker(threading.Thread):
                         break
                     offset += 50
 
-                # 3b) persist into SQLite + in-memory cache
+                # Persist this partition and enqueue assets
                 if all_pkgs:
                     update_package_list("event", all_pkgs, stage, evt_id)
-                    cache_manager.set_package_data({"event": all_pkgs})
-
-                    # 3c) enqueue metadata & thumbnail fetch for each package
+                    mem_union.extend(all_pkgs)
                     for pkg in all_pkgs:
                         try:
-                            pkg_id = int(pkg["file_id"])
-                            background_fetch_metadata(pkg_id)
+                            pid = int(pkg["file_id"])
+                            background_fetch_metadata(pid)
                         except Exception as e:
-                            print(f"[PRELOAD] failed to enqueue metadata for {pkg}: {e}")
+                            print(f"[PRELOAD] metadata enqueue failed for {pkg}: {e}")
 
-        # 4) prune any stale event entries
+        # One write to memory after the whole traversal (prevents overwrites)
+        if mem_union:
+            cache_manager.set_package_data({"event": mem_union})
+
+        # Prune event partitions that no longer exist in that stage
         try:
             for stage in ("submission", "voting", "winners"):
                 active_ids = [str(ev["id"]) for ev in events.get(stage, [])]
@@ -190,45 +176,34 @@ class CacheWorker(threading.Thread):
                             f"   AND selected_event NOT IN ({placeholders});"
                         )
                         self.conn.execute(sql, (stage, *active_ids))
-
-            sub = len(events.get("submission", []))
-            vote = len(events.get("voting", []))
-            win = len(events.get("winners", []))
         except Exception as e:
             print(f"[CacheWorker] _preload_all_events prune error: {e}")
 
-
-
     def _do_full_sweep(self):
-        # ── DEBUG ────────────────────────────────────────────────
+        # Debug print kept
         print(
             f"[DEBUG sweep] {time.strftime('%H:%M:%S')}  "
             f"mode={bpy.context.scene.ui_current_mode!s}  "
             f"token={bool(load_token())}"
         )
-        # ─────────────────────────────────────────────────────────
-        # 0) bail out immediately when the UI is in GAME
-        if bpy.context.scene.ui_current_mode == 'GAME':
-            return
-
         token = load_token()
         if not token:
             print("[CacheWorker] no API token, skipping full sweep until login")
             return
 
-        # 1) Preload ALL events (all stages & IDs)
+        # 1) All events
         self._preload_all_events()
 
-        # 2) Re-fetch & update each non-event file_type (world & shop_item)
+        # 2) world & shop_item as before
         for ftype in FILE_TYPES:
             try:
                 resp = fetch_packages({
                     "file_type": ftype,
                     "sort_by":   "newest",
                     "offset":    0,
-                    "limit":     DOWNLOAD_LIMIT,  # or 999 if you really want “all”
+                    "limit":     DOWNLOAD_LIMIT,
                 })
-            except Exception as e:
+            except Exception:
                 continue
 
             if not resp.get("success"):
@@ -236,7 +211,6 @@ class CacheWorker(threading.Thread):
 
             remote_pkgs = resp["packages"]
 
-            # 2a) Incrementally persist into SQLite & in-memory cache
             update_package_list(ftype, remote_pkgs, event_stage="", selected_event="")
             for pkg in remote_pkgs:
                 pkg.update({
@@ -246,18 +220,12 @@ class CacheWorker(threading.Thread):
                 })
             cache_manager.set_package_data({ftype: remote_pkgs})
 
-            # 2b) Enqueue metadata & thumbnail downloads
             for pkg in remote_pkgs:
                 pid = pkg.get("file_id")
                 url = pkg.get("thumbnail_url")
                 if pid is None or not url:
                     continue
 
-                # metadata
-                if cache_manager.get_metadata(pid) is None:
-                    self.task_queue.put(('meta', pid))
-
-                # thumbnail (only if URL changed)
                 cur = self.conn.execute(
                     "SELECT thumbnail_url, file_path FROM thumbnails WHERE file_id = ? LIMIT 1;",
                     (pid,)
@@ -265,13 +233,14 @@ class CacheWorker(threading.Thread):
                 db_url, db_path = (cur[0], cur[1]) if cur else (None, None)
                 if db_url != url:
                     if db_path and os.path.exists(db_path):
-                        try:
-                            os.remove(db_path)
-                        except:
-                            pass
+                        try: os.remove(db_path)
+                        except: pass
                     self.task_queue.put(('thumb', pid, url))
 
-        # 3) Stale-check **event** thumbnails & requeue if URL changed
+                if cache_manager.get_metadata(pid) is None:
+                    self.task_queue.put(('meta', pid))
+
+        # 3) Event thumbnails stale-check remains (unchanged)
         try:
             import json
             cursor = self.conn.execute(
@@ -290,22 +259,19 @@ class CacheWorker(threading.Thread):
 
                 if url and db_url != url:
                     if db_path and os.path.exists(db_path):
-                        try:
-                            os.remove(db_path)
-                        except:
-                            pass
+                        try: os.remove(db_path)
+                        except: pass
                     self.task_queue.put(('thumb', pkg_id, url))
         except Exception as e:
             print(f"[CacheWorker] event thumbnail stale-check error:", e)
 
-        # 4) Determine the full set of “still valid” IDs (world, shop_item, AND events)
+        # 4) Collect valid IDs from package_list and prune assets (unchanged)
         cursor = self.conn.execute("""
             SELECT DISTINCT CAST(json_extract(data_json, '$.file_id') AS INTEGER)
             FROM package_list;
         """)
         valid_ids = {row[0] for row in cursor.fetchall() if row[0] is not None}
 
-        # 5) Prune any thumbnails/metadata rows not in that valid set
         if valid_ids:
             placeholders = ",".join("?" for _ in valid_ids)
             with self.conn:
@@ -318,10 +284,7 @@ class CacheWorker(threading.Thread):
                     tuple(valid_ids)
                 )
 
-        # 6) Finally schedule your existing on-main-thread cleanup
         bpy.app.timers.register(self._main_cleanup, first_interval=0.1)
-
-
         
     def _main_cleanup(self):
         try:

@@ -378,6 +378,20 @@ def update_package_list(
     • update rows whose JSON or featured-flag changed
     """
 
+
+    # ── DROP rows that don't actually belong in this partition ─────────────
+    safe_packages = []
+    for p in packages:
+        if file_type != "event":
+            safe_packages.append(p)
+            continue
+        if str(p.get("event_stage", "")) != str(event_stage):
+            continue
+        if str(p.get("selected_event", "")) != str(selected_event):
+            continue
+        safe_packages.append(p)
+    packages = safe_packages
+    
     # ── GUARD ─────
     # ── EMPTY LIST: nuke everything for this filter set ─────────────────
     if not packages:

@@ -181,7 +181,7 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
             row = layout.row(align=True)
             row.label(text="Author:")
             if addon_data.profile_url:
-                op = row.operator("webapp.open_url", text=addon_data.author, icon='URL')
+                op = row.operator("webapp.open_url", text=addon_data.author)
                 op.url = addon_data.profile_url
             else:
                 row.label(text=addon_data.author)
