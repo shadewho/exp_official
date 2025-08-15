@@ -8,7 +8,7 @@ from ...main_config import EVENTS_URL, SHOP_URL
 from .utilities import fetch_detail_for_file
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import draw_image_buttons_callback
-from ...download_and_explore.explore_main import explore_icon_handler
+from ...download_and_explore.explore_main import explore_icon_handler, reset_download_progress
 
 
 # ------------------------------------------------------------------------
@@ -260,6 +260,8 @@ class PACKAGE_OT_Display(bpy.types.Operator):
                             if not token:
                                 self.report({'ERROR'}, "You must be logged in to explore a package.")
                                 return {'CANCELLED'}
+                            
+                            reset_download_progress()
                             # Set a loading flag and reset progress (for the UI drawing)
                             scene.download_progress = 0.0
                             scene.ui_current_mode = "LOADING"  # This is only for drawing, not for process control.

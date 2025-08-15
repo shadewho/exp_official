@@ -1,6 +1,7 @@
 #Exploratory/Exp_UI/download_and_explore/explore_main.py
 
 import bpy
+import time
 import requests
 from ..auth.helpers import load_token
 from ..main_config import PACKAGES_ENDPOINT, WORLD_DOWNLOADS_FOLDER
@@ -11,7 +12,54 @@ import threading, os, uuid, traceback
 current_download_task = None
 download_progress_value = 0.0
 
+def reset_download_progress():
+    """
+    Hard reset of all progress counters before a new download begins.
+    Called from UI click handler just before starting a DownloadTask.
+    """
+    global download_progress_value
+    download_progress_value = 0.0
 
+# --- Central bail path -----------------------------------------------
+def _bail_ui(reason: str):
+    """
+    Runs on Blender's main thread. Resets UI back to Browse,
+    clears progress, cleans temp files, and forces a redraw.
+    """
+    try:
+        scene = bpy.context.scene
+        scene.ui_current_mode = "BROWSE"
+        scene.show_loading_image = False
+        scene.download_progress = 0.0
+        reset_download_progress()                 # <- from previous fix
+    except Exception:
+        pass
+
+    # Nuke temp downloads and forget the running task
+    try:
+        clear_world_downloads_folder()
+    except Exception:
+        pass
+
+    global current_download_task
+    current_download_task = None
+
+    # Nudges the draw loop to rebuild
+    bpy.types.Scene.package_ui_dirty = True
+    print(f"[LOAD-BAIL] {reason}")
+    try:
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+    except Exception:
+        pass
+
+def bail_to_browse(reason: str):
+    """
+    Schedules the UI bail on the main thread (safe to call from worker threads).
+    """
+    def _runner():
+        _bail_ui(reason)
+        return None
+    bpy.app.timers.register(_runner, first_interval=0.0)
 #the main download task class that handles the download process
 class DownloadTask:
     def __init__(self, download_code):
@@ -29,29 +77,42 @@ class DownloadTask:
 
     def run(self):
         try:
-            # Step 1: POST request to get the download URL.
             if self.cancelled:
                 self.done = True
                 return
+
             token = load_token()
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             explore_url = PACKAGES_ENDPOINT.replace("/packages", "/explore")
             payload = {"download_code": self.download_code, "file_type": "world"}
-            response = requests.post(explore_url, json=payload, headers=headers)
+            response = requests.post(explore_url, json=payload, headers=headers, timeout=15)
             if self.cancelled:
                 self.done = True
                 return
-            if response.status_code != 200 or not response.json().get("success"):
-                self.error = "Explore API call failed."
+            if response.status_code != 200:
+                self.error = f"Explore API {response.status_code}"
                 self.done = True
                 return
-            self.download_url = response.json().get("download_url")
-            # Step 2: Download the .blend file with streaming.
+            j = response.json()
+            if not j.get("success"):
+                self.error = j.get("message", "Explore API call failed.")
+                self.done = True
+                return
+
+            self.download_url = j.get("download_url")
+            if not self.download_url:
+                self.error = "No download_url provided by server."
+                self.done = True
+                return
+
             self.local_blend_path = async_download_blend_file(
-                self.download_url, 
-                progress_callback=self.update_progress, 
+                self.download_url,
+                progress_callback=self.update_progress,
                 task=self
             )
+            # async_download_blend_file already bails on failure; still set error for the timer
+            if not self.local_blend_path:
+                self.error = "Download failed."
             self.done = True
         except Exception as e:
             self.error = str(e)
@@ -64,42 +125,74 @@ class DownloadTask:
 
 def async_download_blend_file(url, progress_callback, task):
     """
-    Downloads the file from `url` in chunks and calls progress_callback(progress)
-    where progress is a float from 0.0 to 1.0. This version checks for cancellation.
-    Returns the local file path when done or None if cancelled.
+    Downloads with basic stall/timeout detection.
+    Returns the local path or None on failure/cancel.
     """
     try:
-        # Create a unique filename in the WORLD_DOWNLOADS_FOLDER.
-        base_filename = os.path.basename(url.split('?')[0])
+        base_filename = os.path.basename(url.split('?')[0]) or "world.blend"
         if not base_filename.endswith('.blend'):
             base_filename += '.blend'
         unique_id = uuid.uuid4().hex
         unique_filename = f"{os.path.splitext(base_filename)[0]}_{unique_id}.blend"
         local_path = os.path.join(WORLD_DOWNLOADS_FOLDER, unique_filename)
-        
-        response = requests.get(url, stream=True)
+
+        # Short connect timeout + bounded read timeout
+        response = requests.get(url, stream=True, timeout=(5, None))
         if response.status_code != 200:
+            bail_to_browse(f"HTTP {response.status_code} while downloading.")
             return None
 
-        total = response.headers.get("Content-Length")
-        total = int(total) if total else 0
+        total = int(response.headers.get("Content-Length", "0") or 0)
         downloaded = 0
+        last_progress_time = time.time()
+        STALL_SECS = 60        # no bytes for this long => bail
+        MIN_OK_RATIO = 0.95    # if Content-Length present, require at least this much
+
         with open(local_path, "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):
                 if task.cancelled:
                     file.close()
                     if os.path.exists(local_path):
                         os.remove(local_path)
+                    bail_to_browse("Download cancelled.")
                     return None
-                if chunk:
-                    file.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0:
-                        progress_callback(downloaded / total)
+
+                if not chunk:
+                    # No chunk received—check for stall
+                    if time.time() - last_progress_time > STALL_SECS:
+                        file.close()
+                        try:
+                            os.remove(local_path)
+                        except Exception:
+                            pass
+                        bail_to_browse("Network stalled while downloading.")
+                        return None
+                    continue
+
+                file.write(chunk)
+                downloaded += len(chunk)
+                last_progress_time = time.time()
+                if total > 0:
+                    progress_callback(downloaded / total)
+
+        if total > 0 and downloaded < int(total * MIN_OK_RATIO):
+            # Probably truncated
+            try:
+                os.remove(local_path)
+            except Exception:
+                pass
+            bail_to_browse("Download incomplete / truncated.")
+            return None
+
         progress_callback(1.0)
         return local_path
+
+    except requests.RequestException as e:
+        bail_to_browse(f"Network error: {e!s}")
+        return None
     except Exception as e:
         traceback.print_exc()
+        bail_to_browse("Unexpected error during download.")
         return None
 
 def clear_world_downloads_folder():
@@ -116,23 +209,39 @@ def clear_world_downloads_folder():
                 print(f"[WARNING] Could not remove {file_path}: {e}")
 
 def timer_finish_download():
+    from .explore_main import clear_world_downloads_folder  # local import ok
     global current_download_task, download_progress_value
 
     scene = bpy.context.scene
-    # Update progress bar
+    # Keep the loading UI in sync
     scene.download_progress = download_progress_value
 
     # 1) Wait for a valid task
     if current_download_task is None:
-        return None      # nothing to do
+        return None  # nothing to do
+
     if not current_download_task.done:
-        return 0.1       # poll again shortly
+        return 0.1   # poll again shortly
+
+    # If the worker reported an error, bail to Browse
     if current_download_task.error:
+        bail_to_browse(f"Load failed: {current_download_task.error}")
         current_download_task = None
-        return None      # stop on error
+        return None
 
     # 2) Handle cancellation or missing file
     if current_download_task.cancelled or not current_download_task.local_blend_path:
+        bail_to_browse("Download cancelled or missing file.")
+        clear_world_downloads_folder()
+        current_download_task = None
+        return None
+
+    # 2.5) Quick sanity check that the downloaded file is a valid .blend
+    try:
+        with bpy.data.libraries.load(current_download_task.local_blend_path, link=False) as (df, dt):
+            _ = df.scenes  # touch to force header read
+    except Exception:
+        bail_to_browse("Downloaded file is not a valid .blend.")
         clear_world_downloads_folder()
         current_download_task = None
         return None
@@ -142,21 +251,21 @@ def timer_finish_download():
         "actions": list(bpy.data.actions.keys()),
         "images":  list(bpy.data.images.keys()),
         "sounds":  list(bpy.data.sounds.keys()),
-        "meshes":  list(bpy.data.meshes.keys()),   # ← new
-        "objects": list(bpy.data.objects.keys()),  # ← optional, if you want object-level diffs
+        "meshes":  list(bpy.data.meshes.keys()),
+        "objects": list(bpy.data.objects.keys()),
     }
 
     # 4) Append the downloaded blend
     result, appended_scene_name = append_scene_from_blend(current_download_task.local_blend_path)
     if result != {'FINISHED'} or not appended_scene_name:
-        print(f"[ERROR] append_scene_from_blend failed: {result}")
+        bail_to_browse("Append failed or produced no scene.")
         clear_world_downloads_folder()
         current_download_task = None
         return None
 
     # 5) Record scene metadata
     scene["appended_scene_name"] = appended_scene_name
-    scene["world_blend_path"]     = current_download_task.local_blend_path
+    scene["world_blend_path"]    = current_download_task.local_blend_path
 
     # 6) Compute which datablocks arrived with that append
     init = scene["initial_datablocks"]
@@ -216,8 +325,6 @@ def timer_finish_download():
     current_download_task = None
     return None
 
-
-
 def explore_icon_handler(context, download_code):
     """
     Called when the Explore Icon is clicked.
@@ -228,6 +335,9 @@ def explore_icon_handler(context, download_code):
 
     # 1) Store the name of the scene you were on
     context.window_manager['original_scene'] = context.window.scene.name
+
+    reset_download_progress()
+    context.scene.download_progress = 0.0
 
     # 2) Kick off the download + timer as before
     if download_code:
