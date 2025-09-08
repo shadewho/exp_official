@@ -21,63 +21,83 @@ _active_transform_tasks = []
 class TransformTask:
     def __init__(self, obj, start_loc, start_rot, start_scl,
                  end_loc, end_rot, end_scl,
-                 start_time, duration):
+                 start_time, duration,
+                 rot_interp='euler',
+                 delta_euler=None):
         self.obj = obj
 
-        # Store starting transforms:
+        # Store starting transforms (Euler = local space)
         self.start_loc = start_loc
-        self.start_rot = start_rot
+        self.start_rot = start_rot           # Euler
         self.start_scl = start_scl
 
-        # Target transforms:
+        # Targets
         self.end_loc = end_loc
-        self.end_rot = end_rot
+        self.end_rot = end_rot               # Euler
         self.end_scl = end_scl
 
+        # Rotation interpolation mode
+        self.rot_interp  = rot_interp        # 'euler' | 'quat' | 'local_delta'
+        self.delta_euler = delta_euler       # Euler (only for 'local_delta')
+
+        # Quats for slerp path (used by 'quat')
+        self.start_rot_q = start_rot.to_quaternion()
+        self.end_rot_q   = end_rot.to_quaternion()
+
         self.start_time = start_time
-        self.duration = duration
+        self.duration   = duration
 
     def update(self, now):
-        """
-        Returns True if this task has finished;
-        otherwise returns False to keep going.
-        """
-        # ─── Instant-complete zero-length transforms ───────────────
         if self.duration <= 0.0:
             self.obj.location       = self.end_loc
             self.obj.rotation_euler = self.end_rot
             self.obj.scale          = self.end_scl
             return True
 
-        # ─── Normal interpolation ───────────────────────────────────
         t = (now - self.start_time) / self.duration
         if t >= 1.0:
-            # Snap to final
             self.obj.location       = self.end_loc
             self.obj.rotation_euler = self.end_rot
             self.obj.scale          = self.end_scl
             return True
-        else:
-            # Lerp location
-            self.obj.location = self.start_loc.lerp(self.end_loc, t)
 
-            # Lerp rotation euler component-wise
+        # Lerp location
+        self.obj.location = self.start_loc.lerp(self.end_loc, t)
+
+        # Rotation
+        if self.rot_interp == 'local_delta':
+            # True Blender-like local rotation (supports multi-turn spins)
+            # q(t) = q_start @ quat(Euler(t * delta_euler))
+            qdelta_t = Euler((
+                self.delta_euler.x * t,
+                self.delta_euler.y * t,
+                self.delta_euler.z * t,
+            ), 'XYZ').to_quaternion()
+            cur_q = self.start_rot_q @ qdelta_t
+            self.obj.rotation_euler = cur_q.to_euler('XYZ')
+
+        elif self.rot_interp == 'quat':
+            cur_q = self.start_rot_q.slerp(self.end_rot_q, t)
+            self.obj.rotation_euler = cur_q.to_euler('XYZ')
+
+        else:
+            # Per-channel Euler lerp (old behavior)
             current_rot = self.start_rot.copy()
             current_rot.x = (1.0 - t) * self.start_rot.x + (t * self.end_rot.x)
             current_rot.y = (1.0 - t) * self.start_rot.y + (t * self.end_rot.y)
             current_rot.z = (1.0 - t) * self.start_rot.z + (t * self.end_rot.z)
             self.obj.rotation_euler = current_rot
 
-            # Lerp scale
-            self.obj.scale = self.start_scl.lerp(self.end_scl, t)
-            return False
+        # Lerp scale
+        self.obj.scale = self.start_scl.lerp(self.end_scl, t)
+        return False
 
 
-def schedule_transform(obj, end_loc, end_rot, end_scl, duration):
+def schedule_transform(obj, end_loc, end_rot, end_scl, duration,
+                       rot_interp='euler', delta_euler=None):
     """
-    Create a transform animation from the object's *current* transforms
-    to the given final transforms (end_loc, end_rot, end_scl),
-    taking `duration` seconds.
+    rot_interp: 'euler' | 'quat' | 'local_delta'
+    If rot_interp == 'local_delta', pass delta_euler (Euler local offset).
     """
     if not obj:
         return
@@ -92,9 +112,12 @@ def schedule_transform(obj, end_loc, end_rot, end_scl, duration):
         obj,
         start_loc, start_rot, start_scl,
         end_loc, end_rot, end_scl,
-        start_time, duration
+        start_time, duration,
+        rot_interp=rot_interp,
+        delta_euler=delta_euler
     )
     _active_transform_tasks.append(task)
+
 
 def update_transform_tasks():
     """
@@ -185,35 +208,46 @@ def execute_transform_reaction(reaction):
 
 def apply_offset_transform(reaction, target_obj, duration):
     """
-    Rotate/translate/scale in *global* axes,
-    pivoting around the object's current origin.
+    Global offset around the object's current origin, preserving spin.
+    We still use a matrix to compute the translated/scaled end location,
+    but we compute end Euler by adding the offset eulers so 360° isn't lost.
     """
-
     loc_off = Vector(reaction.transform_location)
     rot_off = Euler(reaction.transform_rotation, 'XYZ')
     scl_off = Vector(reaction.transform_scale)
 
-    # Build the user offset in global space
+    # Current
+    start_loc = target_obj.location.copy()
+    start_rot = target_obj.rotation_euler.copy()
+    start_scl = target_obj.scale.copy()
+
+    # Build the user offset in GLOBAL space for location/scale computation
     T_off = Matrix.Translation(loc_off)
-    R_off = rot_off.to_matrix().to_4x4()
+    R_off = rot_off.to_matrix().to_4x4()  # used only to rotate the loc offset when pivoting
     S_off = Matrix.Diagonal((scl_off.x, scl_off.y, scl_off.z, 1.0))
     user_offset_mat = T_off @ R_off @ S_off
 
-    # The pivot is the object’s current location in world coords
+    # Pivot is object's current world location
     pivot_world = target_obj.matrix_world.translation
-
     pivot_inv = Matrix.Translation(-pivot_world)
     pivot_fwd = Matrix.Translation(pivot_world)
 
-    # final_mat = pivot_fwd * user_offset_mat * pivot_inv * current_mat
-    start_mat = target_obj.matrix_world.copy()
+    start_mat  = target_obj.matrix_world.copy()
     offset_mat = pivot_fwd @ user_offset_mat @ pivot_inv
-    final_mat = offset_mat @ start_mat
+    final_mat  = offset_mat @ start_mat
 
-    # Decompose => schedule
-    end_loc, end_rot_quat, end_scl = final_mat.decompose()
-    end_rot_euler = end_rot_quat.to_euler('XYZ')
-    schedule_transform(target_obj, end_loc, end_rot_euler, end_scl, duration)
+    # Decompose ONLY for end location/scale (rotation from decompose loses spin)
+    end_loc, _end_rot_q, end_scl = final_mat.decompose()
+
+    # END ROTATION: preserve spin by explicit Euler addition
+    end_rot = Euler((
+        start_rot.x + rot_off.x,
+        start_rot.y + rot_off.y,
+        start_rot.z + rot_off.z,
+    ), 'XYZ')
+
+    schedule_transform(target_obj, end_loc, end_rot, end_scl, duration)
+
 
 
 def apply_to_location_transform(reaction, target_obj, duration):
@@ -247,28 +281,65 @@ def apply_to_object_transform(reaction, target_obj, to_obj, duration):
     schedule_transform(target_obj, end_loc, end_rot, end_scl, duration)
 
 def apply_local_offset_transform(reaction, target_obj, duration):
-    """Apply a LOCAL offset in location/rotation/scale (like R in Local)."""
+    """
+    LOCAL offset:
+      - Rotation: about the object's CURRENT LOCAL axes (like Blender's local rotation).
+      - Translation: along local axes (normalized basis avoids skew from non-uniform scale).
+      - Scale: component-wise in local space.
+    """
+    from math import tau
     loc_off = Vector(reaction.transform_location)
-    rot_off = Euler(reaction.transform_rotation, 'XYZ')
+    rot_off = Euler(reaction.transform_rotation, 'XYZ')  # radians
     scl_off = Vector(reaction.transform_scale)
 
-    T_off = Matrix.Translation(loc_off)
-    R_off = rot_off.to_matrix().to_4x4()
-    S_off = Matrix.Diagonal((scl_off.x, scl_off.y, scl_off.z, 1.0))
+    # --- START (current state)
+    start_loc = target_obj.location.copy()
+    start_rot_eul = target_obj.rotation_euler.copy()
+    start_rot_q = start_rot_eul.to_quaternion()
+    start_scl = target_obj.scale.copy()
 
-    offset_mat = T_off @ R_off @ S_off
+    # --- TRUE LOCAL ROTATION ---
+    # Build the delta in LOCAL space and right-multiply:
+    #   q_end = q_start @ q_delta_local
+    delta_q_local = rot_off.to_quaternion()
+    end_rot_q = start_rot_q @ delta_q_local
+    end_rot_base = end_rot_q.to_euler('XYZ')
 
-    start_mat = target_obj.matrix_world.copy()
+    # Preserve multi-turn spins so big angles (e.g. 720°) don’t collapse:
+    def unwrap_to_target(base_val, target_val):
+        k = round((target_val - base_val) / tau)
+        return base_val + k * tau
 
-    # For a local transform, multiply AFTER the existing matrix
-    final_mat = start_mat @ offset_mat
+    target_eul = (
+        start_rot_eul.x + rot_off.x,
+        start_rot_eul.y + rot_off.y,
+        start_rot_eul.z + rot_off.z,
+    )
+    end_rot = Euler((
+        unwrap_to_target(end_rot_base.x, target_eul[0]),
+        unwrap_to_target(end_rot_base.y, target_eul[1]),
+        unwrap_to_target(end_rot_base.z, target_eul[2]),
+    ), 'XYZ')
 
-    end_loc, end_rot_quat, end_scl = final_mat.decompose()
-    end_rot_euler = end_rot_quat.to_euler('XYZ')
-    schedule_transform(target_obj, end_loc, end_rot_euler, end_scl, duration)
+    # --- LOCAL TRANSLATION ---
+    # Use the normalized rotation basis so non-uniform scale doesn't skew direction.
+    R_world_n = target_obj.matrix_world.to_3x3().normalized()
+    end_loc = start_loc + (R_world_n @ loc_off)
 
+    # --- LOCAL SCALE (component-wise) ---
+    end_scl = Vector((
+        start_scl.x * scl_off.x,
+        start_scl.y * scl_off.y,
+        start_scl.z * scl_off.z,
+    ))
 
-
+    schedule_transform(
+    target_obj,
+    end_loc, end_rot, end_scl,
+    duration,
+    rot_interp='local_delta',
+    delta_euler=rot_off  # <<— the exact local offset the user requested
+)
 
 # ------------------------------
 # Property Tasks

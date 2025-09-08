@@ -31,7 +31,8 @@ from .exp_ui import (
     VIEW3D_PT_Objectives,
     EXPLORATORY_UL_Objectives,
     VIEW3D_PT_Exploratory_UploadHelper,
-    VIEW3D_PT_Exploratory_Performance
+    VIEW3D_PT_Exploratory_Performance,
+    VIEW3D_PT_Exploratory_PhysicsTuning
 )
 
 
@@ -44,6 +45,7 @@ from .props_and_utils.exp_properties import (
     EXPLORATORY_OT_AddProxyMesh,
     EXPLORATORY_OT_RemoveProxyMesh,
     EXPLORATORY_UL_ProxyMeshList,
+    CharacterPhysicsConfigPG
 )
 
 from .reactions.exp_custom_ui import EXPLORE_OT_PreviewCustomText
@@ -113,6 +115,8 @@ def register():
 
     bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
 
+    bpy.utils.register_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+
     bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
 
     # Register the UILists used in panels
@@ -144,6 +148,7 @@ def register():
     bpy.utils.register_class(CharacterActionsPG)
     bpy.utils.register_class(ProxyMeshEntry)
     bpy.utils.register_class(EXPLORATORY_UL_ProxyMeshList)
+    bpy.utils.register_class(CharacterPhysicsConfigPG)
     bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
     bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
@@ -211,9 +216,11 @@ def unregister():
     del bpy.types.Scene.character_actions
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
     bpy.utils.unregister_class(CharacterActionsPG)
+    bpy.utils.unregister_class(CharacterPhysicsConfigPG)
     bpy.utils.unregister_class(ProxyMeshEntry)
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
+    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
 
      # ─── Performance Culling ──────────────────────────────────
     unregister_performance()

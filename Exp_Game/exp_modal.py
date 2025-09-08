@@ -3,7 +3,6 @@
 import bpy
 import math
 import time
-from .physics.exp_physics import update_dynamic_meshes
 from .props_and_utils.exp_utilities import get_game_world
 from .physics.exp_movement import move_character
 from .physics.exp_raycastutils import create_bvh_tree
@@ -30,6 +29,10 @@ from .audio.exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
 from .systems.exp_performance import init_performance_state, update_performance_culling, restore_performance_state
 from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move, release_cursor_clip, ensure_cursor_hidden_if_mac
+from .physics.exp_kcc import KinematicCharacterController
+from .props_and_utils.exp_time import FixedStepClock
+from .physics.exp_dynamic import update_dynamic_meshes
+
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -104,6 +107,10 @@ class ExpModal(bpy.types.Operator):
 
     # Timer handle for the modal operator
     _timer = None
+
+    #physics controller and time
+    physics_controller = None
+    fixed_clock = None
 
     # (New) We'll store the user-chosen keys from preferences only
     pref_forward_key:  str = "W"
@@ -264,12 +271,26 @@ class ExpModal(bpy.types.Operator):
             set_global_animation_manager(self.animation_manager)
             move_armature_and_children_to_scene(self.target_object, context.scene)
 
+        # Physics controller + fixed clock
+        self.physics_controller = KinematicCharacterController(self.target_object, context.scene.char_physics)
+
+        hz = max(30, min(300, int(context.scene.char_physics.fixed_hz)))
+        fixed_dt = 1.0 / float(hz)
+
+        # Ensure the clock can handle the scaled time you’re feeding it.
+        # Estimate steps per UI tick and give some headroom, cap to 20.
+        steps_per_tick_est = int(math.ceil(float(self.time_scale) * hz / 60.0))
+        max_steps = max(5, min(20, steps_per_tick_est + 2))
+
+        self.fixed_clock = FixedStepClock(fixed_dt=fixed_dt, max_steps=max_steps)
+
+
         # 7) Setup modal cursor region and hide the system cursor
         setup_cursor_region(context, self)
 
         # 8) Create a timer (runs as fast as possible, interval=0.0)
         self._timer = context.window_manager.event_timer_add(1.0/60.0, window=context.window)
-        self._last_time = time.time()
+        self._last_time = time.perf_counter()
 
         # 9) Add ourselves to Blender’s modal event loop
         exp_globals.ACTIVE_MODAL_OP = self
@@ -334,59 +355,50 @@ class ExpModal(bpy.types.Operator):
 
         if event.type == 'TIMER':
             
-            # A) Update time so self.delta_time is now the current frame’s dt
+            # --- TIMER FRAME TICK ---  (replace the entire 'if event.type == "TIMER":' body)
+            # A) Update timebases
             self.update_time()
-            delta = update_time()  # We get how many real seconds passed
-            
+            _ = update_time()  # keep your global game clock increasing
 
-            # B) Update the animation manager once
+            # B) Update animation & audio (pure state)
             self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded)
             current_anim_state = self.animation_manager.anim_state
-
-            # C) Update audio
             audio_state_mgr = get_global_audio_state_manager()
             audio_state_mgr.update_audio_state(current_anim_state)
 
-            # Update Dynamic Mesh Data (moved to exp_physics) ---
+            # C) FIRST: update anything that can move objects this frame
+            #    (This ensures platforms/props have their FINAL transforms for this frame.)
+            update_all_custom_managers(self.delta_time)
+            update_transform_tasks()
+            update_property_tasks()
+
+            # D) Now that transforms are final, rebuild/refresh dynamic BVHs + platform deltas
+            #    (This also applies 'carry' delta if grounded, using last frame's grounded_platform.)
             update_dynamic_meshes(self)
 
-            # ── Run distance‐based hide/unhide ────────────────────
+            # E) Distance-based culling can safely read fresh transforms now
             update_performance_culling(self, context)
 
-            # update movement real time (holding keys)
+            # --- Character gating / input filtering (unchanged) ---
             mg = context.scene.mobility_game
-            
             if not mg.allow_movement:
                 for k in (self.pref_forward_key, self.pref_backward_key,
                         self.pref_left_key, self.pref_right_key):
                     if k in self.keys_pressed:
                         self.keys_pressed.remove(k)
 
-            # 2) If sprint is disallowed, remove SHIFT
             if not mg.allow_sprint:
                 if self.pref_run_key in self.keys_pressed:
                     self.keys_pressed.remove(self.pref_run_key)
 
-
-
-            # D) update custom actions, transform tasks, etc.
-            update_all_custom_managers(self.delta_time)
-            update_transform_tasks()
-            update_property_tasks()
-
-            # E) Movement, jumping, etc.
+            # F) Movement & gravity (consumes fresh dynamic_bvh_map; camera updates inside)
             self.update_movement_and_gravity(context)
-            self.update_jumping(context)
 
-            # F) Check interactions
+            # H) Interactions/UI/SFX (unchanged)
             check_interactions(context)
-
-
-            # G) Update the UI messages
             update_text_reactions()
-
-            #H Sound reaction tasks
             update_sound_tasks()
+
 
 
         # B) Key events => only user preference keys (forward/back/left/right/run/jump).
@@ -410,24 +422,7 @@ class ExpModal(bpy.types.Operator):
             ensure_cursor_hidden_if_mac(context)
 
         return {'RUNNING_MODAL'}
-    
-    # ---------------------------
-    # rotation delta
-    # ---------------------------
-    def apply_platform_delta_if_grounded(self):
-        if not self.target_object:
-            return
 
-        best_obj = getattr(self, 'grounded_platform', None)
-        if not best_obj:
-            return
-
-        delta_mat = self.platform_delta_map.get(best_obj)
-        if not delta_mat:
-            return
-
-        loc = self.target_object.location
-        self.target_object.location = delta_mat @ loc
 
     def cancel(self, context):
         
@@ -526,83 +521,87 @@ class ExpModal(bpy.types.Operator):
     # Update / Logic Methods
     # ---------------------------
     def update_time(self):
-        """Update delta_time based on real system clock, times our time_scale."""
-        current_time = time.time()
+        """Stable, scaled delta_time based on a monotonic clock."""
+        current_time = time.perf_counter()
+        if self._last_time == 0.0:
+            self._last_time = current_time
         real_dt = current_time - self._last_time
         self._last_time = current_time
-        self.delta_time = real_dt * self.time_scale
+
+        # Clamp to avoid huge spikes after stalls (e.g., window focus)
+        real_dt = max(0.0, min(real_dt, 0.050))  # 50 ms max per tick
+
+        self.delta_time = real_dt * float(self.time_scale)
+
 
     def update_animations(self):
         """Send scaled delta_time to the animation manager."""
         if self.animation_manager:
-            self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded)
+            self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded, self.z_velocity)
 
     def update_movement_and_gravity(self, context):
-        """Apply character movement & gravity, using the user’s scaled dt."""
+        """
+        Uses the KCC + fixed-step clock. Camera updates remain unchanged.
+        This version:
+        • does NOT request a jump every frame (edge-only in handle_key_input)
+        • adapts max_steps to avoid periodic clamping/pulsing
+        """
         if not self.target_object:
             return
 
-        # If we have no static-ground BVH, always apply gravity so the character falls.
-        if self.bvh_tree is None:
-            # 1) apply gravity to vertical velocity
-            self.z_velocity += self.gravity * self.delta_time
-            # 2) move the character vertically
-            self.target_object.location.z += self.z_velocity * self.delta_time
-            # 3) mark as airborne
-            self.is_grounded = False
+        prefs = context.preferences.addons["Exploratory"].preferences
 
-        else:
-            # Move
-            self.z_velocity, self.is_grounded = move_character(
-                op=self,
-                target_object=self.target_object,
+        # Accumulate scaled real time into the fixed step clock
+        self.fixed_clock.add(self.delta_time)
+
+        # --- IMPORTANT: adapt max_steps to the work we actually have to do this frame ---
+        # This prevents 'step clamping' and the visible pulse it causes.
+        fixed_dt = float(self.fixed_clock.fixed_dt)
+        if fixed_dt <= 0.0:
+            return
+        # How many steps would we need for this tick?
+        import math
+        steps_needed = int(math.ceil(max(self.delta_time, 1e-6) / fixed_dt))
+        # Give ourselves a small headroom (+2), cap to something sane to prevent frame storms.
+        self.fixed_clock.max_steps = max(5, min(20, steps_needed + 2))
+
+        # Pull the number of steps and simulate
+        steps = self.fixed_clock.steps()
+        for _ in range(steps):
+            # Jump buffer is set only on key PRESS in handle_key_input()
+            self.physics_controller.try_consume_jump()
+
+            self.physics_controller.step(
+                dt=self.fixed_clock.fixed_dt,
+                prefs=prefs,
                 keys_pressed=self.keys_pressed,
-                bvh_tree=self.bvh_tree,
-                delta_time=self.delta_time,
-                speed=self.speed,
-                gravity=self.gravity,
-                z_velocity=self.z_velocity,
-                jump_timer=self.jump_timer,
-                is_jumping=self.is_jumping,
-                is_grounded=self.is_grounded,
-                jump_duration=self.jump_duration,
-                sensitivity=self.sensitivity,
-                pitch=self.pitch,
-                yaw=self.yaw,
-                context=context,
-                dynamic_bvh_map=self.dynamic_bvh_map,
-                platform_motion_map=self.platform_motion_map
+                camera_yaw=self.yaw,
+                static_bvh=self.bvh_tree,
+                dynamic_map=getattr(self, "dynamic_bvh_map", None),
+                platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
+                platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
             )
 
-        # Update camera
+            # Keep old flags for compatibility with animations/audio
+            self.z_velocity = self.physics_controller.vel.z
+            self.is_grounded = self.physics_controller.on_ground
+            self.grounded_platform = self.physics_controller.ground_obj
+
+        # Camera update (unchanged)
         update_view(
             context,
             self.target_object,
             self.pitch,
             self.yaw,
             self.bvh_tree,
-            context.scene.orbit_distance,    # ← orbit_distance
-            context.scene.zoom_factor,       # ← zoom_factor
-            dynamic_bvh_map=self.dynamic_bvh_map
+            context.scene.orbit_distance,
+            context.scene.zoom_factor,
+            dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
         )
 
-
-        # Possibly rotate character to face yaw
+        # Rotate character toward camera if moving (existing helper)
         self.smooth_rotate_towards_camera()
 
-    def update_jumping(self, context):
-        """Handle jump logic (timer, cooldown)."""
-        # If currently in a jump => increment jump_timer
-        if self.is_jumping:
-            self.jump_timer += self.delta_time
-            if self.jump_timer >= self.jump_duration:
-                self.is_jumping = False
-                self.jump_timer = 0.0
-                self.jump_cooldown = True
-
-        # Once grounded => reset jump cooldown
-        if self.jump_cooldown and not self.is_jumping and self.is_grounded:
-            self.jump_cooldown = False
 
 
     # ---------------------------
@@ -612,48 +611,42 @@ class ExpModal(bpy.types.Operator):
         scene = bpy.context.scene
         mg = scene.mobility_game
 
-        # 1) If user pressed Interact Key => call set_interact_pressed
+        # 1) Interact key => set/clear
         if event.type == self.pref_interact_key:
             if event.value == 'PRESS':
                 set_interact_pressed(True)
             elif event.value == 'RELEASE':
                 set_interact_pressed(False)
-        #reset key
-        if event.type == self.pref_reset_key:
-            if event.value == 'PRESS':
-                bpy.ops.exploratory.reset_game('INVOKE_DEFAULT')
-                return
 
-        # 2) Movement lock logic
+        # 2) Reset key
+        if event.type == self.pref_reset_key and event.value == 'PRESS':
+            bpy.ops.exploratory.reset_game('INVOKE_DEFAULT')
+            return
+
+        # 3) Movement lock
         if event.type in {self.pref_forward_key, self.pref_backward_key, self.pref_left_key, self.pref_right_key}:
             if not mg.allow_movement:
-                return  # skip these
-
-        # 3) Sprint lock logic
-        if event.type == self.pref_run_key:
-            if not mg.allow_sprint:
                 return
 
-        # 4) Jump lock logic
+        # 4) Sprint lock
+        if event.type == self.pref_run_key and not mg.allow_sprint:
+            return
+
+        # 5) Jump: **edge-triggered** and buffer-driven
         if event.type == self.pref_jump_key:
             if not mg.allow_jump:
                 return
+
             if event.value == 'PRESS':
-                # only jump on the first press, when key was released before
-                if (self.jump_key_released and
-                    self.is_grounded and
-                    not self.is_jumping and
-                    not self.jump_cooldown):
-                    self.is_jumping = True
-                    self.z_velocity = 7.0
-                    self.jump_key_released = False
+                # Edge only: arm the jump buffer once per press
+                if self.jump_key_released and self.physics_controller:
+                    self.physics_controller.request_jump()
+                self.jump_key_released = False
 
             elif event.value == 'RELEASE':
-                # mark that the key is now free to trigger again
                 self.jump_key_released = True
 
-
-        # Finally, add or remove from self.keys_pressed as before
+        # 6) Maintain keys_pressed set for animations & movement
         if event.value == 'PRESS':
             self.keys_pressed.add(event.type)
         elif event.value == 'RELEASE':

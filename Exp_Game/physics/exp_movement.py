@@ -12,8 +12,6 @@ from .exp_physics import (
     sweep_down_segment,
 )
 
-from .exp_view import update_view
-
 def calculate_movement_direction(keys_pressed, obj):
     """
     DO NOT CHANGE ANYTHING INSIDE THIS FUNCTION.

@@ -8,6 +8,7 @@ from ..interactions.exp_interactions import reset_all_interactions
 from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
+from ..systems.exp_performance import rearm_performance_after_reset, update_performance_culling
 
 def capture_scene_state(self, context):
     """
@@ -114,6 +115,30 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         if not self.skip_restore:
             restore_scene_state(modal_op, context)
 
+        # ---- Reset dynamic platform state so no stale deltas apply after reset ----
+        # Clear BVH caches so they rebuild against the restored transforms
+        modal_op.cached_dynamic_bvhs = {}
+        modal_op.dynamic_bvh_map = {}
+
+        # Drop any notion of being "on a platform"
+        modal_op.grounded_platform = None
+
+        # Re-seed prev positions/matrices to CURRENT matrices post-restore
+        modal_op.platform_motion_map = {}
+        modal_op.platform_delta_map = {}
+
+        if hasattr(modal_op, "moving_meshes"):
+            modal_op.platform_prev_positions = {}
+            modal_op.platform_prev_matrices  = {}
+            for dyn_obj in modal_op.moving_meshes:
+                if dyn_obj:
+                    modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
+                    modal_op.platform_prev_matrices[dyn_obj]  = dyn_obj.matrix_world.copy()
+
+        # Optional: suppress one frame of platform-delta application (see Patch 3)
+        from ..props_and_utils.exp_time import get_game_time
+        modal_op._suppress_platform_delta_until = get_game_time() + 1e-6
+
         # ─── 2) Reset interactions, tasks, objectives, and properties ─
         #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
         reset_all_interactions(context.scene)
@@ -124,6 +149,9 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         # ─── 3) Clear any on-screen text and respawn the user ───────
         clear_all_text()
         spawn_user()
+
+        # Re-arm performance culling after restoring visibility
+        rearm_performance_after_reset(modal_op, context)
 
         self.report({'INFO'}, "Game fully reset.")
         return {'FINISHED'}

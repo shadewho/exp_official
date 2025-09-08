@@ -26,6 +26,80 @@ def list_actions(self, context):
         items.append(("None","No Actions Found",""))
     return items
 
+
+class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
+    radius: bpy.props.FloatProperty(
+        name="Capsule Radius",
+        description="Collider radius in meters. Larger values make the character wider and can prevent squeezing through tight gaps.",
+        default=0.22, min=0.05, max=1.0
+    )
+    height: bpy.props.FloatProperty(
+        name="Capsule Height",
+        description="Total capsule height in meters from feet to head. Must be tall enough to avoid ceiling collisions.",
+        default=1.80, min=0.8, max=3.0
+    )
+    slope_limit_deg: bpy.props.FloatProperty(
+        name="Slope Limit (°)",
+        description="Maximum ground slope (degrees from horizontal) considered walkable. Steeper surfaces are treated as too steep.",
+        default=50.0, min=0.0, max=89.0
+    )
+    step_height: bpy.props.FloatProperty(
+        name="Step Height",
+        description="Max ledge height (meters) the controller will auto-step up while grounded (no jump required).",
+        default=0.40, min=0.0, max=0.8
+    )
+    snap_down: bpy.props.FloatProperty(
+        name="Snap Distance",
+        description="Downward snap distance (meters per step) to keep the character glued to ground over small dips and edges.",
+        default=0.50, min=0.0, max=2.0
+    )
+    gravity: bpy.props.FloatProperty(
+        name="Gravity m/s²",
+        description="Downward acceleration applied when not grounded. Use a negative value (e.g. -9.81).",
+        default=-9.81, min=-50.0, max=0.0
+    )
+    max_speed_walk: bpy.props.FloatProperty(
+        name="Walk Speed",
+        description="Target maximum horizontal speed (m/s) when walking.",
+        default=2.0, min=0.1, max=20.0
+    )
+    max_speed_run: bpy.props.FloatProperty(
+        name="Run Speed",
+        description="Target maximum horizontal speed (m/s) when running (run key held).",
+        default=6.0, min=0.1, max=30.0
+    )
+    accel_ground: bpy.props.FloatProperty(
+        name="Ground Accel",
+        description="Rate of horizontal acceleration toward the target speed while on ground. Higher = snappier control.",
+        default=20.0, min=1.0, max=100.0
+    )
+    accel_air: bpy.props.FloatProperty(
+        name="Air Accel",
+        description="Rate of horizontal acceleration while airborne. Lower = floatier, higher = tighter midair control.",
+        default=5.0, min=0.0, max=100.0
+    )
+    coyote_time: bpy.props.FloatProperty(
+        name="Coyote Time",
+        description="Late-jump grace period (seconds) after stepping off a ledge during which pressing jump still triggers a jump.",
+        default=0.08, min=0.0, max=0.5
+    )
+    jump_buffer: bpy.props.FloatProperty(
+        name="Jump Buffer",
+        description="Early-jump grace period (seconds): if jump is pressed slightly before landing, it will trigger on landing.",
+        default=0.12, min=0.0, max=0.5
+    )
+    jump_speed: bpy.props.FloatProperty(
+        name="Jump Speed",
+        description="Initial upward velocity (m/s) applied when a jump starts. Higher values yield higher jumps.",
+        default=7.0, min=0.0, max=30.0
+    )
+    fixed_hz: bpy.props.IntProperty(
+        name="Physics Hz",
+        description="Fixed physics update frequency (steps per second). Higher values are smoother but cost more CPU.",
+        default=60, min=30, max=120
+    )
+
+
 ###---------------proxy meshes-------------###
 class ProxyMeshEntry(bpy.types.PropertyGroup):
     """
@@ -60,6 +134,17 @@ class ProxyMeshEntry(bpy.types.PropertyGroup):
         name="Hide During Game",
         default=False,
         description="If enabled, the proxy mesh will be hidden during gameplay."
+    )
+
+    collision_layer: bpy.props.EnumProperty(
+        name="Layer",
+        items=[("SOLID","Solid","Solid collision"), ("TRIGGER","Trigger","Events only"), ("ONE_WAY","One Way","Pass from below")],
+        default="SOLID"
+    )
+    dynamic_mode: bpy.props.EnumProperty(
+        name="Dynamic Mode",
+        items=[("KINEMATIC_RIGID","Kinematic Rigid","Moves as one piece"), ("DEFORMING","Deforming","Geometry changes")],
+        default="KINEMATIC_RIGID"
     )
 class EXPLORATORY_UL_ProxyMeshList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
@@ -113,6 +198,7 @@ def add_scene_properties():
     ],
     default="EXPLORE"
 )
+    bpy.types.Scene.char_physics = bpy.props.PointerProperty(type=CharacterPhysicsConfigPG)
 
     #---proxy mesh --#
     bpy.types.Scene.proxy_meshes = bpy.props.CollectionProperty(type=ProxyMeshEntry)

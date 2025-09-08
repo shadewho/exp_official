@@ -13,7 +13,44 @@ from bpy.props import (
     EnumProperty,
 )
 
+# Use the real-time game clock you already run each TIMER tick
+from ..props_and_utils.exp_time import get_game_time
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tunables
+# ──────────────────────────────────────────────────────────────────────────────
+CULL_UPDATE_HZ = 5.0                 # frequency for culling decisions (~5 Hz)
+CULL_HYSTERESIS_RATIO = 0.0         # 10% of cull_distance
+CULL_HYSTERESIS_MIN = 0.0            # at least 1 meter of margin
+MAX_PROP_WRITES_PER_TICK = 300       # safety budget for per-object hide writes
+
+
 # ─── 0) Snapshot / Restore Helpers ─────────────────────────────
+
+def rearm_performance_after_reset(operator, context):
+    """
+    After a ResetGame, restore 'game-time' visibility rules:
+      - Re-hide trigger meshes that are marked 'Hide Mesh During Game'
+      - Rebuild runtime caches for active view layer
+      - Force next culling pass to apply regardless of previous state
+    """
+    scene = context.scene
+
+    # Re-hide trigger meshes that should be hidden during gameplay
+    for entry in scene.performance_entries:
+        if entry.trigger_type == 'BOX' and entry.hide_trigger_mesh and entry.trigger_mesh:
+            try:
+                entry.trigger_mesh.hide_viewport = True
+            except Exception:
+                pass
+
+    # Rebuild caches and force immediate evaluation
+    _build_perf_runtime_cache(operator, context)
+    if hasattr(operator, "_perf_runtime"):
+        for rec in operator._perf_runtime.values():
+            rec["last_in"] = None      # force "state changed" behavior
+            rec["next_update"] = 0.0   # run on the very next tick
+            rec["scan_idx"] = 0
 
 def find_layer_collection(layer_coll, target_coll):
     """Recursively find the LayerCollection matching target_coll."""
@@ -25,10 +62,91 @@ def find_layer_collection(layer_coll, target_coll):
             return found
     return None
 
+
+def iter_collection_and_descendants(root_coll):
+    """Yield root_coll and every child collection (depth-first)."""
+    if not root_coll:
+        return
+    yield root_coll
+    for child in root_coll.children:
+        yield from iter_collection_and_descendants(child)
+
+
+def objects_in_collection(coll, recursive=False):
+    """Return a set of objects in 'coll'. If recursive=True, include children."""
+    objs = set(coll.objects) if coll else set()
+    if recursive and coll:
+        for child in coll.children:
+            objs |= objects_in_collection(child, recursive=True)
+    return objs
+
+
+def _build_perf_runtime_cache(operator, context):
+    """
+    Build per-entry runtime caches so we don't traverse the scene every frame.
+
+    Structure:
+    operator._perf_runtime: {
+        entry_ptr (int): {
+            "layer_colls":   [LayerCollection, ...],  # active view layer only
+            "obj_list":      [Object, ...],           # flattened objects to test distance
+            "pl_layer_coll": LayerCollection | None,  # placeholder collection (active layer)
+            "pl_obj":        Object | None,           # placeholder object
+            "last_in":       None | bool,             # last "in-range" decision
+            "next_update":   float,                   # next game_time to evaluate
+            "scan_idx":      int,                     # round-robin cursor for per-object writes
+        },
+        ...
+    }
+    """
+    operator._perf_runtime = {}
+    scene = context.scene
+    active_vl = context.view_layer
+
+    for entry in scene.performance_entries:
+        rec = {
+            "layer_colls": [],
+            "obj_list": [],
+            "pl_layer_coll": None,
+            "pl_obj": None,
+            "last_in": None,
+            "next_update": 0.0,
+            "scan_idx": 0,  # NEW: distribute per-object writes fairly
+        }
+
+        # Real target cache
+        if entry.use_collection and entry.target_collection:
+            root = entry.target_collection
+            colls = list(iter_collection_and_descendants(root)) if entry.cascade_collections else [root]
+
+            # Resolve LayerCollections only for the ACTIVE view layer
+            for coll in colls:
+                lc = find_layer_collection(active_vl.layer_collection, coll)
+                if lc:
+                    rec["layer_colls"].append(lc)
+
+            # Flatten the objects once
+            for coll in colls:
+                rec["obj_list"].extend(list(objects_in_collection(coll, recursive=False)))
+
+        elif entry.target_object:
+            rec["obj_list"].append(entry.target_object)
+
+        # Placeholder cache (active view layer only)
+        if entry.has_placeholder:
+            if entry.placeholder_use_collection and entry.placeholder_collection:
+                rec["pl_layer_coll"] = find_layer_collection(active_vl.layer_collection, entry.placeholder_collection)
+            elif entry.placeholder_object:
+                rec["pl_obj"] = entry.placeholder_object
+
+        operator._perf_runtime[entry.as_pointer()] = rec
+
+
 def init_performance_state(operator, context):
     """
     Capture original hide_viewport flags and view_layer.exclude flags
     for all performance entries, so we can restore them later.
+    Also builds a runtime cache for fast per-tick decisions.
     """
     operator._perf_prev_states = {}
     scene = context.scene
@@ -40,24 +158,31 @@ def init_performance_state(operator, context):
             "collections": {},   # (view_layer.name, coll_name) -> exclude_flag
         }
 
-        # Real target
+        # Real target snapshot
         if entry.use_collection and entry.target_collection:
-            coll = entry.target_collection
-            # capture per-layer exclude
-            for vl in scene.view_layers:
-                lc = find_layer_collection(vl.layer_collection, coll)
-                if lc:
-                    state["collections"][(vl.name, coll.name)] = lc.exclude
-            # if radial-hide, capture each object's hide_viewport
+            root_coll = entry.target_collection
+            colls_to_track = list(iter_collection_and_descendants(root_coll)) if entry.cascade_collections else [root_coll]
+
+            # capture per-layer exclude for all relevant collections (ALL view layers, for correct restore)
+            for coll in colls_to_track:
+                for vl in scene.view_layers:
+                    lc = find_layer_collection(vl.layer_collection, coll)
+                    if lc:
+                        state["collections"][(vl.name, coll.name)] = lc.exclude
+
+            # if radial per-object culling, capture each object's hide_viewport
             if entry.trigger_type == 'RADIAL' and not entry.exclude_collection:
-                for obj in coll.objects:
+                objs = set()
+                for coll in colls_to_track:
+                    objs |= objects_in_collection(coll, recursive=False)
+                for obj in objs:
                     state["objects"][obj.name] = obj.hide_viewport
 
         elif entry.target_object:
             obj = entry.target_object
             state["objects"][obj.name] = obj.hide_viewport
 
-        # Placeholder target
+        # Placeholder snapshot
         if entry.has_placeholder:
             if entry.placeholder_use_collection and entry.placeholder_collection:
                 plc = entry.placeholder_collection
@@ -68,14 +193,18 @@ def init_performance_state(operator, context):
             elif entry.placeholder_object:
                 obj = entry.placeholder_object
                 state["objects"][obj.name] = obj.hide_viewport
-                    # ─── NEW: capture & hide the trigger mesh ──────────────
+
+        # Trigger mesh snapshot & early hide if requested
         if entry.trigger_type == 'BOX' and entry.hide_trigger_mesh and entry.trigger_mesh:
             mesh = entry.trigger_mesh
             state["objects"][mesh.name] = mesh.hide_viewport
             mesh.hide_viewport = True
 
-
         operator._perf_prev_states[key] = state
+
+    # Build runtime caches for fast updates on the ACTIVE view layer
+    _build_perf_runtime_cache(operator, context)
+
 
 def restore_performance_state(operator, context):
     """
@@ -88,13 +217,13 @@ def restore_performance_state(operator, context):
         if not state:
             continue
 
-        # restore objects (including trigger_mesh)
+        # restore objects (including trigger_mesh and placeholder object)
         for obj_name, hide_flag in state["objects"].items():
             obj = bpy.data.objects.get(obj_name)
             if obj:
                 obj.hide_viewport = hide_flag
 
-        # restore collection exclude
+        # restore collection exclude (across all view layers)
         for (vl_name, coll_name), excl_flag in state["collections"].items():
             vl = scene.view_layers.get(vl_name)
             if not vl:
@@ -106,8 +235,12 @@ def restore_performance_state(operator, context):
             if lc:
                 lc.exclude = excl_flag
 
+    # Drop runtime caches; they will be rebuilt next time
+    if hasattr(operator, "_perf_runtime"):
+        operator._perf_runtime.clear()
 
-# ─── 1) Data ──────────────────────────────────────────────────
+
+# ─── 1) Data: Properties ──────────────────────────────────────────────────
 
 class PerformanceEntry(PropertyGroup):
     name: StringProperty(
@@ -142,7 +275,7 @@ class PerformanceEntry(PropertyGroup):
         min=0.0,
     )
 
-    # ─── new trigger props ───────────────────
+    # Trigger mode
     trigger_type: EnumProperty(
         name="Trigger Type",
         description="Choose how to trigger culled objects",
@@ -164,7 +297,7 @@ class PerformanceEntry(PropertyGroup):
         default=False,
     )
 
-    # ─── placeholder props ───────────────────
+    # Placeholder props
     has_placeholder: BoolProperty(
         name="Use Placeholder",
         description="Show a cheaper proxy when the real entry is out of range",
@@ -182,6 +315,14 @@ class PerformanceEntry(PropertyGroup):
     placeholder_object: PointerProperty(
         name="Placeholder Object",
         type=bpy.types.Object,
+    )
+    cascade_collections: BoolProperty(
+        name="Cascade Into Child Collections",
+        description=(
+            "If enabled and a collection is the target, culling also applies to "
+            "all nested child collections (and their objects)"
+        ),
+        default=False,
     )
 
 
@@ -208,6 +349,7 @@ class EXPLORATORY_OT_AddPerformanceEntry(Operator):
         context.scene.performance_entries_index = len(context.scene.performance_entries) - 1
         return {'FINISHED'}
 
+
 class EXPLORATORY_OT_RemovePerformanceEntry(Operator):
     bl_idname = "exploratory.remove_performance_entry"
     bl_label  = "Remove Cull Entry"
@@ -222,13 +364,19 @@ class EXPLORATORY_OT_RemovePerformanceEntry(Operator):
         return {'FINISHED'}
 
 
-# ─── 5) Per-Frame Culling ──────────────────────────────────────
+# ─── 5) Per-Frame Culling (Throttled + Cached + Hysteresis) ───
 
 def update_performance_culling(operator, context):
     """
-    Called each frame in ExpModal.modal():
-      - hides/excludes the real entry when out-of-range (radial or box)
-      - shows the placeholder when out-of-range
+    Called each frame in ExpModal.modal().
+
+    Optimizations:
+      - Throttled per-entry to CULL_UPDATE_HZ using get_game_time()
+      - Hysteresis around cull_distance to prevent flapping (entry-level)
+      - Only writes properties when the value actually changes
+      - Operates on ACTIVE view layer only
+      - Uses caches built at init to avoid per-tick recursion/aggregation
+      - Per-object mode ALWAYS runs (even if entry-level in_range didn't change)
     """
     scene = context.scene
     ref = scene.target_armature
@@ -236,66 +384,127 @@ def update_performance_culling(operator, context):
         return
     ref_loc = ref.matrix_world.translation
 
+    # Ensure caches exist
+    if not hasattr(operator, "_perf_runtime"):
+        _build_perf_runtime_cache(operator, context)
+
+    game_t = get_game_time()
+
     for entry in scene.performance_entries:
-        # determine whether the real entry is “in” the trigger
-        real_in = False
+        key = entry.as_pointer()
+        rec = operator._perf_runtime.get(key)
+        if not rec:
+            _build_perf_runtime_cache(operator, context)
+            rec = operator._perf_runtime.get(key)
+            if not rec:
+                continue
+
+        # Throttle per entry
+        if game_t < rec["next_update"]:
+            continue
+        rec["next_update"] = game_t + (1.0 / CULL_UPDATE_HZ)
+
+        # Determine per-object vs collection-exclude mode
+        per_object_mode = (
+            entry.use_collection and entry.target_collection and
+            entry.trigger_type == 'RADIAL' and
+            not entry.exclude_collection
+        )
+
+        # Entry-level in_range (used for placeholders & collection-exclude)
+        base = entry.cull_distance if entry.trigger_type == 'RADIAL' else 0.0
+        margin = max(CULL_HYSTERESIS_MIN, base * CULL_HYSTERESIS_RATIO)
 
         if entry.trigger_type == 'RADIAL':
-            dist = entry.cull_distance
-            if entry.use_collection and entry.target_collection:
-                # any object in collection within distance?
-                real_in = any((obj.matrix_world.translation - ref_loc).length <= dist
-                              for obj in entry.target_collection.objects)
-            elif entry.target_object:
-                d = (entry.target_object.matrix_world.translation - ref_loc).length
-                real_in = (d <= dist)
-        else:  # BOX trigger
+            objs = rec["obj_list"]
+            if objs:
+                if rec["last_in"] is None:
+                    threshold = base
+                elif rec["last_in"]:
+                    threshold = base + margin   # need to be clearly outside to flip false
+                else:
+                    threshold = max(0.0, base - margin)  # clearly inside to flip true
+
+                in_range = any((o.matrix_world.translation - ref_loc).length <= threshold for o in objs)
+            else:
+                in_range = False
+        else:
+            # BOX trigger
             mesh = entry.trigger_mesh
             if mesh and mesh.type == 'MESH':
-                # compute world-space AABB
                 world_verts = [mesh.matrix_world @ mathutils.Vector(c) for c in mesh.bound_box]
                 min_v = mathutils.Vector((min(v[i] for v in world_verts) for i in range(3)))
                 max_v = mathutils.Vector((max(v[i] for v in world_verts) for i in range(3)))
                 p = ref_loc
-                real_in = (min_v.x <= p.x <= max_v.x and
-                           min_v.y <= p.y <= max_v.y and
-                           min_v.z <= p.z <= max_v.z)
+                in_range = (min_v.x <= p.x <= max_v.x and
+                            min_v.y <= p.y <= max_v.y and
+                            min_v.z <= p.z <= max_v.z)
             else:
-                real_in = False
+                in_range = False
 
-        # ─── apply to the “real” target ───────────────────────
-        if entry.use_collection and entry.target_collection:
-            coll = entry.target_collection
-            if entry.trigger_type == 'BOX' or entry.exclude_collection:
-                # hide/unhide whole collection via view-layer exclude
-                for vl in scene.view_layers:
-                    lc = find_layer_collection(vl.layer_collection, coll)
-                    if lc:
-                        lc.exclude = not real_in
-            else:
-                # radial + per-object hide
-                for obj in coll.objects:
-                    obj.hide_viewport = (obj.matrix_world.translation - ref_loc).length > entry.cull_distance
+        # ─────────────────────────────────────────────────────────
+        # A) COLLECTION-EXCLUDE / BOX / SINGLE-OBJECT modes
+        #    -> only act when entry-level state changes
+        # ─────────────────────────────────────────────────────────
+        if not per_object_mode:
+            if rec["last_in"] is None or in_range != rec["last_in"]:
+                if entry.use_collection and entry.target_collection:
+                    if entry.trigger_type == 'BOX' or entry.exclude_collection:
+                        desired_excl = not in_range
+                        for lc in rec["layer_colls"]:
+                            if lc and lc.exclude != desired_excl:
+                                lc.exclude = desired_excl
+                elif entry.target_object:
+                    if entry.trigger_type == 'BOX':
+                        desired_hidden = not in_range
+                    else:
+                        d = (entry.target_object.matrix_world.translation - ref_loc).length
+                        desired_hidden = (d > entry.cull_distance)
+                    if entry.target_object.hide_viewport != desired_hidden:
+                        entry.target_object.hide_viewport = desired_hidden
 
-        elif entry.target_object:
-            if entry.trigger_type == 'BOX':
-                entry.target_object.hide_viewport = not real_in
-            else:
-                d = (entry.target_object.matrix_world.translation - ref_loc).length
-                entry.target_object.hide_viewport = (d > entry.cull_distance)
+        # ─────────────────────────────────────────────────────────
+        # B) PER-OBJECT mode (RADIAL + not exclude_collection)
+        #    -> ALWAYS run (throttled), regardless of in_range changes
+        # ─────────────────────────────────────────────────────────
+        else:
+            objs = rec["obj_list"]
+            if objs:
+                n = len(objs)
+                start = rec.get("scan_idx", 0)
+                i = 0
+                changes = 0
+                thresh = entry.cull_distance  # object-level check uses base threshold
 
-        # ─── apply to the placeholder ───────────────────────
+                # Round-robin across the list to avoid starvation
+                while i < n and changes < MAX_PROP_WRITES_PER_TICK:
+                    idx = (start + i) % n
+                    o = objs[idx]
+                    far = (o.matrix_world.translation - ref_loc).length > thresh
+                    desired_hidden = far
+                    if o.hide_viewport != desired_hidden:
+                        o.hide_viewport = desired_hidden
+                        changes += 1
+                    i += 1
+
+                rec["scan_idx"] = (start + i) % n  # advance cursor even if no changes
+
+        # ─────────────────────────────────────────────────────────
+        # C) Placeholder toggling follows entry-level in_range
+        # ─────────────────────────────────────────────────────────
         if entry.has_placeholder:
-            if entry.placeholder_use_collection and entry.placeholder_collection:
-                plc = entry.placeholder_collection
-                for vl in scene.view_layers:
-                    lc = find_layer_collection(vl.layer_collection, plc)
-                    if lc:
-                        # show placeholder when real_in is False
-                        lc.exclude = real_in
-            elif entry.placeholder_object:
-                # hide placeholder when real_in is True
-                entry.placeholder_object.hide_viewport = real_in
+            if rec["pl_layer_coll"]:
+                desired_excl = in_range  # exclude placeholder when real visible
+                if rec["pl_layer_coll"].exclude != desired_excl:
+                    rec["pl_layer_coll"].exclude = desired_excl
+            elif rec["pl_obj"]:
+                desired_hidden = in_range  # hide placeholder when real visible
+                if rec["pl_obj"].hide_viewport != desired_hidden:
+                    rec["pl_obj"].hide_viewport = desired_hidden
+
+        # Save new state
+        rec["last_in"] = in_range
+
 
 
 # ─── 6) Registration ───────────────────────────────────────────

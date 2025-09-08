@@ -21,7 +21,7 @@ DB_PATH = os.path.join(THUMBNAIL_CACHE_FOLDER, "cache.db")
 
 # What to cache and how often:
 FILE_TYPES     = ['world', 'shop_item']
-SWEEP_INTERVAL = 600.0    #600.0 # seconds between full list sweeps
+SWEEP_INTERVAL = 30.0    #600.0 # seconds between full list sweeps
 BATCH_SIZE     = 16      # how many thumb/meta ops at once
 IDLE_SLEEP     = 60.0    #60.0 # seconds to sleep when no work
 BUSY_SLEEP     = 1.0     # seconds to sleep when queue still has items

@@ -970,6 +970,7 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
         target_box.prop(entry, "use_collection", text="Cull a Collection?")
         if entry.use_collection:
             target_box.prop(entry, "target_collection", text="Collection")
+            target_box.prop(entry, "cascade_collections", text="Cascade Into Child Collections")
             excl = target_box.row()
             excl.enabled = (entry.trigger_type != 'BOX')
             excl.prop(entry, "exclude_collection", text="Hide Entire Collection")
@@ -985,13 +986,67 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
         dist_row.prop(entry, "cull_distance", text="Cull Radius")
 
         # ─── Placeholder Options ───────────────────────────────────
+        ph_box = box.box()
+        ph_box.prop(entry, "has_placeholder", text="Enable Placeholder")
+
         if entry.has_placeholder:
-            ph_box = box.box()
             ph_box.label(text="Placeholder Settings")
             ph_box.prop(entry, "placeholder_use_collection", text="Use Collection as Placeholder")
             if entry.placeholder_use_collection:
                 ph_box.prop(entry, "placeholder_collection", text="Placeholder Collection")
             else:
                 ph_box.prop(entry, "placeholder_object", text="Placeholder Object")
-        else:
-            box.prop(entry, "has_placeholder", text="Enable Placeholder")
+
+# -----------------------------
+# UI: Character Physics (grouped)
+# -----------------------------
+class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
+    bl_label = "Character Physics"
+    bl_idname = "VIEW3D_PT_exploratory_physics"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context.scene, "main_category", "EXPLORE") == "CREATE"
+
+    def draw(self, context):
+        layout = self.layout
+        p = context.scene.char_physics
+
+        # --- Collider ---
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Collider", icon='MESH_CAPSULE')
+        row = col.row(align=True)
+        row.prop(p, "radius")
+        row.prop(p, "height")
+        col.separator()
+        col.label(text="Grounding & Steps", icon='TRIA_DOWN_BAR')
+        row = col.row(align=True)
+        row.prop(p, "slope_limit_deg")
+        row.prop(p, "step_height")
+        col.prop(p, "snap_down")
+
+        # --- Movement ---
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Movement", icon='ORIENTATION_GLOBAL')
+        col.prop(p, "gravity")
+        row = col.row(align=True)
+        row.prop(p, "max_speed_walk")
+        row.prop(p, "max_speed_run")
+        row = col.row(align=True)
+        row.prop(p, "accel_ground")
+        row.prop(p, "accel_air")
+
+        # --- Jumping & Forgiveness ---
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Jumping & Forgiveness", icon='OUTLINER_OB_FORCE_FIELD')
+        row = col.row(align=True)
+        row.prop(p, "jump_speed")
+        row.prop(p, "coyote_time")
+        col.prop(p, "jump_buffer")
