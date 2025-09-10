@@ -380,6 +380,9 @@ class ExpModal(bpy.types.Operator):
             # Decide once: should we do a 30 Hz physics tick this frame?
             do_phys = self._physics_due()
 
+            # For the HUD: remember if we executed a 30 Hz physics tick this frame
+            self._perf_last_physics_steps = 1 if do_phys else 0
+            
             # B) Animation & audio (pure state) - per frame, uses scaled delta_time
             t0 = perf_mark(self, 'anim_audio')
             self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded)

@@ -31,7 +31,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     radius: bpy.props.FloatProperty(
         name="Capsule Radius",
         description="Collider radius in meters. Larger values make the character wider and can prevent squeezing through tight gaps.",
-        default=0.22, min=0.05, max=1.0
+        default=0.25, min=0.05, max=1.0
     )
     height: bpy.props.FloatProperty(
         name="Capsule Height",
@@ -46,7 +46,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     step_height: bpy.props.FloatProperty(
         name="Step Height",
         description="Max ledge height (meters) the controller will auto-step up while grounded (no jump required).",
-        default=0.50, min=0.0, max=0.8
+        default=0.40, min=0.0, max=0.8
     )
     snap_down: bpy.props.FloatProperty(
         name="Snap Distance",
@@ -56,7 +56,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     gravity: bpy.props.FloatProperty(
         name="Gravity m/s²",
         description="Downward acceleration applied when not grounded. Use a negative value (e.g. -9.81).",
-        default=-20.0, min=-50.0, max=0.0
+        default=-21.0, min=-50.0, max=0.0
     )
     max_speed_walk: bpy.props.FloatProperty(
         name="Walk Speed",
@@ -76,7 +76,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     accel_air: bpy.props.FloatProperty(
         name="Air Accel",
         description="Rate of horizontal acceleration while airborne. Lower = floatier, higher = tighter midair control.",
-        default=7.0, min=0.0, max=100.0
+        default=9.0, min=0.0, max=100.0
     )
     coyote_time: bpy.props.FloatProperty(
         name="Coyote Time",
@@ -91,12 +91,20 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     jump_speed: bpy.props.FloatProperty(
         name="Jump Speed",
         description="Initial upward velocity (m/s) applied when a jump starts. Higher values yield higher jumps.",
-        default=7.0, min=0.0, max=30.0
+        default=9.0, min=0.0, max=30.0
     )
     fixed_hz: bpy.props.IntProperty(
         name="Physics Hz",
         description="Fixed physics update frequency (steps per second). Higher values are smoother but cost more CPU.",
         default=30, min=30, max=30
+    )
+    step_forward_min: bpy.props.FloatProperty(
+        name="Step Forward Min",
+        description=(
+            "Minimum horizontal push applied during step-up to clear the stair lip.\n"
+            "This is combined with capsule radius so the total nudge is at least (radius + 3 cm)."
+        ),
+        default=0.10, min=0.0, max=1.0
     )
 
 

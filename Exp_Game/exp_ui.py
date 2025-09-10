@@ -1056,4 +1056,6 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "jump_speed")
         row.prop(p, "coyote_time")
         col.prop(p, "jump_buffer")
+        col.prop(p, "step_forward_min", text="Step Forward Min")
+
 

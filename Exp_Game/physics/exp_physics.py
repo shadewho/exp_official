@@ -35,21 +35,27 @@ def capsule_collision_resolve(
     radius=0.2,
     heights=(0.3, 1.0, 1.9),
     max_iterations=6,
-    push_strength=1.0
+    push_strength=0.5,
+    max_push_per_iter=None,
+    average_contacts=True,
+    # NEW (optional): treat walkable floors differently
+    floor_cos_limit=None,          # pass cos(radians(slope_limit_deg)) or leave None
+    ignore_floor_contacts=False,   # if True, skip floor-like contacts entirely
 ):
     """
-    Robust capsule pushout:
-      • Uses BVH.find_nearest at several vertical sample heights. This
-        works even if we START INSIDE thin geometry (ray-casts may fail).
-      • Pushes away along the face normal oriented AWAY from the center.
-      • Optionally does a shallow ring ray test as a final polish.
+    Softer capsule pushout:
+      • Samples find_nearest at several heights (capsule: r, mid, H-r).
+      • Sums penetration corrections across contacts (averaged manifold).
+      • Clamps per-iteration displacement.
+      • **NEW**: option to *ignore walkable-floor* contacts so we don’t
+        create artificial downhill drift on slopes below the slope limit.
 
-    Accepts either a BVHTree or a LocalBVH (has .ray_cast and .find_nearest).
+    Accepts either a BVHTree or a LocalBVH (must provide .ray_cast and .find_nearest).
     """
     if not bvh_like or not obj:
         return
 
-    # For plain BVHTree, expose a uniform API like LocalBVH
+    # Uniform wrapper for plain BVHTree so we can call .find_nearest
     class _BVHWrapper:
         def __init__(self, bvh):
             self._bvh = bvh
@@ -62,37 +68,68 @@ def capsule_collision_resolve(
             co, n, idx, _ = res
             return (co, n.normalized(), idx, (p - co).length)
 
-    if hasattr(bvh_like, "find_nearest"):
-        bvh = bvh_like  # LocalBVH already provides the API
-    else:
-        bvh = _BVHWrapper(bvh_like)
+    bvh = bvh_like if hasattr(bvh_like, "find_nearest") else _BVHWrapper(bvh_like)
 
-    eps = 1.0e-4
+    from mathutils import Vector
     up  = Vector((0, 0, 1))
+    eps = 1.0e-4
 
-    for _ in range(max_iterations):
-        any_fix = False
+    # Reasonable per-iter clamp: fraction of the radius (soft, not a shove)
+    if max_push_per_iter is None:
+        max_push_per_iter = max(0.10, float(radius) * 0.35)
+
+    for _ in range(max(1, int(max_iterations))):
         base = obj.location.copy()
 
-        # --- Nearest-point pushout at multiple heights ---
+        corr = Vector((0.0, 0.0, 0.0))
+        any_penetration = False
+
         for h in heights:
-            center = base.copy(); center.z += h
-            co, n, _, dist = bvh.find_nearest(center)
+            c = base.copy(); c.z += float(h)
+            co, n, _, dist = bvh.find_nearest(c)
             if co is None or n is None:
                 continue
 
-            # Distance from center to surface
-            if dist < (radius - eps):
-                # Ensure we push *away* from surface, regardless of triangle winding
-                dir_to_center = (center - co)
-                if dir_to_center.dot(n) < 0.0:
-                    n = -n
-                penetration = (radius - dist) + eps
-                obj.location += n * (penetration * push_strength)
-                any_fix = True
+            n = n.normalized()
+            # Orient normal away from capsule center
+            if (c - co).dot(n) < 0.0:
+                n = -n
 
-        if not any_fix:
+            pen = float(radius) - float(dist)
+            if pen <= eps:
+                continue
+
+            # Classify floor-like contact if caller provided a threshold
+            floor_like = False
+            if floor_cos_limit is not None:
+                # n·up >= cos(limit) → within slope limit → “walkable floor”
+                try:
+                    floor_like = (n.dot(up) >= float(floor_cos_limit))
+                except Exception:
+                    floor_like = False
+
+            # **Key change:** ignore walkable-floor contacts (prevents slope creep)
+            if floor_like and ignore_floor_contacts:
+                continue
+
+            any_penetration = True
+
+            if average_contacts:
+                corr += n * pen
+            else:
+                step = min(pen * float(push_strength), float(max_push_per_iter))
+                obj.location += n * (step + eps)
+
+        if not any_penetration:
             break
+
+        if average_contacts:
+            L = corr.length
+            if L > eps:
+                step_len = min(L * float(push_strength), float(max_push_per_iter))
+                obj.location += (corr / L) * step_len
+            else:
+                break
 
 
 def raycast_down(bvh_tree, obj, dist=3.0):
