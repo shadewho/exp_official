@@ -36,7 +36,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     height: bpy.props.FloatProperty(
         name="Capsule Height",
         description="Total capsule height in meters from feet to head. Must be tall enough to avoid ceiling collisions.",
-        default=1.80, min=0.8, max=3.0
+        default=2.0, min=0.8, max=3.0
     )
     slope_limit_deg: bpy.props.FloatProperty(
         name="Slope Limit (°)",
@@ -46,27 +46,27 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     step_height: bpy.props.FloatProperty(
         name="Step Height",
         description="Max ledge height (meters) the controller will auto-step up while grounded (no jump required).",
-        default=0.40, min=0.0, max=0.8
+        default=0.50, min=0.0, max=0.8
     )
     snap_down: bpy.props.FloatProperty(
         name="Snap Distance",
         description="Downward snap distance (meters per step) to keep the character glued to ground over small dips and edges.",
-        default=0.50, min=0.0, max=2.0
+        default=0.20, min=0.0, max=2.0
     )
     gravity: bpy.props.FloatProperty(
         name="Gravity m/s²",
         description="Downward acceleration applied when not grounded. Use a negative value (e.g. -9.81).",
-        default=-9.81, min=-50.0, max=0.0
+        default=-20.0, min=-50.0, max=0.0
     )
     max_speed_walk: bpy.props.FloatProperty(
         name="Walk Speed",
         description="Target maximum horizontal speed (m/s) when walking.",
-        default=2.0, min=0.1, max=20.0
+        default=3.0, min=0.1, max=20.0
     )
     max_speed_run: bpy.props.FloatProperty(
         name="Run Speed",
         description="Target maximum horizontal speed (m/s) when running (run key held).",
-        default=6.0, min=0.1, max=30.0
+        default=9.0, min=0.1, max=30.0
     )
     accel_ground: bpy.props.FloatProperty(
         name="Ground Accel",
@@ -76,7 +76,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     accel_air: bpy.props.FloatProperty(
         name="Air Accel",
         description="Rate of horizontal acceleration while airborne. Lower = floatier, higher = tighter midair control.",
-        default=5.0, min=0.0, max=100.0
+        default=7.0, min=0.0, max=100.0
     )
     coyote_time: bpy.props.FloatProperty(
         name="Coyote Time",
@@ -96,7 +96,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     fixed_hz: bpy.props.IntProperty(
         name="Physics Hz",
         description="Fixed physics update frequency (steps per second). Higher values are smoother but cost more CPU.",
-        default=60, min=30, max=120
+        default=30, min=30, max=30
     )
 
 
@@ -136,16 +136,7 @@ class ProxyMeshEntry(bpy.types.PropertyGroup):
         description="If enabled, the proxy mesh will be hidden during gameplay."
     )
 
-    collision_layer: bpy.props.EnumProperty(
-        name="Layer",
-        items=[("SOLID","Solid","Solid collision"), ("TRIGGER","Trigger","Events only"), ("ONE_WAY","One Way","Pass from below")],
-        default="SOLID"
-    )
-    dynamic_mode: bpy.props.EnumProperty(
-        name="Dynamic Mode",
-        items=[("KINEMATIC_RIGID","Kinematic Rigid","Moves as one piece"), ("DEFORMING","Deforming","Geometry changes")],
-        default="KINEMATIC_RIGID"
-    )
+
 class EXPLORATORY_UL_ProxyMeshList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
@@ -250,7 +241,7 @@ def add_scene_properties():
     )
     bpy.types.Scene.zoom_factor = bpy.props.FloatProperty(
         name="Zoom Factor",
-        default=2.0,
+        default=4.0,
         min=0.1,
         max=15.0
     )
@@ -260,12 +251,18 @@ def add_scene_properties():
         min=-180.0,
         max=180.0
     )
-    # How far the camera pulls in when avoiding obstacles
-    bpy.types.Scene.camera_collision_buffer = bpy.props.FloatProperty(
-        name="Collision Buffer",
-        default=4.1,
-        min=0.0,
-        description="Meters to pull the camera toward the character when a collision is detected"
+
+    # Toggle: Live Performance Overlay (drawn in the 3D Viewport)
+    bpy.types.Scene.show_live_performance_overlay = bpy.props.BoolProperty(
+        name="Live Performance Overlay",
+        description="Show a live performance meter in the viewport while playing",
+        default=False
+    )
+    # Live Performance HUD tuning
+    bpy.types.Scene.live_perf_scale = bpy.props.IntProperty(
+        name="HUD Scale",
+        description="Smaller values make the single-row HUD less intrusive",
+        default=2, min=1, max=4
     )
 
 class CharacterActionsPG(bpy.types.PropertyGroup):
@@ -313,3 +310,4 @@ def remove_scene_properties():
 
     del bpy.types.Scene.proxy_meshes
     del bpy.types.Scene.proxy_meshes_index
+    del bpy.types.Scene.show_live_performance_overlay

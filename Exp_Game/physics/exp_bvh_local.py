@@ -19,13 +19,11 @@ class LocalBVH:
         self.bvh = BVHTree.FromBMesh(bm)
         bm.free()
 
-    # Duck-typed to look like BVHTree for existing code paths.
     def ray_cast(self, origin_world, direction_world, distance=None):
         """
         Matches BVHTree.ray_cast signature:
-        - origin (Vector), direction (Vector[, normalized])
-        - optional distance cap (if None, uses |direction_world| and normalizes)
-        Returns: (hit_loc_world, hit_norm_world, face_index, dist_world) or (None,None,-1,0)
+        Returns: (hit_loc_world, hit_norm_world, face_index, dist_world)
+                 or (None,None,-1,0.0)
         """
         M = self.obj.matrix_world
         Minv = M.inverted()
@@ -63,3 +61,24 @@ class LocalBVH:
         dist_world = vec_world.length
 
         return (hit_loc_world, hit_norm_world, face_index, dist_world)
+
+    def find_nearest(self, point_world, distance=float("inf")):
+        """
+        World-space wrapper for BVHTree.find_nearest.
+        Returns (co_world, normal_world, face_index, world_distance)
+        or (None, None, -1, 0.0)
+        """
+        M = self.obj.matrix_world
+        Minv = M.inverted()
+        Minv3 = Minv.to_3x3()
+        MinvT3 = Minv3.transposed()
+
+        res = self.bvh.find_nearest(Minv @ point_world, distance)
+        if res is None or res[0] is None:
+            return (None, None, -1, 0.0)
+
+        co_l, n_l, idx, _ = res
+        co_w = M @ co_l
+        n_w = (MinvT3 @ n_l).normalized()
+        dist_w = (point_world - co_w).length
+        return (co_w, n_w, idx, dist_w)

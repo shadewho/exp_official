@@ -91,7 +91,7 @@ class AnimationStateManager:
         self._last_is_grounded   = True
         self.air_time            = 0.0
         self.fall_timer          = 0.0
-        self.min_fall_time       = 2.0
+        self.min_fall_time       = 2.5
         self.min_fall_for_land   = 0.25
         self.landing_in_progress = False
         self.jump_played_in_air  = False

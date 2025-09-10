@@ -38,7 +38,7 @@ class FixedStepClock:
     """
     Deterministic accumulator. Add real dt each frame; step physics at fixed_dt up to max_steps.
     """
-    def __init__(self, fixed_dt=1.0/120.0, max_steps=5):
+    def __init__(self, fixed_dt=1.0/60, max_steps=5):
         self.fixed_dt = float(fixed_dt)
         self.max_steps = int(max_steps)
         self._acc = 0.0
@@ -47,8 +47,11 @@ class FixedStepClock:
         self._acc += max(0.0, real_dt)
 
     def steps(self):
-        n = int(self._acc // self.fixed_dt)
-        if n > self.max_steps:  # clamp to protect frame time
+        # ROUND rather than FLOOR to prevent N / N+1 alternation
+        eps = self.fixed_dt * 1e-3
+        n = int((self._acc + 0.5 * self.fixed_dt - eps) / self.fixed_dt)
+
+        if n > self.max_steps:  # keep your existing clamp
             n = self.max_steps
         if n > 0:
             self._acc -= n * self.fixed_dt

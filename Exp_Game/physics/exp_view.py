@@ -1,94 +1,221 @@
-#Exploratory/Exp_Game/exp_view.py
-
-import mathutils
+# Exploratory/Exp_Game/physics/exp_view.py
 import math
-from .exp_raycastutils import raycast_to_ground
+import mathutils
+from mathutils import Vector
+from .exp_raycastutils import raycast_closest_any
 
+# ===========================
+# Tunables you can tweak (no addon properties touched)
+# ===========================
+_FRUSTUM_RING_SAMPLES = 16     # how many rays around the center ray
+_FRUSTUM_RING_RADIUS  = 1.0    # ring radius in units of r_cam
+_PUSHOUT_ITERS        = 3      # tiny nearest-point pushout passes
+_LOS_BINARY_STEPS     = 10     # bsearch steps for nearest clear LoS
+_LOS_EPS              = 1.0e-4
+
+# Absolute minimum camera distance from anchor (meters)
+# Final minimum is: max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)
+MIN_CAM_ABS = 0.0006           # 0.6 mm absolute physical floor
+MIN_CAM_RADIUS_FACTOR = 0.04   # 4% of capsule radius
+
+# Camera "thickness": derived from viewport near clip with a small floor
+NEARCLIP_TO_RADIUS = 0.60      # camera radius ~60% of clip_start
+R_CAM_FLOOR        = 0.008     # 8 mm minimum camera thickness
+
+# When we do collide, pull a bit more inward as a safety buffer
+EXTRA_PULL_METERS  = 0.25      # ~25 cm additional inward pull on hit
+EXTRA_PULL_K       = 2.0       # plus 2× r_cam inward
+
+# If still blocked at the hard minimum, allow a very small peek upward
+MICRO_LEAN_UP_MAX              = 0.06   # ≤ 6 cm upward nudge
+MICRO_LEAN_UP_FRAC_OF_RADIUS   = 0.20   # or 20% of capsule radius
+
+
+# -------------------------
+# Helpers
+# -------------------------
+def _get_view_clip_start(context, fallback=0.1):
+    best = None
+    try:
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                sv3d = area.spaces.active
+                cs = getattr(sv3d, "clip_start", None)
+                if cs and cs > 0.0:
+                    best = cs if best is None else min(best, cs)
+    except Exception:
+        pass
+    return float(best) if (best is not None and best > 0.0) else float(fallback)
+
+def _build_basis(direction: Vector):
+    up_world = Vector((0,0,1))
+    helper = Vector((1,0,0)) if abs(direction.dot(up_world)) > 0.98 else up_world
+    right = direction.cross(helper)
+    right = right.normalized() if right.length > 1e-9 else Vector((1,0,0))
+    up = right.cross(direction).normalized()
+    return right, up
+
+def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist, r_cam):
+    """
+    Returns nearest hit distance along 'direction' using a center ray plus a ring of offset rays.
+    None => no hit within max_dist.
+    """
+    best = None
+    # Center
+    hl, hn, ho, hd = raycast_closest_any(static_bvh, dynamic_bvh_map, origin, direction, max_dist)
+    if hl is not None:
+        best = hd
+
+    # Ring
+    right, up = _build_basis(direction)
+    ring_r = _FRUSTUM_RING_RADIUS * r_cam
+    step = (2.0 * math.pi) / float(max(1, _FRUSTUM_RING_SAMPLES))
+    for i in range(_FRUSTUM_RING_SAMPLES):
+        ang = i * step
+        offset = (math.cos(ang) * right + math.sin(ang) * up) * ring_r
+        o = origin + offset
+        hl, hn, ho, hd = raycast_closest_any(static_bvh, dynamic_bvh_map, o, direction, max_dist)
+        if hl is not None:
+            best = hd if (best is None or hd < best) else best
+    return best  # None => clear
+
+def _los_blocked(static_bvh, dynamic_bvh_map, a: Vector, b: Vector):
+    d = b - a
+    dist = d.length
+    if dist <= 1e-9:
+        return False
+    hl, hn, ho, hd = raycast_closest_any(static_bvh, dynamic_bvh_map, a, d.normalized(), dist - _LOS_EPS)
+    return (hl is not None)
+
+def _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction, low, high, steps):
+    lo, hi = low, high
+    for _ in range(max(1, int(steps))):
+        mid = 0.5 * (lo + hi)
+        cam = anchor + direction * mid
+        if _los_blocked(static_bvh, dynamic_bvh_map, anchor, cam):
+            hi = mid
+        else:
+            lo = mid
+    return lo  # closest guaranteed-clear distance (>=low)
+
+def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_iters=_PUSHOUT_ITERS):
+    """
+    Tiny nearest-point pushout against static BVH and any LocalBVHs.
+    """
+    if radius <= 1e-6:
+        return pos
+
+    def push_once(bvh_like, p):
+        try:
+            res = bvh_like.find_nearest(p)
+        except Exception:
+            return p, False
+        if not res or res[0] is None or res[1] is None:
+            return p, False
+        hit_co, hit_n, _, dist = res
+        n = hit_n
+        if (p - hit_co).dot(n) < 0.0:
+            n = -n
+        if dist < radius:
+            return p + n * ((radius - dist) + 1.0e-4), True
+        return p, False
+
+    p = pos
+    for _ in range(max_iters):
+        moved = False
+        if static_bvh:
+            p, m = push_once(static_bvh, p); moved = moved or m
+        if dynamic_bvh_map:
+            for _, (bvh_like, _approx_rad) in dynamic_bvh_map.items():
+                p, m = push_once(bvh_like, p); moved = moved or m
+        if not moved:
+            break
+    return p
+
+
+# -------------------------
+# Public API (signature unchanged)
+# -------------------------
 def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor, dynamic_bvh_map=None):
-    # Calculate the direction vector
-    direction = mathutils.Vector((
+    """
+    Ultra-close third-person camera that:
+      • Uses capsule-top as anchor
+      • Spherecasts boom (center + ring) to find first obstacle
+      • Binary-searches to nearest clear LoS
+      • Adds a small inward safety buffer on hits
+      • Pushes out of thin geometry slightly
+      • Positions the viewport correctly (pivot=anchor, distance=allowed)
+    """
+    if not obj:
+        return
+
+    # Direction from anchor toward desired camera
+    direction = Vector((
         math.cos(pitch) * math.sin(yaw),
         -math.cos(pitch) * math.cos(yaw),
         math.sin(pitch)
     ))
+    if direction.length > 1e-9:
+        direction.normalize()
 
-    # Set the desired view location
-    head_height = 2.0
-    scan_point = obj.location + mathutils.Vector((0, 0, head_height))
-    view_location = scan_point + direction * orbit_distance
+    # Capsule-aware anchor (top of the capsule)
+    cp = context.scene.char_physics
+    cap_h = getattr(cp, "height", 1.80)
+    cap_r = getattr(cp, "radius", 0.22)
+    anchor = obj.location + Vector((0.0, 0.0, cap_h))
 
-    # Pull your detection range out by the buffer amount
-    buf = context.scene.camera_collision_buffer
-    extended_scan_distance = orbit_distance + zoom_factor + buf
-    if extended_scan_distance < 0.0:
-        extended_scan_distance = 0.0
+    # Desired boom length from UI inputs
+    desired_max = max(0.0, orbit_distance + zoom_factor)
 
-        
-    # Perform obstruction checking
-    if bvh_tree:
-        # Calculate the direction vector from the head to the extended view location
-        direction_to_view = (view_location - scan_point).normalized()
+    # Camera "thickness" from near clip => r_cam
+    clip_start = _get_view_clip_start(context, fallback=0.1)
+    r_cam = max(R_CAM_FLOOR, clip_start * NEARCLIP_TO_RADIUS)
 
-        # Perform the raycast from the scan point towards the extended view location
-        extended_view_location = scan_point + direction_to_view * extended_scan_distance
-        hit_location = raycast_to_ground(bvh_tree, scan_point, direction_to_view)
+    # Absolute minimum approach distance
+    min_cam = max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)
 
-        # If the ray hits something, adjust the view location
-        if hit_location:
-            distance_to_hit = (scan_point - hit_location).length
-            if distance_to_hit < extended_scan_distance:
-                buf = context.scene.camera_collision_buffer
-                # compute raw pull‑in distance
-                adjusted_distance = distance_to_hit - buf
-                # clamp so we never go farther out than orbit_distance
-                adjusted_distance = min(adjusted_distance, orbit_distance)
-                # apply it
-                view_location = scan_point + direction_to_view * adjusted_distance
+    # 1) Find earliest obstruction along the boom
+    hit_dist = _multi_ray_min_hit(bvh_tree, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
+    if hit_dist is not None:
+        # distance to surface minus camera radius, plus our extra inward buffer
+        base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
+        allowed = max(
+            min_cam,
+            base_allowed - (EXTRA_PULL_METERS + EXTRA_PULL_K * r_cam)
+        )
+    else:
+        allowed = desired_max
 
+    # 2) Ensure clear LoS from anchor to the chosen point
+    candidate_cam = anchor + direction * allowed
+    if _los_blocked(bvh_tree, dynamic_bvh_map, anchor, candidate_cam):
+        allowed = _binary_search_clear_los(
+            bvh_tree, dynamic_bvh_map, anchor, direction,
+            low=min_cam, high=allowed, steps=_LOS_BINARY_STEPS
+        )
+        candidate_cam = anchor + direction * allowed
 
-    #####################################################################
-    # Dynamic BVH Check (without removing or changing original logic)
-    #####################################################################
-    if dynamic_bvh_map:
-        # We'll do a second pass and see if any dynamic mesh is closer than our current camera offset.
-        # We'll replicate the logic above but for each dynamic BVH, then compare distances.
-        direction_to_view_dyn = (view_location - scan_point).normalized()
-        extended_view_location_dyn = scan_point + direction_to_view_dyn * extended_scan_distance
+    # 3) If STILL blocked at the hard minimum, micro-lean upward a hair to peek
+    if _los_blocked(bvh_tree, dynamic_bvh_map, anchor, candidate_cam) and allowed <= (min_cam + 1e-6):
+        up_nudge = min(MICRO_LEAN_UP_MAX, cap_r * MICRO_LEAN_UP_FRAC_OF_RADIUS)
+        candidate_cam = candidate_cam + Vector((0, 0, up_nudge))
 
-        closest_distance_dyn = None
-        closest_hit_dyn = None
+    # 4) Tiny nearest-point pushout to avoid embedding in thin geometry
+    candidate_cam = _camera_sphere_pushout_any(bvh_tree, dynamic_bvh_map, candidate_cam, r_cam, max_iters=_PUSHOUT_ITERS)
 
-        for dyn_obj, (dyn_bvh, dyn_radius) in dynamic_bvh_map.items():
-            if not dyn_bvh:
-                continue
-            # Raycast to dynamic object
-            hit_dyn = raycast_to_ground(dyn_bvh, scan_point, direction_to_view_dyn)
-            if hit_dyn:
-                dist_dyn = (scan_point - hit_dyn).length
-                # Track the closest dynamic obstacle
-                if (closest_distance_dyn is None) or (dist_dyn < closest_distance_dyn):
-                    closest_distance_dyn = dist_dyn
-                    closest_hit_dyn = hit_dyn
-
-        # If a dynamic obstacle is closer than our current view, clamp again
-        if closest_hit_dyn and closest_distance_dyn < extended_scan_distance:
-            buf = context.scene.camera_collision_buffer
-            adjusted_distance_dyn = closest_distance_dyn - buf
-            adjusted_distance_dyn = min(adjusted_distance_dyn, orbit_distance)
-            if adjusted_distance_dyn < (view_location - scan_point).length:
-                view_location = scan_point + direction_to_view_dyn * adjusted_distance_dyn
-
-    #####################################################################
-    # END of new dynamic block
-    #####################################################################
-
+    # === Crucial: position the viewport correctly ===
+    # In Blender, the eye is:
+    #     eye = view_location - (rotated -Z) * view_distance
+    # We want the *pivot/target* at the anchor, and the eye to be at candidate_cam.
+    # With rotation such that rotated Z == direction, rotated -Z == -direction,
+    # setting view_distance = allowed yields eye = anchor + direction*allowed.
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':
-            for region in area.regions:
-                if region.type == 'WINDOW':
-                    region_3d = area.spaces.active.region_3d
-                    region_3d.view_location = view_location
-                    region_3d.view_rotation = direction.to_track_quat('Z', 'Y').to_matrix().to_3x3().to_quaternion()
+            rv3d = area.spaces.active.region_3d
+            rv3d.view_location = anchor
+            rv3d.view_rotation = direction.to_track_quat('Z', 'Y')
+            rv3d.view_distance = allowed
+
 
 def shortest_angle_diff(current, target):
     diff = (target - current + math.pi) % (2 * math.pi) - math.pi

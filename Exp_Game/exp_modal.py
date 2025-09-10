@@ -4,7 +4,6 @@ import bpy
 import math
 import time
 from .props_and_utils.exp_utilities import get_game_world
-from .physics.exp_movement import move_character
 from .physics.exp_raycastutils import create_bvh_tree
 from .startup_and_reset.exp_spawn import spawn_user
 from .physics.exp_view import update_view, shortest_angle_diff
@@ -32,7 +31,12 @@ from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_mov
 from .physics.exp_kcc import KinematicCharacterController
 from .props_and_utils.exp_time import FixedStepClock
 from .physics.exp_dynamic import update_dynamic_meshes
-
+from .systems.exp_live_performance import (
+    init_live_performance,
+    perf_frame_begin,
+    perf_mark,
+    perf_frame_end,
+)
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -51,12 +55,12 @@ class ExpModal(bpy.types.Operator):
         max=3.0,
         description="Character movement speed"
     )
-    time_scale: bpy.props.FloatProperty(
+    time_scale: bpy.props.IntProperty(
         name="Time Scale",
-        default=3.0,
-        min=1.0,
-        max=5.0,
-        description="Controls how quickly time passes in the simulation"
+        default=3,           # keep your current feel
+        min=1,
+        max=5,
+        description="Controls how quickly time passes in the simulation (integer)"
     )
     camera_distance: bpy.props.FloatProperty(
         name="Camera Distance",
@@ -87,6 +91,12 @@ class ExpModal(bpy.types.Operator):
     delta_time: float = 0.0  # Updated each frame based on real time * time_scale
     _last_time: float = 0.0  # Used to calculate real time between frames
 
+    # --- Fixed 30 Hz physics scheduling (wall-clock) ---
+    physics_hz: int = 30
+    physics_dt: float = 1.0 / 30.0
+    _next_physics_tick: float = 0.0  # monotonic time for next physics step
+
+
     is_grounded: bool = False
     is_jumping: bool = False
     jump_timer: float = 0.0
@@ -112,7 +122,7 @@ class ExpModal(bpy.types.Operator):
     physics_controller = None
     fixed_clock = None
 
-    # (New) We'll store the user-chosen keys from preferences only
+    # store the user-chosen keys from preferences only
     pref_forward_key:  str = "W"
     pref_backward_key: str = "S"
     pref_left_key:     str = "A"
@@ -271,25 +281,26 @@ class ExpModal(bpy.types.Operator):
             set_global_animation_manager(self.animation_manager)
             move_armature_and_children_to_scene(self.target_object, context.scene)
 
-        # Physics controller + fixed clock
+        # --- Physics controller + HARD-LOCKED 30 Hz scheduler ---
         self.physics_controller = KinematicCharacterController(self.target_object, context.scene.char_physics)
 
-        hz = max(30, min(300, int(context.scene.char_physics.fixed_hz)))
-        fixed_dt = 1.0 / float(hz)
+        # Absolute, real-time 30 Hz physics (independent of time_scale)
+        self.physics_hz = 30
+        self.physics_dt = 1.0 / float(self.physics_hz)
 
-        # Ensure the clock can handle the scaled time you’re feeding it.
-        # Estimate steps per UI tick and give some headroom, cap to 20.
-        steps_per_tick_est = int(math.ceil(float(self.time_scale) * hz / 60.0))
-        max_steps = max(5, min(20, steps_per_tick_est + 2))
+        # We do not allow catch-up bursts; exactly one step per 33.333 ms.
+        self._next_physics_tick = time.perf_counter() + self.physics_dt
 
-        self.fixed_clock = FixedStepClock(fixed_dt=fixed_dt, max_steps=max_steps)
+        # FixedStepClock not needed for scheduling; keep None to avoid confusion
+        self.fixed_clock = None
+
 
 
         # 7) Setup modal cursor region and hide the system cursor
         setup_cursor_region(context, self)
 
         # 8) Create a timer (runs as fast as possible, interval=0.0)
-        self._timer = context.window_manager.event_timer_add(1.0/60.0, window=context.window)
+        self._timer = context.window_manager.event_timer_add(1.0/30.0, window=context.window)
         self._last_time = time.perf_counter()
 
         # 9) Add ourselves to Blender’s modal event loop
@@ -341,7 +352,9 @@ class ExpModal(bpy.types.Operator):
 
         # 11) Clear any previously pressed keys
         self.keys_pressed.clear()
-
+        
+        # Live performance overlay helper
+        init_live_performance(self)
 
         return {'RUNNING_MODAL'}
 
@@ -354,52 +367,70 @@ class ExpModal(bpy.types.Operator):
             return {'CANCELLED'}
 
         if event.type == 'TIMER':
-            
-            # --- TIMER FRAME TICK ---  (replace the entire 'if event.type == "TIMER":' body)
-            # A) Update timebases
+
+            # ---- START FRAME (for live perf overlay) ----
+            perf_frame_begin(self)
+
+            # A) Timebases
+            t0 = perf_mark(self, 'time')
             self.update_time()
             _ = update_time()  # keep your global game clock increasing
+            perf_mark(self, 'time', t0)
 
-            # B) Update animation & audio (pure state)
+            # Decide once: should we do a 30 Hz physics tick this frame?
+            do_phys = self._physics_due()
+
+            # B) Animation & audio (pure state) - per frame, uses scaled delta_time
+            t0 = perf_mark(self, 'anim_audio')
             self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded)
             current_anim_state = self.animation_manager.anim_state
             audio_state_mgr = get_global_audio_state_manager()
             audio_state_mgr.update_audio_state(current_anim_state)
+            perf_mark(self, 'anim_audio', t0)
 
-            # C) FIRST: update anything that can move objects this frame
-            #    (This ensures platforms/props have their FINAL transforms for this frame.)
-            update_all_custom_managers(self.delta_time)
-            update_transform_tasks()
-            update_property_tasks()
+            # C) FIRST: anything that moves objects this frame (treat as "physical")
+            if do_phys:
+                t0 = perf_mark(self, 'custom_tasks')
+                update_all_custom_managers(self.delta_time)  # your content-driven movers
+                update_transform_tasks()
+                update_property_tasks()
+                perf_mark(self, 'custom_tasks', t0)
 
-            # D) Now that transforms are final, rebuild/refresh dynamic BVHs + platform deltas
-            #    (This also applies 'carry' delta if grounded, using last frame's grounded_platform.)
-            update_dynamic_meshes(self)
+                # D) Dynamic proxies/BVHs + platform velocities (feeds KCC)
+                t0 = perf_mark(self, 'dynamic_meshes')
+                update_dynamic_meshes(self)
+                perf_mark(self, 'dynamic_meshes', t0)
 
-            # E) Distance-based culling can safely read fresh transforms now
-            update_performance_culling(self, context)
+                # E) Distance-based culling (can be heavy; do on physics tick)
+                t0 = perf_mark(self, 'culling')
+                update_performance_culling(self, context)
+                perf_mark(self, 'culling', t0)
 
             # --- Character gating / input filtering (unchanged) ---
             mg = context.scene.mobility_game
             if not mg.allow_movement:
                 for k in (self.pref_forward_key, self.pref_backward_key,
-                        self.pref_left_key, self.pref_right_key):
+                          self.pref_left_key, self.pref_right_key):
                     if k in self.keys_pressed:
                         self.keys_pressed.remove(k)
-
             if not mg.allow_sprint:
                 if self.pref_run_key in self.keys_pressed:
                     self.keys_pressed.remove(self.pref_run_key)
 
-            # F) Movement & gravity (consumes fresh dynamic_bvh_map; camera updates inside)
-            self.update_movement_and_gravity(context)
+            # F) Movement & gravity (fixed 30 Hz physics; camera updates inside)
+            t0 = perf_mark(self, 'physics')
+            self.update_movement_and_gravity(context)  # will step only if due
+            perf_mark(self, 'physics', t0)
 
-            # H) Interactions/UI/SFX (unchanged)
+            # H) Interactions/UI/SFX (per frame)
+            t0 = perf_mark(self, 'interact_ui_audio')
             check_interactions(context)
             update_text_reactions()
             update_sound_tasks()
+            perf_mark(self, 'interact_ui_audio', t0)
 
-
+            # ---- END FRAME ----
+            perf_frame_end(self, context)
 
         # B) Key events => only user preference keys (forward/back/left/right/run/jump).
         elif event.type in {
@@ -533,6 +564,9 @@ class ExpModal(bpy.types.Operator):
 
         self.delta_time = real_dt * float(self.time_scale)
 
+    def _physics_due(self) -> bool:
+        """Return True if a 30 Hz physics step is due (wall-clock)."""
+        return time.perf_counter() >= self._next_physics_tick
 
     def update_animations(self):
         """Send scaled delta_time to the animation manager."""
@@ -541,53 +575,40 @@ class ExpModal(bpy.types.Operator):
 
     def update_movement_and_gravity(self, context):
         """
-        Uses the KCC + fixed-step clock. Camera updates remain unchanged.
-        This version:
-        • does NOT request a jump every frame (edge-only in handle_key_input)
-        • adapts max_steps to avoid periodic clamping/pulsing
+        HARD-LOCK physics to 30 Hz (real time). Never runs faster than 30 Hz:
+        - We execute at most one KCC step per 33.333 ms wall-clock.
+        - We DO NOT "catch up" with multiple steps if the UI stalls.
+        - Animations/audio remain per-frame on scaled delta_time.
         """
         if not self.target_object:
             return
 
+        # Only step exactly on (or after) the scheduled 30 Hz tick
+        now = time.perf_counter()
+        if now < self._next_physics_tick:
+            return  # not time yet; keep physics frozen this frame
+
         prefs = context.preferences.addons["Exploratory"].preferences
 
-        # Accumulate scaled real time into the fixed step clock
-        self.fixed_clock.add(self.delta_time)
+        # One step at constant dt (independent of time_scale)
+        self.physics_controller.try_consume_jump()
+        self.physics_controller.step(
+            dt=self.physics_dt,
+            prefs=prefs,
+            keys_pressed=self.keys_pressed,
+            camera_yaw=self.yaw,
+            static_bvh=self.bvh_tree,
+            dynamic_map=getattr(self, "dynamic_bvh_map", None),
+            platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
+            platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
+        )
 
-        # --- IMPORTANT: adapt max_steps to the work we actually have to do this frame ---
-        # This prevents 'step clamping' and the visible pulse it causes.
-        fixed_dt = float(self.fixed_clock.fixed_dt)
-        if fixed_dt <= 0.0:
-            return
-        # How many steps would we need for this tick?
-        import math
-        steps_needed = int(math.ceil(max(self.delta_time, 1e-6) / fixed_dt))
-        # Give ourselves a small headroom (+2), cap to something sane to prevent frame storms.
-        self.fixed_clock.max_steps = max(5, min(20, steps_needed + 2))
+        # Keep old flags for compatibility with animations/audio
+        self.z_velocity = self.physics_controller.vel.z
+        self.is_grounded = self.physics_controller.on_ground
+        self.grounded_platform = self.physics_controller.ground_obj
 
-        # Pull the number of steps and simulate
-        steps = self.fixed_clock.steps()
-        for _ in range(steps):
-            # Jump buffer is set only on key PRESS in handle_key_input()
-            self.physics_controller.try_consume_jump()
-
-            self.physics_controller.step(
-                dt=self.fixed_clock.fixed_dt,
-                prefs=prefs,
-                keys_pressed=self.keys_pressed,
-                camera_yaw=self.yaw,
-                static_bvh=self.bvh_tree,
-                dynamic_map=getattr(self, "dynamic_bvh_map", None),
-                platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
-                platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
-            )
-
-            # Keep old flags for compatibility with animations/audio
-            self.z_velocity = self.physics_controller.vel.z
-            self.is_grounded = self.physics_controller.on_ground
-            self.grounded_platform = self.physics_controller.ground_obj
-
-        # Camera update (unchanged)
+        # Camera update at physics rate (30 Hz)
         update_view(
             context,
             self.target_object,
@@ -599,9 +620,14 @@ class ExpModal(bpy.types.Operator):
             dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
         )
 
-        # Rotate character toward camera if moving (existing helper)
+        # Rotate character toward camera if moving
         self.smooth_rotate_towards_camera()
 
+        # Schedule the next 30 Hz tick WITHOUT catch-up bursts
+        self._next_physics_tick += self.physics_dt
+        if now >= self._next_physics_tick:
+            # If we fell behind, drop missed steps and re-align a period from now.
+            self._next_physics_tick = now + self.physics_dt
 
 
     # ---------------------------

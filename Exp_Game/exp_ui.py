@@ -43,6 +43,15 @@ class ExploratoryPanel(bpy.types.Panel):
                 "exploratory.start_game",
                 text="▶     Play Fullscreen"
             )
+            # ─── Live Performance (Compact HUD) ──────────────────────────────
+            col.separator()
+            sub = col.box()
+            row = sub.row(align=True)
+            row.prop(scene, "show_live_performance_overlay",
+                    text="Show Live Performance", icon='HIDE_OFF')
+            if scene.show_live_performance_overlay:
+                sub.prop(scene, "live_perf_scale", text="Scale")
+            col.separator()
             
             layout.separator()
             layout.operator(
@@ -64,9 +73,6 @@ class ExploratoryPanel(bpy.types.Panel):
                 row.label(
                     text="Switch to your desired scene and click 'Set Game World' to assign it."
                 )
-
-
-
 
 
 
@@ -1001,7 +1007,7 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
 # UI: Character Physics (grouped)
 # -----------------------------
 class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
-    bl_label = "Character Physics"
+    bl_label = "Character Physics and View"
     bl_idname = "VIEW3D_PT_exploratory_physics"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1050,3 +1056,4 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "jump_speed")
         row.prop(p, "coyote_time")
         col.prop(p, "jump_buffer")
+

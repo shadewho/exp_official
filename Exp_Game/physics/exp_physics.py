@@ -29,60 +29,67 @@ def is_colliding_overhead(bvh_tree, obj, overhead_offset=2.0, cast_height=0.2, m
     hit = bvh_tree.ray_cast(origin, direction, max_distance)
     return (hit[0] is not None)
 
-
 def capsule_collision_resolve(
-    bvh_tree,
+    bvh_like,
     obj,
     radius=0.2,
     heights=(0.3, 1.0, 1.9),
-    max_iterations=3,
-    push_strength=0.2
+    max_iterations=6,
+    push_strength=1.0
 ):
     """
-    A shape-based collision approach. We cast multiple radial rays
-    around the character at different heights, pushing out if inside geometry.
+    Robust capsule pushout:
+      • Uses BVH.find_nearest at several vertical sample heights. This
+        works even if we START INSIDE thin geometry (ray-casts may fail).
+      • Pushes away along the face normal oriented AWAY from the center.
+      • Optionally does a shallow ring ray test as a final polish.
 
-    - radius: how wide the character is
-    - heights: which "layers" (above feet) do we check
-    - max_iterations: how many times we attempt to push out
-    - push_strength: fraction of the push we apply each iteration (0.2 => gentle, 1.0 => strong)
-
-    This ensures we never remain inside geometry if we overlap.
+    Accepts either a BVHTree or a LocalBVH (has .ray_cast and .find_nearest).
     """
-    if not bvh_tree or not obj:
+    if not bvh_like or not obj:
         return
 
-    # Ensure bvh_tree is the actual BVH tree (if it's returned as a tuple, extract the first element)
-    if isinstance(bvh_tree, tuple):
-        bvh_tree = bvh_tree[0]
+    # For plain BVHTree, expose a uniform API like LocalBVH
+    class _BVHWrapper:
+        def __init__(self, bvh):
+            self._bvh = bvh
+        def ray_cast(self, o, d, dist):
+            return self._bvh.ray_cast(o, d, dist)
+        def find_nearest(self, p, distance=float("inf")):
+            res = self._bvh.find_nearest(p, distance)
+            if res is None or res[0] is None:
+                return (None, None, -1, 0.0)
+            co, n, idx, _ = res
+            return (co, n.normalized(), idx, (p - co).length)
+
+    if hasattr(bvh_like, "find_nearest"):
+        bvh = bvh_like  # LocalBVH already provides the API
+    else:
+        bvh = _BVHWrapper(bvh_like)
+
+    eps = 1.0e-4
+    up  = Vector((0, 0, 1))
 
     for _ in range(max_iterations):
         any_fix = False
-        loc = obj.location.copy()
+        base = obj.location.copy()
 
-        # We'll do 8 rays around the circle (like a capsule's cross-section)
-        n_rays = 8
-        step_angle = (2.0 * math.pi) / float(n_rays)
-
+        # --- Nearest-point pushout at multiple heights ---
         for h in heights:
-            center = loc.copy()
-            center.z += h
+            center = base.copy(); center.z += h
+            co, n, _, dist = bvh.find_nearest(center)
+            if co is None or n is None:
+                continue
 
-            for i in range(n_rays):
-                angle = i * step_angle
-                direction = Vector((math.cos(angle), math.sin(angle), 0.0))
-                start = center
-                end = center + (direction * radius)
-
-                hit = bvh_tree.ray_cast(start, (end - start))
-                if hit[0] is not None:
-                    # we are overlapping geometry => push out
-                    hit_loc, hit_normal, face_idx, dist = hit
-                    if dist < radius:
-                        pen_depth = (radius - dist) + 0.0001
-                        push_vec = hit_normal * pen_depth * push_strength
-                        obj.location += push_vec
-                        any_fix = True
+            # Distance from center to surface
+            if dist < (radius - eps):
+                # Ensure we push *away* from surface, regardless of triangle winding
+                dir_to_center = (center - co)
+                if dir_to_center.dot(n) < 0.0:
+                    n = -n
+                penetration = (radius - dist) + eps
+                obj.location += n * (penetration * push_strength)
+                any_fix = True
 
         if not any_fix:
             break
