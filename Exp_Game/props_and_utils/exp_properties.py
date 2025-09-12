@@ -98,14 +98,6 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
         description="Fixed physics update frequency (steps per second). Higher values are smoother but cost more CPU.",
         default=30, min=30, max=30
     )
-    step_forward_min: bpy.props.FloatProperty(
-        name="Step Forward Min",
-        description=(
-            "Minimum horizontal push applied during step-up to clear the stair lip.\n"
-            "This is combined with capsule radius so the total nudge is at least (radius + 3 cm)."
-        ),
-        default=0.10, min=0.0, max=1.0
-    )
 
 
 ###---------------proxy meshes-------------###

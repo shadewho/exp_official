@@ -69,68 +69,7 @@ def _build_basis(direction: Vector):
 
 # -------------------------
 # Low-cost dynamic prefilters
-# -------------------------
-def _prefilter_dynamic_by_ray(dynamic_bvh_map, origin: Vector, dnorm: Vector, max_dist: float, r_cam: float, margin: float):
-    """
-    Return a subset dict {obj: (bvh_like, rad)} of dynamic_bvh_map that the ray could plausibly hit.
-    Uses a cheap cylinder test against each object's origin (world translation) with radius≈(obj_rad + r_cam + margin).
-    """
-    if not dynamic_bvh_map:
-        return None
-    subset = {}
-    md = max(0.0, float(max_dist) + margin)
-    for obj, (bvh_like, approx_rad) in dynamic_bvh_map.items():
-        # Approximate center from object origin (cheap and ok for a coarse gate)
-        c = obj.matrix_world.translation
-        oc = c - origin
-        t = oc.dot(dnorm)
-        if t < -margin or t > md:
-            continue
-        # perpendicular distance from ray to center
-        perp = (oc - dnorm * t).length
-        if perp <= (approx_rad + r_cam + margin):
-            subset[obj] = (bvh_like, approx_rad)
-    return subset if subset else None
-
-def _prefilter_dynamic_by_point(dynamic_bvh_map, point: Vector, reach: float):
-    """
-    Return a subset dict of dynamics within (approx_rad + reach) of 'point'.
-    Used to localize nearest-point pushout.
-    """
-    if not dynamic_bvh_map:
-        return None
-    subset = {}
-    r = float(reach)
-    for obj, (bvh_like, approx_rad) in dynamic_bvh_map.items():
-        if (obj.matrix_world.translation - point).length <= (approx_rad + r):
-            subset[obj] = (bvh_like, approx_rad)
-    return subset if subset else None
-
-
-def _raycast_closest_any_prefiltered(static_bvh, dynamic_bvh_map, origin: Vector, dnorm: Vector, max_dist: float, r_cam: float, margin: float):
-    """
-    Same output contract as BVH.ray_cast wrapper you use elsewhere:
-    Returns: (hit_loc, hit_norm, hit_obj, hit_dist) or (None, None, None, None)
-    But only checks a small subset of dynamic BVHs.
-    """
-    best = (None, None, None, 1e9)
-
-    # Static: unchanged
-    if static_bvh:
-        hit = static_bvh.ray_cast(origin, dnorm, max_dist)
-        if hit and hit[0] is not None and hit[3] < best[3]:
-            best = (hit[0], hit[1], None, hit[3])
-
-    # Dynamics: prefiltered subset only
-    sub = _prefilter_dynamic_by_ray(dynamic_bvh_map, origin, dnorm, max_dist, r_cam, margin)
-    if sub:
-        for obj, (bvh_like, _) in sub.items():
-            h = bvh_like.ray_cast(origin, dnorm, max_dist)
-            if h and h[0] is not None and h[3] < best[3]:
-                best = (h[0], h[1], obj, h[3])
-
-    return best if best[0] is not None else (None, None, None, None)
-
+# ------------------------
 
 def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist, r_cam):
     """

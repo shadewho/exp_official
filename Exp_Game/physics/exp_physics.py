@@ -1,33 +1,5 @@
 # exp_physics.py
-import bpy
-import math
-import mathutils
 from mathutils import Vector
-from .exp_raycastutils import BVHTree, create_bvh_tree
-from ..interactions.exp_interactions import approximate_bounding_sphere_radius
-
-def apply_gravity(z_velocity, gravity, dt):
-    """
-    Applies gravity to z_velocity over time dt.
-    """
-    z_velocity += gravity * dt
-    return z_velocity
-
-
-def is_colliding_overhead(bvh_tree, obj, overhead_offset=2.0, cast_height=0.2, max_distance=0.5):
-    """
-    Checks if there's geometry above the character's head within max_distance.
-    If so => True.
-    """
-    if not bvh_tree or not obj:
-        return False
-
-    origin = obj.location.copy()
-    origin.z += (overhead_offset + cast_height)
-    direction = Vector((0,0,1))
-
-    hit = bvh_tree.ray_cast(origin, direction, max_distance)
-    return (hit[0] is not None)
 
 def capsule_collision_resolve(
     bvh_like,
@@ -132,23 +104,6 @@ def capsule_collision_resolve(
                 break
 
 
-def raycast_down(bvh_tree, obj, dist=3.0):
-    """
-    Cast a ray from about 1 meter above the feet, downward by dist => returns (loc, norm).
-    If no hit => (None, None).
-    """
-    if not bvh_tree or not obj:
-        return None, None
-
-    origin = obj.location + Vector((0,0,1.0))
-    direction = Vector((0,0,-1))
-
-    result = bvh_tree.ray_cast(origin, direction, dist)
-    if result[0] is not None:
-        return result[0], result[1]
-    return None, None
-
-
 def remove_steep_slope_component(move_dir, slope_normal, max_slope_dot=0.7):
     """
     If slope is too steep => dot( slope_normal, (0,0,1) ) < max_slope_dot => remove uphill portion.
@@ -165,42 +120,3 @@ def remove_steep_slope_component(move_dir, slope_normal, max_slope_dot=0.7):
             remove_vec = slope_normal * remove_amt
             move_dir -= remove_vec
     return move_dir
-
-
-def is_tall_obstacle(bvh_tree, point, height_check=1.0):
-    """
-    If there's geometry above 'point' up to 'height_check' => it's a tall obstacle/wall.
-    """
-    if not bvh_tree:
-        return False
-
-    start = point.copy()
-    end = point.copy()
-    end.z += height_check
-
-    direction = (end - start).normalized()
-    length = (end - start).length
-
-    hit = bvh_tree.ray_cast(start, direction, length)
-    return (hit[0] is not None)
-
-
-def sweep_down_segment(bvh_tree, obj, old_z, new_z):
-    """
-    We do a segment from old_z down to new_z. If there's ground in that segment => return the z of that ground.
-    Otherwise => None => keep falling.
-    """
-    if new_z >= old_z:
-        return None  # not going down
-
-    origin = obj.location.copy()
-    origin.z = old_z + 0.01
-    segment_dist = (old_z - new_z) + 0.05
-
-    direction = Vector((0,0,-1))
-    hit = bvh_tree.ray_cast(origin, direction, segment_dist)
-    if hit[0] is not None:
-        hit_loc, hit_normal, face_idx, dist = hit
-        if hit_loc.z >= new_z:
-            return hit_loc.z
-    return None

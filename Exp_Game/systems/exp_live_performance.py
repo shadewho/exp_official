@@ -220,7 +220,7 @@ class _LivePerfOverlay:
         self._items[4]["color"] = (1,1,1,0.85)
 
         # ---------- line 5: world activity ----------
-        self._items[5]["text"]  = f"World: Dyn {dyn_active}/{dyn_total}  •  Dyn BVHs {dyn_bvhs}  •  Static {stat_total}"
+        self._items[5]["text"]  = f"Dynamic Proxies {dyn_active}/{dyn_total}  •  Dynamic Proxies {dyn_bvhs}  •  Static Proxies {stat_total}"
         self._items[5]["color"] = (0.95,0.95,1.00,0.95)
 
         # ---------- line 6: physics ----------

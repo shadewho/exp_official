@@ -1,11 +1,16 @@
-# Exp_Game/physics/exp_kcc.py
+#Exploratory/Exp_Game/physics/exp_kcc.py
+#sick
+#speed up still an issue
+#capsules collisions are very weak (jump through box)
+#
 import math
 import mathutils
 from mathutils import Vector
-from .exp_physics import capsule_collision_resolve
+from .exp_physics import capsule_collision_resolve, remove_steep_slope_component
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
 
 class KCCConfig:
     def __init__(self, scene_cfg):
@@ -22,16 +27,28 @@ class KCCConfig:
         self.coyote_time     = getattr(scene_cfg, "coyote_time", 0.08)
         self.jump_buffer     = getattr(scene_cfg, "jump_buffer", 0.12)
         self.jump_speed      = getattr(scene_cfg, "jump_speed", 7.0)
-        self.step_forward_min = getattr(scene_cfg, "step_forward_min", 0.20)
+
 
 class KinematicCharacterController:
     """
     Simple, robust capsule controller:
       • Horizontal pre-sweep to clamp into walls
-      • Proper step-up: lift -> move -> drop with free-space checks
+      • Clean step-up: lift (measured), short forward march (swept), drop
       • Ceiling sweep blocks jump-through ceilings
       • Grounding decoupled from snap
     """
+
+    # --- Step tunables (no UI knobs; chosen to be sane and universal) ---
+    _STEP_LIFT_OVERSHOOT  = 0.01   # tiny extra headroom to avoid grazing undersides
+    _STEP_MARCH_ITERS     = 1      # a few micro-sweeps to crest the lip cleanly
+    _EPS                  = 1.0e-6
+
+    # --- Radius-independent step probes (meters) ---
+    _STEP_PROBE_OFFSETS_M = (0.0, +0.12, -0.12)   # center, shoulders in meters (not % of radius)
+    _STEP_PROBE_FORWARD_M = 0.35                  # how far ahead to look for the tread
+    _STEP_FOOT_H_M        = 0.10                  # foot sample height for riser feel
+    _STEP_CLEAR_RADIUS_M  = 0.10                  # effective "clearance sphere" for lip math   
+
     def __init__(self, obj, scene_cfg):
         self.obj = obj
         self.cfg = KCCConfig(scene_cfg)
@@ -41,15 +58,78 @@ class KinematicCharacterController:
         self.ground_obj = None
         self._coyote = 0.0
         self._jump_buf = 0.0
+
+    # --------------------
+    # Input & helpers
+    # --------------------
     def _project_on_plane(self, v3, n):
-        """Project 3D vector v3 onto the plane with normal n."""
         if n.length <= 1e-9:
             return v3
         n = n.normalized()
         return v3 - n * v3.dot(n)
-    # --------------------
-    # Input & helpers
-    # --------------------
+    
+    def _dynamic_lip_clear(self, static_bvh, dynamic_map, origin: Vector, forward_xy: Vector) -> float:
+        """
+        Compute the exact extra forward distance (meters) needed for the capsule to clear
+        the blocking riser plane, based on geometry, not a fixed margin.
+
+        Returns the recommended extra distance (can be 0). You must still clamp this by
+        your remaining per-tick forward budget in the caller.
+        """
+        EPS = 1.0e-6
+        f = Vector((forward_xy.x, forward_xy.y, 0.0))
+        if f.length <= EPS:
+            return 0.0
+        f.normalize()
+
+        # We’ll query the wall (riser) plane by raycasting forward at a couple of heights.
+        # From ray geometry: for a plane with normal n, the normal distance to the plane is
+        #   d0 = t * (f · n)   where t is the ray distance along forward to intersection.
+        # To have a swept sphere of radius R clear the plane, we need:
+        #   d0 - s*(f · n)  >=  R   ⇒   s_clear >= (R - d0) / max(f·n, eps)
+        # If d0 >= R already, s_clear <= 0 (we’re clear).
+        R = float(self._STEP_CLEAR_RADIUS_M)
+        # A tiny safety so we don’t end with the sphere exactly grazing the plane
+        SAFETY = max(0.010, min(0.60 * R, 0.025))
+
+        up = Vector((0,0,1))
+        floor_dot = math.cos(math.radians(self.cfg.slope_limit_deg))
+
+        # Heights to sample for “riser feel” (foot & mid)
+        foot_h = float(self._STEP_FOOT_H_M)
+        heights = (foot_h, self.cfg.height * 0.5)
+
+        best_extra = None
+
+        for h in heights:
+            o = origin.copy(); o.z += float(h)
+            # Look a short distance ahead; 2R is plenty to find the riser close to the nose.
+            hit_loc, hit_n, _, t = self._raycast_any(static_bvh, dynamic_map, o, f, max(0.15, 2.5 * R))
+            if hit_loc is None or hit_n is None:
+                continue
+
+            # Ignore floor-like surfaces; we only care about the vertical-ish riser plane.
+            if hit_n.dot(up) >= floor_dot:
+                continue
+
+            fn = max(f.dot(hit_n), 0.0)
+            if fn <= EPS:
+                # Forward is (nearly) parallel to the plane; no well-defined clear distance.
+                # Fall back to a small bound (acts like “don’t try to force it this tick”).
+                continue
+
+            d0 = t * fn  # normal distance from our sample to the plane
+            need = (R + SAFETY) - d0
+            if need <= 0.0:
+                extra = 0.0
+            else:
+                extra = need / fn  # forward distance needed to get plane ≥ R+SAFETY away
+
+            best_extra = extra if (best_extra is None or extra < best_extra) else best_extra
+
+        return max(0.0, best_extra if best_extra is not None else 0.0)
+    
+
     def _input_vector(self, keys_pressed, prefs, camera_yaw):
         from mathutils import Vector
         fwd_key  = prefs.key_forward
@@ -64,37 +144,46 @@ class KinematicCharacterController:
         if right_key in keys_pressed: x += 1.0
         if left_key in keys_pressed:  x -= 1.0
 
+        # Camera‑plane intent (no slope steering)
         v = Vector((x, y, 0.0))
         if v.length > 1e-6:
             v.normalize()
 
-        # Camera-space to world-space (horizontal)
         Rz = mathutils.Matrix.Rotation(camera_yaw, 4, 'Z')
         world3 = Rz @ Vector((v.x, v.y, 0.0))
 
-        # While grounded on a walkable slope, align to the tangent plane,
-        # but DO NOT normalize in 3D (that steals magnitude into Z).
-        if self.on_ground and self.ground_norm is not None and self._slope_ok(self.ground_norm):
-            world3 = self._project_on_plane(world3, self.ground_norm)
-            xy = Vector((world3.x, world3.y))
-            if xy.length > 1e-6:
-                xy.normalize()  # keep full horizontal intent (unit in XY)
-                return xy, (run_key in keys_pressed)
-            # fallback if XY collapsed (rare)
-            return Vector((0.0, 0.0)), (run_key in keys_pressed)
+        # Use XY only for acceleration; keep heading strictly camera‑plane.
+        xy = Vector((world3.x, world3.y))
+        if xy.length > 1e-6:
+            xy.normalize()
 
-        # Flat ground / air: original behavior
-        return world3.xy, (run_key in keys_pressed)
+        # If standing on a too‑steep slope, remove only the uphill component
+        # (prevents "walking up walls" while avoiding terrain‑induced steering).
+        if self.on_ground and self.ground_norm is not None and not self._slope_ok(self.ground_norm):
+            cos_limit = math.cos(math.radians(self.cfg.slope_limit_deg))
+            v3 = Vector((xy.x, xy.y, 0.0))
+            v3 = remove_steep_slope_component(v3, self.ground_norm, max_slope_dot=cos_limit)
+            xy = Vector((v3.x, v3.y))
 
+        return xy, (run_key in keys_pressed)
+
+    def _hit_below_step_window(self, hit_z: float, origin_z: float) -> bool:
+        """
+        True if a contact point is within the vertical band the step logic owns:
+        [feet + _STEP_FOOT_H_M, feet + _STEP_FOOT_H_M + step_height]
+        We treat wall-like hits in this band as NON-blocking during sweeps.
+        """
+        band_top = float(self._STEP_FOOT_H_M) + float(self.cfg.step_height)
+        return (hit_z - origin_z) <= (band_top + 0.005)  # 5mm slack
+    
     def _accelerate(self, cur_xy, wish_dir_xy, target_speed, accel, dt):
         wish = Vector((wish_dir_xy[0], wish_dir_xy[1]))
         desired = wish * target_speed
-        t = clamp(accel * dt, 0.0, 1.0)  # critically-damped lerp
+        t = clamp(accel * dt, 0.0, 1.0)
         return cur_xy.lerp(desired, t)
 
     def _slope_ok(self, n: Vector):
         up = Vector((0,0,1))
-        # angle between normal and up should be <= slope limit
         ang = math.degrees(up.angle(n))
         return ang <= self.cfg.slope_limit_deg
 
@@ -158,12 +247,11 @@ class KinematicCharacterController:
         dnorm  = disp / move_len
         origin = self.obj.location.copy()
 
-        # LOWER foot sample so stairs/low ledges are actually "seen"
-        # 3–8 cm, clamped by capsule radius
-        foot_h = max(0.03, min(0.08, 0.5 * self.cfg.radius))
+        # height samples: foot/mid/top of capsule
+        foot_h = float(self._STEP_FOOT_H_M)
         heights = (foot_h, self.cfg.height * 0.5, self.cfg.height - 0.1)
 
-        skin      = max(0.03, self.cfg.radius * 0.95)
+        skin = max(0.01, min(0.03, self.cfg.radius * 0.15))
         test_dist = move_len + self.cfg.radius + 0.05
         up        = Vector((0, 0, 1))
 
@@ -171,15 +259,20 @@ class KinematicCharacterController:
         hit_any     = False
         best_norm   = None
 
+        floor_like_dot = math.cos(math.radians(self.cfg.slope_limit_deg))
+
         for h in heights:
             o = origin.copy(); o.z += h
             loc, n, _, dist = self._raycast_any(static_bvh, dynamic_map, o, dnorm, test_dist)
             if loc is None or n is None:
                 continue
 
-            # ignore floor-like surfaces
-            floor_like_dot = math.cos(math.radians(self.cfg.slope_limit_deg))
+            # Ignore floors (as before)
             if n.dot(up) >= floor_like_dot:
+                continue
+
+            # NEW: if the wall contact is within the step window, let step logic handle it
+            if self.on_ground and self._hit_below_step_window(loc.z, origin.z):
                 continue
 
             hit_any = True
@@ -190,158 +283,154 @@ class KinematicCharacterController:
 
         return (min_allowed, hit_any, best_norm)
 
-
-    def _forward_sweep_limit(self, static_bvh, dynamic_map, forward_xy: Vector, move_len: float):
+    def _estimate_step_height_ahead(self, static_bvh, dynamic_map, origin: Vector,
+                                    forward_xy: Vector, sample_forward: float, max_height: float):
         """
-        Forward pre-sweep using three vertical samples. We classify 'low bump' vs 'wall'
-        by comparing the low/mid hit distances. If only the low sample hits (or hits
-        much earlier than mid), we flag it as a curb rather than a full wall so the
-        step solver can do its job.
+        Radius-independent: probe center and ± fixed meter offsets, not ±k*radius.
+        Returns (rise, top_norm, top_loc) or (None,None,None).
         """
-        self._last_forward_low_bump = False
+        base_loc, base_norm, _, _ = self._raycast_down_any(
+            static_bvh, dynamic_map, origin, max(1.0, self.cfg.snap_down + max_height + 0.5)
+        )
+        if base_loc is None:
+            return (None, None, None)
 
-        if move_len <= 1e-6 or forward_xy.length <= 1e-6:
-            return (0.0, False, None)
+        f = Vector((forward_xy.x, forward_xy.y, 0.0))
+        if f.length <= 1e-6 or sample_forward <= 1e-6:
+            return (0.0, base_norm, origin)
+        f.normalize()
 
-        disp = Vector((forward_xy.x, forward_xy.y, 0.0)) * move_len
-        move_len = disp.length
-        dnorm = disp / move_len
+        right = Vector((f.y, -f.x, 0.0))  # XY 90° CW
 
-        origin = self.obj.location.copy()
-        up = Vector((0, 0, 1))
-        floor_like_dot = math.cos(math.radians(self.cfg.slope_limit_deg))
+        lateral_offsets = tuple(self._STEP_PROBE_OFFSETS_M)
+        ahead = max(sample_forward, float(self._STEP_PROBE_FORWARD_M))
 
-        # Height samples: low (curb sniff), mid, near-top
-        foot_h = max(0.03, min(0.08, 0.5 * self.cfg.radius))
-        heights = (foot_h, self.cfg.height * 0.5, self.cfg.height - 0.1)
+        best_rise = 1e9
+        best = (None, None, None)
 
-        # Sphere-sweep length (ray + radius reserve)
-        test_dist = move_len + self.cfg.radius + 0.05
-
-        # We allow the sweep to approach a touch closer than a strict radius.
-        # The capsule pushout that runs after integration still guarantees no penetration.
-        # This little slack keeps tiny lips from behaving like full walls.
-        contact_slack = 0.02  # ~2cm
-        contact_subtract = max(0.0, self.cfg.radius - contact_slack)
-
-        min_allowed = move_len
-        hit_any = False
-        best_norm = None
-
-        # For curb classification
-        low_hit = False
-        mid_hit = False
-        low_dist = None
-        mid_dist = None
-
-        for idx, h in enumerate(heights):
-            o = origin.copy(); o.z += h
-            loc, n, _, dist = self._raycast_any(static_bvh, dynamic_map, o, dnorm, test_dist)
-            if loc is None or n is None:
+        for off in lateral_offsets:
+            probe_xy = origin + f * ahead + right * off
+            top_loc, top_norm, _, _ = self._raycast_down_any(
+                static_bvh, dynamic_map, probe_xy, max_height + 1.0
+            )
+            if top_loc is None or top_norm is None:
                 continue
+            h = top_loc.z - base_loc.z
+            if h > 0.005 and h <= (self.cfg.step_height + 1.0e-3) and self._slope_ok(top_norm):
+                if h < best_rise:
+                    best_rise = h
+                    best = (h, top_norm, top_loc)
 
-            # Ignore floor-like hits (i.e., we're not trying to block on walkable slopes)
-            if n.dot(up) >= floor_like_dot:
-                continue
-
-            hit_any = True
-            allowed_here = max(0.0, dist - contact_subtract)
-            if allowed_here < min_allowed:
-                min_allowed = allowed_here
-                best_norm = n.normalized()
-
-            if idx == 0:      # low sample
-                low_hit = True
-                low_dist = dist
-            elif idx == 1:    # mid sample
-                mid_hit = True
-                mid_dist = dist
-
-        # Classify curb vs wall: if the low sample hits but the mid sample is
-        # either absent or much farther away, treat the obstacle as a small bump.
-        if hit_any and low_hit:
-            curb_gap = self.cfg.radius * 0.75  # how much farther mid must be to count as a curb
-            is_curb = (not mid_hit) or (mid_dist is None) or ((mid_dist - (low_dist or 0.0)) > curb_gap)
-            if is_curb:
-                self._last_forward_low_bump = True
-                # Ensure we never clamp motion to zero on a curb; give the step solver room to act.
-                min_allowed = max(min_allowed, min(0.10, self.cfg.radius * 0.35))
-
-        return (min_allowed, hit_any, best_norm)
+        return best
 
 
+    # --------- New: small helper that marches forward after lift ----------
+    def _march_over_lip(self, static_bvh, dynamic_map, forward: Vector, target_forward: float):
+        """
+        Try to move forward up to target_forward using small swept sub-steps.
+        Never exceeds the sweep allowance. Returns the total distance moved.
+        """
+        if forward.length <= self._EPS or target_forward <= self._EPS:
+            return 0.0
+
+        dnorm = Vector((forward.x, forward.y, 0.0)).normalized()
+        moved = 0.0
+
+        for _ in range(max(1, int(self._STEP_MARCH_ITERS))):
+            remaining = max(0.0, target_forward - moved)
+            if remaining <= self._EPS:
+                break
+
+            disp = dnorm * remaining
+            allowed, hit, _ = self._sweep_limit_3d(static_bvh, dynamic_map, disp)
+            if allowed <= self._EPS:
+                break
+
+            self.obj.location += dnorm * allowed
+            moved += allowed
+
+            # If we hit something early, don't force more this tick
+            if hit and allowed < (remaining - 1e-5):
+                break
+
+        return moved
+    
     def _try_step_up(self, dt, static_bvh, dynamic_map, forward: Vector, desired_len: float):
         """
-        Classic step offset (distance-aware version):
-        1) detect low obstacle at foot height, with free space near step height (mid)
-        2) ensure overhead clearance (no low ceiling)
-        3) lift by step_height
-        4) move horizontally (guarantee a tiny push across the lip)
-        5) drop down (snap)
+        Step-up (no key-release boost):
+        1) Only consider if this frame has meaningful horizontal intent
+        2) Measure rise ahead; must be > min_rise and <= step_height and top walkable
+        3) Lift with small overshoot if headroom allows
+        4) March forward (first: this tick’s budget; fallback: minimal lip-clear distance)
+        5) Drop to stable walkable ground; else revert
         """
-        if desired_len <= 1e-6 or forward.length <= 1e-6:
+        EPS = self._EPS
+
+        # 0) Basic gates
+        if desired_len <= EPS or forward.length <= EPS:
             return False
-        if self.cfg.step_height <= 1e-6:
+        if self.cfg.step_height <= EPS:
             return False
         if not self.on_ground:
             return False
 
+        # Ignore vanishingly small intent this tick (prevents one-tick hop after release)
+        min_intent = 0.015  # meters of forward intent this tick
+        if desired_len < min_intent:
+            return False
+
         origin = self.obj.location.copy()
 
-        # Samples
-        foot_h = max(0.03, min(0.08, 0.5 * self.cfg.radius))
-        mid_h  = min(self.cfg.height * 0.5, foot_h + self.cfg.step_height + 0.05)
-
-        # Robust look-ahead independent of speed
-        min_probe = max(self.cfg.radius * 1.5, 0.25)
-        test_dist = max(min_probe, desired_len + self.cfg.radius + 0.02)
-
-        # Low hit?
-        foot_o = origin.copy(); foot_o.z += foot_h
-        loc_low, _, _, dist_low = self._raycast_any(
-            static_bvh, dynamic_map, foot_o, Vector((forward.x, forward.y, 0.0)), test_dist
+        # 1) Measure rise ahead (by actual height diff)
+        sample_forward = float(self._STEP_PROBE_FORWARD_M)   # was 1.1R / 0.20
+        max_h = self.cfg.step_height + 0.05
+        h, top_norm, _ = self._estimate_step_height_ahead(
+            static_bvh, dynamic_map, origin, forward, sample_forward, max_h
         )
-        if loc_low is None:
-            return False  # nothing to step onto
-
-        # Mid must be clear "near the low hit". A hit far away shouldn't cancel the step.
-        mid_o = origin.copy(); mid_o.z += mid_h
-        loc_mid, _, _, dist_mid = self._raycast_any(
-            static_bvh, dynamic_map, mid_o, Vector((forward.x, forward.y, 0.0)), test_dist
-        )
-        if loc_mid is not None and dist_mid <= (dist_low + self.cfg.radius * 0.75):
-            # Mid-height is blocked right where the low is → real wall
+        if h is None or top_norm is None:
+            return False
+        # Require a real rise (> 5 mm) so flat/noise never triggers a step
+        if h <= 0.005:
+            return False
+        if h > self.cfg.step_height + 1.0e-3:
+            return False
+        if not self._slope_ok(top_norm):
             return False
 
-        # Overhead clearance for the lift
-        cap_top = origin.copy(); cap_top.z += self.cfg.height
-        up_clear = self._raycast_any(static_bvh, dynamic_map, cap_top, Vector((0, 0, 1)), self.cfg.step_height + 0.02)
-        if up_clear[0] is not None:
+        # 2) Headroom / ceiling clearance
+        lift = min(self.cfg.step_height, max(0.0, h)) + self._STEP_LIFT_OVERSHOOT
+        cap_top = origin + Vector((0, 0, self.cfg.height))
+        up_hit = self._raycast_any(static_bvh, dynamic_map, cap_top, Vector((0, 0, 1)), lift + 0.01)
+        if up_hit[0] is not None:
             return False
 
-        # 3) lift
+        # 3) Execute lift
         saved = origin.copy()
-        self.obj.location = saved + Vector((0, 0, self.cfg.step_height + 0.02))
+        self.obj.location = saved + Vector((0, 0, lift))
 
-        # 4) move horizontally after lifting
-        disp_after_lift = Vector((forward.x, forward.y, 0.0)) * desired_len
-        if disp_after_lift.length > 1e-6:
-            dnorm = disp_after_lift.normalized()
-        else:
-            dnorm = Vector((forward.x, forward.y, 0.0)).normalized() if forward.length > 1e-6 else Vector((0, 0, 0))
+        # 4) March forward
+        # 4a) Try the honest per-tick budget first
+        base_forward = max(0.0, desired_len)
+        moved = self._march_over_lip(static_bvh, dynamic_map, forward, base_forward)
 
-        # We still check for walls after the lift…
-        allowed_after_lift, _, _ = self._sweep_limit_3d(static_bvh, dynamic_map, disp_after_lift)
+        # --- Dynamic lip-clear: exact geometry, capped by remaining budget ---
+        # Only attempt if the top we measured was NOT a gentle slope (true step),
+        # and only if we didn’t already move far enough this tick.
+        up = Vector((0,0,1))
+        is_gentle_slope = top_norm.dot(up) >= math.cos(math.radians(30.0))  # ~≤ 30°
+        remaining_budget = max(0.0, base_forward - moved)
 
-        # …but we guarantee a minimal lip‑crossing push to clear the riser.
-        required_clear = self.cfg.radius + 0.03  # 3 cm safety over geometric radius
-        min_push = max(required_clear, self.cfg.step_forward_min, desired_len)
-        push_len = max(allowed_after_lift, min_push)
-        if push_len > 1e-6 and dnorm.length > 1e-6:
-            self.obj.location += dnorm * push_len
+        if (not is_gentle_slope) and remaining_budget > self._EPS:
+            # Compute the minimal extra distance needed to clear the riser plane
+            extra_needed = self._dynamic_lip_clear(static_bvh, dynamic_map, saved, forward)
+            if extra_needed > self._EPS:
+                extra = min(extra_needed, remaining_budget)  # NEVER exceed this tick’s budget
+                moved += self._march_over_lip(static_bvh, dynamic_map, forward, extra)
 
-        # 5) drop down to ground
-        loc, norm, gobj, _ = self._raycast_down_any(static_bvh, dynamic_map, self.obj.location, self.cfg.step_height + self.cfg.snap_down)
+        # 5) Drop down to stable, walkable ground
+        loc, norm, gobj, _ = self._raycast_down_any(
+            static_bvh, dynamic_map, self.obj.location, lift + self.cfg.snap_down
+        )
         if loc and norm and self._slope_ok(norm):
             self.obj.location.z = loc.z
             self.on_ground = True
@@ -354,43 +443,8 @@ class KinematicCharacterController:
         # Failed → revert
         self.obj.location = saved
         return False
-    def _micro_bump_step(self, static_bvh, dynamic_map, forward: Vector, move_len: float):
-        """Last-resort curb hop for tiny lips. Very small lift, nudge, then drop."""
-        if forward.length <= 1e-6:
-            return False
 
-        origin = self.obj.location.copy()
-        # Respect capsule height; keep this tiny.
-        lift = min(self.cfg.step_height * 0.5, 0.06)
 
-        # Overhead clearance
-        cap_top = origin + Vector((0, 0, self.cfg.height))
-        up_clear = self._raycast_any(static_bvh, dynamic_map, cap_top, Vector((0, 0, 1)), lift + 0.02)
-        if up_clear[0] is not None:
-            return False
-
-        self.obj.location = origin + Vector((0, 0, lift))
-
-        dnorm = forward.normalized()
-        min_push = max(self.cfg.radius + 0.03, self.cfg.step_forward_min, move_len)
-        self.obj.location += dnorm * min_push
-
-        loc, norm, gobj, _ = self._raycast_down_any(static_bvh, dynamic_map, self.obj.location, lift + self.cfg.snap_down)
-        if loc and norm and self._slope_ok(norm):
-            self.obj.location.z = loc.z
-            self.on_ground = True
-            self.ground_obj = gobj
-            self.ground_norm = norm
-            self._coyote = self.cfg.coyote_time
-            self.vel.z = min(self.vel.z, 0.0)
-            return True
-
-        # Revert if we didn’t find stable ground
-        self.obj.location = origin
-        return False
-    # --------------------
-    # Public stepping API
-    # --------------------
     def step(
         self,
         dt,
@@ -410,7 +464,7 @@ class KinematicCharacterController:
         self._coyote   = max(0.0, self._coyote - dt)
         self._jump_buf = max(0.0, self._jump_buf - dt)
 
-        # 3) Horizontal acceleration
+        # 3) Horizontal acceleration (strictly camera‑plane)
         cur_xy = Vector((self.vel.x, self.vel.y))
         accel  = self.cfg.accel_ground if self.on_ground else self.cfg.accel_air
         new_xy = self._accelerate(cur_xy, wish_dir_xy, target_speed, accel, dt)
@@ -420,7 +474,6 @@ class KinematicCharacterController:
         if not self.on_ground:
             self.vel.z += self.cfg.gravity * dt
         else:
-            # On walkable ground, kill downward velocity so gravity can't bleed into downhill slide
             self.vel.z = max(self.vel.z, 0.0)
 
         # 5) Moving platform carry velocity (v + ω×r), and yaw follow
@@ -454,46 +507,48 @@ class KinematicCharacterController:
                 self.obj.location.z = new_top_z - self.cfg.height
                 self.vel.z = 0.0
 
-        # 7) Forward sweep & optional step-up  (use tangent velocity on ground)
+        # 7) Forward sweep & optional step‑up (no slope steering)
         hvel = Vector((self.vel.x + carry.x, self.vel.y + carry.y, 0.0))
 
-        if self.on_ground and self.ground_norm is not None and hvel.length > 1e-8:
-            # Project direction to slope tangent but keep the original horizontal speed.
-            speed_xy = Vector((hvel.x, hvel.y)).length
-            hv3 = self._project_on_plane(Vector((hvel.x, hvel.y, 0.0)), self.ground_norm)
-            hv_xy = Vector((hv3.x, hv3.y))
-            if hv_xy.length > 1e-6:
-                hv_xy.normalize()
-                hv_xy *= speed_xy
-                hvel = Vector((hv_xy.x, hv_xy.y, 0.0))
+        # If we are on a too‑steep slope, remove only the uphill component; otherwise leave heading untouched.
+        if self.on_ground and self.ground_norm is not None and not self._slope_ok(self.ground_norm):
+            hv3 = Vector((hvel.x, hvel.y, 0.0))
+            cos_limit = math.cos(math.radians(self.cfg.slope_limit_deg))
+            hv3 = remove_steep_slope_component(hv3, self.ground_norm, max_slope_dot=cos_limit)
+            hvel = Vector((hv3.x, hv3.y, 0.0))
 
         move_len = hvel.length * dt
         forward  = hvel.normalized() if move_len > 1e-8 else Vector((0,0,0))
 
-        allowed_len, hit_wall, wall_norm = self._forward_sweep_limit(static_bvh, dynamic_map, forward, move_len) if move_len > 0 else (0.0, False, None)
+        # Unified clamp: one sweep that includes Z (via disp vector)
+        allowed_len, hit_any, _ = self._sweep_limit_3d(static_bvh, dynamic_map, forward * max(0.0, move_len))
 
+        # Always attempt step‑up when moving on ground; it’s cheap and makes ramps/slopes smooth without slope‑steering.
         did_step = False
-        if hit_wall and self.on_ground and forward.length > 1e-6:
+        if self.on_ground and forward.length > 1e-6:
             did_step = self._try_step_up(dt, static_bvh, dynamic_map, forward, move_len)
-            if (not did_step) and self._last_forward_low_bump:
-                # Tiny curb hop as a last resort
-                did_step = self._micro_bump_step(static_bvh, dynamic_map, forward, move_len)
 
-        # 8) Integrate position (horizontal then vertical)
+        # 8) Integrate if we didn't step
         if not did_step:
             if allowed_len > 0.0 and forward.length > 1e-6:
                 self.obj.location += forward * allowed_len
             self.obj.location.z += self.vel.z * dt
 
-        # 9) Robust capsule pushout (static + dynamic)
-        #    IMPORTANT: sample at [radius, mid_clamped, height - radius] (not foot_h),
-        #    otherwise the solver thinks we penetrate flat ground constantly.
+        # 9) Robust capsule pushout (static + dynamic), ignoring floors if grounded
         r = float(self.cfg.radius)
         H = float(self.cfg.height)
         mid = max(r, min(0.5 * H, H - r))
-        push_heights = (r, mid, H - r)
 
-        # Treat walkable floors specially to prevent slope creep.
+        # If we are trying to move horizontally on ground, raise the lowest push sample
+        # above the step window so risers don't shove us during step attempts.
+        if self.on_ground and forward.length > 1e-6:
+            step_band_top = float(self._STEP_FOOT_H_M) + float(self.cfg.step_height)
+            low_sample = max(r, step_band_top + 0.01)          # a hair above the band
+            mid_sample = max(mid, low_sample + 0.05)           # keep an upper sample
+            push_heights = (low_sample, mid_sample, H - r)
+        else:
+            push_heights = (r, mid, H - r)
+
         floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
         ignore_floor = (self.on_ground and self.vel.z <= 0.05)
 
@@ -522,7 +577,6 @@ class KinematicCharacterController:
 
         # 10) Grounding (do not mark grounded while ascending)
         was_grounded = self.on_ground
-
         loc, norm, gobj, dist = self._raycast_down_any(static_bvh, dynamic_map, self.obj.location, self.cfg.snap_down)
         supported = (loc is not None and norm is not None and self._slope_ok(norm))
 
@@ -538,6 +592,9 @@ class KinematicCharacterController:
             self.ground_obj = None
             if was_grounded:
                 self._coyote = self.cfg.coyote_time
+
+                
+
 
 
     def request_jump(self):
