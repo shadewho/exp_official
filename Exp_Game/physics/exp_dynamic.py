@@ -1,4 +1,3 @@
-# Exp_Game/physics/exp_dynamic.py
 import bpy
 import mathutils
 from mathutils import Vector
@@ -6,19 +5,18 @@ from .exp_bvh_local import LocalBVH
 
 def update_dynamic_meshes(modal_op):
     """
-    Distance-gated dynamic proxies:
-      • Only 'activate' a dynamic proxy when player is within pm.register_distance.
-      • Active proxies contribute to dynamic_bvh_map and platform velocities.
-      • Activation/deactivation prints fire on state change (not every frame).
-      • Summary print shows active-count when it changes.
+    Distance-gated dynamic proxies with evaluated transforms:
+      • Uses depsgraph-evaluated matrices (matches what the viewport draws).
+      • Active proxies contribute to dynamic_bvh_map and platform velocities/ω.
     """
     scene = bpy.context.scene
+    depsgraph = bpy.context.evaluated_depsgraph_get()
 
     # Caches / state
     if not hasattr(modal_op, "cached_local_bvhs"):
         modal_op.cached_local_bvhs = {}
     if not hasattr(modal_op, "_dyn_active_state"):
-        modal_op._dyn_active_state = {}   # {obj: bool}
+        modal_op._dyn_active_state = {}
     if not hasattr(modal_op, "platform_prev_positions"):
         modal_op.platform_prev_positions = {}
     if not hasattr(modal_op, "platform_prev_matrices"):
@@ -51,14 +49,16 @@ def update_dynamic_meshes(modal_op):
         if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
             continue
 
+        eval_obj = dyn_obj.evaluated_get(depsgraph)
+        cur_M = eval_obj.matrix_world.copy()
+
         # --- Distance gate ---
         dist = None
         active = True
         if pm.register_distance > 0.0 and player_loc is not None:
-            dist = (dyn_obj.matrix_world.translation - player_loc).length
+            dist = (cur_M.translation - player_loc).length
             active = (dist <= pm.register_distance)
 
-        # Print on activation state change (not every frame)
         prev_active = modal_op._dyn_active_state.get(dyn_obj)
         if prev_active is None or prev_active != active:
             dist_msg = "n/a" if dist is None else f"{dist:.2f}"
@@ -69,9 +69,8 @@ def update_dynamic_meshes(modal_op):
             modal_op._dyn_active_state[dyn_obj] = active
 
         if not active:
-            # Keep continuity for when it becomes active again
-            modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
-            modal_op.platform_prev_matrices[dyn_obj] = dyn_obj.matrix_world.copy()
+            modal_op.platform_prev_positions[dyn_obj] = cur_M.translation.copy()
+            modal_op.platform_prev_matrices[dyn_obj] = cur_M.copy()
             continue
 
         # --- ACTIVE PATH ---
@@ -83,17 +82,17 @@ def update_dynamic_meshes(modal_op):
             lbvh = LocalBVH(dyn_obj)
             modal_op.cached_local_bvhs[dyn_obj] = lbvh
 
-        # Rough radius for camera/aux checks
-        bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(corner) for corner in dyn_obj.bound_box]
+        # Bounding-sphere radius (world) from evaluated matrix
+        bbox_world = [cur_M @ mathutils.Vector(corner) for corner in dyn_obj.bound_box]
         center = sum(bbox_world, mathutils.Vector()) / 8.0
         rad = max((p - center).length for p in bbox_world)
 
         # Contribute to collisions only when active
         modal_op.dynamic_bvh_map[dyn_obj] = (lbvh, rad)
 
-        # Linear motion / velocity (only when active)
-        cur_pos = dyn_obj.matrix_world.translation.copy()
+        # Linear motion / velocity
         prev_pos = modal_op.platform_prev_positions.get(dyn_obj)
+        cur_pos  = cur_M.translation.copy()
         if prev_pos is not None:
             disp = cur_pos - prev_pos
             modal_op.platform_motion_map[dyn_obj] = disp
@@ -101,16 +100,14 @@ def update_dynamic_meshes(modal_op):
         modal_op.platform_prev_positions[dyn_obj] = cur_pos
 
         # Angular motion / ω (rad/s)
-        prev_M = modal_op.platform_prev_matrices.get(dyn_obj, dyn_obj.matrix_world.copy())
-        cur_M  = dyn_obj.matrix_world.copy()
+        prev_M = modal_op.platform_prev_matrices.get(dyn_obj, cur_M.copy())
         delta_M = cur_M @ prev_M.inverted()
-
         R = delta_M.to_3x3()
         R.normalize()
         dq = R.to_quaternion()
         modal_op.platform_delta_quat_map[dyn_obj] = dq
         modal_op.platform_delta_map[dyn_obj] = delta_M
-        modal_op.platform_prev_matrices[dyn_obj] = cur_M
+        modal_op.platform_prev_matrices[dyn_obj] = cur_M.copy()
 
         try:
             axis, angle = dq.to_axis_angle()
@@ -119,7 +116,6 @@ def update_dynamic_meshes(modal_op):
         omega = axis * (angle / frame_dt) if angle > 1e-9 else mathutils.Vector((0.0, 0.0, 0.0))
         modal_op.platform_ang_velocity_map[dyn_obj] = omega
 
-    # One small summary print when the count changes
     last = getattr(modal_op, "_dyn_active_count", None)
     if last is None or last != active_count:
         print(f"[DynProxy] Active dynamic proxies this frame: {active_count}")

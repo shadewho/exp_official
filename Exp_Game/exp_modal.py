@@ -425,6 +425,20 @@ class ExpModal(bpy.types.Operator):
             self.update_movement_and_gravity(context)  # will step only if due
             perf_mark(self, 'physics', t0)
 
+            # G) Camera update every frame (decoupled from physics)
+            t0 = perf_mark(self, 'camera')
+            update_view(
+                context,
+                self.target_object,
+                self.pitch,
+                self.yaw,
+                self.bvh_tree,
+                context.scene.orbit_distance,
+                context.scene.zoom_factor,
+                dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
+            )
+            perf_mark(self, 'camera', t0)
+
             # H) Interactions/UI/SFX (per frame)
             t0 = perf_mark(self, 'interact_ui_audio')
             check_interactions(context)
@@ -610,19 +624,7 @@ class ExpModal(bpy.types.Operator):
         self.z_velocity = self.physics_controller.vel.z
         self.is_grounded = self.physics_controller.on_ground
         self.grounded_platform = self.physics_controller.ground_obj
-
-        # Camera update at physics rate (30 Hz)
-        update_view(
-            context,
-            self.target_object,
-            self.pitch,
-            self.yaw,
-            self.bvh_tree,
-            context.scene.orbit_distance,
-            context.scene.zoom_factor,
-            dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
-        )
-
+        
         # Rotate character toward camera if moving
         self.smooth_rotate_towards_camera()
 

@@ -3,11 +3,10 @@ import math
 import mathutils
 from mathutils import Vector
 from .exp_raycastutils import raycast_closest_any
-
+from ..props_and_utils.exp_time import get_game_time
 # ===========================
-# Tunables you can tweak (no addon properties touched)
+# Tunables you can tweak
 # ===========================
-_FRUSTUM_RING_SAMPLES = 16     # legacy max ring rays (kept for compatibility)
 _FRUSTUM_RING_RADIUS  = 1.0    # ring radius in units of r_cam
 _PUSHOUT_ITERS        = 3      # tiny nearest-point pushout passes
 _LOS_BINARY_STEPS     = 10     # bsearch steps for nearest clear LoS
@@ -17,12 +16,6 @@ _LOS_EPS              = 1.0e-4
 # Ring is only used when the center ray reports a hit. This is enough because LoS and pushout
 # cover the other cases. You can lower this further if needed.
 _RING_SAMPLES_ON_HIT  = 8
-
-# Prefilter margins:
-#   - Rays: allow a little slack so we don't accidentally cull near‑misses.
-#   - Pushout: consider only dynamics within (camera radius + margin).
-_DYNAMIC_PREFILTER_MARGIN = 0.40   # meters
-_PUSHOUT_NEAR_MARGIN      = 0.60   # meters
 
 # Absolute minimum camera distance from anchor (meters)
 # Final minimum is: max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)
@@ -40,6 +33,100 @@ EXTRA_PULL_K       = 2.0       # plus 2× r_cam inward
 # If still blocked at the hard minimum, allow a very small peek upward
 MICRO_LEAN_UP_MAX              = 0.06   # ≤ 6 cm upward nudge
 MICRO_LEAN_UP_FRAC_OF_RADIUS   = 0.20   # or 20% of capsule radius
+
+
+
+# ------------------------------------------------------------
+# Camera temporal filters (outward-only rate-limit + occlusion latch)
+# ------------------------------------------------------------
+class _CamSmoother:
+    """
+    Outward-only rate limiter:
+      - Inward changes (obstruction) are immediate.
+      - Outward changes are capped at OUTWARD_RATE m/s.
+    """
+    __slots__ = ("last_allowed", "last_t")
+    OUTWARD_RATE = 10.0  # tune 6..14 m/s as desired
+
+    def __init__(self):
+        self.last_allowed = None
+        self.last_t = get_game_time()
+
+    def filter(self, target: float) -> float:
+        now = get_game_time()
+        dt = max(1e-6, now - self.last_t)
+        if self.last_allowed is None:
+            self.last_allowed = target
+        else:
+            if target >= self.last_allowed:
+                self.last_allowed = min(target, self.last_allowed + self.OUTWARD_RATE * dt)
+            else:
+                self.last_allowed = target  # immediate pull-in
+        self.last_t = now
+        return self.last_allowed
+
+
+class _CamLatch:
+    """
+    Occlusion Schmitt trigger:
+      - When an object blocks, we 'latch' that blocked distance.
+      - We hold it briefly and only release when there is a bit of extra clearance.
+    """
+    __slots__ = ("latched_obj", "latched_until", "latched_allowed")
+
+    # release needs at least this much extra clearance beyond the latched distance
+    RELEASE_PAD_MIN = 0.06   # meters
+    RELEASE_PAD_K   = 1.6    # × r_cam
+    HOLD_TIME       = 0.14   # seconds
+
+    def __init__(self):
+        self.latched_obj = None     # dynamic object or "__STATIC__"
+        self.latched_until = 0.0
+        self.latched_allowed = None
+
+    def filter(self, hit_obj_token, allowed_now: float, r_cam: float) -> float:
+        now = get_game_time()
+
+        # Acquire/refresh latch when blocked
+        if hit_obj_token is not None:
+            self.latched_obj = hit_obj_token
+            self.latched_allowed = allowed_now
+            self.latched_until = now + self.HOLD_TIME
+            return allowed_now
+
+        # No current hit: maybe keep holding the last latch a bit
+        if self.latched_obj is not None and self.latched_allowed is not None:
+            need_pad = max(self.RELEASE_PAD_MIN, self.RELEASE_PAD_K * r_cam)
+            if (now < self.latched_until) and (allowed_now < (self.latched_allowed + need_pad)):
+                # stay latched at the last blocked length
+                return self.latched_allowed
+            # release
+            self.latched_obj = None
+            self.latched_allowed = None
+            self.latched_until = 0.0
+
+        return allowed_now
+
+
+# per-character caches
+_SMOOTHERS = {}
+_LATCHES   = {}
+
+def _smooth_for(char_obj):
+    key = char_obj.name if char_obj else "__global__"
+    sm = _SMOOTHERS.get(key)
+    if sm is None:
+        sm = _CamSmoother()
+        _SMOOTHERS[key] = sm
+    return sm
+
+def _latch_for(char_obj):
+    key = char_obj.name if char_obj else "__global__"
+    lt = _LATCHES.get(key)
+    if lt is None:
+        lt = _CamLatch()
+        _LATCHES[key] = lt
+    return lt
 
 
 # -------------------------
@@ -71,27 +158,35 @@ def _build_basis(direction: Vector):
 # Low-cost dynamic prefilters
 # ------------------------
 
+_STATIC_TOKEN = "__STATIC__"
+
 def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist, r_cam):
     """
-    Returns nearest hit distance along 'direction' using:
-      1) a center ray,
-      2) only if center hits, a ring of offset rays (same accuracy for static & dynamic).
-    None => no hit within max_dist.
+    Returns (nearest_hit_distance, hit_obj_token) or (None, None).
+    hit_obj_token is either a dynamic object, or "__STATIC__" for static BVH.
+    We keep the center ray and then a compact ring when the center hits.
     """
     if direction.length <= 1e-9 or max_dist <= 1e-9:
-        return None
+        return (None, None)
 
     dnorm = direction.normalized()
 
-    # Center ray — use unified full check (static + all dynamic)
+    # Center ray
     hl, hn, ho, hd = raycast_closest_any(static_bvh, dynamic_bvh_map, origin, dnorm, max_dist)
     if hl is None:
-        return None
+        return (None, None)
 
-    best = hd
+    best_dist = hd
+    best_obj  = (_STATIC_TOKEN if ho is None else ho)
 
-    # If center hits, sample a ring to emulate camera "thickness" near edges
-    right, up = _build_basis(dnorm)
+    # Only ring-sample if center hits (keeps perf bounded)
+    right = direction.cross(Vector((0,0,1)))
+    if right.length <= 1e-9:
+        right = Vector((1,0,0))
+    else:
+        right.normalize()
+    up = right.cross(dnorm).normalized()
+
     ring_r = _FRUSTUM_RING_RADIUS * r_cam
     samples = max(1, int(_RING_SAMPLES_ON_HIT))
     step = (2.0 * math.pi) / float(samples)
@@ -101,10 +196,11 @@ def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist,
         offset = (math.cos(ang) * right + math.sin(ang) * up) * ring_r
         o = origin + offset
         h = raycast_closest_any(static_bvh, dynamic_bvh_map, o, dnorm, max_dist)
-        if h and h[0] is not None and h[3] < best:
-            best = h[3]
+        if h and h[0] is not None and h[3] < best_dist:
+            best_dist = h[3]
+            best_obj  = (_STATIC_TOKEN if h[2] is None else h[2])
 
-    return best
+    return (best_dist, best_obj)
 
 def _los_blocked(static_bvh, dynamic_bvh_map, a: Vector, b: Vector, r_cam: float):
     d = b - a
@@ -171,13 +267,11 @@ def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_ite
 # -------------------------
 def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor, dynamic_bvh_map=None):
     """
-    Ultra-close third-person camera that:
-      • Uses capsule-top as anchor
-      • Center ray + small adaptive ring near obstacles (fast)
-      • Binary-searches to nearest clear LoS (prefiltered dynamics)
-      • Adds a small inward safety buffer on hits
-      • Pushes out of thin geometry slightly (nearby dynamics only)
-      • Positions the viewport correctly (pivot=anchor, distance=allowed)
+    Third-person camera with dynamic occluders:
+      • Full static + dynamic occlusion
+      • Occlusion latch (Schmitt trigger) to kill edge-jitter on moving proxies
+      • Outward-only temporal smoothing
+      • Tiny pushout near thin geometry
     """
     if not obj:
         return
@@ -191,35 +285,29 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
     if direction.length > 1e-9:
         direction.normalize()
 
-    # Capsule-aware anchor (top of the capsule)
+    # Capsule-top anchor
     cp = context.scene.char_physics
     cap_h = getattr(cp, "height", 1.80)
     cap_r = getattr(cp, "radius", 0.22)
     anchor = obj.location + Vector((0.0, 0.0, cap_h))
 
-    # Desired boom length from UI inputs
-    desired_max = max(0.0, orbit_distance + zoom_factor)
-
-    # Camera "thickness" from near clip => r_cam
+    # Camera “thickness” from near clip
     clip_start = _get_view_clip_start(context, fallback=0.1)
     r_cam = max(R_CAM_FLOOR, clip_start * NEARCLIP_TO_RADIUS)
 
-    # Absolute minimum approach distance
-    min_cam = max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)
+    # Desired max boom from UI
+    desired_max = max(0.0, orbit_distance + zoom_factor)
+    min_cam     = max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)
 
-    # 1) Find earliest obstruction along the boom
-    hit_dist = _multi_ray_min_hit(bvh_tree, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
+    # 1) First hard obstruction along the boom
+    hit_dist, hit_token = _multi_ray_min_hit(bvh_tree, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
     if hit_dist is not None:
-        # distance to surface minus camera radius, plus our extra inward buffer
         base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
-        allowed = max(
-            min_cam,
-            base_allowed - (EXTRA_PULL_METERS + EXTRA_PULL_K * r_cam)
-        )
+        allowed      = max(min_cam, base_allowed - (EXTRA_PULL_METERS + EXTRA_PULL_K * r_cam))
     else:
-        allowed = desired_max
+        allowed      = desired_max
 
-    # 2) Ensure clear LoS from anchor to the chosen point (prefiltered dynamics)
+    # 2) Guarantee clear LoS to the chosen point (binary-search inward)
     candidate_cam = anchor + direction * allowed
     if _los_blocked(bvh_tree, dynamic_bvh_map, anchor, candidate_cam, r_cam):
         allowed = _binary_search_clear_los(
@@ -228,26 +316,23 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
         )
         candidate_cam = anchor + direction * allowed
 
-    # 3) If STILL blocked at the hard minimum, micro-lean upward a hair to peek
-    if _los_blocked(bvh_tree, dynamic_bvh_map, anchor, candidate_cam, r_cam) and allowed <= (min_cam + 1e-6):
-        up_nudge = min(MICRO_LEAN_UP_MAX, cap_r * MICRO_LEAN_UP_FRAC_OF_RADIUS)
-        candidate_cam = candidate_cam + Vector((0, 0, up_nudge))
-
-    # 4) Tiny nearest-point pushout to avoid embedding in thin geometry (near dynamics only)
+    # 3) Tiny nearest-point pushout to avoid embedding in thin geometry
     candidate_cam = _camera_sphere_pushout_any(bvh_tree, dynamic_bvh_map, candidate_cam, r_cam, max_iters=_PUSHOUT_ITERS)
 
-    # === Crucial: position the viewport correctly ===
-    # In Blender, the eye is:
-    #     eye = view_location - (rotated -Z) * view_distance
-    # We want the *pivot/target* at the anchor, and the eye to be at candidate_cam.
-    # With rotation such that rotated Z == direction, rotated -Z == -direction,
-    # setting view_distance = allowed yields eye = anchor + direction*allowed.
+    # 4) Latch + smoothing (order matters!)
+    #    - Latch applies to the allowed length (based on the *hit* identity from step 1)
+    #    - Smoother applies to the post-pushout position to keep visuals steady.
+    allowed_after_push = (candidate_cam - anchor).length
+    latched_allowed = _latch_for(obj).filter(hit_token, max(min_cam, min(allowed_after_push, desired_max)), r_cam)
+    final_allowed   = _smooth_for(obj).filter(latched_allowed)
+
+    # === Apply to the viewport ===
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':
             rv3d = area.spaces.active.region_3d
             rv3d.view_location = anchor
             rv3d.view_rotation = direction.to_track_quat('Z', 'Y')
-            rv3d.view_distance = allowed
+            rv3d.view_distance = final_allowed
 
 
 def shortest_angle_diff(current, target):

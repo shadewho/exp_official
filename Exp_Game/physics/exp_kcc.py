@@ -1,9 +1,27 @@
 #Exploratory/Exp_Game/physics/exp_kcc.py
-#sick
-#speed up still an issue
-#capsules collisions are very weak (jump through box)
-#good
-#version (ish)
+#removed
+#march over lip. never want to add forward velocity.
+
+#still poor uphill slopes or any steep angles. i know large capsules solve the collision issue
+#if capsule goes up it solves steep issue but then steps dont work. they need to work together
+
+"""
+-changes to this file are fragile and must be tested thoroughly. 
+-test steep slopes, mesh collisions at many angles, and steps. 
+
+-many of the physics functions are tied closely with the stepping logic,
+test small steps large steps, sprinting and running etc.
+
+-steps are handled by boosting the character upward while maintaining
+forward velocity
+
+-steps are not detected by the capsule radius, but rather a single point tied to the capsule
+
+-steps are prone to capsule conflict, make sure that a wide capsule does not block the
+registration of steps in any of the slope logic or other traverse code. ie dont let a wall 
+collisions or steep slope interfere with steps under the step height value.
+
+"""
 import math
 import mathutils
 from mathutils import Vector
@@ -327,37 +345,61 @@ class KinematicCharacterController:
 
         return best
 
-
-    # --------- New: small helper that marches forward after lift ----------
-    def _march_over_lip(self, static_bvh, dynamic_map, forward: Vector, target_forward: float):
+    def _steep_guard_block(self, static_bvh, dynamic_map, origin: Vector, forward_xy: Vector) -> Vector:
         """
-        Try to move forward up to target_forward using small swept sub-steps.
-        Never exceeds the sweep allowance. Returns the total distance moved.
+        Conservative pre-sweep guard that prevents tunneling into steep faces
+        inside the step window *only when no real step is possible*.
+
+        Returns: projected XY direction (same length or shorter).
         """
-        if forward.length <= self._EPS or target_forward <= self._EPS:
-            return 0.0
+        EPS = 1.0e-6
+        if forward_xy.length <= EPS:
+            return forward_xy
 
-        dnorm = Vector((forward.x, forward.y, 0.0)).normalized()
-        moved = 0.0
+        f = Vector((forward_xy.x, forward_xy.y, 0.0)).normalized()
+        up = Vector((0,0,1))
+        floor_dot = math.cos(math.radians(self.cfg.slope_limit_deg))
 
-        for _ in range(max(1, int(self._STEP_MARCH_ITERS))):
-            remaining = max(0.0, target_forward - moved)
-            if remaining <= self._EPS:
-                break
+        # 1) Is a true step actually possible? (walkable top + genuine riser)
+        sample_forward = float(self._STEP_PROBE_FORWARD_M)
+        max_h = self.cfg.step_height + 0.05
+        step_res = self._estimate_step_height_ahead(static_bvh, dynamic_map, origin, f, sample_forward, max_h)
+        has_walkable_top = bool(step_res and step_res[0] is not None and step_res[1] is not None and self._slope_ok(step_res[1]))
+        has_riser = self._dynamic_lip_clear(static_bvh, dynamic_map, origin, f) > 1.0e-4
+        step_possible = (has_walkable_top and has_riser)
 
-            disp = dnorm * remaining
-            allowed, hit, _ = self._sweep_limit_3d(static_bvh, dynamic_map, disp)
-            if allowed <= self._EPS:
-                break
+        if step_possible:
+            # Do not interfere with step logic.
+            return forward_xy
 
-            self.obj.location += dnorm * allowed
-            moved += allowed
+        # 2) Probe a short distance ahead at foot height to detect near-vertical face
+        foot_h = float(self._STEP_FOOT_H_M)
+        o = origin.copy(); o.z += foot_h
 
-            # If we hit something early, don't force more this tick
-            if hit and allowed < (remaining - 1e-5):
-                break
+        # Short reach ~ capsule radius; enough to catch faces in the step window
+        reach = max(0.10, self.cfg.radius * 1.25)
+        loc, n, _, dist = self._raycast_any(static_bvh, dynamic_map, o, f, reach)
+        if loc is None or n is None:
+            return forward_xy
 
-        return moved
+        # Ignore floor-like contacts; we only care about steep faces
+        if n.dot(up) >= floor_dot:
+            return forward_xy
+
+        # If the contact is actually within the step window heights, treat as "wall"
+        if self._hit_below_step_window(loc.z, origin.z):
+            # Remove the into-wall component so we can't advance into the face this tick.
+            v = Vector((forward_xy.x, forward_xy.y, 0.0))
+            into = v.dot(n)
+            if into > 0.0:
+                v = v - n * into
+                if v.length > EPS:
+                    v.normalize()
+                    return v
+                else:
+                    return Vector((0.0, 0.0, 0.0))
+
+        return forward_xy
     
     def _try_step_up(self, dt, static_bvh, dynamic_map, forward: Vector, desired_len: float):
         """
@@ -435,9 +477,6 @@ class KinematicCharacterController:
             self.ground_norm = norm
             self._coyote = self.cfg.coyote_time
             self.vel.z = min(self.vel.z, 0.0)
-
-            # ── NEW: carry a small forward nudge over the lip so movement doesn't stall ──
-            self._march_over_lip(static_bvh, dynamic_map, forward, target_forward=desired_len)
             return True
 
         # Failed → revert to original state
@@ -596,8 +635,8 @@ class KinematicCharacterController:
                 static_bvh, self.obj,
                 radius=self.cfg.radius,
                 heights=push_heights,
-                max_iterations=4,
-                push_strength=0.9,
+                max_iterations=3,
+                push_strength=0.6,
                 floor_cos_limit=floor_cos,
                 ignore_floor_contacts=ignore_floor,
             )
@@ -609,7 +648,7 @@ class KinematicCharacterController:
                     radius=self.cfg.radius,
                     heights=push_heights,
                     max_iterations=3,
-                    push_strength=0.9,
+                    push_strength=0.6,
                     floor_cos_limit=floor_cos,
                     ignore_floor_contacts=ignore_floor,
                 )
