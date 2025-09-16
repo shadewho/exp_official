@@ -1020,7 +1020,11 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        p = context.scene.char_physics
+        scene = context.scene
+        p = scene.char_physics
+        if p is None:
+            layout.label(text="Character physics not initialized")
+            return
 
         # --- Collider ---
         box = layout.box()
@@ -1029,12 +1033,15 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row = col.row(align=True)
         row.prop(p, "radius")
         row.prop(p, "height")
-        col.separator()
+
+        # --- Grounding & Steps ---
+        box = layout.box()
+        col = box.column(align=True)
         col.label(text="Grounding & Steps", icon='TRIA_DOWN_BAR')
+        col.prop(p, "slope_limit_deg")
         row = col.row(align=True)
-        row.prop(p, "slope_limit_deg")
         row.prop(p, "step_height")
-        col.prop(p, "snap_down")
+        row.prop(p, "snap_down")
 
         # --- Movement ---
         box = layout.box()
@@ -1056,6 +1063,7 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "jump_speed")
         row.prop(p, "coyote_time")
         col.prop(p, "jump_buffer")
+
 
 
 
