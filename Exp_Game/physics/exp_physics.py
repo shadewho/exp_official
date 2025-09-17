@@ -1,4 +1,4 @@
-# exp_physics.py
+# Exploratory/physics/exp_physics.py
 from mathutils import Vector
 
 def capsule_collision_resolve(
@@ -108,17 +108,35 @@ def capsule_collision_resolve(
 
 def remove_steep_slope_component(move_dir, slope_normal, max_slope_dot=0.7):
     """
-    If slope is too steep => dot( slope_normal, (0,0,1) ) < max_slope_dot => remove uphill portion.
+    When the slope is too steep (dot(up, n) < max_slope_dot), remove ONLY the
+    uphill component *along the plane* from move_dir. This blocks climbing but
+    still allows cross-slope movement.
 
-    e.g., max_slope_dot=0.6 => ~53°, 0.7 => ~45°, 0.8 => ~36°, etc.
+    move_dir: Vector (XYZ)
+    slope_normal: contact normal (unit or not; normalized here)
+    max_slope_dot: cos(max_walkable_angle)
     """
-    up = Vector((0,0,1))
-    slope_dot = slope_normal.dot(up)
-    if slope_dot < max_slope_dot:
-        # remove uphill portion
-        uphill_dot = move_dir.normalized().dot(slope_normal)
-        if uphill_dot > 0:
-            remove_amt = uphill_dot * move_dir.length
-            remove_vec = slope_normal * remove_amt
-            move_dir -= remove_vec
+    up = Vector((0, 0, 1))
+    n = slope_normal.normalized()
+
+    # Steep if floor-likeness is below the limit (strict, no epsilons)
+    if n.dot(up) >= max_slope_dot:
+        return move_dir
+
+    # "Uphill along the plane" = the projection of world up onto the plane
+    uphill = up - n * up.dot(n)  # lies in the plane, points uphill
+    if uphill.length <= 1.0e-9:
+        return move_dir
+    uphill.normalize()
+
+    # Project intended motion into the plane, then zero its uphill component
+    m_plane = move_dir - n * move_dir.dot(n)
+    uphill_amt = m_plane.dot(uphill)
+    if uphill_amt > 0.0:
+        m_plane -= uphill * uphill_amt
+
+        # Keep any component that was orthogonal to the plane (into air/ground)
+        m_normal = n * move_dir.dot(n)
+        return m_plane + m_normal
+
     return move_dir
