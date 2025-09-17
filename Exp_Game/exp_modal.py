@@ -114,6 +114,9 @@ class ExpModal(bpy.types.Operator):
 
     # Keep track of pressed keys
     keys_pressed = set()
+    _press_seq: int = 0
+    _axis_last = {'x': None, 'y': None}          # selected key per axis
+    _axis_candidates = {'x': {}, 'y': {}}        # held keys → press order
 
     # Timer handle for the modal operator
     _timer = None
@@ -352,6 +355,10 @@ class ExpModal(bpy.types.Operator):
 
         # 11) Clear any previously pressed keys
         self.keys_pressed.clear()
+        self._press_seq = 0
+        self._axis_last = {'x': None, 'y': None}
+        self._axis_candidates = {'x': {}, 'y': {}}
+
         
         # Live performance overlay helper
         init_live_performance(self)
@@ -609,10 +616,11 @@ class ExpModal(bpy.types.Operator):
 
         # One step at constant dt (independent of time_scale)
         self.physics_controller.try_consume_jump()
+        resolved_keys = self._resolved_move_keys()
         self.physics_controller.step(
             dt=self.physics_dt,
             prefs=prefs,
-            keys_pressed=self.keys_pressed,
+            keys_pressed=resolved_keys,
             camera_yaw=self.yaw,
             static_bvh=self.bvh_tree,
             dynamic_map=getattr(self, "dynamic_bvh_map", None),
@@ -677,11 +685,19 @@ class ExpModal(bpy.types.Operator):
             elif event.value == 'RELEASE':
                 self.jump_key_released = True
 
-        # 6) Maintain keys_pressed set for animations & movement
+        # 6) Maintain keys_pressed set AND last-pressed-per-axis
         if event.value == 'PRESS':
             self.keys_pressed.add(event.type)
+
+            ax = self._axis_of_key(event.type)
+            if ax:
+                self._press_seq += 1
+                self._axis_candidates[ax][event.type] = self._press_seq
+                self._axis_last[ax] = event.type  # last-pressed wins on that axis
+
         elif event.value == 'RELEASE':
             self.keys_pressed.discard(event.type)
+            self._update_axis_resolution_on_release(event.type)
 
     def handle_jump(self, event):
         """Manage jump start, cooldown, etc."""
@@ -715,20 +731,18 @@ class ExpModal(bpy.types.Operator):
         if not self.target_object:
             return
 
-        # Only rotate if movement keys are pressed.
         pressed_keys = {
             self.pref_forward_key,
             self.pref_backward_key,
             self.pref_left_key,
             self.pref_right_key,
         }
-        actual_pressed = self.keys_pressed.intersection(pressed_keys)
+        actual_pressed = self._resolved_move_keys().intersection(pressed_keys)
         if not actual_pressed:
             return
 
         desired_yaw = self.determine_desired_yaw(actual_pressed)
         current_yaw = self.target_object.rotation_euler.z
-        # Use the helper to get the shortest difference.
         yaw_diff = shortest_angle_diff(current_yaw, desired_yaw)
         if abs(yaw_diff) > 0.001:
             self.target_object.rotation_euler.z += yaw_diff * self.rotation_smoothness
@@ -761,3 +775,37 @@ class ExpModal(bpy.types.Operator):
 
         # fallback
         return base_yaw
+    
+    def _axis_of_key(self, key):
+        if key in (self.pref_left_key, self.pref_right_key):  return 'x'
+        if key in (self.pref_forward_key, self.pref_backward_key): return 'y'
+        return None
+
+    def _resolved_move_keys(self):
+        """
+        Return at most one X key and one Y key (last-pressed on each axis),
+        plus run key if held.
+        """
+        resolved = set()
+        kx = self._axis_last.get('x')
+        if kx and (kx in self.keys_pressed):
+            resolved.add(kx)
+        ky = self._axis_last.get('y')
+        if ky and (ky in self.keys_pressed):
+            resolved.add(ky)
+        if self.pref_run_key in self.keys_pressed:
+            resolved.add(self.pref_run_key)
+        return resolved
+
+    def _update_axis_resolution_on_release(self, key):
+        ax = self._axis_of_key(key)
+        if not ax:
+            return
+        # drop from candidates
+        self._axis_candidates[ax].pop(key, None)
+        # if it was selected, pick newest remaining on that axis
+        if self._axis_last.get(ax) == key:
+            if self._axis_candidates[ax]:
+                self._axis_last[ax] = max(self._axis_candidates[ax], key=self._axis_candidates[ax].get)
+            else:
+                self._axis_last[ax] = None

@@ -1,6 +1,9 @@
 # Exploratory/physics/exp_physics.py
 from mathutils import Vector
 
+# Exploratory/physics/exp_physics.py
+from mathutils import Vector
+
 def capsule_collision_resolve(
     bvh_like,
     obj,
@@ -15,15 +18,11 @@ def capsule_collision_resolve(
     ignore_floor_contacts=False,   # if True, skip walkable-floor contacts
     # Capsule-based step band filtering (relative height from base)
     ignore_contacts_below_height=None,     # e.g., radius + step_height
-    ignore_below_only_if_floor_like=True,  # NEW: only skip if walkable floor
+    ignore_below_only_if_floor_like=True,
 ):
     """
     Softer capsule pushout with capsule-based step-band filtering.
-      • Samples nearest at several axial heights.
-      • Skips walkable floors when requested to avoid downhill creep.
-      • Skips contacts inside the step band ONLY if they are walkable floors.
-        Steep/wall contacts are NEVER skipped, preventing bleed-through.
-    Accepts either a BVHTree or a LocalBVH (must provide .ray_cast and .find_nearest).
+    Treat faces above the slope limit as walls: their correction is horizontal only.
     """
     if not bvh_like or not obj:
         return
@@ -43,14 +42,13 @@ def capsule_collision_resolve(
     bvh = bvh_like if hasattr(bvh_like, "find_nearest") else _BVHWrapper(bvh_like)
 
     up  = Vector((0, 0, 1))
-    eps = 1.0e-4
+    eps = 1.0e-4  # not used to change slope decisions; just avoids zero-length math
 
     if max_push_per_iter is None:
         max_push_per_iter = max(0.10, float(radius) * 0.35)
 
     for _ in range(max(1, int(max_iterations))):
         base = obj.location.copy()
-
         corr = Vector((0.0, 0.0, 0.0))
         any_penetration = False
 
@@ -64,23 +62,18 @@ def capsule_collision_resolve(
             if (c - co).dot(n) < 0.0:
                 n = -n
 
-            # Floor-like classification once
+            # Walkable classification (exact)
             is_floor_like = False
             if floor_cos_limit is not None:
-                try:
-                    is_floor_like = (n.dot(up) >= float(floor_cos_limit))
-                except Exception:
-                    is_floor_like = False
+                is_floor_like = (n.dot(up) >= float(floor_cos_limit))
 
-            # Capsule-based step band filtering:
+            # Step-band filtering (do NOT skip steep; only skip walkable if requested)
             if ignore_contacts_below_height is not None:
-                if (co.z - base.z) <= (float(ignore_contacts_below_height) + eps):
-                    # Skip only if it's a walkable floor and the caller requested floor-only.
+                if (co.z - base.z) <= float(ignore_contacts_below_height):
                     if ignore_below_only_if_floor_like and is_floor_like:
                         continue
-                    # If not floor-like (i.e., steep), DO NOT skip. Steep must always block.
 
-            # Optional global walkable-floor skip (e.g., while grounded)
+            # Global walkable-floor skip (e.g., while grounded) — again, never for steep
             if ignore_floor_contacts and is_floor_like:
                 continue
 
@@ -88,12 +81,21 @@ def capsule_collision_resolve(
             if pen <= eps:
                 continue
 
+            # --- NEW: treat too-steep faces as walls (horizontal push only)
+            n_for_push = n
+            if (floor_cos_limit is not None) and (not is_floor_like):
+                n_for_push = Vector((n.x, n.y, 0.0))
+                if n_for_push.length <= eps:
+                    # Purely vertical normal shouldn't happen here; skip if it does
+                    continue
+                n_for_push.normalize()
+
             any_penetration = True
             if average_contacts:
-                corr += n * pen
+                corr += n_for_push * pen
             else:
                 step = min(pen * float(push_strength), float(max_push_per_iter))
-                obj.location += n * (step + eps)
+                obj.location += n_for_push * (step + eps)
 
         if not any_penetration:
             break
@@ -106,37 +108,34 @@ def capsule_collision_resolve(
             else:
                 break
 
+
 def remove_steep_slope_component(move_dir, slope_normal, max_slope_dot=0.7):
     """
-    When the slope is too steep (dot(up, n) < max_slope_dot), remove ONLY the
-    uphill component *along the plane* from move_dir. This blocks climbing but
-    still allows cross-slope movement.
-
-    move_dir: Vector (XYZ)
-    slope_normal: contact normal (unit or not; normalized here)
-    max_slope_dot: cos(max_walkable_angle)
+    XY-only uphill clamp for steep slopes.
+    - If the slope is above the limit, remove only the uphill component from the XY motion.
+    - Returns a vector with z = 0.0.
     """
     up = Vector((0, 0, 1))
-    n = slope_normal.normalized()
+    n = slope_normal
+    if n.length <= 1.0e-12:
+        return Vector((move_dir.x, move_dir.y, 0.0))
+    n = n.normalized()
 
-    # Steep if floor-likeness is below the limit (strict, no epsilons)
-    if n.dot(up) >= max_slope_dot:
-        return move_dir
+    # If walkable (angle <= limit), leave motion unchanged (exact comparison)
+    if n.dot(up) >= float(max_slope_dot):
+        return Vector((move_dir.x, move_dir.y, 0.0))
 
-    # "Uphill along the plane" = the projection of world up onto the plane
-    uphill = up - n * up.dot(n)  # lies in the plane, points uphill
-    if uphill.length <= 1.0e-9:
-        return move_dir
-    uphill.normalize()
+    # In-plane uphill direction and its XY
+    uphill = up - n * up.dot(n)     # lies in the plane, points uphill
+    g_xy = Vector((uphill.x, uphill.y))
+    if g_xy.length <= 1.0e-12:
+        return Vector((move_dir.x, move_dir.y, 0.0))
+    g_xy.normalize()
 
-    # Project intended motion into the plane, then zero its uphill component
-    m_plane = move_dir - n * move_dir.dot(n)
-    uphill_amt = m_plane.dot(uphill)
-    if uphill_amt > 0.0:
-        m_plane -= uphill * uphill_amt
+    m_xy = Vector((move_dir.x, move_dir.y))
+    comp = m_xy.dot(g_xy)
+    if comp > 0.0:
+        m_xy -= g_xy * comp  # remove only the uphill component
 
-        # Keep any component that was orthogonal to the plane (into air/ground)
-        m_normal = n * move_dir.dot(n)
-        return m_plane + m_normal
+    return Vector((m_xy.x, m_xy.y, 0.0))
 
-    return move_dir

@@ -2,9 +2,8 @@
 
 #steps and bumps great
 #slopes need work
-#
-#
-#
+##
+##
 import math
 import mathutils
 from mathutils import Vector
@@ -51,7 +50,7 @@ class KinematicCharacterController:
         self.on_walkable = True
         self._coyote = 0.0
         self._jump_buf = 0.0
-
+    
     # --------------------
     # Input & helpers
     # --------------------
@@ -238,6 +237,7 @@ class KinematicCharacterController:
         )
         if hitL is None:
             return False
+        
         # Only step if what we hit is a steep barrier (not walkable)
         if nL.dot(up) >= floor_cos:
             return False
@@ -315,10 +315,14 @@ class KinematicCharacterController:
                 g = Vector((0, 0, self.cfg.gravity))
                 n = self.ground_norm if self.ground_norm is not None else up
                 g_tan = g - n * g.dot(n)  # gravity along the plane
-                # Push along plane (includes a small negative z if the plane dips)
+
+                # --- Stronger slide: simple multiplier
+                g_tan *= 12.0
+
                 self.vel.x += g_tan.x * dt
                 self.vel.y += g_tan.y * dt
                 self.vel.z = min(0.0, self.vel.z + g_tan.z * dt)
+
 
         # 5) Moving platform carry velocity (v + ω×r), and yaw follow
         carry = Vector((0, 0, 0))
@@ -386,7 +390,15 @@ class KinematicCharacterController:
                     self.vel.x, self.vel.y = hvel.x - carry.x, hvel.y - carry.y
 
                 rem = max(0.0, move_len - moved)
+                # Tangent slide direction
                 slide_dir = forward - hit_norm * forward.dot(hit_norm)
+
+                # -- if the surface is above the slope limit, slide only in XY (treat as a wall)
+                up = Vector((0, 0, 1))
+                floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
+                if hit_norm.dot(up) < floor_cos:
+                    slide_dir = Vector((slide_dir.x, slide_dir.y, 0.0))
+
                 if slide_dir.length > 1.0e-6 and rem > 0.0:
                     slide_dir.normalize()
                     allow2, _, _ = self._sweep_limit_3d(static_bvh, dynamic_map, slide_dir * rem)
