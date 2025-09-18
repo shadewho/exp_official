@@ -534,9 +534,15 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             ("LOW", "Low", "Optimized for performance with minimal visual quality"),
             ("MEDIUM", "Medium", "Balanced quality and performance"),
             ("HIGH", "High", "Full quality settings (default)"),
-            ("CUSTOM", "Custom", "Use custom performance settings")
         ],
         default="HIGH"
+    )
+
+    # --- Shadows toggle for gameplay ---
+    enable_shadows_in_game: bpy.props.BoolProperty(
+        name="Enable Shadows (Gameplay)",
+        description="Toggle Eevee Next shadows ON/OFF when the game starts",
+        default=True
     )
 
     # ----------------------------------------------------------------
@@ -578,6 +584,9 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         layout.separator()
         layout.label(text="Performance Settings:")
         layout.prop(self, "performance_level")
+
+        # NEW: Shadows on/off
+        layout.prop(self, "enable_shadows_in_game")
 
         #--------------------
         #MASTER AUDIO SETTINGS

@@ -14,7 +14,7 @@ from .startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene,
                             revert_to_original_workspace, revert_to_original_scene,
-                            ensure_timeline_at_zero, ensure_object_mode)  
+                            ensure_timeline_at_zero, ensure_object_mode, clear_all_exp_custom_strips)  
 from .animations.exp_custom_animations import update_all_custom_managers
 from .interactions.exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
 from .reactions.exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
@@ -190,7 +190,7 @@ class ExpModal(bpy.types.Operator):
         record_user_settings(scene)
         capture_scene_state(self,context)
 
-        performance_level = addon_prefs.performance_level  # e.g., "LOW", "MEDIUM", "HIGH", "CUSTOM"
+        performance_level = addon_prefs.performance_level  # e.g., "LOW", "MEDIUM", "HIGH"
         apply_performance_settings(scene, performance_level)
 
         ensure_timeline_at_zero()
@@ -205,6 +205,12 @@ class ExpModal(bpy.types.Operator):
             self.report({'ERROR'}, "No armature assigned to scene.target_armature! Cancelling game.")
             return {'CANCELLED'}
         
+        #--clear custom action strips--#
+        if not self.launched_from_ui:
+            try:
+                clear_all_exp_custom_strips()
+            except Exception as e:
+                print(f"[WARN] clear_all_exp_custom_strips failed: {e}")
 
         # A) Clean out old audio temp (skip when audio-lock is ON)
         if not context.scene.character_audio_lock:

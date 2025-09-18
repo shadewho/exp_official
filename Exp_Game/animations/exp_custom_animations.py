@@ -41,6 +41,36 @@ def update_all_custom_managers(delta_time):
     for mgr in _custom_managers.values():
         mgr.scrub_time_update(delta_time)
 
+def stop_custom_actions_and_rewind_strips():
+    """
+    Stop all queued/active custom actions (no deletion), and rewind all NLA
+    strips on 'exp_custom' tracks to [0..action_length].
+    """
+
+    # A) Stop playback in all per-object managers (no strip deletion)
+    for mgr in _custom_managers.values():
+        # halt all queued/active strips for this manager
+        mgr.active_strips.clear()
+
+    # B) Rewind every 'exp_custom' strip across the file
+    for obj in bpy.data.objects:
+        ad = getattr(obj, "animation_data", None)
+        if not ad:
+            continue
+        tr = ad.nla_tracks.get("exp_custom")
+        if not tr:
+            continue
+        for s in tr.strips:
+            act = s.action
+            if not act:
+                # nothing to size against; just zero out start/end
+                s.frame_start = 0.0
+                s.frame_end   = 0.0
+                continue
+            a0, a1 = act.frame_range
+            a_len  = max(0.0, a1 - a0)
+            s.frame_start = 0.0
+            s.frame_end   = a_len
 
 class CustomActionManager:
     """

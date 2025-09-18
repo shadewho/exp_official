@@ -50,6 +50,7 @@ class KinematicCharacterController:
         self.on_walkable = True
         self._coyote = 0.0
         self._jump_buf = 0.0
+        
     
     # --------------------
     # Input & helpers
@@ -158,6 +159,7 @@ class KinematicCharacterController:
                         best = (hit[0], hit[1], obj, dist)
 
         return best if best[0] is not None else (None, None, None, None)
+
 
     def _sweep_limit_3d(self, static_bvh, dynamic_map, disp: Vector):
         """

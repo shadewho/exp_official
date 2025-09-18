@@ -114,9 +114,11 @@ def record_user_settings(scene):
         original_settings["shadow_ray_count"] = scene.eevee.shadow_ray_count
         original_settings["shadow_step_count"] = scene.eevee.shadow_step_count
         original_settings["shadow_resolution_scale"] = scene.eevee.shadow_resolution_scale
+        original_settings["use_shadows"] = getattr(scene.eevee, "use_shadows", True)
     # Record 3D Viewport lens settings for each VIEW_3D area.
     # Convert the pointer to a string so that it can be used as a key.
     original_settings["viewport_lens"] = {}
+    original_settings["viewport_show_shadows"] = {}
     for area in bpy.context.window.screen.areas:
         if area.type == 'VIEW_3D':
             key = str(area.as_pointer())
@@ -126,17 +128,18 @@ def record_user_settings(scene):
 def apply_performance_settings(scene, performance_level):
     """
     Applies performance settings based on the given performance_level.
-    If performance_level is "CUSTOM", this function does nothing.
     Otherwise, it forces the render engine to Eevee Next,
     applies the desired Eevee settings, sets the viewport shading to 'RENDERED',
     and sets the viewport lens to 55mm.
     """
     # If the user chose CUSTOM, do nothing.
-    if performance_level == "CUSTOM":
-        return
+    if performance_level not in {"LOW", "MEDIUM", "HIGH"}:
+        performance_level = "LOW"
 
     # Force the render engine to Eevee Next.
     scene.render.engine = "BLENDER_EEVEE_NEXT"
+
+    prefs = bpy.context.preferences.addons["Exploratory"].preferences
 
     if hasattr(scene, "eevee"):
         # Force the two Eevee settings regardless of performance level:
@@ -145,6 +148,9 @@ def apply_performance_settings(scene, performance_level):
         scene.eevee.use_raytracing = False
         scene.eevee.shadow_ray_count = 1
         scene.eevee.shadow_step_count = 1
+
+    if hasattr(scene.eevee, "use_shadows"):
+        scene.eevee.use_shadows = bool(prefs.enable_shadows_in_game)
 
         # Adjust TAA samples based on performance level:
         if performance_level == "LOW":
@@ -178,6 +184,8 @@ def apply_performance_settings(scene, performance_level):
         "shadow_step_count": scene.eevee.shadow_step_count if hasattr(scene, "eevee") else "N/A",
         "shadow_resolution_scale": scene.eevee.shadow_resolution_scale if hasattr(scene, "eevee") else "N/A",
         "viewport_lens": 55,
+        "use_shadows": (scene.eevee.use_shadows if hasattr(scene, "eevee") and hasattr(scene.eevee, "use_shadows") else "N/A"),
+
     })
 
 
@@ -201,6 +209,9 @@ def restore_user_settings(scene):
         scene.eevee.shadow_ray_count = original_settings.get("shadow_ray_count", scene.eevee.shadow_ray_count)
         scene.eevee.shadow_step_count = original_settings.get("shadow_step_count", scene.eevee.shadow_step_count)
         scene.eevee.shadow_resolution_scale = original_settings.get("shadow_resolution_scale", scene.eevee.shadow_resolution_scale)
+
+        if hasattr(scene.eevee, "use_shadows"):
+            scene.eevee.use_shadows = original_settings.get("use_shadows", scene.eevee.use_shadows)
         
 
     # Restore 3D Viewport lens settings for each VIEW_3D area.
@@ -211,6 +222,7 @@ def restore_user_settings(scene):
                 key = str(area.as_pointer())
                 if key in viewport_lens:
                     area.spaces.active.lens = viewport_lens[key]
+                    
 
     # Optionally, remove the custom property after restoring settings.
     del scene["exploratory_original_settings"]
@@ -278,6 +290,24 @@ def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
         context.window.workspace = new_ws
     else:
         print(f"Workspace '{workspace_name}' not found after append.")
+
+
+#---------clear custom actions in NLA --- updated or changed actions replace action strips
+def clear_all_exp_custom_strips():
+    """
+    Delete all strips inside tracks named 'exp_custom' for all objects.
+    Non-destructive: we do NOT delete the tracks themselves or touch other tracks.
+    Call this on game start to ensure newly edited Actions re-push cleanly.
+    """
+    for obj in bpy.data.objects:
+        ad = getattr(obj, "animation_data", None)
+        if not ad:
+            continue
+        tr = ad.nla_tracks.get("exp_custom")
+        if tr:
+            for s in list(tr.strips):
+                tr.strips.remove(s)
+#----------------------------------------------------------------------------------------
 
 def revert_to_original_workspace(context):
     """

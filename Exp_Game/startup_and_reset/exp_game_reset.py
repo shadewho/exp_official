@@ -9,6 +9,8 @@ from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
 from ..systems.exp_performance import rearm_performance_after_reset, update_performance_culling
+from ..animations.exp_custom_animations import stop_custom_actions_and_rewind_strips
+
 
 def capture_scene_state(self, context):
     """
@@ -61,6 +63,26 @@ def restore_scene_state(modal_op, context):
                 obj.hide_viewport = xform_data["hide_viewport"]
 
 
+def apply_hide_during_game(modal_op, context):
+    """
+    Ensure all proxy meshes marked 'hide_during_game' are hidden.
+    Preserves the original hide state in modal_op._proxy_mesh_original_states once.
+    """
+    if not hasattr(modal_op, "_proxy_mesh_original_states"):
+        modal_op._proxy_mesh_original_states = {}
+
+    for entry in context.scene.proxy_meshes:
+        obj = entry.mesh_object
+        if not obj:
+            continue
+
+        if entry.hide_during_game:
+            # Remember original only once so cancel() can restore it later
+            if obj.name not in modal_op._proxy_mesh_original_states:
+                modal_op._proxy_mesh_original_states[obj.name] = bool(obj.hide_viewport)
+            obj.hide_viewport = True
+
+
 def reset_property_reactions(scene):
     """
     For each Interaction in the scene, find any PROPERTY reaction and reset the target property
@@ -111,9 +133,19 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         #    so that any "last_trigger_time" stamps use the new zero baseline.
         init_time()
 
+        # ─── 0.5) Stop custom actions and rewind exp_custom strips ───
+        # Do this BEFORE restoring object transforms, so strips can't "fight" the pose.
+        try:
+            from ..animations.exp_custom_animations import stop_custom_actions_and_rewind_strips
+            stop_custom_actions_and_rewind_strips()
+        except Exception as e:
+            print(f"[WARN] stop_custom_actions_and_rewind_strips failed: {e}")
+
         # 1) only restore the scene if skip_restore is False
         if not self.skip_restore:
             restore_scene_state(modal_op, context)
+
+            apply_hide_during_game(modal_op, context)
 
         # ---- Reset dynamic platform state so no stale deltas apply after reset ----
         # Clear BVH caches so they rebuild against the restored transforms
@@ -160,7 +192,7 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
 
 def setattr_recursive(scene, dotted_path, value):
     """
-    If your scene property keys might be dotted like "mobility_game.allow_movement",
+    scene property keys might be dotted like "mobility_game.allow_movement",
     we can parse them. If you just store them as "allow_movement" that belongs 
     directly to the mobility_game pointer, you could manually do 
     scene.mobility_game.allow_movement = ...

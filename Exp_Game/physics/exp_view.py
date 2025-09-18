@@ -287,8 +287,8 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
 
     # Capsule-top anchor
     cp = context.scene.char_physics
-    cap_h = getattr(cp, "height", 1.80)
-    cap_r = getattr(cp, "radius", 0.22)
+    cap_h = getattr(cp, "height", 2.0)
+    cap_r = getattr(cp, "radius", 0.30)
     anchor = obj.location + Vector((0.0, 0.0, cap_h))
 
     # Camera “thickness” from near clip

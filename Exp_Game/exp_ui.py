@@ -85,6 +85,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -270,6 +271,7 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -924,6 +926,8 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
     bl_idname = "VIEW3D_PT_exploratory_performance"
+    bl_options = {'DEFAULT_CLOSED'}
+
 
     @classmethod
     def poll(cls, context):

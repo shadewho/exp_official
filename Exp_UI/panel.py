@@ -13,6 +13,8 @@ class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
 
     @classmethod
     def poll(cls, context):
@@ -156,6 +158,7 @@ class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -234,6 +237,7 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
     
     @classmethod
     def poll(cls, context):
