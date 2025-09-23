@@ -5,52 +5,82 @@ import math
 from mathutils import Vector, Euler
 from ..physics.exp_raycastutils import create_bvh_tree
 
+def _raycast_obj_along_world_z(obj: bpy.types.Object, origin_xy: Vector, world_dir: Vector):
+    """
+    Ray-cast against `obj.data` along a WORLD +Z or -Z direction, passing through (origin_xy.x, origin_xy.y).
+    Returns world-space hit location or None.
+    """
+    # Build world-space ray origin far enough outside the object’s AABB to avoid grazing
+    world_bb = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    z_min = min(v.z for v in world_bb)
+    z_max = max(v.z for v in world_bb)
+    height = max(0.01, z_max - z_min)
+
+    if world_dir.z < 0.0:
+        start_world = Vector((origin_xy.x, origin_xy.y, z_max + height * 0.5))
+    else:
+        start_world = Vector((origin_xy.x, origin_xy.y, z_min - height * 0.5))
+
+    # Transform the ray into the object’s local space for Mesh.ray_cast
+    inv = obj.matrix_world.inverted()
+    start_local = inv @ start_world
+    # Transform direction via the inverse transpose for correctness, then normalize
+    dir_local = (inv.to_3x3() @ world_dir).normalized()
+
+    mesh = obj.data
+    if not hasattr(mesh, "ray_cast"):
+        return None
+
+    hit, loc_local, normal_local, face_idx = mesh.ray_cast(start_local, dir_local)
+    if not hit:
+        return None
+
+    # Return world-space hit location
+    return obj.matrix_world @ loc_local
+
+
 def spawn_user():
     """Spawn the user character in the scene based on the current settings."""
     scene = bpy.context.scene
     arm = scene.target_armature
-    margin = 0.25  # safety margin above the surface
 
     if not arm:
         print("Error: No target armature set in scene.target_armature.")
         return
 
+    # Capsule-aware vertical clearance above the contacted surface
+    char_cfg = getattr(scene, "char_physics", None)
+    capsule_clear = max(getattr(char_cfg, "radius", 0.25), 0.25)
+
     spawn_obj = scene.spawn_object
     if spawn_obj:
         if scene.spawn_use_nearest_z_surface and spawn_obj.type == 'MESH':
-            bvh = create_bvh_tree([spawn_obj])
-            if bvh:
-                # Compute world‐space bounding box Z extents
-                world_bb = [spawn_obj.matrix_world @ Vector(corner) for corner in spawn_obj.bound_box]
-                z_min = min(v.z for v in world_bb)
-                z_max = max(v.z for v in world_bb)
-                origin = spawn_obj.location.copy()
+            # Cast along global ±Z through the spawn object’s XY origin
+            origin_xy = Vector((spawn_obj.location.x, spawn_obj.location.y, 0.0))
 
-                # Raycast down from just above top
-                origin_down = Vector((origin.x, origin.y, z_max + 0.001))
-                hit_down = bvh.ray_cast(origin_down, Vector((0, 0, -1)))
-                loc_down = hit_down[0] if hit_down and hit_down[0] else None
+            hit_down = _raycast_obj_along_world_z(spawn_obj, origin_xy, Vector((0, 0, -1)))
+            hit_up   = _raycast_obj_along_world_z(spawn_obj, origin_xy, Vector((0, 0,  1)))
 
-                # Raycast up from just below bottom
-                origin_up = Vector((origin.x, origin.y, z_min - 0.001))
-                hit_up = bvh.ray_cast(origin_up, Vector((0, 0, 1)))
-                loc_up = hit_up[0] if hit_up and hit_up[0] else None
-
-                # Choose the hit closest in Z to the origin
-                candidates = [loc for loc in (loc_down, loc_up) if loc]
-                if candidates:
-                    chosen = min(candidates, key=lambda loc: abs(loc.z - origin.z))
-                    arm.location = Vector((origin.x, origin.y, chosen.z + margin))
-                    # Always upright: zero X/Y rotation, keep only Z (yaw)
-                    arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
-                else:
-                    arm.location = origin
-                    arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+            candidates = [h for h in (hit_down, hit_up) if h is not None]
+            if candidates:
+                # choose the Z closest to the object’s world origin (stable for large meshes)
+                z0 = spawn_obj.location.z
+                chosen = min(candidates, key=lambda P: abs(P.z - z0))
+                arm.location = Vector((origin_xy.x, origin_xy.y, chosen.z + capsule_clear))
             else:
-                arm.location = spawn_obj.location.copy()
-                arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+                # Fallbacks:
+                # 1) if no triangles under the XY column, place the character just above the mesh AABB.
+                world_bb = [spawn_obj.matrix_world @ Vector(c) for c in spawn_obj.bound_box]
+                z_max = max(v.z for v in world_bb)
+                arm.location = Vector((origin_xy.x, origin_xy.y, z_max + capsule_clear))
+
+            # Keep only yaw from the spawn object
+            arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
+
         else:
+            # direct placement (non-surface mode)
             arm.location = spawn_obj.location.copy()
+            arm.location.z += capsule_clear  # still keep the capsule out of minor overlaps
             arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
     else:
         print("No spawn_object set!")
