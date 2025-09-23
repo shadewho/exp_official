@@ -152,17 +152,17 @@ class CharacterAudioStateManager:
             # no sound assigned or nothing packed
             return
 
-        # 2) Extract the packed bytes to temp_sounds
+        # 2) Resolve cached temp path once per sound
         addon_root     = get_addon_path()
         temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
         os.makedirs(temp_sounds_dir, exist_ok=True)
 
-        temp_path = extract_packed_sound(sound_data, temp_sounds_dir)
+        temp_path = _get_or_extract_temp_path(sound_data, temp_sounds_dir)
         if not temp_path:
             return
 
-        # 3) Play via aud.Sound(temp_path)
-        device = aud.Device()
+        # 3) Play using the singleton device (avoid recreating aud.Device)
+        device = get_global_audio_manager().device
         try:
             handle = device.play(aud.Sound(temp_path))
         except Exception:
@@ -427,6 +427,30 @@ def clean_audio_temp():
         shutil.rmtree(temp_sounds_dir, ignore_errors=True)
     os.makedirs(temp_sounds_dir, exist_ok=True)
 
+# Cache the extracted temp filepath on the Sound datablock (ID property)
+def _get_or_extract_temp_path(sound_data: bpy.types.Sound, temp_dir: str) -> str:
+    """
+    Returns a reusable temp path for this packed sound.
+    Extracts once and caches path on the datablock: sound_data["exp_temp_path"].
+    Re-extracts only if missing.
+    """
+    if not sound_data or not sound_data.packed_file:
+        return None
+    try:
+        cached = sound_data.get("exp_temp_path", None)
+    except Exception:
+        cached = None
+
+    if cached and os.path.isfile(cached):
+        return cached
+
+    path = extract_packed_sound(sound_data, temp_dir)
+    if path:
+        try:
+            sound_data["exp_temp_path"] = path
+        except Exception:
+            pass
+    return path
 
 
 # ------------------------------------------------------------------------

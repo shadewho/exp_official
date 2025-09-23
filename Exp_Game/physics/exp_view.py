@@ -15,7 +15,7 @@ _LOS_EPS              = 1.0e-4
 # New (safe) tuning helpers
 # Ring is only used when the center ray reports a hit. This is enough because LoS and pushout
 # cover the other cases. You can lower this further if needed.
-_RING_SAMPLES_ON_HIT  = 8
+_RING_SAMPLES_ON_HIT  = 4
 
 # Absolute minimum camera distance from anchor (meters)
 # Final minimum is: max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)

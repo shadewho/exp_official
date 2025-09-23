@@ -121,7 +121,7 @@ class InteractionDefinition(bpy.types.PropertyGroup):
     objective_index: bpy.props.EnumProperty(
         name="Objective",
         description="Which objective do we monitor?",
-        items=enum_objective_items,  # a function that enumerates scene.objectives
+        items=enum_objective_items,
         default=None
     )
 

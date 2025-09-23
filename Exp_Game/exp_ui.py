@@ -454,7 +454,7 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
 
         elif inter.trigger_type == "OBJECTIVE_UPDATE":
             # Let user pick which objective
-            box.prop_search(inter, "objective_index", scene, "objectives", text="Objective")
+            box.prop(inter, "objective_index", text="Objective")
             box.prop(inter, "objective_condition", text="Condition")
 
             # If user picks EQUALS or AT_LEAST, show the condition_value
@@ -793,7 +793,7 @@ class EXPLORATORY_UL_Objectives(bpy.types.UIList):
 # (Objectives panel)
 # -------------------------------------
 class VIEW3D_PT_Objectives(bpy.types.Panel):
-    bl_label = "Objectives"
+    bl_label = "Objectives and Timers"
     bl_idname = "VIEW3D_PT_objectives"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'

@@ -166,7 +166,21 @@ class ExpModal(bpy.types.Operator):
     def invoke(self, context, event):
         scene = context.scene
 
-        # ─── Capture both camera/character state ───────
+
+        # --- proxy records for hidden meshes - to avoid performance culling conflicts ---
+        if not hasattr(self, "_proxy_mesh_original_states"):
+            self._proxy_mesh_original_states = {}
+        else:
+            self._proxy_mesh_original_states.clear()
+
+        if not hasattr(self, "_force_hide_names"):
+            self._force_hide_names = set()
+        else:
+            self._force_hide_names.clear()
+        # --------------------------------------------------------------------------------
+
+
+        # Capture both camera/character state
         capture_initial_cam_state(self, context)
 
         #set UI mode to disable background caching
@@ -350,14 +364,12 @@ class ExpModal(bpy.types.Operator):
             if dyn_obj:
                 self.platform_prev_matrices[dyn_obj] = dyn_obj.matrix_world.copy()
 
-        # Initialize dictionary to record original visibility states
-        self._proxy_mesh_original_states = {}
         for entry in context.scene.proxy_meshes:
             if entry.hide_during_game and entry.mesh_object:
-                # Record the original visibility (using hide_viewport)
-                self._proxy_mesh_original_states[entry.mesh_object.name] = entry.mesh_object.hide_viewport
-                # Hide the proxy mesh during the game
+                name = entry.mesh_object.name
+                self._proxy_mesh_original_states[name] = entry.mesh_object.hide_viewport
                 entry.mesh_object.hide_viewport = True
+                self._force_hide_names.add(name)
 
         # 11) Clear any previously pressed keys
         self.keys_pressed.clear()
@@ -538,6 +550,7 @@ class ExpModal(bpy.types.Operator):
             )
         if not self.launched_from_ui:
             restore_performance_state(self, context)
+
 
         #reset --------------------reset --------#
 

@@ -19,13 +19,21 @@ from ..props_and_utils.exp_time import get_game_time
 # ──────────────────────────────────────────────────────────────────────────────
 # Tunables
 # ──────────────────────────────────────────────────────────────────────────────
-CULL_UPDATE_HZ = 5.0                 # frequency for culling decisions (~5 Hz)
+CULL_UPDATE_HZ = 1.0                 # frequency for culling decisions (~5 Hz)
 CULL_HYSTERESIS_RATIO = 0.0         # 10% of cull_distance
 CULL_HYSTERESIS_MIN = 0.0            # at least 1 meter of margin
-MAX_PROP_WRITES_PER_TICK = 300       # safety budget for per-object hide writes
+MAX_PROP_WRITES_PER_TICK = 100       # safety budget for per-object hide writes
 
 
 # ─── 0) Snapshot / Restore Helpers ─────────────────────────────
+
+def _is_force_hidden_during_game(operator, obj):
+    """
+    Returns True if obj should remain hidden for the whole game session
+    because the modal marked it as 'hide during game'.
+    """
+    names = getattr(operator, "_force_hide_names", None)
+    return bool(obj and names and obj.name in names)
 
 def rearm_performance_after_reset(operator, context):
     """
@@ -454,14 +462,17 @@ def update_performance_culling(operator, context):
                         for lc in rec["layer_colls"]:
                             if lc and lc.exclude != desired_excl:
                                 lc.exclude = desired_excl
-                elif entry.target_object:
-                    if entry.trigger_type == 'BOX':
-                        desired_hidden = not in_range
-                    else:
-                        d = (entry.target_object.matrix_world.translation - ref_loc).length
-                        desired_hidden = (d > entry.cull_distance)
-                    if entry.target_object.hide_viewport != desired_hidden:
-                        entry.target_object.hide_viewport = desired_hidden
+                    elif entry.target_object:
+                        if _is_force_hidden_during_game(operator, entry.target_object):
+                            desired_hidden = True
+                        else:
+                            if entry.trigger_type == 'BOX':
+                                desired_hidden = not in_range
+                            else:
+                                d = (entry.target_object.matrix_world.translation - ref_loc).length
+                                desired_hidden = (d > entry.cull_distance)
+                        if entry.target_object.hide_viewport != desired_hidden:
+                            entry.target_object.hide_viewport = desired_hidden
 
         # ─────────────────────────────────────────────────────────
         # B) PER-OBJECT mode (RADIAL + not exclude_collection)
@@ -480,8 +491,13 @@ def update_performance_culling(operator, context):
                 while i < n and changes < MAX_PROP_WRITES_PER_TICK:
                     idx = (start + i) % n
                     o = objs[idx]
-                    far = (o.matrix_world.translation - ref_loc).length > thresh
-                    desired_hidden = far
+
+                    if _is_force_hidden_during_game(operator, o):
+                        desired_hidden = True
+                    else:
+                        far = (o.matrix_world.translation - ref_loc).length > thresh
+                        desired_hidden = far
+
                     if o.hide_viewport != desired_hidden:
                         o.hide_viewport = desired_hidden
                         changes += 1
