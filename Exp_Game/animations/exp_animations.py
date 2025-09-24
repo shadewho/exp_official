@@ -91,8 +91,8 @@ class AnimationStateManager:
         self._last_is_grounded   = True
         self.air_time            = 0.0
         self.fall_timer          = 0.0
-        self.min_fall_time       = 2.5
-        self.min_fall_for_land   = 0.25
+        self.min_fall_time       = 0.9
+        self.min_fall_for_land   = 0.20
         self.landing_in_progress = False
         self.jump_played_in_air  = False
 
@@ -104,7 +104,7 @@ class AnimationStateManager:
         self.active_actions = []
 
         # Controls how quickly we shift frames
-        self.base_speed_factor = 10.0
+        self.base_speed_factor = 30.0
 
         # So we don’t re-trigger the same action repeatedly
         self.last_action_name = None

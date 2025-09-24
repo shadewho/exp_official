@@ -111,26 +111,32 @@ class CharacterAudioStateManager:
             self.last_state = None
             return
 
-        current_time = get_game_time()
-
+        # State changed → (re)start the appropriate sound once
         if new_state != self.last_state:
             self.stop_current_sound()
             self.last_state = new_state
             self.play_sound_for_state(new_state)
             return
 
+        # Same state as last tick:
+        # - Continuous states (WALK/RUN/FALL): do nothing; they loop on the device.
+        # - One-shots (JUMP/LAND): if finished, stop/clear (do NOT restart here).
         if new_state in (AnimState.WALK, AnimState.RUN, AnimState.FALL):
-            if self.current_handle:
-                elapsed = current_time - self.current_sound_start_time
-                if elapsed >= self.current_sound_duration:
+            return
+
+        if new_state in (AnimState.JUMP, AnimState.LAND):
+            if self.current_handle and self.current_sound_start_time is not None:
+                elapsed = get_game_time() - self.current_sound_start_time
+                dur = self.current_sound_duration or 0.0
+                if dur > 0.0 and elapsed >= dur:
                     self.stop_current_sound()
-                    self.play_sound_for_state(new_state)
-            else:
-                self.play_sound_for_state(new_state)
 
     def stop_current_sound(self):
         if self.current_handle:
-            self.current_handle.stop()
+            try:
+                self.current_handle.stop()
+            except Exception:
+                pass
         self.current_handle = None
         self.current_sound_start_time = None
         self.current_sound_duration = None
@@ -140,7 +146,7 @@ class CharacterAudioStateManager:
         if not prefs.enable_audio:
             return
 
-        # 1) Find the right pointer on scene.character_audio
+        # 1) Resolve the sound pointer for this state
         prop_name = AUDIO_PROPS_MAP.get(state)
         if not prop_name:
             return
@@ -149,41 +155,47 @@ class CharacterAudioStateManager:
             return
         sound_data = getattr(audio_pg, prop_name, None)
         if not sound_data or not sound_data.packed_file:
-            # no sound assigned or nothing packed
             return
 
-        # 2) Resolve cached temp path once per sound
-        addon_root     = get_addon_path()
+        # 2) Reuse/extract a temp file for aud
+        addon_root = get_addon_path()
         temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
         os.makedirs(temp_sounds_dir, exist_ok=True)
-
         temp_path = _get_or_extract_temp_path(sound_data, temp_sounds_dir)
         if not temp_path:
             return
 
-        # 3) Play using the singleton device (avoid recreating aud.Device)
+        # 3) If this is a continuous state and something is already playing, leave it
+        if state in (AnimState.WALK, AnimState.RUN, AnimState.FALL) and self.current_handle:
+            return
+
+        # 4) Start playback
         device = get_global_audio_manager().device
         try:
             handle = device.play(aud.Sound(temp_path))
         except Exception:
             return
 
-        # 4) Figure out duration
-        duration = getattr(sound_data, "sound_duration", None)
-        if duration is None:
-            try:
-                duration = handle.length
-            except Exception:
-                duration = 2.0
-
-        # 5) Store for looping logic
-        self.current_sound_start_time = get_game_time()
-        self.current_sound_duration   = duration
-
-        # 6) Apply volume, pitch, loop settings
-        handle.loop_count = 0
+        # 5) Looping vs one-shot
+        is_loop = (state in (AnimState.WALK, AnimState.RUN, AnimState.FALL))
+        handle.loop_count = -1 if is_loop else 0
         handle.volume     = prefs.audio_level
-        handle.pitch      = sound_data.sound_speed
+        handle.pitch      = getattr(sound_data, "sound_speed", 1.0)
+
+        if is_loop:
+            # Loops: no duration bookkeeping; they run until state changes
+            self.current_sound_start_time = None
+            self.current_sound_duration   = None
+        else:
+            # One-shots: track duration so we can stop once
+            dur = getattr(sound_data, "sound_duration", None)
+            if dur is None:
+                try:
+                    dur = handle.length
+                except Exception:
+                    dur = 2.0
+            self.current_sound_start_time = get_game_time()
+            self.current_sound_duration   = float(dur)
 
         self.current_handle = handle
 
@@ -422,7 +434,7 @@ def clean_audio_temp():
 
     # E) Wipe and recreate the temp folder
     addon_root = get_addon_path()
-    temp_sounds_dir = os.path.join(addon_root, "Exp_Game", "exp_assets", "Sounds", "temp_sounds")
+    temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
     if os.path.isdir(temp_sounds_dir):
         shutil.rmtree(temp_sounds_dir, ignore_errors=True)
     os.makedirs(temp_sounds_dir, exist_ok=True)

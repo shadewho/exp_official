@@ -82,7 +82,7 @@ class CustomActionManager:
     """
     def __init__(self, object_name):
         self.object_name = object_name
-        self.base_speed_factor = 10.0
+        self.base_speed_factor = 30.0
         self.active_strips = []
 
     def play_custom_action(self, action, loop=False, loop_duration=10.0):

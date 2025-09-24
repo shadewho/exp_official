@@ -180,15 +180,8 @@ class CacheWorker(threading.Thread):
             print(f"[CacheWorker] _preload_all_events prune error: {e}")
 
     def _do_full_sweep(self):
-        # Debug print kept
-        print(
-            f"[DEBUG sweep] {time.strftime('%H:%M:%S')}  "
-            f"mode={bpy.context.scene.ui_current_mode!s}  "
-            f"token={bool(load_token())}"
-        )
         token = load_token()
         if not token:
-            print("[CacheWorker] no API token, skipping full sweep until login")
             return
 
         # 1) All events

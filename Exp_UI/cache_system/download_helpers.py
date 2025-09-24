@@ -56,7 +56,6 @@ def download_thumbnail(url, file_id=None):
                 if chunk:
                     out.write(chunk)
     except Exception as e:
-        print("[DL-THUMB] file_id", file_id, "→", e)
         return None
 
     # 3) Persist into DB
@@ -97,7 +96,6 @@ def _fetch_metadata_worker(package_id):
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print("[META] id", package_id, "→", e)  
         return
 
     if not data.get("success"):

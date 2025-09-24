@@ -7,7 +7,6 @@ from ..audio.exp_globals import _sound_tasks, SoundTask
 import mathutils
 from mathutils import Vector, Euler, Matrix
 from ..props_and_utils.exp_time import get_game_time
-from ..animations.exp_animations import get_global_animation_manager
 from . import exp_custom_ui
 from ..audio.exp_audio import extract_packed_sound
 from ...exp_preferences import get_addon_path

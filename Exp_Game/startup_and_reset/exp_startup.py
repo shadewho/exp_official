@@ -250,6 +250,20 @@ def move_armature_and_children_to_scene(target_armature, destination_scene):
         if not any(o == obj for o in destination_scene.collection.objects):
             destination_scene.collection.objects.link(obj)
 
+def disable_live_perf_overlay_next_tick():
+    """
+    Turn off the scene live performance overlay on the next tick.
+    Safe to call right after appending/switching scenes/workspaces.
+    """
+    def _do_disable():
+        sc = bpy.context.window.scene if bpy.context and bpy.context.window else None
+        try:
+            if sc and hasattr(sc, "show_live_performance_overlay"):
+                sc.show_live_performance_overlay = False
+        except Exception as e:
+            print(f"[WARN] disable_live_perf_overlay_next_tick failed: {e}")
+        return None  # run once
+    bpy.app.timers.register(_do_disable, first_interval=0.0)
 
 def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
     """
@@ -440,6 +454,8 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
 
         # ─── Schedule the modal launch ─────────────────────────
         from_ui = self.launched_from_ui
+        if from_ui:
+            disable_live_perf_overlay_next_tick()
         def start_modal():
             delayed_invoke_modal(from_ui)
             return None

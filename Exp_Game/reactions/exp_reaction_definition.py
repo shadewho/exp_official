@@ -466,7 +466,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     )
     interruptible: bpy.props.BoolProperty(
         name="Interruptible",
-        default=True,
+        default=False,
         description="If True, the timer can continuously be restarted in-game.)"
     )
 

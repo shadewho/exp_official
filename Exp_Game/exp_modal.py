@@ -18,7 +18,7 @@ from .startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_
 from .animations.exp_custom_animations import update_all_custom_managers
 from .interactions.exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
 from .reactions.exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
-from .props_and_utils.exp_time import init_time, update_time, get_game_time
+from .props_and_utils.exp_time import init_time, update_real_time, tick_sim_time, get_game_time
 from .reactions.exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text, show_controls_info
 from .systems.exp_objectives import update_all_objective_timers, reset_all_objectives
 from .startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
@@ -48,26 +48,12 @@ class ExpModal(bpy.types.Operator):
     # ---------------------------
     #  Properties
     # ---------------------------
-    speed: bpy.props.FloatProperty(
-        name="Speed",
-        default=2.0,
-        min=1.0,
-        max=3.0,
-        description="Character movement speed"
-    )
     time_scale: bpy.props.IntProperty(
         name="Time Scale",
-        default=3,           # keep your current feel
+        default=1,           # keep your current feel
         min=1,
         max=5,
         description="Controls how quickly time passes in the simulation (integer)"
-    )
-    camera_distance: bpy.props.FloatProperty(
-        name="Camera Distance",
-        default=5.0,
-        min=1.0,
-        max=20.0,
-        description="Default camera distance from the character"
     )
 
     launched_from_ui: bpy.props.BoolProperty(
@@ -397,60 +383,67 @@ class ExpModal(bpy.types.Operator):
             perf_frame_begin(self)
 
             # A) Timebases
+            # Keep your local real-time dt for camera smoothing/input feel
             t0 = perf_mark(self, 'time')
-            self.update_time()
-            _ = update_time()  # keep your global game clock increasing
+            self.update_time()              # updates self.delta_time = real_dt * time_scale (your existing method)
+            _ = update_real_time()          # advance wall-clock marker (no sim-time change)
             perf_mark(self, 'time', t0)
 
             # Decide once: should we do a 30 Hz physics tick this frame?
             do_phys = self._physics_due()
-
-            # For the HUD: remember if we executed a 30 Hz physics tick this frame
             self._perf_last_physics_steps = 1 if do_phys else 0
-            
-            # B) Animation & audio (pure state) - per frame, uses scaled delta_time
-            t0 = perf_mark(self, 'anim_audio')
-            self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded)
-            current_anim_state = self.animation_manager.anim_state
-            audio_state_mgr = get_global_audio_state_manager()
-            audio_state_mgr.update_audio_state(current_anim_state)
-            perf_mark(self, 'anim_audio', t0)
 
-            # C) FIRST: anything that moves objects this frame (treat as "physical")
+            # ---- Everything that must live on the fixed simulation tick ----
             if do_phys:
+                # One SIM tick (shared across physics, animations, audio, scripted movers)
+                dt_sim = self.physics_dt * float(self.time_scale)
+
+                # Advance the SIM clock used by animations/audio/timers
+                tick_sim_time(dt_sim)
+
+                # B) Content movers & scripted reactions (SIM-timed)
                 t0 = perf_mark(self, 'custom_tasks')
-                update_all_custom_managers(self.delta_time)  # your content-driven movers
+                update_all_custom_managers(dt_sim)    # now runs at fixed Hz
                 update_transform_tasks()
                 update_property_tasks()
                 perf_mark(self, 'custom_tasks', t0)
 
-                # D) Dynamic proxies/BVHs + platform velocities (feeds KCC)
+                # C) Dynamic proxies + platform velocities (feeds KCC)
                 t0 = perf_mark(self, 'dynamic_meshes')
                 update_dynamic_meshes(self)
                 perf_mark(self, 'dynamic_meshes', t0)
 
-                # E) Distance-based culling (can be heavy; do on physics tick)
+                # D) Distance-based culling (heavier work → keep on fixed tick)
                 t0 = perf_mark(self, 'culling')
                 update_performance_culling(self, context)
                 perf_mark(self, 'culling', t0)
+
+                # E) Animations & audio: also fixed-tick, same dt_sim
+                t0 = perf_mark(self, 'anim_audio')
+                # (Pass vertical_velocity so airborne transitions are consistent)
+                self.animation_manager.update(self.keys_pressed, dt_sim, self.is_grounded, self.z_velocity)
+                current_anim_state = self.animation_manager.anim_state
+                audio_state_mgr = get_global_audio_state_manager()
+                audio_state_mgr.update_audio_state(current_anim_state)
+                perf_mark(self, 'anim_audio', t0)
 
             # --- Character gating / input filtering (unchanged) ---
             mg = context.scene.mobility_game
             if not mg.allow_movement:
                 for k in (self.pref_forward_key, self.pref_backward_key,
-                          self.pref_left_key, self.pref_right_key):
+                        self.pref_left_key, self.pref_right_key):
                     if k in self.keys_pressed:
                         self.keys_pressed.remove(k)
             if not mg.allow_sprint:
                 if self.pref_run_key in self.keys_pressed:
                     self.keys_pressed.remove(self.pref_run_key)
 
-            # F) Movement & gravity (fixed 30 Hz physics; camera updates inside)
+            # F) Movement & gravity step (method still hard-locks itself to 30 Hz)
             t0 = perf_mark(self, 'physics')
-            self.update_movement_and_gravity(context)  # will step only if due
+            self.update_movement_and_gravity(context)
             perf_mark(self, 'physics', t0)
 
-            # G) Camera update every frame (decoupled from physics)
+            # G) Camera update EVERY frame (keeps smooth motion irrespective of tick)
             t0 = perf_mark(self, 'camera')
             update_view(
                 context,
@@ -464,15 +457,16 @@ class ExpModal(bpy.types.Operator):
             )
             perf_mark(self, 'camera', t0)
 
-            # H) Interactions/UI/SFX (per frame)
+            # H) Interactions/UI/SFX every frame (but timers use SIM time now)
             t0 = perf_mark(self, 'interact_ui_audio')
             check_interactions(context)
             update_text_reactions()
-            update_sound_tasks()
+            update_sound_tasks()   # uses get_game_time() → now SIM-synced
             perf_mark(self, 'interact_ui_audio', t0)
 
             # ---- END FRAME ----
             perf_frame_end(self, context)
+
 
         # B) Key events => only user preference keys (forward/back/left/right/run/jump).
         elif event.type in {

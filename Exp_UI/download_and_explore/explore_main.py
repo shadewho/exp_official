@@ -253,6 +253,10 @@ def timer_finish_download():
         "sounds":  list(bpy.data.sounds.keys()),
         "meshes":  list(bpy.data.meshes.keys()),
         "objects": list(bpy.data.objects.keys()),
+        "materials": list(bpy.data.materials.keys()),
+        "armatures":  list(bpy.data.armatures.keys()),
+        "curves":    list(bpy.data.curves.keys()),
+        "lights":    list(bpy.data.lights.keys()),
     }
 
     # 4) Append the downloaded blend
@@ -275,6 +279,10 @@ def timer_finish_download():
         "sounds":  [s for s in bpy.data.sounds.keys()  if s not in init["sounds"]],
         "meshes":  [m for m in bpy.data.meshes.keys()  if m not in init["meshes"]],
         "objects": [o for o in bpy.data.objects.keys() if o not in init["objects"]],
+        "materials": [t for t in bpy.data.materials.keys() if t not in init["materials"]],
+        "armatures":  [r for r in bpy.data.armatures.keys()  if r not in init["armatures"]],
+        "curves":    [c for c in bpy.data.curves.keys()    if c not in init["curves"]],
+        "lights":    [l for l in bpy.data.lights.keys()    if l not in init["lights"]],
     }
 
     # 7) Clean up the temporary UI

@@ -1030,6 +1030,15 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
             layout.label(text="Character physics not initialized")
             return
 
+        # --- Warning label at top ---
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Experimental", icon='ERROR')
+        col.label(text="Changing these values may affect:")
+        col.label(text="- Character physics")
+        col.label(text="- Mesh collisions")
+        col.label(text="- Audio/animation timing")
+
         # --- Collider ---
         box = layout.box()
         col = box.column(align=True)
@@ -1067,7 +1076,6 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "jump_speed")
         row.prop(p, "coyote_time")
         col.prop(p, "jump_buffer")
-
 
 
 
