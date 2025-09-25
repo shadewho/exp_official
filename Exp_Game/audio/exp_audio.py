@@ -303,7 +303,7 @@ class EXPLORATORY_OT_BuildAudio(bpy.types.Operator):
     bl_idname = "exploratory.build_audio"
     bl_label  = "Build Audio (Append Sounds)"
 
-    DEFAULT_SOUNDS_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Sounds", "exp_default_sounds.blend")
+    DEFAULT_SOUNDS_BLEND = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend")
     DEFAULT_WALK_SOUND   = "exp_walk_sound"
     DEFAULT_RUN_SOUND    = "exp_run_sound"
     DEFAULT_JUMP_SOUND   = "exp_jump_sound"

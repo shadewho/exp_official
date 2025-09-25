@@ -12,8 +12,7 @@ from .audio.exp_audio import (get_global_audio_state_manager, clear_temp_sounds,
                         get_global_audio_manager, clean_audio_temp)
 from .startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
-                          move_armature_and_children_to_scene,
-                            revert_to_original_workspace, revert_to_original_scene,
+                          move_armature_and_children_to_scene, revert_to_original_scene,
                             ensure_timeline_at_zero, ensure_object_mode, clear_all_exp_custom_strips)  
 from .animations.exp_custom_animations import update_all_custom_managers
 from .interactions.exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
@@ -27,7 +26,12 @@ from .audio import exp_globals
 from .audio.exp_globals import stop_all_sounds, update_sound_tasks
 from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
 from .systems.exp_performance import init_performance_state, update_performance_culling, restore_performance_state
-from .mouse_and_movement.exp_cursor import setup_cursor_region, handle_mouse_move, release_cursor_clip, ensure_cursor_hidden_if_mac
+from .mouse_and_movement.exp_cursor import (
+    setup_cursor_region,
+    handle_mouse_move,
+    release_cursor_clip,
+    ensure_cursor_hidden_if_mac,
+)
 from .physics.exp_kcc import KinematicCharacterController
 from .props_and_utils.exp_time import FixedStepClock
 from .physics.exp_dynamic import update_dynamic_meshes
@@ -37,6 +41,7 @@ from .systems.exp_live_performance import (
     perf_mark,
     perf_frame_end,
 )
+from .startup_and_reset.exp_fullscreen import exit_fullscreen_once
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -59,11 +64,6 @@ class ExpModal(bpy.types.Operator):
     launched_from_ui: bpy.props.BoolProperty(
         name="Launched from UI",
         default=False,
-    )
-    should_revert_workspace: bpy.props.BoolProperty(
-        name="Revert Workspace on Cancel",
-        description="If false, do not revert the workspace when canceling the modal",
-        default=True
     )
     
     # -----------------------------
@@ -497,6 +497,9 @@ class ExpModal(bpy.types.Operator):
         release_cursor_clip()
         context.window.cursor_modal_restore()
 
+        #if in fullscreen, exit
+        exit_fullscreen_once()
+
         #restore UI mode
         context.scene.ui_current_mode = 'BROWSE'
         
@@ -527,10 +530,6 @@ class ExpModal(bpy.types.Operator):
         #-----------------------------------------------
 
         clear_all_text()
-
-        # Revert to the original workspace if the flag is True
-        if self.should_revert_workspace:
-            revert_to_original_workspace(context)
 
 
         #reset --------------------reset --------#

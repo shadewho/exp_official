@@ -1,3 +1,5 @@
+#Exploratory/Exp_Game/animations/exp_animations.py
+
 import bpy
 import enum
 from ..props_and_utils.exp_time import get_game_time

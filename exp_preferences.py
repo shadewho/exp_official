@@ -535,14 +535,42 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             ("MEDIUM", "Medium", "Balanced quality and performance"),
             ("HIGH", "High", "Full quality settings (default)"),
         ],
-        default="HIGH"
+        default="MEDIUM"
     )
 
     # --- Shadows toggle for gameplay ---
     enable_shadows_in_game: bpy.props.BoolProperty(
-        name="Enable Shadows (Gameplay)",
+        name="Enable Shadows",
         description="Toggle Eevee Next shadows ON/OFF when the game starts",
         default=True
+    )
+
+    # --- Viewport shading mode to use on game start ---
+    viewport_shading_mode: bpy.props.EnumProperty(
+        name="Viewport Shading on Start",
+        description="Shading mode to switch all 3D Viewports to when the game starts",
+        items=[
+            ("RENDERED",  "Rendered",   "Full rendered shading"),
+            ("MATERIAL",  "Material",   "Material/LookDev shading"),
+            ("SOLID",     "Solid",      "Solid shading"),
+            ("WIREFRAME", "Wireframe",  "Wireframe shading"),
+        ],
+        default="RENDERED",
+    )
+
+    # --- Viewport Preview Pixel Size (Render) ---
+    # Mirrors Scene.render.preview_pixel_size; 'AUTO' is default.
+    preview_pixel_size: bpy.props.EnumProperty(
+        name="Preview Pixel Size",
+        description="Pixel size used for preview renders in the viewport",
+        items=[
+            ("AUTO", "Automatic", "Let Blender choose automatically"),
+            ("1",    "1x",        "1:1 preview pixels"),
+            ("2",    "2x",        "Double-sized preview pixels"),
+            ("4",    "4x",        "Quad-sized preview pixels"),
+            ("8",    "8x",        "Eight-times preview pixels"),
+        ],
+        default="AUTO",
     )
 
     # ----------------------------------------------------------------
@@ -584,9 +612,12 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         layout.separator()
         layout.label(text="Performance Settings:")
         layout.prop(self, "performance_level")
-
-        # NEW: Shadows on/off
+        layout.separator()
+        layout.prop(self, "viewport_shading_mode")
+        layout.separator()
+        layout.prop(self, "preview_pixel_size")
         layout.prop(self, "enable_shadows_in_game")
+
 
         #--------------------
         #MASTER AUDIO SETTINGS

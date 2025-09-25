@@ -202,14 +202,25 @@ class PACKAGE_OT_Display(bpy.types.Operator):
             hover_found = False
             gpu_data = bpy.types.Scene.gpu_image_buttons_data
             if gpu_data:
+                # Only show hand cursor for truly clickable items
+                CLICKABLE = {
+                    "Close_Icon", "Right_Arrow", "Left_Arrow",
+                    "Back_Icon", "Explore_Icon", "Visit_Shop_Icon", "Submit_World_Icon"
+                }
+                ui_mode = context.scene.ui_current_mode
                 for button in gpu_data:
-                    # Define clickable elements.
-                    if button.get("name") in {"Close_Icon", "Right_Arrow", "Left_Arrow", "Back_Icon", "Explore_Icon"} or \
-                       (button.get("name") not in {"Template"}):
-                        x1, y1, x2, y2 = button.get("pos", (0, 0, 0, 0))
-                        if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
-                            hover_found = True
-                            break
+                    name = button.get("name")
+                    # Skip nameless items (rects, text, spinner frames, etc.)
+                    if not name:
+                        continue
+                    # In BROWSE, thumbnails (named by package) are clickable too.
+                    is_clickable = (name in CLICKABLE) or (ui_mode == "BROWSE" and name not in {"Template"})
+                    if not is_clickable:
+                        continue
+                    x1, y1, x2, y2 = button.get("pos", (0, 0, 0, 0))
+                    if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
+                        hover_found = True
+                        break
             context.window.cursor_modal_set('HAND' if hover_found else 'DEFAULT')
 
         # Process left-mouse clicks.
@@ -219,8 +230,10 @@ class PACKAGE_OT_Display(bpy.types.Operator):
             gpu_data = bpy.types.Scene.gpu_image_buttons_data
             packages_list = getattr(bpy.types.Scene, 'fetched_packages_data', [])
             for button in gpu_data:
-                if button.get("name") == "handler":
-                    continue  # skip any handler
+                # Ignore special handler sentinels or nameless items
+                name = button.get("name")
+                if name == "handler" or name is None:
+                    continue
                 x1, y1, x2, y2 = button.get("pos", (0, 0, 0, 0))
                 if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
                     # Handle specific button actions.

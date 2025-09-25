@@ -298,16 +298,12 @@ def timer_finish_download():
             print("Waiting for appended scene…")
             return 1.0
 
-        # pull and clear original scene/workspace
-        wm = bpy.context.window_manager
-        orig_scene = wm.pop('original_scene', None)
-        orig_ws    = bpy.context.window.workspace.name
-
-        # switch into it
+        # Do NOT pop original_scene here; cancel() will pop and revert later.
+        # Just switch into the appended scene and mark UI mode.
         bpy.context.window.scene = scene_obj
         scene_obj.ui_current_mode = "GAME"
 
-        # find a VIEW_3D override
+        # Find a VIEW_3D override and launch the game (fullscreen path in your operator)
         view3d = next((a for a in bpy.context.window.screen.areas if a.type == 'VIEW_3D'), None)
         if view3d:
             region = next((r for r in view3d.regions if r.type == 'WINDOW'), None)
@@ -319,12 +315,7 @@ def timer_finish_download():
                     'region': region,
                 }
                 with bpy.context.temp_override(**override):
-                    bpy.ops.exploratory.start_game(
-                        'INVOKE_DEFAULT',
-                        launched_from_ui=True,
-                        original_workspace_name=orig_ws,
-                        original_scene_name=orig_scene
-                    )
+                    bpy.ops.exploratory.start_game('INVOKE_DEFAULT', launched_from_ui=True)
         return None
 
     bpy.app.timers.register(check_scene)

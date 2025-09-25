@@ -22,7 +22,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     )
     DEFAULT_ANIMS_BLEND = os.path.join(
         get_addon_path(),
-        "Exp_Game", "exp_assets", "Animations", "exp_animations.blend"
+        "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend"
     )
 
     DEFAULT_IDLE_NAME = "exp_idle"

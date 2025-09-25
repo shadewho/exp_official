@@ -36,14 +36,15 @@ class ExploratoryPanel(bpy.types.Panel):
                 text="▶     Play Windowed"
             )
             op.launched_from_ui = False
-            op.should_revert_workspace = False
             
             # Play in fullscreen
             col.operator(
                 "exploratory.start_game",
-                text="▶     Play Fullscreen"
+                text="▶     Play"
             )
+            
             # ─── Live Performance (Compact HUD) ──────────────────────────────
+            col.separator()
             col.separator()
             sub = col.box()
             row = sub.row(align=True)
@@ -134,12 +135,22 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
 
         # ─── Build Character Button ───
         box.separator()
-        btn = box.row()
-        btn.scale_y = 1.0
-        btn.operator(
+        row = box.row(align=True)
+        row.scale_y = 1.0
+        row.operator(
             "exploratory.build_character",
             text="Build Character",
             icon='ARMATURE_DATA'
+        )
+
+        # ─── Remove Character Button (Confirmed) ───
+        row = box.row(align=True)
+        row.scale_y = 1.0
+        row.enabled = not scene.character_spawn_lock  # disable if locked
+        op = row.operator(
+            "exploratory.remove_character_hard",
+            text="Remove Character (Confirm)",
+            icon='TRASH'
         )
 
         # ─── Animations & Speeds ───

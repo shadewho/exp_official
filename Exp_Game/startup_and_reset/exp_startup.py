@@ -5,13 +5,12 @@ import bpy
 import os
 from ...exp_preferences import get_addon_path
 from ..props_and_utils.exp_utilities import get_game_world
+from .exp_fullscreen import enter_fullscreen_once
 
 # ────────────────────────────────────
-# Global for restoring workspace
+# Global for restoring scene
 # ────────────────────────────────────
-ORIGINAL_WORKSPACE_NAME = None
 ORIGINAL_SCENE_NAME     = None
-
 
 def center_cursor_in_3d_view(context, margin=50):
     """
@@ -66,20 +65,27 @@ def ensure_object_mode(context):
 #----------------------------------------------------------
 ### Snapshot of User Settings (No Global)
 #----------------------------------------------------------
-def set_viewport_shading_rendered():
+def set_viewport_shading(mode: str = "RENDERED"):
     """
-    Sets the shading mode of all VIEW_3D areas to 'RENDERED'.
-    This must be done using the correct context (the current screen's areas).
+    Sets the shading mode of all VIEW_3D areas on the *current* window's screen.
+    Valid modes in Blender: 'WIREFRAME', 'SOLID', 'MATERIAL', 'RENDERED'.
     """
-    # Loop over all areas in the current window's screen
-    for area in bpy.context.window.screen.areas:
+    valid = {"WIREFRAME", "SOLID", "MATERIAL", "RENDERED"}
+    if mode not in valid:
+        mode = "RENDERED"
+
+    win = bpy.context.window
+    if not win or not win.screen:
+        return
+
+    for area in win.screen.areas:
         if area.type == 'VIEW_3D':
-            # The active space in a VIEW_3D area holds the shading settings.
             space = area.spaces.active
             if hasattr(space, "shading"):
-                space.shading.type = 'RENDERED'
-            else:
-                print("No shading property found for area:", area)
+                try:
+                    space.shading.type = mode
+                except Exception as e:
+                    print(f"[WARN] Failed to set shading on {area}: {e}")
 
 
 def ensure_timeline_at_zero():
@@ -115,14 +121,29 @@ def record_user_settings(scene):
         original_settings["shadow_step_count"] = scene.eevee.shadow_step_count
         original_settings["shadow_resolution_scale"] = scene.eevee.shadow_resolution_scale
         original_settings["use_shadows"] = getattr(scene.eevee, "use_shadows", True)
+        original_settings["preview_pixel_size"] = scene.render.preview_pixel_size
     # Record 3D Viewport lens settings for each VIEW_3D area.
     # Convert the pointer to a string so that it can be used as a key.
+    original_settings["viewport_shading_type"] = {}
     original_settings["viewport_lens"] = {}
     original_settings["viewport_show_shadows"] = {}
-    for area in bpy.context.window.screen.areas:
-        if area.type == 'VIEW_3D':
-            key = str(area.as_pointer())
-            original_settings["viewport_lens"][key] = area.spaces.active.lens
+
+    win = bpy.context.window
+    if win and win.screen:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                key = str(area.as_pointer())
+                space = area.spaces.active
+                # lens
+                original_settings["viewport_lens"][key] = space.lens
+                # shading type (defensive)
+                stype = None
+                if hasattr(space, "shading"):
+                    try:
+                        stype = space.shading.type
+                    except Exception:
+                        stype = None
+                original_settings["viewport_shading_type"][key] = stype
 
 
 def apply_performance_settings(scene, performance_level):
@@ -132,7 +153,6 @@ def apply_performance_settings(scene, performance_level):
     applies the desired Eevee settings, sets the viewport shading to 'RENDERED',
     and sets the viewport lens to 55mm.
     """
-    # If the user chose CUSTOM, do nothing.
     if performance_level not in {"LOW", "MEDIUM", "HIGH"}:
         performance_level = "LOW"
 
@@ -164,7 +184,18 @@ def apply_performance_settings(scene, performance_level):
             scene.eevee.shadow_resolution_scale = 0.5
 
     # Now set all VIEW_3D areas’ shading mode to 'RENDERED'
-    set_viewport_shading_rendered()
+    # Apply user-chosen viewport shading for gameplay
+    try:
+        set_viewport_shading(getattr(prefs, "viewport_shading_mode", "RENDERED"))
+    except Exception as e:
+        print(f"[WARN] Failed to apply preferred shading: {e}")
+
+    # Apply preview pixel size from preferences
+    try:
+        # This is an Enum on Scene.render; strings like 'AUTO','1','2','4','8' are valid.
+        scene.render.preview_pixel_size = getattr(prefs, "preview_pixel_size", "AUTO")
+    except Exception as e:
+        print(f"[WARN] Failed to set preview_pixel_size: {e}")
 
     # Set the viewport lens for each VIEW_3D area to 55mm.
     for area in bpy.context.window.screen.areas:
@@ -198,33 +229,56 @@ def restore_user_settings(scene):
     if not original_settings:
         return
 
-    # Restore the render engine type:
+    # Render engine
     scene.render.engine = original_settings.get("render_engine", scene.render.engine)
 
+    # Eevee block
     if hasattr(scene, "eevee"):
-        scene.eevee.use_taa_reprojection = original_settings.get("use_taa_reprojection", scene.eevee.use_taa_reprojection)
+        scene.eevee.use_taa_reprojection      = original_settings.get("use_taa_reprojection", scene.eevee.use_taa_reprojection)
         scene.eevee.use_shadow_jitter_viewport = original_settings.get("use_shadow_jitter_viewport", scene.eevee.use_shadow_jitter_viewport)
-        scene.eevee.taa_samples = original_settings.get("taa_samples", scene.eevee.taa_samples)
-        scene.eevee.use_raytracing = original_settings.get("use_raytracing", scene.eevee.use_raytracing)
-        scene.eevee.shadow_ray_count = original_settings.get("shadow_ray_count", scene.eevee.shadow_ray_count)
-        scene.eevee.shadow_step_count = original_settings.get("shadow_step_count", scene.eevee.shadow_step_count)
-        scene.eevee.shadow_resolution_scale = original_settings.get("shadow_resolution_scale", scene.eevee.shadow_resolution_scale)
+        scene.eevee.taa_samples               = original_settings.get("taa_samples", scene.eevee.taa_samples)
+        scene.eevee.use_raytracing            = original_settings.get("use_raytracing", scene.eevee.use_raytracing)
+        scene.eevee.shadow_ray_count          = original_settings.get("shadow_ray_count", scene.eevee.shadow_ray_count)
+        scene.eevee.shadow_step_count         = original_settings.get("shadow_step_count", scene.eevee.shadow_step_count)
+        scene.eevee.shadow_resolution_scale   = original_settings.get("shadow_resolution_scale", scene.eevee.shadow_resolution_scale)
 
         if hasattr(scene.eevee, "use_shadows"):
             scene.eevee.use_shadows = original_settings.get("use_shadows", scene.eevee.use_shadows)
-        
 
-    # Restore 3D Viewport lens settings for each VIEW_3D area.
+    pps = original_settings.get("preview_pixel_size")
+    if pps is not None:
+        try:
+            scene.render.preview_pixel_size = pps
+        except Exception as e:
+            print(f"[WARN] Failed to restore preview_pixel_size: {e}")
+
+    # Per-viewport lens
     viewport_lens = original_settings.get("viewport_lens")
     if viewport_lens:
-        for area in bpy.context.window.screen.areas:
-            if area.type == 'VIEW_3D':
-                key = str(area.as_pointer())
-                if key in viewport_lens:
-                    area.spaces.active.lens = viewport_lens[key]
-                    
+        win = bpy.context.window
+        if win and win.screen:
+            for area in win.screen.areas:
+                if area.type == 'VIEW_3D':
+                    key = str(area.as_pointer())
+                    if key in viewport_lens:
+                        area.spaces.active.lens = viewport_lens[key]
 
-    # Optionally, remove the custom property after restoring settings.
+    # Per-viewport shading
+    viewport_types = original_settings.get("viewport_shading_type")
+    if viewport_types:
+        win = bpy.context.window
+        if win and win.screen:
+            for area in win.screen.areas:
+                if area.type == 'VIEW_3D':
+                    key = str(area.as_pointer())
+                    stype = viewport_types.get(key)
+                    if stype:
+                        try:
+                            area.spaces.active.shading.type = stype
+                        except Exception as e:
+                            print(f"[WARN] Failed to restore shading for {area}: {e}")
+
+    # Cleanup snapshot
     del scene["exploratory_original_settings"]
 
 
@@ -253,7 +307,7 @@ def move_armature_and_children_to_scene(target_armature, destination_scene):
 def disable_live_perf_overlay_next_tick():
     """
     Turn off the scene live performance overlay on the next tick.
-    Safe to call right after appending/switching scenes/workspaces.
+    Safe to call right after appending/switching scenes
     """
     def _do_disable():
         sc = bpy.context.window.scene if bpy.context and bpy.context.window else None
@@ -264,47 +318,6 @@ def disable_live_perf_overlay_next_tick():
             print(f"[WARN] disable_live_perf_overlay_next_tick failed: {e}")
         return None  # run once
     bpy.app.timers.register(_do_disable, first_interval=0.0)
-
-def append_and_switch_to_game_workspace(context, workspace_name="exp_game"):
-    """
-    Appends a workspace from game_screen.blend (if not already present)
-    and switches the current window to it.
-    """
-
-    scene = context.scene
-
-    # 1) Store the original workspace name (if not already stored)
-    if "original_workspace_name" not in scene:
-        original_ws = context.window.workspace
-        scene["original_workspace_name"] = original_ws.name
-    else:
-        print("Original workspace already stored as:", scene["original_workspace_name"])
-
-    # 2) Build the path to your .blend file using get_addon_path()
-    blend_path = os.path.join(get_addon_path(), "Exp_Game", "exp_assets", "Game_Screen", "game_screen.blend")
-
-    # 3) Define the directory inside the blend file where workspaces are stored.
-    directory = blend_path + "/WorkSpace/"
-    filepath  = os.path.join(directory, workspace_name)
-
-    # 4) Append the workspace if not already present.
-    if workspace_name not in bpy.data.workspaces:
-        try:
-            bpy.ops.wm.append(
-                filepath=filepath,
-                directory=directory,
-                filename=workspace_name
-            )
-        except Exception as e:
-            print(f"Failed to append workspace '{workspace_name}': {e}")
-
-    # 5) Switch the current window to the appended workspace.
-    new_ws = bpy.data.workspaces.get(workspace_name)
-    if new_ws:
-        context.window.workspace = new_ws
-    else:
-        print(f"Workspace '{workspace_name}' not found after append.")
-
 
 #---------clear custom actions in NLA --- updated or changed actions replace action strips
 def clear_all_exp_custom_strips():
@@ -323,53 +336,6 @@ def clear_all_exp_custom_strips():
                 tr.strips.remove(s)
 #----------------------------------------------------------------------------------------
 
-def revert_to_original_workspace(context):
-    """
-    Switch back to the workspace we started from, by using the
-    global ORIGINAL_WORKSPACE_NAME slot instead of any scene property.
-    """
-    global ORIGINAL_WORKSPACE_NAME
-
-    # ── 1) Read and clear the saved workspace name
-    original_name = ORIGINAL_WORKSPACE_NAME
-    ORIGINAL_WORKSPACE_NAME = None
-
-    # ── 2) Resolve a bpy.types.Workspace
-    original_ws = bpy.data.workspaces.get(original_name)
-    if not original_ws:
-        original_ws = bpy.data.workspaces.get("Layout")
-        if not original_ws and bpy.data.workspaces:
-            original_ws = bpy.data.workspaces[0]
-
-    # ── 3) Delete the temporary "exp_game" workspace, then switch back
-    def delete_and_revert():
-        # a) delete exp_game if it exists, to avoid clutter
-        game_ws = bpy.data.workspaces.get("exp_game")
-        if game_ws:
-            context.window.workspace = game_ws
-            override = {
-                'window': context.window,
-                'screen': context.window.screen,
-            }
-            # find a VIEW_3D area/region for the override
-            for area in context.window.screen.areas:
-                if area.type == 'VIEW_3D':
-                    override['area'] = area
-                    for reg in area.regions:
-                        if reg.type == 'WINDOW':
-                            override['region'] = reg
-                            break
-                    break
-            with bpy.context.temp_override(**override):
-                bpy.ops.workspace.delete('EXEC_DEFAULT')
-
-        # b) switch back to the original
-        if original_ws:
-            context.window.workspace = original_ws
-        return None  # stop the timer
-
-    # register the timer so it runs after the modal cleanup
-    bpy.app.timers.register(delete_and_revert, first_interval=0.1)
 
 def revert_to_original_scene(context):
     """
@@ -394,27 +360,32 @@ def revert_to_original_scene(context):
         context.window.scene = bpy.data.scenes[orig_name]
     else:
         print(f"[DEBUG] Original scene '{orig_name}' not found; skipping scene revert.")
-def delayed_invoke_modal(from_ui):
-    for window in bpy.context.window_manager.windows:
-        if window.workspace.name == "exp_game":
-            for area in window.screen.areas:
-                if area.type == 'VIEW_3D':
-                    override_ctx = bpy.context.copy()
-                    override_ctx['window'] = window
-                    override_ctx['screen'] = window.screen
-                    override_ctx['area'] = area
-                    for reg in area.regions:
-                        if reg.type == 'WINDOW':
-                            override_ctx['region'] = reg
-                            break
-                    with bpy.context.temp_override(**override_ctx):
-                        bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=from_ui)
-                    return None
-    return 0.1
+        
 
 #########################################
-#Append workspace then start the game
+#Fullscreen then start the game
 #########################################
+
+
+def invoke_modal_in_current_view3d(launched_from_ui: bool):
+    """Find a valid VIEW_3D + WINDOW region in the current window and invoke the modal there."""
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+                if region:
+                    override_ctx = {
+                        'window': window,
+                        'screen': window.screen,
+                        'area':   area,
+                        'region': region,
+                    }
+                    with bpy.context.temp_override(**override_ctx):
+                        bpy.ops.view3d.exp_modal('INVOKE_DEFAULT', launched_from_ui=launched_from_ui)
+                    return
+    print("[StartGameFS] No VIEW_3D/WINDOW region available to invoke modal.")
+
+
 class EXP_GAME_OT_StartGame(bpy.types.Operator):
     """Fullscreen Game Start"""
     
@@ -425,42 +396,25 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         name="Launched from UI",
         default=False
     )
-    original_workspace_name: bpy.props.StringProperty(
-        name="Original Workspace Name",
-        default=""
-    )
-    original_scene_name: bpy.props.StringProperty(
-        name="Original Scene Name",
-        default=""
-    )
 
     def execute(self, context):
-        global ORIGINAL_WORKSPACE_NAME, ORIGINAL_SCENE_NAME
+        # capture before the timer so we never touch self later
+        from_ui = bool(self.launched_from_ui)
 
-        # ─── Store original workspace ───────────────────────────
-        if self.original_workspace_name:
-            ORIGINAL_WORKSPACE_NAME = self.original_workspace_name
-        else:
-            ORIGINAL_WORKSPACE_NAME = context.window.workspace.name
-
-        # ─── Store original scene ───────────────────────────────
-        if self.original_scene_name:
-            ORIGINAL_SCENE_NAME = self.original_scene_name
-        else:
-            ORIGINAL_SCENE_NAME = context.window.scene.name
-
-        # ─── Switch into the exp_game workspace ────────────────
-        append_and_switch_to_game_workspace(context, "exp_game")
-
-        # ─── Schedule the modal launch ─────────────────────────
-        from_ui = self.launched_from_ui
         if from_ui:
-            disable_live_perf_overlay_next_tick()
-        def start_modal():
-            delayed_invoke_modal(from_ui)
+            try:
+                disable_live_perf_overlay_next_tick()
+            except Exception:
+                pass
+
+        enter_fullscreen_once()
+
+        def _start_modal_after_fs():
+            invoke_modal_in_current_view3d(from_ui)  # no self here
             return None
-        bpy.app.timers.register(start_modal, first_interval=0.2)
+        
+        delay = 0.4 if from_ui else 0.2  # ← give the UI/area/handlers a beat to settle
+        bpy.app.timers.register(_start_modal_after_fs, first_interval=delay)
 
         return {'FINISHED'}
-    
 
