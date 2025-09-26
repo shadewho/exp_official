@@ -43,6 +43,10 @@ from .systems.exp_live_performance import (
 )
 from .startup_and_reset.exp_fullscreen import exit_fullscreen_once
 
+from .systems.exp_threads import ThreadEngine
+from mathutils import Vector
+from .physics.exp_view import compute_camera_allowed_distance
+
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
 
@@ -145,6 +149,15 @@ class ExpModal(bpy.types.Operator):
             self.grounded_platform = None
 
     _initial_game_state = {}
+
+
+
+    #Threading intialization#
+    _thread_eng = None
+    _frame_seq: int = 0
+    _cam_allowed_last: float = 3.0 
+
+
 
     # ---------------------------
     # Main Modal Functions
@@ -367,6 +380,10 @@ class ExpModal(bpy.types.Operator):
         # Live performance overlay helper
         init_live_performance(self)
 
+        # Threading engine 
+        self._thread_eng = ThreadEngine(max_workers=1)
+
+
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
@@ -383,10 +400,9 @@ class ExpModal(bpy.types.Operator):
             perf_frame_begin(self)
 
             # A) Timebases
-            # Keep your local real-time dt for camera smoothing/input feel
             t0 = perf_mark(self, 'time')
-            self.update_time()              # updates self.delta_time = real_dt * time_scale (your existing method)
-            _ = update_real_time()          # advance wall-clock marker (no sim-time change)
+            self.update_time()          # self.delta_time = real_dt * time_scale
+            _ = update_real_time()      # advance wall-clock marker (no sim-time change)
             perf_mark(self, 'time', t0)
 
             # Decide once: should we do a 30 Hz physics tick this frame?
@@ -403,7 +419,7 @@ class ExpModal(bpy.types.Operator):
 
                 # B) Content movers & scripted reactions (SIM-timed)
                 t0 = perf_mark(self, 'custom_tasks')
-                update_all_custom_managers(dt_sim)    # now runs at fixed Hz
+                update_all_custom_managers(dt_sim)
                 update_transform_tasks()
                 update_property_tasks()
                 perf_mark(self, 'custom_tasks', t0)
@@ -418,9 +434,8 @@ class ExpModal(bpy.types.Operator):
                 update_performance_culling(self, context)
                 perf_mark(self, 'culling', t0)
 
-                # E) Animations & audio: also fixed-tick, same dt_sim
+                # E) Animations & audio
                 t0 = perf_mark(self, 'anim_audio')
-                # (Pass vertical_velocity so airborne transitions are consistent)
                 self.animation_manager.update(self.keys_pressed, dt_sim, self.is_grounded, self.z_velocity)
                 current_anim_state = self.animation_manager.anim_state
                 audio_state_mgr = get_global_audio_state_manager()
@@ -443,29 +458,107 @@ class ExpModal(bpy.types.Operator):
             self.update_movement_and_gravity(context)
             perf_mark(self, 'physics', t0)
 
-            # G) Camera update EVERY frame (keeps smooth motion irrespective of tick)
+            # G) Camera update — offload compute to thread, apply on main thread
             t0 = perf_mark(self, 'camera')
-            update_view(
-                context,
-                self.target_object,
-                self.pitch,
-                self.yaw,
-                self.bvh_tree,
-                context.scene.orbit_distance,
-                context.scene.zoom_factor,
-                dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
-            )
+
+            # Build inputs on main thread (cheap math only; no bpy writes)
+            # 1) Direction from pitch/yaw
+            dir_x = math.cos(self.pitch) * math.sin(self.yaw)
+            dir_y = -math.cos(self.pitch) * math.cos(self.yaw)
+            dir_z = math.sin(self.pitch)
+            direction = Vector((dir_x, dir_y, dir_z))
+            if direction.length > 1e-9:
+                direction.normalize()
+
+            # 2) Anchor at capsule top
+            cp = context.scene.char_physics
+            cap_h = float(getattr(cp, "height", 2.0))
+            cap_r = float(getattr(cp, "radius", 0.30))
+            anchor = self.target_object.location + Vector((0.0, 0.0, cap_h))
+
+            # 3) Camera "thickness" from near-clip (read only)
+            clip_start = 0.1
+            try:
+                for area in context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        cs = area.spaces.active.clip_start
+                        if cs > 0.0:
+                            clip_start = cs if clip_start <= 0.0 else min(clip_start, cs)
+            except Exception:
+                pass
+            r_cam = max(0.008, clip_start * 0.60)
+
+            # 4) Desired boom and minimum
+            desired_max = max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
+            min_cam     = max(0.0006, cap_r * 0.04)
+
+            # 5) Submit background camera solve (debounced by key/version)
+            if self._thread_eng:
+                self._frame_seq += 1
+                self._thread_eng.submit_latest(
+                    key="camera",
+                    version=self._frame_seq,
+                    fn=compute_camera_allowed_distance,
+                    char_key=self.target_object.name,
+                    anchor=anchor.copy(),
+                    direction=direction.copy(),
+                    r_cam=float(r_cam),
+                    desired_max=float(desired_max),
+                    min_cam=float(min_cam),
+                    static_bvh=self.bvh_tree,
+                    dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
+                )
+
+                # Poll ready results and keep the latest allowed length
+                for res in self._thread_eng.poll_results():
+                    if res.key == "camera" and isinstance(res.payload, (int, float)):
+                        self._cam_allowed_last = float(res.payload)
+                    # Per-object culling batches: key startswith "cull:"
+                    if res.key.startswith("cull:") and isinstance(res.payload, dict):
+                        entry_ptr = res.payload.get("entry_ptr")
+                        next_idx  = res.payload.get("next_idx")
+                        changes   = res.payload.get("changes", [])
+
+                        # Access the runtime cache built by exp_performance
+                        runtime = getattr(self, "_perf_runtime", None)
+                        if not runtime or entry_ptr not in runtime:
+                            continue
+                        rec = runtime[entry_ptr]
+
+                        # Apply only the requested small set of writes
+                        writes = 0
+                        for name, desired_hidden in changes:
+                            obj = bpy.data.objects.get(name)
+                            if not obj:
+                                continue
+                            if obj.hide_viewport != desired_hidden:
+                                obj.hide_viewport = desired_hidden
+                                writes += 1
+
+                        # Advance the round-robin cursor so next batch continues
+                        rec["scan_idx"] = int(next_idx)
+                        continue
+
+            # 6) Apply to viewport (main thread only)
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    rv3d = area.spaces.active.region_3d
+                    rv3d.view_location = anchor
+                    rv3d.view_rotation = direction.to_track_quat('Z', 'Y')
+                    rv3d.view_distance = self._cam_allowed_last
+
             perf_mark(self, 'camera', t0)
 
-            # H) Interactions/UI/SFX every frame (but timers use SIM time now)
+            # H) Interactions/UI/SFX every frame (timers use SIM time now)
             t0 = perf_mark(self, 'interact_ui_audio')
             check_interactions(context)
             update_text_reactions()
-            update_sound_tasks()   # uses get_game_time() → now SIM-synced
+            update_sound_tasks()   # uses get_game_time()
             perf_mark(self, 'interact_ui_audio', t0)
 
             # ---- END FRAME ----
             perf_frame_end(self, context)
+
 
 
         # B) Key events => only user preference keys (forward/back/left/right/run/jump).
@@ -580,7 +673,12 @@ class ExpModal(bpy.types.Operator):
 
             # Register the timer to delay UI calls.
             bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)
-        
+    
+        if self._thread_eng:
+            try: self._thread_eng.shutdown()
+            except Exception: pass
+            self._thread_eng = None
+
         return {'CANCELLED'}
 
 

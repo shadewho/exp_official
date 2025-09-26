@@ -465,7 +465,7 @@ class KinematicCharacterController:
                     bvh_like, self.obj,
                     radius=self.cfg.radius,
                     heights=push_heights,
-                    max_iterations=3,
+                    max_iterations=2,
                     push_strength=0.6,
                     floor_cos_limit=floor_cos,
                     ignore_floor_contacts=ignore_floor,

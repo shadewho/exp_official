@@ -8,14 +8,14 @@ from ..props_and_utils.exp_time import get_game_time
 # Tunables you can tweak
 # ===========================
 _FRUSTUM_RING_RADIUS  = 1.0    # ring radius in units of r_cam
-_PUSHOUT_ITERS        = 3      # tiny nearest-point pushout passes
-_LOS_BINARY_STEPS     = 10     # bsearch steps for nearest clear LoS
+_PUSHOUT_ITERS        = 1      # tiny nearest-point pushout passes
+_LOS_BINARY_STEPS     = 1     # bsearch steps for nearest clear LoS
 _LOS_EPS              = 1.0e-4
 
 # New (safe) tuning helpers
 # Ring is only used when the center ray reports a hit. This is enough because LoS and pushout
 # cover the other cases. You can lower this further if needed.
-_RING_SAMPLES_ON_HIT  = 4
+_RING_SAMPLES_ON_HIT  = 1
 
 # Absolute minimum camera distance from anchor (meters)
 # Final minimum is: max(MIN_CAM_ABS, cap_r * MIN_CAM_RADIUS_FACTOR)
@@ -113,7 +113,7 @@ _SMOOTHERS = {}
 _LATCHES   = {}
 
 def _smooth_for(char_obj):
-    key = char_obj.name if char_obj else "__global__"
+    key = getattr(char_obj, "name", char_obj) if char_obj else "__global__"
     sm = _SMOOTHERS.get(key)
     if sm is None:
         sm = _CamSmoother()
@@ -121,7 +121,7 @@ def _smooth_for(char_obj):
     return sm
 
 def _latch_for(char_obj):
-    key = char_obj.name if char_obj else "__global__"
+    key = getattr(char_obj, "name", char_obj) if char_obj else "__global__"
     lt = _LATCHES.get(key)
     if lt is None:
         lt = _CamLatch()
@@ -338,3 +338,47 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
 def shortest_angle_diff(current, target):
     diff = (target - current + math.pi) % (2 * math.pi) - math.pi
     return diff
+
+
+
+from typing import Optional, Any
+
+def compute_camera_allowed_distance(
+    char_key,
+    anchor,
+    direction,
+    r_cam: float,
+    desired_max: float,
+    min_cam: float,
+    static_bvh,
+    dynamic_bvh_map,
+) -> float:
+    """
+    Thread‑safe: no bpy/context. Uses your existing helpers:
+      _multi_ray_min_hit, _los_blocked, _binary_search_clear_los, _camera_sphere_pushout_any,
+      _smooth_for, _latch_for, get_game_time()
+    Returns a single float: final allowed boom length.
+    """
+    # 1) First obstruction along the boom
+    hit_dist, hit_token = _multi_ray_min_hit(static_bvh, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
+    if hit_dist is not None:
+        base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
+        allowed      = max(min_cam, base_allowed - (EXTRA_PULL_METERS + EXTRA_PULL_K * r_cam))
+    else:
+        allowed = desired_max
+
+    # 2) Ensure clear LoS (binary search)
+    candidate_cam = anchor + direction * allowed
+    if _los_blocked(static_bvh, dynamic_bvh_map, anchor, candidate_cam, r_cam):
+        allowed = _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction,
+                                           low=min_cam, high=allowed, steps=_LOS_BINARY_STEPS, r_cam=r_cam)
+        candidate_cam = anchor + direction * allowed
+
+    # 3) Tiny pushout vs. thin geo
+    candidate_cam = _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, candidate_cam, r_cam, max_iters=_PUSHOUT_ITERS)
+    allowed_after_push = (candidate_cam - anchor).length
+
+    # 4) Latch + smoothing (identical semantics to update_view)
+    latched_allowed = _latch_for(char_key).filter(hit_token, max(min_cam, min(allowed_after_push, desired_max)), r_cam)
+    final_allowed   = _smooth_for(char_key).filter(latched_allowed)
+    return float(final_allowed)

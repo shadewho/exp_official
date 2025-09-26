@@ -9,7 +9,7 @@ def capsule_collision_resolve(
     obj,
     radius=0.2,
     heights=(0.3, 1.0, 1.9),
-    max_iterations=6,
+    max_iterations=2,
     push_strength=0.5,
     max_push_per_iter=None,
     average_contacts=True,

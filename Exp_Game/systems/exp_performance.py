@@ -15,7 +15,7 @@ from bpy.props import (
 
 # Use the real-time game clock you already run each TIMER tick
 from ..props_and_utils.exp_time import get_game_time
-
+from .exp_threads import compute_cull_batch
 # ──────────────────────────────────────────────────────────────────────────────
 # Tunables
 # ──────────────────────────────────────────────────────────────────────────────
@@ -481,29 +481,67 @@ def update_performance_culling(operator, context):
         else:
             objs = rec["obj_list"]
             if objs:
-                n = len(objs)
-                start = rec.get("scan_idx", 0)
-                i = 0
-                changes = 0
-                thresh = entry.cull_distance  # object-level check uses base threshold
+                # If the thread engine is available, submit a coalesced batch job.
+                if hasattr(operator, "_thread_eng") and operator._thread_eng:
+                    # Snapshot names & positions on the main thread (read-only)
+                    names = [o.name for o in objs]
+                    poss  = [tuple(o.matrix_world.translation) for o in objs]
 
-                # Round-robin across the list to avoid starvation
-                while i < n and changes < MAX_PROP_WRITES_PER_TICK:
-                    idx = (start + i) % n
-                    o = objs[idx]
+                    # Round-robin cursor and batch size (respect your write budget)
+                    start_idx = rec.get("scan_idx", 0)
+                    max_batch = min(MAX_PROP_WRITES_PER_TICK, len(names))
 
-                    if _is_force_hidden_during_game(operator, o):
-                        desired_hidden = True
-                    else:
-                        far = (o.matrix_world.translation - ref_loc).length > thresh
-                        desired_hidden = far
+                    # Threshold and identity for this entry
+                    threshold = float(entry.cull_distance)
+                    entry_ptr = entry.as_pointer()
+                    job_key   = f"cull:{entry_ptr}"
 
-                    if o.hide_viewport != desired_hidden:
-                        o.hide_viewport = desired_hidden
-                        changes += 1
-                    i += 1
+                    # Per-entry version to coalesce newer work
+                    ver = rec.get("cull_ver", 0) + 1
+                    rec["cull_ver"] = ver
 
-                rec["scan_idx"] = (start + i) % n  # advance cursor even if no changes
+                    # Submit/replace latest work for this entry.
+                    operator._thread_eng.submit_latest(
+                        key=job_key,
+                        version=ver,
+                        fn=compute_cull_batch,             # runs in worker (no bpy)
+                        entry_ptr=entry_ptr,
+                        obj_names=names,
+                        obj_positions=poss,
+                        ref_loc=tuple(ref_loc),            # (x,y,z)
+                        thresh=threshold,
+                        start=start_idx,
+                        max_count=max_batch,
+                    )
+
+                    # Note: we advance rec["scan_idx"] when the result is applied
+                    # in ExpModal.modal() after polling thread results.
+                else:
+                    # ── Fallback (no thread engine): original synchronous path ──
+                    n = len(objs)
+                    start = rec.get("scan_idx", 0)
+                    i = 0
+                    changes = 0
+                    thresh = entry.cull_distance  # object-level check uses base threshold
+
+                    # Round-robin across the list to avoid starvation
+                    while i < n and changes < MAX_PROP_WRITES_PER_TICK:
+                        idx = (start + i) % n
+                        o = objs[idx]
+
+                        if _is_force_hidden_during_game(operator, o):
+                            desired_hidden = True
+                        else:
+                            far = (o.matrix_world.translation - ref_loc).length > thresh
+                            desired_hidden = far
+
+                        if o.hide_viewport != desired_hidden:
+                            o.hide_viewport = desired_hidden
+                            changes += 1
+                        i += 1
+
+                    rec["scan_idx"] = (start + i) % n  # advance cursor even if no changes
+
 
         # ─────────────────────────────────────────────────────────
         # C) Placeholder toggling follows entry-level in_range
