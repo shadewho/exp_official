@@ -3,49 +3,40 @@
 import bpy
 import math
 import time
-from .props_and_utils.exp_utilities import get_game_world
-from .physics.exp_raycastutils import create_bvh_tree
-from .startup_and_reset.exp_spawn import spawn_user
-from .physics.exp_view import update_view, shortest_angle_diff
-from .animations.exp_animations import AnimationStateManager, set_global_animation_manager
-from .audio.exp_audio import (get_global_audio_state_manager, clear_temp_sounds, 
-                        get_global_audio_manager, clean_audio_temp)
-from .startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
+from ..physics.exp_raycastutils import create_bvh_tree
+from ..startup_and_reset.exp_spawn import spawn_user
+from .exp_view_helpers import (_update_axis_resolution_on_release, _resolved_move_keys, _axis_of_key,
+                                smooth_rotate_towards_camera, _maybe_rebind_view3d, _bind_view3d_once)
+from ..animations.exp_animations import AnimationStateManager, set_global_animation_manager
+from ..audio.exp_audio import (get_global_audio_state_manager, clean_audio_temp)
+from ..startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene, revert_to_original_scene,
                             ensure_timeline_at_zero, ensure_object_mode, clear_all_exp_custom_strips)  
-from .animations.exp_custom_animations import update_all_custom_managers
-from .interactions.exp_interactions import check_interactions, set_interact_pressed, reset_all_interactions, approximate_bounding_sphere_radius
-from .reactions.exp_reactions import update_transform_tasks, update_property_tasks, reset_all_tasks
-from .props_and_utils.exp_time import init_time, update_real_time, tick_sim_time, get_game_time
-from .reactions.exp_custom_ui import register_ui_draw, update_text_reactions, clear_all_text, show_controls_info
-from .systems.exp_objectives import update_all_objective_timers, reset_all_objectives
-from .startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
+from ..interactions.exp_interactions import set_interact_pressed, reset_all_interactions
+from ..reactions.exp_reactions import reset_all_tasks
+from ..props_and_utils.exp_time import init_time, FixedStepClock
+from ..reactions.exp_custom_ui import register_ui_draw, clear_all_text, show_controls_info
+from ..systems.exp_objectives import reset_all_objectives
+from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
-from .audio import exp_globals
-from .audio.exp_globals import stop_all_sounds, update_sound_tasks
-from ..Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
-from .systems.exp_performance import init_performance_state, update_performance_culling, restore_performance_state
-from .mouse_and_movement.exp_cursor import (
+from ..audio import exp_globals
+from ..audio.exp_globals import stop_all_sounds
+from ...Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
+from ..systems.exp_performance import init_performance_state, restore_performance_state
+from ..mouse_and_movement.exp_cursor import (
     setup_cursor_region,
     handle_mouse_move,
     release_cursor_clip,
     ensure_cursor_hidden_if_mac,
 )
-from .physics.exp_kcc import KinematicCharacterController
-from .props_and_utils.exp_time import FixedStepClock
-from .physics.exp_dynamic import update_dynamic_meshes
-from .systems.exp_live_performance import (
-    init_live_performance,
-    perf_frame_begin,
-    perf_mark,
-    perf_frame_end,
-)
-from .startup_and_reset.exp_fullscreen import exit_fullscreen_once
+from ..physics.exp_kcc import KinematicCharacterController
+from ..systems.exp_live_performance import init_live_performance
+from ..startup_and_reset.exp_fullscreen import exit_fullscreen_once
+from ..systems.exp_threads import ThreadEngine
+from .exp_loop import GameLoop
 
-from .systems.exp_threads import ThreadEngine
-from mathutils import Vector
-from .physics.exp_view import compute_camera_allowed_distance
+
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -87,6 +78,29 @@ class ExpModal(bpy.types.Operator):
     _next_physics_tick: float = 0.0  # monotonic time for next physics step
 
 
+    #----------------------------------------------------
+    #catch up - keeps slower systems in sync (no slo mo)
+    max_catchup_steps: int = 3
+    def _physics_steps_due(self) -> int:
+        """
+        Return how many 30 Hz steps are due *now*, capped to max_catchup_steps.
+        Any extra debt is dropped and the schedule realigns to 'now'.
+        """
+        now = time.perf_counter()
+        steps = 0
+        cap = int(getattr(self, "max_catchup_steps", 3))
+
+        while now >= self._next_physics_tick and steps < cap:
+            steps += 1
+            self._next_physics_tick += self.physics_dt
+
+        # If we still lag past the next tick after executing 'cap' steps,
+        # drop any remaining debt to avoid a spiral and realign.
+        if now >= self._next_physics_tick:
+            self._next_physics_tick = now + self.physics_dt
+
+        return steps
+    #------------------------------------------------------
     is_grounded: bool = False
     is_jumping: bool = False
     jump_timer: float = 0.0
@@ -114,6 +128,7 @@ class ExpModal(bpy.types.Operator):
     #physics controller and time
     physics_controller = None
     fixed_clock = None
+
 
     # store the user-chosen keys from preferences only
     pref_forward_key:  str = "W"
@@ -157,6 +172,8 @@ class ExpModal(bpy.types.Operator):
     _frame_seq: int = 0
     _cam_allowed_last: float = 3.0 
 
+    #loop initialization
+    _loop = None
 
 
     # ---------------------------
@@ -310,7 +327,6 @@ class ExpModal(bpy.types.Operator):
         self.physics_hz = 30
         self.physics_dt = 1.0 / float(self.physics_hz)
 
-        # We do not allow catch-up bursts; exactly one step per 33.333 ms.
         self._next_physics_tick = time.perf_counter() + self.physics_dt
 
         # FixedStepClock not needed for scheduling; keep None to avoid confusion
@@ -381,204 +397,41 @@ class ExpModal(bpy.types.Operator):
         init_live_performance(self)
 
         # Threading engine 
-        self._thread_eng = ThreadEngine(max_workers=1)
+        self._thread_eng = ThreadEngine(max_workers=2)
 
+        #game loop initialization
+        self._loop = GameLoop(self)
+        
+        _bind_view3d_once(self, context)
 
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
-
-        """Called repeatedly by Blender for each event (mouse, keyboard, timer, etc.)."""
-        # 1) End game when user presses the assigned end-game key
+        # End game hotkey
         if event.type == self.pref_end_game_key and event.value == 'PRESS':
             self.cancel(context)
             return {'CANCELLED'}
 
         if event.type == 'TIMER':
+            if self._loop:
+                self._loop.on_timer(context)
+            return {'RUNNING_MODAL'}
 
-            # ---- START FRAME (for live perf overlay) ----
-            perf_frame_begin(self)
-
-            # A) Timebases
-            t0 = perf_mark(self, 'time')
-            self.update_time()          # self.delta_time = real_dt * time_scale
-            _ = update_real_time()      # advance wall-clock marker (no sim-time change)
-            perf_mark(self, 'time', t0)
-
-            # Decide once: should we do a 30 Hz physics tick this frame?
-            do_phys = self._physics_due()
-            self._perf_last_physics_steps = 1 if do_phys else 0
-
-            # ---- Everything that must live on the fixed simulation tick ----
-            if do_phys:
-                # One SIM tick (shared across physics, animations, audio, scripted movers)
-                dt_sim = self.physics_dt * float(self.time_scale)
-
-                # Advance the SIM clock used by animations/audio/timers
-                tick_sim_time(dt_sim)
-
-                # B) Content movers & scripted reactions (SIM-timed)
-                t0 = perf_mark(self, 'custom_tasks')
-                update_all_custom_managers(dt_sim)
-                update_transform_tasks()
-                update_property_tasks()
-                perf_mark(self, 'custom_tasks', t0)
-
-                # C) Dynamic proxies + platform velocities (feeds KCC)
-                t0 = perf_mark(self, 'dynamic_meshes')
-                update_dynamic_meshes(self)
-                perf_mark(self, 'dynamic_meshes', t0)
-
-                # D) Distance-based culling (heavier work → keep on fixed tick)
-                t0 = perf_mark(self, 'culling')
-                update_performance_culling(self, context)
-                perf_mark(self, 'culling', t0)
-
-                # E) Animations & audio
-                t0 = perf_mark(self, 'anim_audio')
-                self.animation_manager.update(self.keys_pressed, dt_sim, self.is_grounded, self.z_velocity)
-                current_anim_state = self.animation_manager.anim_state
-                audio_state_mgr = get_global_audio_state_manager()
-                audio_state_mgr.update_audio_state(current_anim_state)
-                perf_mark(self, 'anim_audio', t0)
-
-            # --- Character gating / input filtering (unchanged) ---
-            mg = context.scene.mobility_game
-            if not mg.allow_movement:
-                for k in (self.pref_forward_key, self.pref_backward_key,
-                        self.pref_left_key, self.pref_right_key):
-                    if k in self.keys_pressed:
-                        self.keys_pressed.remove(k)
-            if not mg.allow_sprint:
-                if self.pref_run_key in self.keys_pressed:
-                    self.keys_pressed.remove(self.pref_run_key)
-
-            # F) Movement & gravity step (method still hard-locks itself to 30 Hz)
-            t0 = perf_mark(self, 'physics')
-            self.update_movement_and_gravity(context)
-            perf_mark(self, 'physics', t0)
-
-            # G) Camera update — offload compute to thread, apply on main thread
-            t0 = perf_mark(self, 'camera')
-
-            # Build inputs on main thread (cheap math only; no bpy writes)
-            # 1) Direction from pitch/yaw
-            dir_x = math.cos(self.pitch) * math.sin(self.yaw)
-            dir_y = -math.cos(self.pitch) * math.cos(self.yaw)
-            dir_z = math.sin(self.pitch)
-            direction = Vector((dir_x, dir_y, dir_z))
-            if direction.length > 1e-9:
-                direction.normalize()
-
-            # 2) Anchor at capsule top
-            cp = context.scene.char_physics
-            cap_h = float(getattr(cp, "height", 2.0))
-            cap_r = float(getattr(cp, "radius", 0.30))
-            anchor = self.target_object.location + Vector((0.0, 0.0, cap_h))
-
-            # 3) Camera "thickness" from near-clip (read only)
-            clip_start = 0.1
-            try:
-                for area in context.screen.areas:
-                    if area.type == 'VIEW_3D':
-                        cs = area.spaces.active.clip_start
-                        if cs > 0.0:
-                            clip_start = cs if clip_start <= 0.0 else min(clip_start, cs)
-            except Exception:
-                pass
-            r_cam = max(0.008, clip_start * 0.60)
-
-            # 4) Desired boom and minimum
-            desired_max = max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
-            min_cam     = max(0.0006, cap_r * 0.04)
-
-            # 5) Submit background camera solve (debounced by key/version)
-            if self._thread_eng:
-                self._frame_seq += 1
-                self._thread_eng.submit_latest(
-                    key="camera",
-                    version=self._frame_seq,
-                    fn=compute_camera_allowed_distance,
-                    char_key=self.target_object.name,
-                    anchor=anchor.copy(),
-                    direction=direction.copy(),
-                    r_cam=float(r_cam),
-                    desired_max=float(desired_max),
-                    min_cam=float(min_cam),
-                    static_bvh=self.bvh_tree,
-                    dynamic_bvh_map=getattr(self, "dynamic_bvh_map", None)
-                )
-
-                # Poll ready results and keep the latest allowed length
-                for res in self._thread_eng.poll_results():
-                    if res.key == "camera" and isinstance(res.payload, (int, float)):
-                        self._cam_allowed_last = float(res.payload)
-                    # Per-object culling batches: key startswith "cull:"
-                    if res.key.startswith("cull:") and isinstance(res.payload, dict):
-                        entry_ptr = res.payload.get("entry_ptr")
-                        next_idx  = res.payload.get("next_idx")
-                        changes   = res.payload.get("changes", [])
-
-                        # Access the runtime cache built by exp_performance
-                        runtime = getattr(self, "_perf_runtime", None)
-                        if not runtime or entry_ptr not in runtime:
-                            continue
-                        rec = runtime[entry_ptr]
-
-                        # Apply only the requested small set of writes
-                        writes = 0
-                        for name, desired_hidden in changes:
-                            obj = bpy.data.objects.get(name)
-                            if not obj:
-                                continue
-                            if obj.hide_viewport != desired_hidden:
-                                obj.hide_viewport = desired_hidden
-                                writes += 1
-
-                        # Advance the round-robin cursor so next batch continues
-                        rec["scan_idx"] = int(next_idx)
-                        continue
-
-            # 6) Apply to viewport (main thread only)
-            for area in context.screen.areas:
-                if area.type == 'VIEW_3D':
-                    rv3d = area.spaces.active.region_3d
-                    rv3d.view_location = anchor
-                    rv3d.view_rotation = direction.to_track_quat('Z', 'Y')
-                    rv3d.view_distance = self._cam_allowed_last
-
-            perf_mark(self, 'camera', t0)
-
-            # H) Interactions/UI/SFX every frame (timers use SIM time now)
-            t0 = perf_mark(self, 'interact_ui_audio')
-            check_interactions(context)
-            update_text_reactions()
-            update_sound_tasks()   # uses get_game_time()
-            perf_mark(self, 'interact_ui_audio', t0)
-
-            # ---- END FRAME ----
-            perf_frame_end(self, context)
-
-
-
-        # B) Key events => only user preference keys (forward/back/left/right/run/jump).
+        # Key events
         elif event.type in {
-            self.pref_forward_key,
-            self.pref_backward_key,
-            self.pref_left_key,
-            self.pref_right_key,
-            self.pref_run_key,
-            self.pref_jump_key,
-            self.pref_interact_key,
-            self.pref_reset_key,
+            self.pref_forward_key, self.pref_backward_key, self.pref_left_key,
+            self.pref_right_key,  self.pref_run_key,       self.pref_jump_key,
+            self.pref_interact_key, self.pref_reset_key,
         }:
-            self.handle_key_input(event)
+            # Option A: delegate to loop (keeps modal slim)
+            if self._loop:
+                self._loop.handle_key_input(event)
+            else:
+                self.handle_key_input(event)
 
-        # D) Mouse move => camera rotation
+        # Mouse -> camera rotation
         elif event.type == 'MOUSEMOVE':
             handle_mouse_move(self, context, event)
-            
-            #Hide cursor on macOS
             ensure_cursor_hidden_if_mac(context)
 
         return {'RUNNING_MODAL'}
@@ -674,6 +527,14 @@ class ExpModal(bpy.types.Operator):
             # Register the timer to delay UI calls.
             bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)
     
+        #----------------------------
+        #loop and threading shutdown
+        #----------------------------
+        if self._loop:
+            try:
+                self._loop.shutdown()
+            except Exception:
+                pass
         if self._thread_eng:
             try: self._thread_eng.shutdown()
             except Exception: pass
@@ -702,55 +563,40 @@ class ExpModal(bpy.types.Operator):
         """Return True if a 30 Hz physics step is due (wall-clock)."""
         return time.perf_counter() >= self._next_physics_tick
 
-    def update_animations(self):
-        """Send scaled delta_time to the animation manager."""
-        if self.animation_manager:
-            self.animation_manager.update(self.keys_pressed, self.delta_time, self.is_grounded, self.z_velocity)
-
-    def update_movement_and_gravity(self, context):
+    def update_movement_and_gravity(self, context, steps: int = 0):
         """
-        HARD-LOCK physics to 30 Hz (real time). Never runs faster than 30 Hz:
-        - We execute at most one KCC step per 33.333 ms wall-clock.
-        - We DO NOT "catch up" with multiple steps if the UI stalls.
-        - Animations/audio remain per-frame on scaled delta_time.
+        Execute 'steps' physics iterations at a fixed 30 Hz dt.
+        Scheduling (deciding how many to run) is done by _physics_steps_due().
         """
-        if not self.target_object:
+        if not self.target_object or steps <= 0:
             return
-
-        # Only step exactly on (or after) the scheduled 30 Hz tick
-        now = time.perf_counter()
-        if now < self._next_physics_tick:
-            return  # not time yet; keep physics frozen this frame
 
         prefs = context.preferences.addons["Exploratory"].preferences
 
-        # One step at constant dt (independent of time_scale)
-        self.physics_controller.try_consume_jump()
-        resolved_keys = self._resolved_move_keys()
-        self.physics_controller.step(
-            dt=self.physics_dt,
-            prefs=prefs,
-            keys_pressed=resolved_keys,
-            camera_yaw=self.yaw,
-            static_bvh=self.bvh_tree,
-            dynamic_map=getattr(self, "dynamic_bvh_map", None),
-            platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
-            platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
-        )
+        for _ in range(int(steps)):
+            # One fixed 30 Hz step (independent of time_scale)
+            self.physics_controller.try_consume_jump()
+            resolved_keys = _resolved_move_keys(self)
 
-        # Keep old flags for compatibility with animations/audio
-        self.z_velocity = self.physics_controller.vel.z
-        self.is_grounded = self.physics_controller.on_ground
-        self.grounded_platform = self.physics_controller.ground_obj
-        
-        # Rotate character toward camera if moving
-        self.smooth_rotate_towards_camera()
+            self.physics_controller.step(
+                dt=self.physics_dt,
+                prefs=prefs,
+                keys_pressed=resolved_keys,
+                camera_yaw=self.yaw,
+                static_bvh=self.bvh_tree,
+                dynamic_map=getattr(self, "dynamic_bvh_map", None),
+                platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
+                platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
+            )
 
-        # Schedule the next 30 Hz tick WITHOUT catch-up bursts
-        self._next_physics_tick += self.physics_dt
-        if now >= self._next_physics_tick:
-            # If we fell behind, drop missed steps and re-align a period from now.
-            self._next_physics_tick = now + self.physics_dt
+            # Keep existing flags for animations/audio
+            self.z_velocity       = self.physics_controller.vel.z
+            self.is_grounded      = self.physics_controller.on_ground
+            self.grounded_platform= self.physics_controller.ground_obj
+
+            # Rotate character toward camera if moving
+            smooth_rotate_towards_camera(self)
+
 
 
     # ---------------------------
@@ -799,7 +645,7 @@ class ExpModal(bpy.types.Operator):
         if event.value == 'PRESS':
             self.keys_pressed.add(event.type)
 
-            ax = self._axis_of_key(event.type)
+            ax = _axis_of_key(self, event.type)
             if ax:
                 self._press_seq += 1
                 self._axis_candidates[ax][event.type] = self._press_seq
@@ -807,115 +653,4 @@ class ExpModal(bpy.types.Operator):
 
         elif event.value == 'RELEASE':
             self.keys_pressed.discard(event.type)
-            self._update_axis_resolution_on_release(event.type)
-
-    def handle_jump(self, event):
-        """Manage jump start, cooldown, etc."""
-        if (event.value == 'PRESS'
-            and self.is_grounded
-            and not self.is_jumping
-            and not self.jump_cooldown
-            and self.jump_key_released):
-            self.is_jumping = True
-            self.z_velocity = 7.0
-            self.jump_cooldown = True
-            self.jump_key_released = False
-
-        elif event.value == 'RELEASE':
-            self.jump_key_released = True
-
-        # If already jumping, apply gravity
-        if self.is_jumping:
-            self.z_velocity -= self.gravity * self.delta_time
-            # If velocity dips below 0, and we're not too high => reset jump
-            if (self.z_velocity <= 0
-                and self.target_object
-                and self.target_object.location.z <= 2.0):
-                self.is_jumping = False
-                self.z_velocity = 0.0
-
-    # ---------------------------
-    # Utility / Helper Methods
-    # ---------------------------
-    def smooth_rotate_towards_camera(self):
-        if not self.target_object:
-            return
-
-        pressed_keys = {
-            self.pref_forward_key,
-            self.pref_backward_key,
-            self.pref_left_key,
-            self.pref_right_key,
-        }
-        actual_pressed = self._resolved_move_keys().intersection(pressed_keys)
-        if not actual_pressed:
-            return
-
-        desired_yaw = self.determine_desired_yaw(actual_pressed)
-        current_yaw = self.target_object.rotation_euler.z
-        yaw_diff = shortest_angle_diff(current_yaw, desired_yaw)
-        if abs(yaw_diff) > 0.001:
-            self.target_object.rotation_euler.z += yaw_diff * self.rotation_smoothness
-
-
-    def determine_desired_yaw(self, actual_pressed):
-        """Calculate desired yaw based on user-chosen forward/back/left/right keys + camera yaw."""
-        base_yaw = self.yaw
-
-        # Check combos: forward+right => ~45°, forward+left => -45°, etc.
-        # We'll unify the user-chosen keys to match typical movement combos
-        # Or any logic you wish to implement:
-        if (self.pref_forward_key in actual_pressed and self.pref_right_key in actual_pressed):
-            return base_yaw - math.radians(45)
-        if (self.pref_forward_key in actual_pressed and self.pref_left_key in actual_pressed):
-            return base_yaw + math.radians(45)
-        if (self.pref_backward_key in actual_pressed and self.pref_right_key in actual_pressed):
-            return base_yaw - math.radians(135)
-        if (self.pref_backward_key in actual_pressed and self.pref_left_key in actual_pressed):
-            return base_yaw + math.radians(135)
-
-        if self.pref_forward_key in actual_pressed:
-            return base_yaw
-        if self.pref_backward_key in actual_pressed:
-            return base_yaw + math.pi
-        if self.pref_left_key in actual_pressed:
-            return base_yaw + (math.pi / 2)
-        if self.pref_right_key in actual_pressed:
-            return base_yaw - (math.pi / 2)
-
-        # fallback
-        return base_yaw
-    
-    def _axis_of_key(self, key):
-        if key in (self.pref_left_key, self.pref_right_key):  return 'x'
-        if key in (self.pref_forward_key, self.pref_backward_key): return 'y'
-        return None
-
-    def _resolved_move_keys(self):
-        """
-        Return at most one X key and one Y key (last-pressed on each axis),
-        plus run key if held.
-        """
-        resolved = set()
-        kx = self._axis_last.get('x')
-        if kx and (kx in self.keys_pressed):
-            resolved.add(kx)
-        ky = self._axis_last.get('y')
-        if ky and (ky in self.keys_pressed):
-            resolved.add(ky)
-        if self.pref_run_key in self.keys_pressed:
-            resolved.add(self.pref_run_key)
-        return resolved
-
-    def _update_axis_resolution_on_release(self, key):
-        ax = self._axis_of_key(key)
-        if not ax:
-            return
-        # drop from candidates
-        self._axis_candidates[ax].pop(key, None)
-        # if it was selected, pick newest remaining on that axis
-        if self._axis_last.get(ax) == key:
-            if self._axis_candidates[ax]:
-                self._axis_last[ax] = max(self._axis_candidates[ax], key=self._axis_candidates[ax].get)
-            else:
-                self._axis_last[ax] = None
+            _update_axis_resolution_on_release(self, event.type)

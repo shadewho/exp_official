@@ -113,6 +113,41 @@ class KinematicCharacterController:
         ang = math.degrees(up.angle(n))
         return ang <= self.cfg.slope_limit_deg
 
+    @staticmethod
+    def _ray_hits_sphere_segment(origin: Vector, dir_norm: Vector, max_dist: float,
+                                center: Vector, radius: float) -> bool:
+        """
+        Fast prefilter: does the segment [origin, origin + dir_norm*max_dist]
+        pass within 'radius' of 'center'? 'dir_norm' must be normalized.
+        """
+        oc = center - origin
+        t = oc.dot(dir_norm)
+        if t < -radius or t > max_dist + radius:
+            return False
+        if t < 0.0:     # before the segment start
+            closest = oc
+        elif t > max_dist:  # beyond the segment end
+            closest = oc - dir_norm * max_dist
+        else:
+            closest = oc - dir_norm * t
+        return closest.length_squared <= (radius * radius)
+
+    @staticmethod
+    def _capsule_may_touch_sphere(cap_origin: Vector, cap_height: float, cap_radius: float,
+                                sphere_center: Vector, sphere_radius: float, pad: float = 0.25) -> bool:
+        """
+        Quick reject for capsule-vs-sphere pushout. Approximates capsule by a
+        vertical cylinder+caps and tests simple XY ring + Z range overlap.
+        """
+        dx = sphere_center.x - cap_origin.x
+        dy = sphere_center.y - cap_origin.y
+        ring = cap_radius + sphere_radius + pad
+        if (dx*dx + dy*dy) > ring * ring:
+            return False
+        z0 = cap_origin.z - pad
+        z1 = cap_origin.z + cap_height + pad
+        return (sphere_center.z + sphere_radius) >= z0 and (sphere_center.z - sphere_radius) <= z1
+
     def _raycast_any(self, static_bvh, dynamic_map, origin: Vector, direction: Vector, distance: float):
         """
         Returns (hit_loc, hit_normal, hit_obj, hit_dist) or (None,None,None,None)
@@ -128,8 +163,13 @@ class KinematicCharacterController:
             if hit and hit[0] is not None and hit[3] < best[3]:
                 best = (hit[0], hit[1], None, hit[3])
 
+        # Prefilter dynamic by ray/segment vs bounding sphere
         if dynamic_map:
-            for obj, (bvh_like, _) in dynamic_map.items():
+            pf_pad = float(self.cfg.radius) + 0.05  # small Minkowski pad
+            for obj, (bvh_like, rad) in dynamic_map.items():
+                center = obj.matrix_world.translation
+                if not self._ray_hits_sphere_segment(origin, dnorm, distance, center, float(rad) + pf_pad):
+                    continue    
                 hit = bvh_like.ray_cast(origin, dnorm, distance)
                 if hit and hit[0] is not None and hit[3] < best[3]:
                     best = (hit[0], hit[1], obj, hit[3])
@@ -145,14 +185,27 @@ class KinematicCharacterController:
         start = origin + Vector((0,0,1.0))
 
         if static_bvh:
-            hit = static_bvh.ray_cast(start, d, max_dist+1.0)
+            hit = static_bvh.ray_cast(start, d, max_dist + 1.0)
             if hit and hit[0] is not None:
                 dist = (origin - hit[0]).length
                 best = (hit[0], hit[1], None, dist)
 
         if dynamic_map:
-            for obj, (bvh_like, _) in dynamic_map.items():
-                hit = bvh_like.ray_cast(start, d, max_dist+1.0)
+            pf_pad = float(self.cfg.radius) + 0.05
+            for obj, (bvh_like, rad) in dynamic_map.items():
+                c = obj.matrix_world.translation
+                # Quick XY ring check around the ray line
+                dx = c.x - start.x; dy = c.y - start.y
+                ring = (float(rad) + pf_pad); ring2 = ring * ring
+                if (dx*dx + dy*dy) > ring2:
+                    continue
+                # Approximate Z overlap with the downward segment
+                seg_top = start.z
+                seg_bot = start.z - (max_dist + 1.0)
+                if (c.z + float(rad) + pf_pad) < seg_bot or (c.z - float(rad) - pf_pad) > seg_top:
+                    continue
+
+                hit = bvh_like.ray_cast(start, d, max_dist + 1.0)
                 if hit and hit[0] is not None:
                     dist = (origin - hit[0]).length
                     if dist < best[3]:
@@ -161,12 +214,13 @@ class KinematicCharacterController:
         return best if best[0] is not None else (None, None, None, None)
 
 
+
     def _sweep_limit_3d(self, static_bvh, dynamic_map, disp: Vector):
         """
         Ray-based sweep along disp with capsule-aware distances.
         • Cast at heights (r, H*0.5, H-r).
-        • Floors (≤ slope_limit) inside the step band are ignored to allow stepping.
-        • Steep surfaces (> slope_limit) are NEVER ignored, even inside the band.
+        • Floors (≤ slope_limit) inside the step band are NOT ignored here.
+        • Early-out once allowed distance is already trivially small.
         Returns (allowed_len_along_disp, hit_any, wall_normal).
         """
         move_len = disp.length
@@ -184,12 +238,13 @@ class KinematicCharacterController:
         test_dist = move_len + r + 0.05   # cast far enough (Minkowski)
         skin = 0.02                       # general separation (not a slope fudge)
 
-        up = Vector((0, 0, 1))
-        floor_like_dot = math.cos(math.radians(self.cfg.slope_limit_deg))
-
         min_allowed = move_len
         hit_any     = False
         best_norm   = None
+
+        # If we already clamp under this fraction, stop testing other heights
+        EARLY_OUT_FRACTION = 0.05  # 5% of move length is "good enough" to stop
+        early_stop_len = move_len * EARLY_OUT_FRACTION
 
         for h in heights:
             o = origin.copy(); o.z += h
@@ -198,16 +253,18 @@ class KinematicCharacterController:
                 continue
 
             n = n.normalized()
-            # NOTE: no step-band skipping of “floor-like” contacts here
-
             hit_any = True
-            # CRITICAL: subtract the capsule radius so the center never advances into the face
+
             allowed = max(0.0, dist - r - skin)
             if allowed < min_allowed:
                 min_allowed = allowed
                 best_norm   = n
+                # ---- Early-out: further samples cannot increase allowed distance
+                if min_allowed <= early_stop_len:
+                    break
 
         return (min_allowed, hit_any, best_norm)
+
     
 
     def _try_step_up(self, static_bvh, dynamic_map, forward: Vector, move_len: float) -> bool:
@@ -431,7 +488,7 @@ class KinematicCharacterController:
         else:
             self.obj.location.z += dz
 
-        # 10) Robust capsule pushout (static + dynamic) — unchanged behavior
+        # 10) Robust capsule pushout ...
         r = float(self.cfg.radius)
         H = float(self.cfg.height)
         mid = max(r, min(0.5 * H, H - r))
@@ -451,22 +508,28 @@ class KinematicCharacterController:
                 static_bvh, self.obj,
                 radius=self.cfg.radius,
                 heights=push_heights,
-                max_iterations=3,
-                push_strength=0.6,
+                max_iterations=1,            # was 2
+                push_strength=0.5,           # was 0.6
                 floor_cos_limit=floor_cos,
-                ignore_floor_contacts=ignore_floor,          # only skips walkable floors
+                ignore_floor_contacts=ignore_floor,
                 ignore_contacts_below_height=band_rel_h,
                 ignore_below_only_if_floor_like=True,
             )
 
         if dynamic_map:
-            for bvh_like, _ in dynamic_map.values():
+            cap_origin = self.obj.location.copy()
+            cap_pad = max(0.25, self.cfg.step_height + self.cfg.radius * 0.5)
+            for obj, (bvh_like, rad) in dynamic_map.items():
+                center = obj.matrix_world.translation
+                if not self._capsule_may_touch_sphere(cap_origin, self.cfg.height, self.cfg.radius,
+                                                center, float(rad), pad=cap_pad):
+                    continue
                 capsule_collision_resolve(
                     bvh_like, self.obj,
                     radius=self.cfg.radius,
                     heights=push_heights,
-                    max_iterations=2,
-                    push_strength=0.6,
+                    max_iterations=1,        # was 2
+                    push_strength=0.5,       # was 0.6
                     floor_cos_limit=floor_cos,
                     ignore_floor_contacts=ignore_floor,
                     ignore_contacts_below_height=band_rel_h,

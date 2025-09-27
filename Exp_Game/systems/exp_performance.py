@@ -136,9 +136,13 @@ def _build_perf_runtime_cache(operator, context):
             # Flatten the objects once
             for coll in colls:
                 rec["obj_list"].extend(list(objects_in_collection(coll, recursive=False)))
+                
+            rec["name_map"] = {o.name: o for o in rec["obj_list"]}
 
         elif entry.target_object:
             rec["obj_list"].append(entry.target_object)
+            # FAST LOOKUP for single-object case
+            rec["name_map"] = {entry.target_object.name: entry.target_object}
 
         # Placeholder cache (active view layer only)
         if entry.has_placeholder:
@@ -433,7 +437,11 @@ def update_performance_culling(operator, context):
                 else:
                     threshold = max(0.0, base - margin)  # clearly inside to flip true
 
-                in_range = any((o.matrix_world.translation - ref_loc).length <= threshold for o in objs)
+                thr2 = threshold * threshold
+                in_range = any(
+                    (o.matrix_world.translation - ref_loc).length_squared <= thr2
+                    for o in objs
+                )
             else:
                 in_range = False
         else:
@@ -469,8 +477,8 @@ def update_performance_culling(operator, context):
                             if entry.trigger_type == 'BOX':
                                 desired_hidden = not in_range
                             else:
-                                d = (entry.target_object.matrix_world.translation - ref_loc).length
-                                desired_hidden = (d > entry.cull_distance)
+                                d2 = (entry.target_object.matrix_world.translation - ref_loc).length_squared
+                                desired_hidden = (d2 > (entry.cull_distance * entry.cull_distance))
                         if entry.target_object.hide_viewport != desired_hidden:
                             entry.target_object.hide_viewport = desired_hidden
 
@@ -517,12 +525,12 @@ def update_performance_culling(operator, context):
                     # Note: we advance rec["scan_idx"] when the result is applied
                     # in ExpModal.modal() after polling thread results.
                 else:
-                    # ── Fallback (no thread engine): original synchronous path ──
                     n = len(objs)
                     start = rec.get("scan_idx", 0)
                     i = 0
                     changes = 0
                     thresh = entry.cull_distance  # object-level check uses base threshold
+                    thr2 = thresh * thresh
 
                     # Round-robin across the list to avoid starvation
                     while i < n and changes < MAX_PROP_WRITES_PER_TICK:
@@ -532,8 +540,8 @@ def update_performance_culling(operator, context):
                         if _is_force_hidden_during_game(operator, o):
                             desired_hidden = True
                         else:
-                            far = (o.matrix_world.translation - ref_loc).length > thresh
-                            desired_hidden = far
+                            d2 = (o.matrix_world.translation - ref_loc).length_squared
+                            desired_hidden = (d2 > thr2)
 
                         if o.hide_viewport != desired_hidden:
                             o.hide_viewport = desired_hidden
@@ -541,6 +549,7 @@ def update_performance_culling(operator, context):
                         i += 1
 
                     rec["scan_idx"] = (start + i) % n  # advance cursor even if no changes
+
 
 
         # ─────────────────────────────────────────────────────────
@@ -559,6 +568,39 @@ def update_performance_culling(operator, context):
         # Save new state
         rec["last_in"] = in_range
 
+
+
+def apply_cull_thread_result(operator, payload) -> int:
+    """
+    Apply a batch of per-object culling writes produced by compute_cull_batch().
+    payload = {"entry_ptr": int, "next_idx": int, "changes": List[(name, desired_hidden)]}
+
+    Returns: number of viewport writes applied.
+    """
+    if not payload:
+        return 0
+
+    entry_ptr = payload.get("entry_ptr")
+    next_idx  = payload.get("next_idx")
+    changes   = payload.get("changes", [])
+
+    runtime = getattr(operator, "_perf_runtime", None)
+    if not runtime or entry_ptr not in runtime:
+        return 0
+
+    rec = runtime[entry_ptr]
+    writes = 0
+    for name, desired_hidden in changes:
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            continue
+        if obj.hide_viewport != desired_hidden:
+            obj.hide_viewport = desired_hidden
+            writes += 1
+
+    # Advance round-robin cursor so next batch continues
+    rec["scan_idx"] = int(next_idx)
+    return writes
 
 
 # ─── 6) Registration ───────────────────────────────────────────

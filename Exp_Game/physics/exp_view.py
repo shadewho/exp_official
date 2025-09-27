@@ -272,6 +272,7 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
       • Occlusion latch (Schmitt trigger) to kill edge-jitter on moving proxies
       • Outward-only temporal smoothing
       • Tiny pushout near thin geometry
+      • Skips redundant VIEW_3D writes (micro thresholds) when this API is used directly
     """
     if not obj:
         return
@@ -305,7 +306,7 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
         base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
         allowed      = max(min_cam, base_allowed - (EXTRA_PULL_METERS + EXTRA_PULL_K * r_cam))
     else:
-        allowed      = desired_max
+        allowed = desired_max
 
     # 2) Guarantee clear LoS to the chosen point (binary-search inward)
     candidate_cam = anchor + direction * allowed
@@ -319,29 +320,50 @@ def update_view(context, obj, pitch, yaw, bvh_tree, orbit_distance, zoom_factor,
     # 3) Tiny nearest-point pushout to avoid embedding in thin geometry
     candidate_cam = _camera_sphere_pushout_any(bvh_tree, dynamic_bvh_map, candidate_cam, r_cam, max_iters=_PUSHOUT_ITERS)
 
-    # 4) Latch + smoothing (order matters!)
-    #    - Latch applies to the allowed length (based on the *hit* identity from step 1)
-    #    - Smoother applies to the post-pushout position to keep visuals steady.
+    # 4) Latch + smoothing (order matters)
     allowed_after_push = (candidate_cam - anchor).length
     latched_allowed = _latch_for(obj).filter(hit_token, max(min_cam, min(allowed_after_push, desired_max)), r_cam)
     final_allowed   = _smooth_for(obj).filter(latched_allowed)
 
-    # === Apply to the viewport ===
+    # === Apply to the viewport (skip redundant writes) ===
+    POS_EPS  = 1e-4
+    ANG_EPS  = 1e-4
+    DIST_EPS = 1e-4
+
+    target_rot = direction.to_track_quat('Z', 'Y')
+
     for area in context.screen.areas:
-        if area.type == 'VIEW_3D':
-            rv3d = area.spaces.active.region_3d
+        if area.type != 'VIEW_3D':
+            continue
+        rv3d = area.spaces.active.region_3d
+
+        # Fetch last applied (stash on the rv3d object via custom attrs)
+        last_loc = getattr(rv3d, "_exp_last_loc", None)
+        last_rot = getattr(rv3d, "_exp_last_rot", None)
+        last_dst = getattr(rv3d, "_exp_last_dst", None)
+
+        need_loc = True if last_loc is None else (anchor - last_loc).length > POS_EPS
+        need_rot = True
+        if last_rot is not None:
+            dq = last_rot.rotation_difference(target_rot)
+            need_rot = abs(dq.angle) > ANG_EPS
+        need_dst = True if last_dst is None else abs(final_allowed - last_dst) > DIST_EPS
+
+        if need_loc:
             rv3d.view_location = anchor
-            rv3d.view_rotation = direction.to_track_quat('Z', 'Y')
+            setattr(rv3d, "_exp_last_loc", anchor.copy())
+        if need_rot:
+            rv3d.view_rotation = target_rot
+            setattr(rv3d, "_exp_last_rot", target_rot.copy())
+        if need_dst:
             rv3d.view_distance = final_allowed
+            setattr(rv3d, "_exp_last_dst", float(final_allowed))
 
 
 def shortest_angle_diff(current, target):
     diff = (target - current + math.pi) % (2 * math.pi) - math.pi
     return diff
 
-
-
-from typing import Optional, Any
 
 def compute_camera_allowed_distance(
     char_key,
