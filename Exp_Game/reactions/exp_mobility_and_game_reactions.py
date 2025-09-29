@@ -2,7 +2,6 @@
 
 import bpy
 from bpy.types import PropertyGroup
-from ..props_and_utils.exp_time import get_game_time
 
 class MobilityGameReactionsPG(PropertyGroup):
     """

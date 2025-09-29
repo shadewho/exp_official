@@ -56,7 +56,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     gravity: bpy.props.FloatProperty(
         name="Gravity m/s²",
         description="Downward acceleration applied when not grounded. Use a negative value (e.g. -9.81).",
-        default=-20.0, min=-50.0, max=0.0
+        default=-21.0, min=-50.0, max=0.0
     )
     max_speed_walk: bpy.props.FloatProperty(
         name="Walk Speed",
@@ -96,7 +96,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     fixed_hz: bpy.props.IntProperty(
         name="Physics Hz",
         description="Fixed physics update frequency (steps per second). Higher values are smoother but cost more CPU.",
-        default=30, min=30, max=30
+        default=30, min=10, max=30
     )
 
 

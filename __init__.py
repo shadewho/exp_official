@@ -22,8 +22,8 @@ bl_info = {
     "author": "Spencer Shade",
     "doc_url": "https://exploratory.online/",
     "tracker_url": "https://discord.gg/GJpGAAvMBe",
-    "description": "Explore and Create within Blender.",
-    "version": (1, 0, 1),
+    "description": "Explore and Create within Blender. Location: 3D Viewport N-panel",
+    "version": (1, 0, 0),
 }
 
 import bpy

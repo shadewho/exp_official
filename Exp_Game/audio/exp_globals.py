@@ -2,7 +2,6 @@
 
 # This module just stores references or flags used by multiple files.
 # It's intentionally minimal to avoid circular imports.
-import aud
 import bpy
 from ..props_and_utils.exp_time import get_game_time
 

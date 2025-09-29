@@ -14,6 +14,7 @@ from bpy_extras.io_utils import ImportHelper
 ##############################################################################
 # MAP FROM AnimState => The property name in scene.character_audio
 ##############################################################################
+
 AUDIO_PROPS_MAP = {
     AnimState.WALK: "walk_sound",
     AnimState.RUN:  "run_sound",

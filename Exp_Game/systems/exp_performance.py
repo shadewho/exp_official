@@ -382,13 +382,11 @@ def update_performance_culling(operator, context):
     """
     Called each frame in ExpModal.modal().
 
-    Optimizations:
-      - Throttled per-entry to CULL_UPDATE_HZ using get_game_time()
-      - Hysteresis around cull_distance to prevent flapping (entry-level)
-      - Only writes properties when the value actually changes
-      - Operates on ACTIVE view layer only
-      - Uses caches built at init to avoid per-tick recursion/aggregation
-      - Per-object mode ALWAYS runs (even if entry-level in_range didn't change)
+    Threaded per-object RADIAL culling only (no synchronous fallback):
+      - Throttled per-entry via get_game_time()
+      - Entry-level decisions (collection-exclude, BOX triggers) on main thread
+      - Per-object distance checks batched to ThreadEngine (pure math)
+      - All bpy writes (objects/collections/placeholders) remain on main thread
     """
     scene = context.scene
     ref = scene.target_armature
@@ -436,7 +434,6 @@ def update_performance_culling(operator, context):
                     threshold = base + margin   # need to be clearly outside to flip false
                 else:
                     threshold = max(0.0, base - margin)  # clearly inside to flip true
-
                 thr2 = threshold * threshold
                 in_range = any(
                     (o.matrix_world.translation - ref_loc).length_squared <= thr2
@@ -445,7 +442,7 @@ def update_performance_culling(operator, context):
             else:
                 in_range = False
         else:
-            # BOX trigger
+            # BOX trigger: point-in-AABB check on main thread
             mesh = entry.trigger_mesh
             if mesh and mesh.type == 'MESH':
                 world_verts = [mesh.matrix_world @ mathutils.Vector(c) for c in mesh.bound_box]
@@ -460,7 +457,7 @@ def update_performance_culling(operator, context):
 
         # ─────────────────────────────────────────────────────────
         # A) COLLECTION-EXCLUDE / BOX / SINGLE-OBJECT modes
-        #    -> only act when entry-level state changes
+        #    -> only act when entry-level state changes (main-thread writes)
         # ─────────────────────────────────────────────────────────
         if not per_object_mode:
             if rec["last_in"] is None or in_range != rec["last_in"]:
@@ -470,87 +467,56 @@ def update_performance_culling(operator, context):
                         for lc in rec["layer_colls"]:
                             if lc and lc.exclude != desired_excl:
                                 lc.exclude = desired_excl
-                    elif entry.target_object:
-                        if _is_force_hidden_during_game(operator, entry.target_object):
-                            desired_hidden = True
+                elif entry.target_object:
+                    if _is_force_hidden_during_game(operator, entry.target_object):
+                        desired_hidden = True
+                    else:
+                        if entry.trigger_type == 'BOX':
+                            desired_hidden = not in_range
                         else:
-                            if entry.trigger_type == 'BOX':
-                                desired_hidden = not in_range
-                            else:
-                                d2 = (entry.target_object.matrix_world.translation - ref_loc).length_squared
-                                desired_hidden = (d2 > (entry.cull_distance * entry.cull_distance))
-                        if entry.target_object.hide_viewport != desired_hidden:
-                            entry.target_object.hide_viewport = desired_hidden
+                            d2 = (entry.target_object.matrix_world.translation - ref_loc).length_squared
+                            desired_hidden = (d2 > (entry.cull_distance * entry.cull_distance))
+                    if entry.target_object.hide_viewport != desired_hidden:
+                        entry.target_object.hide_viewport = desired_hidden
 
         # ─────────────────────────────────────────────────────────
         # B) PER-OBJECT mode (RADIAL + not exclude_collection)
-        #    -> ALWAYS run (throttled), regardless of in_range changes
+        #    -> THREAD ONLY (no synchronous fallback)
         # ─────────────────────────────────────────────────────────
         else:
             objs = rec["obj_list"]
-            if objs:
-                # If the thread engine is available, submit a coalesced batch job.
-                if hasattr(operator, "_thread_eng") and operator._thread_eng:
-                    # Snapshot names & positions on the main thread (read-only)
-                    names = [o.name for o in objs]
-                    poss  = [tuple(o.matrix_world.translation) for o in objs]
+            if objs and hasattr(operator, "_thread_eng") and operator._thread_eng:
+                # Snapshot names & positions on the main thread (read-only)
+                names = [o.name for o in objs]
+                poss  = [tuple(o.matrix_world.translation) for o in objs]
 
-                    # Round-robin cursor and batch size (respect your write budget)
-                    start_idx = rec.get("scan_idx", 0)
-                    max_batch = min(MAX_PROP_WRITES_PER_TICK, len(names))
+                # Round-robin cursor and batch size (respect your write budget)
+                start_idx = rec.get("scan_idx", 0)
+                max_batch = min(MAX_PROP_WRITES_PER_TICK, len(names))
 
-                    # Threshold and identity for this entry
-                    threshold = float(entry.cull_distance)
-                    entry_ptr = entry.as_pointer()
-                    job_key   = f"cull:{entry_ptr}"
+                # Threshold and identity for this entry
+                threshold = float(entry.cull_distance)
+                entry_ptr = entry.as_pointer()
+                job_key   = f"cull:{entry_ptr}"
 
-                    # Per-entry version to coalesce newer work
-                    ver = rec.get("cull_ver", 0) + 1
-                    rec["cull_ver"] = ver
+                # Per-entry version to coalesce newer work
+                ver = rec.get("cull_ver", 0) + 1
+                rec["cull_ver"] = ver
 
-                    # Submit/replace latest work for this entry.
-                    operator._thread_eng.submit_latest(
-                        key=job_key,
-                        version=ver,
-                        fn=compute_cull_batch,             # runs in worker (no bpy)
-                        entry_ptr=entry_ptr,
-                        obj_names=names,
-                        obj_positions=poss,
-                        ref_loc=tuple(ref_loc),            # (x,y,z)
-                        thresh=threshold,
-                        start=start_idx,
-                        max_count=max_batch,
-                    )
-
-                    # Note: we advance rec["scan_idx"] when the result is applied
-                    # in ExpModal.modal() after polling thread results.
-                else:
-                    n = len(objs)
-                    start = rec.get("scan_idx", 0)
-                    i = 0
-                    changes = 0
-                    thresh = entry.cull_distance  # object-level check uses base threshold
-                    thr2 = thresh * thresh
-
-                    # Round-robin across the list to avoid starvation
-                    while i < n and changes < MAX_PROP_WRITES_PER_TICK:
-                        idx = (start + i) % n
-                        o = objs[idx]
-
-                        if _is_force_hidden_during_game(operator, o):
-                            desired_hidden = True
-                        else:
-                            d2 = (o.matrix_world.translation - ref_loc).length_squared
-                            desired_hidden = (d2 > thr2)
-
-                        if o.hide_viewport != desired_hidden:
-                            o.hide_viewport = desired_hidden
-                            changes += 1
-                        i += 1
-
-                    rec["scan_idx"] = (start + i) % n  # advance cursor even if no changes
-
-
+                # Submit/replace latest work for this entry.
+                operator._thread_eng.submit_latest(
+                    key=job_key,
+                    version=ver,
+                    fn=compute_cull_batch,             # runs in worker (no bpy)
+                    entry_ptr=entry_ptr,
+                    obj_names=names,
+                    obj_positions=poss,
+                    ref_loc=tuple(ref_loc),            # (x,y,z)
+                    thresh=threshold,
+                    start=start_idx,
+                    max_count=max_batch,
+                )
+                # Note: rec["scan_idx"] is advanced when results are applied via apply_cull_thread_result()
 
         # ─────────────────────────────────────────────────────────
         # C) Placeholder toggling follows entry-level in_range
@@ -567,7 +533,6 @@ def update_performance_culling(operator, context):
 
         # Save new state
         rec["last_in"] = in_range
-
 
 
 def apply_cull_thread_result(operator, payload) -> int:

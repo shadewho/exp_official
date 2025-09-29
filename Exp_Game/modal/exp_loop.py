@@ -12,7 +12,7 @@ from ..animations.exp_custom_animations import update_all_custom_managers
 from ..reactions.exp_reactions import update_transform_tasks, update_property_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_thread_result
 from ..physics.exp_dynamic import update_dynamic_meshes
-from ..physics.exp_view import compute_camera_allowed_distance
+from ..physics.exp_view import update_camera_for_operator
 from ..interactions.exp_interactions import check_interactions
 from ..reactions.exp_custom_ui import update_text_reactions
 from ..audio.exp_globals import update_sound_tasks
@@ -28,10 +28,7 @@ class GameLoop:
 
     def __init__(self, op):
         self.op = op
-        # Keep last camera allowed distance as our local cache,
-        # but also mirror it to op for backwards compat.
-        self._cam_allowed_last = getattr(op, "_cam_allowed_last", 3.0)
-
+        self._last_anim_state = None
     # ---------- Public API ----------
 
     def on_timer(self, context):
@@ -80,15 +77,24 @@ class GameLoop:
             update_performance_culling(op, context)
             perf_mark(op, 'culling', t0)
 
+            # poll threaded results once per frame (apply cull batches) <<<
+            t0 = perf_mark(op, 'threads_poll')
+            self._poll_and_apply_thread_results()
+            perf_mark(op, 'threads_poll', t0)
+
             # B4) Animations & audio: once with aggregated dt
             t0 = perf_mark(op, 'anim_audio')
             if op.animation_manager:
                 op.animation_manager.update(
                     op.keys_pressed, agg_dt, op.is_grounded, op.z_velocity
                 )
-                audio_state_mgr = get_global_audio_state_manager()
-                audio_state_mgr.update_audio_state(op.animation_manager.anim_state)
+                cur_state = op.animation_manager.anim_state
+                if cur_state is not None and cur_state != self._last_anim_state:
+                    audio_state_mgr = get_global_audio_state_manager()
+                    audio_state_mgr.update_audio_state(cur_state)
+                    self._last_anim_state = cur_state
             perf_mark(op, 'anim_audio', t0)
+
 
         # C) Input gating based on game mobility flags (unchanged)
         mg = context.scene.mobility_game
@@ -105,11 +111,9 @@ class GameLoop:
         op.update_movement_and_gravity(context, steps)
         perf_mark(op, 'physics', t0)
 
-        # E) Camera update (unchanged threading/apply path)
+        # E) Camera update ()
         t0 = perf_mark(op, 'camera')
-        self._update_camera(context)
-        self._poll_and_apply_thread_results()
-        self._apply_camera_to_view(context)
+        update_camera_for_operator(context, op)
         perf_mark(op, 'camera', t0)
 
         # F) Interactions/UI/SFX (SIM timers already advanced)
@@ -143,110 +147,9 @@ class GameLoop:
 
     # ---------- Internals ----------
 
-    def _update_camera(self, context):
-        """
-        Build camera request and (debounced) submit to worker (“camera” job).
-        Uses a cached VIEW_3D near-clip value (set by the operator on invoke).
-        """
-        op = self.op
-        if not op.target_object:
-            return
-
-        # Ensure local debounce state exists (kept on the loop instance)
-        if not hasattr(self, "_cam_last_params"):
-            self._cam_last_params = None
-            self._cam_last_time = 0.0
-
-        # 1) Direction from pitch/yaw
-        dir_x = math.cos(op.pitch) * math.sin(op.yaw)
-        dir_y = -math.cos(op.pitch) * math.cos(op.yaw)
-        dir_z = math.sin(op.pitch)
-        direction = Vector((dir_x, dir_y, dir_z))
-        if direction.length > 1e-9:
-            direction.normalize()
-
-        # 2) Anchor at capsule top
-        cp = context.scene.char_physics
-        cap_h = float(getattr(cp, "height", 2.0))
-        cap_r = float(getattr(cp, "radius", 0.30))
-        anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
-
-        # 3) Camera “thickness” from cached near-clip (fallback to 0.1)
-        clip_start = getattr(op, "_clip_start_cached", 0.1)
-        try:
-            clip_start = float(clip_start)
-            if clip_start <= 0.0:
-                clip_start = 0.1
-        except Exception:
-            clip_start = 0.1
-        r_cam = max(0.008, clip_start * 0.60)
-
-        # 4) Desired boom and minimum
-        desired_max = max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
-        min_cam     = max(0.0006, cap_r * 0.04)
-
-        # --- Cheap debounce: only solve when pose changed or on a short heartbeat ---
-        now = time.perf_counter()
-        params = (float(op.pitch), float(op.yaw),
-                float(anchor.x), float(anchor.y), float(anchor.z),
-                float(desired_max), float(r_cam))
-
-        if self._cam_last_params is not None:
-            PITCH_EPS  = 0.0015   # ~0.086°
-            YAW_EPS    = 0.0015
-            ANCHOR_EPS = 0.008    # 8 mm
-            DIST_EPS   = 0.010    # 1 cm
-            HEARTBEAT  = 0.08     # ~12.5 Hz fallback
-
-            lp, ly, lx, ly2, lz, ldes, lrcam = self._cam_last_params
-            same_pose = (
-                abs(params[0] - lp) < PITCH_EPS and
-                abs(params[1] - ly) < YAW_EPS   and
-                math.sqrt((params[2]-lx)**2 + (params[3]-ly2)**2 + (params[4]-lz)**2) < ANCHOR_EPS and
-                abs(params[5] - ldes) < DIST_EPS and
-                abs(params[6] - lrcam) < 1e-6
-            )
-            if same_pose and (now - self._cam_last_time) < HEARTBEAT:
-                # Skip submitting a new camera job this tick; still stash for viewport write.
-                self._cam_anchor    = anchor
-                self._cam_direction = direction
-                return
-
-        # Record pose/time for next tick
-        self._cam_last_params = params
-        self._cam_last_time   = now
-
-        # 5) Submit background camera solve (coalesced by key/version)
-        eng = getattr(op, "_thread_eng", None)
-        if eng:
-            if not hasattr(op, "_frame_seq"):
-                op._frame_seq = 0
-            op._frame_seq += 1
-            eng.submit_latest(
-                key="camera",
-                version=op._frame_seq,
-                fn=compute_camera_allowed_distance,
-                char_key=op.target_object.name,
-                anchor=anchor.copy(),
-                direction=direction.copy(),
-                r_cam=float(r_cam),
-                desired_max=float(desired_max),
-                min_cam=float(min_cam),
-                static_bvh=getattr(op, "bvh_tree", None),
-                dynamic_bvh_map=getattr(op, "dynamic_bvh_map", None),
-            )
-
-        # Stash for viewport application
-        self._cam_anchor    = anchor
-        self._cam_direction = direction
-
-
-
     def _poll_and_apply_thread_results(self):
         """
-        Collect finished thread jobs. Apply:
-          • camera distance
-          • per-object culling batch writes
+        Collect worker results for systems OTHER than camera.
         """
         op = self.op
         eng = getattr(op, "_thread_eng", None)
@@ -254,97 +157,10 @@ class GameLoop:
             return
 
         for res in eng.poll_results():
-            if res.key == "camera" and isinstance(res.payload, (int, float)):
-                self._cam_allowed_last = float(res.payload)
-                op._cam_allowed_last = self._cam_allowed_last  # mirror for compatibility
-                continue
 
+            # Apply threaded culling batches, etc.
             if res.key.startswith("cull:") and isinstance(res.payload, dict):
-                # Delegate to exp_performance utility (operates on op._perf_runtime)
                 try:
                     apply_cull_thread_result(op, res.payload)
                 except Exception:
-                    # Non-fatal; continue consuming other results
                     pass
-
-    def _apply_camera_to_view(self, context):
-        """
-        Writes to exactly ONE cached VIEW_3D (rv3d) on the main thread.
-        Skips redundant writes unless changes exceed tiny thresholds.
-        """
-        op = self.op
-        if not hasattr(self, "_cam_anchor") or not hasattr(self, "_cam_direction"):
-            return
-
-        anchor    = self._cam_anchor
-        direction = self._cam_direction
-        desired_dist = getattr(op, "_cam_allowed_last", 3.0)
-
-        # Rebind once if rv3d got invalid
-        rv3d = getattr(op, "_view3d_rv3d", None)
-        if rv3d is None:
-            rebind_ok = False
-            try:
-                if hasattr(op, "_maybe_rebind_view3d"):
-                    rebind_ok = bool(op._maybe_rebind_view3d(context))
-            except Exception:
-                rebind_ok = False
-            rv3d = getattr(op, "_view3d_rv3d", None) if rebind_ok else None
-            if rv3d is None:
-                return
-
-        # --- change thresholds (keep very small to preserve feel) ---
-        POS_EPS   = 1e-4     # meters
-        ANG_EPS   = 1e-4     # radians on quaternion delta
-        DIST_EPS  = 1e-4     # meters
-
-        # Build target rotation once
-        target_rot = direction.to_track_quat('Z', 'Y')
-
-        # Pull last applied values from self (cache) to avoid getattr on rv3d
-        last_loc = getattr(self, "_rv3d_last_loc", None)
-        last_rot = getattr(self, "_rv3d_last_rot", None)
-        last_dst = getattr(self, "_rv3d_last_dst", None)
-
-        # Decide if each channel needs a write
-        need_loc = True
-        if last_loc is not None:
-            need_loc = (anchor - last_loc).length > POS_EPS
-
-        need_rot = True
-        if last_rot is not None:
-            dq = last_rot.rotation_difference(target_rot)
-            need_rot = abs(dq.angle) > ANG_EPS
-
-        need_dst = True
-        if last_dst is not None:
-            need_dst = abs(desired_dist - last_dst) > DIST_EPS
-
-        # Apply only what changed
-        try:
-            if need_loc:
-                rv3d.view_location = anchor
-                self._rv3d_last_loc = anchor.copy()
-            if need_rot:
-                rv3d.view_rotation = target_rot
-                self._rv3d_last_rot = target_rot.copy()
-            if need_dst:
-                rv3d.view_distance = desired_dist
-                self._rv3d_last_dst = float(desired_dist)
-        except Exception:
-            # If write failed, try a one-shot rebind and a single retry
-            if hasattr(op, "_maybe_rebind_view3d") and op._maybe_rebind_view3d(context):
-                try:
-                    rv3d = op._view3d_rv3d
-                    if need_loc:
-                        rv3d.view_location = anchor
-                        self._rv3d_last_loc = anchor.copy()
-                    if need_rot:
-                        rv3d.view_rotation = target_rot
-                        self._rv3d_last_rot = target_rot.copy()
-                    if need_dst:
-                        rv3d.view_distance = desired_dist
-                        self._rv3d_last_dst = float(desired_dist)
-                except Exception:
-                    pass
-

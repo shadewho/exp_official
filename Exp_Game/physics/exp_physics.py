@@ -1,31 +1,29 @@
 # Exploratory/physics/exp_physics.py
 from mathutils import Vector
 
-# Exploratory/physics/exp_physics.py
-from mathutils import Vector
-
 def capsule_collision_resolve(
     bvh_like,
-    obj,
+    pos: Vector,                     # ← NEW: current capsule base position (world)
     radius=0.2,
     heights=(0.3, 1.0, 1.9),
     max_iterations=2,
     push_strength=0.5,
     max_push_per_iter=None,
     average_contacts=True,
-    # Walkable-floor classification and skipping
-    floor_cos_limit=None,          # pass cos(radians(slope_limit_deg)) or None
-    ignore_floor_contacts=False,   # if True, skip walkable-floor contacts
+    # Walkable-floor classification and skipping (unchanged semantics)
+    floor_cos_limit=None,            # pass cos(radians(slope_limit_deg)) or None
+    ignore_floor_contacts=False,     # if True, skip walkable-floor contacts
     # Capsule-based step band filtering (relative height from base)
     ignore_contacts_below_height=None,     # e.g., radius + step_height
     ignore_below_only_if_floor_like=True,
 ):
     """
     Softer capsule pushout with capsule-based step-band filtering.
-    Treat faces above the slope limit as walls: their correction is horizontal only.
+    • Pure-function style: does NOT touch bpy or object; returns corrected pos.
+    • Treat faces above the slope limit as walls: horizontal-only correction.
     """
-    if not bvh_like or not obj:
-        return
+    if not bvh_like or pos is None:
+        return pos
 
     class _BVHWrapper:
         def __init__(self, bvh):
@@ -39,16 +37,20 @@ def capsule_collision_resolve(
             co, n, idx, _ = res
             return (co, n.normalized(), idx, (p - co).length)
 
+    # Normalize interface so both BVHTree and LocalBVH work the same
     bvh = bvh_like if hasattr(bvh_like, "find_nearest") else _BVHWrapper(bvh_like)
 
     up  = Vector((0, 0, 1))
-    eps = 1.0e-4  # not used to change slope decisions; just avoids zero-length math
+    # Only used to avoid zero-length math; not a slope threshold tweak.
+    tiny = 1.0e-9
 
     if max_push_per_iter is None:
         max_push_per_iter = max(0.10, float(radius) * 0.35)
 
+    out_pos = pos.copy()
+
     for _ in range(max(1, int(max_iterations))):
-        base = obj.location.copy()
+        base = out_pos.copy()
         corr = Vector((0.0, 0.0, 0.0))
         any_penetration = False
 
@@ -59,6 +61,7 @@ def capsule_collision_resolve(
                 continue
 
             n = n.normalized()
+            # Ensure outward-facing normal relative to the capsule sample
             if (c - co).dot(n) < 0.0:
                 n = -n
 
@@ -67,26 +70,25 @@ def capsule_collision_resolve(
             if floor_cos_limit is not None:
                 is_floor_like = (n.dot(up) >= float(floor_cos_limit))
 
-            # Step-band filtering (do NOT skip steep; only skip walkable if requested)
+            # Step-band filtering (unchanged semantics)
             if ignore_contacts_below_height is not None:
                 if (co.z - base.z) <= float(ignore_contacts_below_height):
                     if ignore_below_only_if_floor_like and is_floor_like:
                         continue
 
-            # Global walkable-floor skip (e.g., while grounded) — again, never for steep
+            # Global walkable-floor skip (unchanged semantics)
             if ignore_floor_contacts and is_floor_like:
                 continue
 
             pen = float(radius) - float(dist)
-            if pen <= eps:
+            if pen <= tiny:
                 continue
 
-            # --- NEW: treat too-steep faces as walls (horizontal push only)
+            # Treat too-steep faces like walls: horizontal-only push
             n_for_push = n
             if (floor_cos_limit is not None) and (not is_floor_like):
                 n_for_push = Vector((n.x, n.y, 0.0))
-                if n_for_push.length <= eps:
-                    # Purely vertical normal shouldn't happen here; skip if it does
+                if n_for_push.length <= tiny:
                     continue
                 n_for_push.normalize()
 
@@ -95,18 +97,20 @@ def capsule_collision_resolve(
                 corr += n_for_push * pen
             else:
                 step = min(pen * float(push_strength), float(max_push_per_iter))
-                obj.location += n_for_push * (step + eps)
+                out_pos += n_for_push * step
 
         if not any_penetration:
             break
 
         if average_contacts:
             L = corr.length
-            if L > eps:
+            if L > tiny:
                 step_len = min(L * float(push_strength), float(max_push_per_iter))
-                obj.location += (corr / L) * step_len
+                out_pos += (corr / L) * step_len
             else:
                 break
+
+    return out_pos
 
 
 def remove_steep_slope_component(move_dir, slope_normal, max_slope_dot=0.7):

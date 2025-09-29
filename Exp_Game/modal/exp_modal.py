@@ -573,10 +573,16 @@ class ExpModal(bpy.types.Operator):
 
         prefs = context.preferences.addons["Exploratory"].preferences
 
+        # We resolve movement keys once and reuse inside the loop
+        resolved_keys = None
+
         for _ in range(int(steps)):
             # One fixed 30 Hz step (independent of time_scale)
             self.physics_controller.try_consume_jump()
-            resolved_keys = _resolved_move_keys(self)
+
+            # Compute once and cache for this batch if not done yet
+            if resolved_keys is None:
+                resolved_keys = _resolved_move_keys(self)
 
             self.physics_controller.step(
                 dt=self.physics_dt,
@@ -590,11 +596,12 @@ class ExpModal(bpy.types.Operator):
             )
 
             # Keep existing flags for animations/audio
-            self.z_velocity       = self.physics_controller.vel.z
-            self.is_grounded      = self.physics_controller.on_ground
-            self.grounded_platform= self.physics_controller.ground_obj
+            self.z_velocity        = self.physics_controller.vel.z
+            self.is_grounded       = self.physics_controller.on_ground
+            self.grounded_platform = self.physics_controller.ground_obj
 
-            # Rotate character toward camera if moving
+        # Rotate character toward camera ONCE per frame if actually moving
+        if self.physics_controller and (self.physics_controller.vel.x**2 + self.physics_controller.vel.y**2) > 1e-6:
             smooth_rotate_towards_camera(self)
 
 

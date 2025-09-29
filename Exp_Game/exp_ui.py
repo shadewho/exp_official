@@ -7,7 +7,7 @@ from ..Exp_UI.main_config import UPLOAD_URL
 # Exploratory Modal Panel
 # --------------------------------------------------------------------
 class ExploratoryPanel(bpy.types.Panel):
-    bl_label = "Exploratory"
+    bl_label = "Exploratory (BETA v1.1)"
     bl_idname = "VIEW3D_PT_exploratory_modal"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -33,14 +33,14 @@ class ExploratoryPanel(bpy.types.Panel):
             # Play in windowed mode
             op = col.operator(
                 "view3d.exp_modal",
-                text="▶     Play Windowed"
+                text="▶     Play Windowed (Slower)"
             )
             op.launched_from_ui = False
             
             # Play in fullscreen
             col.operator(
                 "exploratory.start_game",
-                text="▶     Play"
+                text="▶     Play Fullscreen"
             )
             
             # ─── Live Performance (Compact HUD) ──────────────────────────────
@@ -141,16 +141,6 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             "exploratory.build_character",
             text="Build Character",
             icon='ARMATURE_DATA'
-        )
-
-        # ─── Remove Character Button (Confirmed) ───
-        row = box.row(align=True)
-        row.scale_y = 1.0
-        row.enabled = not scene.character_spawn_lock  # disable if locked
-        op = row.operator(
-            "exploratory.remove_character_hard",
-            text="Remove Character (Confirm)",
-            icon='TRASH'
         )
 
         # ─── Animations & Speeds ───
@@ -338,9 +328,6 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
         spawn_box.label(text="Spawn Object", icon='EMPTY_AXIS')
         spawn_box.prop(scene, "spawn_object", text="Object")
         spawn_box.prop(scene, "spawn_use_nearest_z_surface", text="Find Nearest Z Surface")
-
-
-
 
 
 ###############################################################
