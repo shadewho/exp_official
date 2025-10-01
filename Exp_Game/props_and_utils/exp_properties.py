@@ -191,6 +191,26 @@ def add_scene_properties():
 )
     bpy.types.Scene.char_physics = bpy.props.PointerProperty(type=CharacterPhysicsConfigPG)
 
+
+    # ─────────────────────────────────────────────────────────
+    # "Filter Create Panels" - multi-select flags enum
+    # ─────────────────────────────────────────────────────────
+    bpy.types.Scene.create_panels_filter = bpy.props.EnumProperty(
+        name="Filter 'Create' Panels",
+        description="Show only selected panels in the Create section",
+        items=[
+            ("CHAR",   "Character / Actions / Audio", "Character, actions, and audio panel"),
+            ("PROXY",  "Proxy Mesh & Spawn",          "Proxy mesh list and spawn settings"),
+            ("STUDIO", "Interactions & Reactions",    "Custom interactions and reactions"),
+            ("OBJ",    "Objectives & Timers",         "Objectives and timer settings"),
+            ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
+            ("PERF",   "Performance",                 "Live performance + culling tools"),
+            ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
+        ],
+        options={'ENUM_FLAG'},
+        default={'CHAR', 'PROXY', 'STUDIO', 'OBJ', 'UPLOAD', 'PERF', 'PHYS'}
+    )
+
     #---proxy mesh --#
     bpy.types.Scene.proxy_meshes = bpy.props.CollectionProperty(type=ProxyMeshEntry)
     bpy.types.Scene.proxy_meshes_index = bpy.props.IntProperty(default=0)
@@ -311,3 +331,4 @@ def remove_scene_properties():
     del bpy.types.Scene.proxy_meshes
     del bpy.types.Scene.proxy_meshes_index
     del bpy.types.Scene.show_live_performance_overlay
+    del bpy.types.Scene.create_panels_filter

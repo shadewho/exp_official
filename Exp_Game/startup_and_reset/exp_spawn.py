@@ -123,30 +123,90 @@ class EXPLORATORY_OT_RemoveCharacter(bpy.types.Operator):
         if not arm:
             return {'CANCELLED'}
 
-        # only remove the target armature + its children
+        # ------------------------------------------------------------------
+        # 1) Collect objects to remove and gather their materials & images
+        # ------------------------------------------------------------------
         to_remove = [arm] + list(arm.children_recursive)
+
+        # Materials directly assigned to meshes under the armature
+        mats_to_consider = set()
+        # Images referenced by those materials (walk node groups, too)
+        images_to_consider = set()
+
+        def _gather_images_from_node_tree(nt, seen_nt):
+            if not nt or nt in seen_nt:
+                return
+            seen_nt.add(nt)
+            for node in nt.nodes:
+                if node.type == 'TEX_IMAGE' and getattr(node, "image", None):
+                    images_to_consider.add(node.image)
+                elif node.type == 'GROUP' and getattr(node, "node_tree", None):
+                    _gather_images_from_node_tree(node.node_tree, seen_nt)
+
         for obj in to_remove:
-            # unlink from every scene
+            if obj.type == 'MESH' and obj.data:
+                # materials in slots
+                for mat in obj.data.materials:
+                    if mat and mat.library is None:  # only local data
+                        mats_to_consider.add(mat)
+                        if getattr(mat, "node_tree", None):
+                            _gather_images_from_node_tree(mat.node_tree, set())
+
+        # ------------------------------------------------------------------
+        # 2) Unlink & remove objects (all scenes), then clear the pointer
+        # ------------------------------------------------------------------
+        for obj in to_remove:
+            # Unlink from every scene collection that contains it
             for sc in bpy.data.scenes:
-                if obj.name in sc.collection.objects:
-                    sc.collection.objects.unlink(obj)
-            # remove the object
+                try:
+                    if obj.name in sc.collection.objects:
+                        sc.collection.objects.unlink(obj)
+                except Exception:
+                    pass
+            # Remove the object datablock
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
             except Exception:
                 pass
 
-        # clear the scene pointer
         scene.target_armature = None
 
-        # purge any unused mesh datablocks
+        # ------------------------------------------------------------------
+        # 3) Purge orphaned geometry/armatures created by the removal
+        # ------------------------------------------------------------------
         for mesh in list(bpy.data.meshes):
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
+            try:
+                if mesh.library is None and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+            except Exception:
+                pass
 
-        # purge any unused armature datablocks
         for arm_data in list(bpy.data.armatures):
-            if arm_data.users == 0:
-                bpy.data.armatures.remove(arm_data)
+            try:
+                if arm_data.library is None and arm_data.users == 0:
+                    bpy.data.armatures.remove(arm_data)
+            except Exception:
+                pass
+
+        # ------------------------------------------------------------------
+        # 4) Safely purge materials & images that belonged to the character
+        #     • Only remove if:
+        #         - local (not linked from a library)
+        #         - has zero users after the object removals
+        #         - not protected by a fake user
+        # ------------------------------------------------------------------
+        for mat in list(mats_to_consider):
+            try:
+                if mat and mat.library is None and mat.users == 0 and not mat.use_fake_user:
+                    bpy.data.materials.remove(mat)
+            except Exception:
+                pass
+
+        for img in list(images_to_consider):
+            try:
+                if img and img.library is None and img.users == 0 and not img.use_fake_user:
+                    bpy.data.images.remove(img)
+            except Exception:
+                pass
 
         return {'FINISHED'}

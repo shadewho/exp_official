@@ -32,7 +32,8 @@ from .exp_ui import (
     EXPLORATORY_UL_Objectives,
     VIEW3D_PT_Exploratory_UploadHelper,
     VIEW3D_PT_Exploratory_Performance,
-    VIEW3D_PT_Exploratory_PhysicsTuning
+    VIEW3D_PT_Exploratory_PhysicsTuning,
+    EXP_OT_FilterCreatePanels,
 )
 
 
@@ -50,6 +51,7 @@ from .props_and_utils.exp_properties import (
 
 from .reactions.exp_custom_ui import EXPLORE_OT_PreviewCustomText
 from .props_and_utils.exp_utilities import EXPLORATORY_OT_SetGameWorld
+from .props_and_utils import exp_demo_scene
 from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
 from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
                         EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
@@ -100,22 +102,24 @@ def register():
     register_interaction_properties()
 
     # --- Panels & UILists (Ordered) ---
-    # 1. Main Panel (mode toggle)
     bpy.utils.register_class(ExploratoryPanel)
-    # 2. Character, Actions, Audio Panel (CREATE mode)
+
     bpy.utils.register_class(ExploratoryCharacterPanel)
-    # 3. Proxy Meshes Panel (CREATE mode)
+
     bpy.utils.register_class(ExploratoryProxyMeshPanel)
-    # 4. Custom Interactions Panel (CREATE mode)
+
     bpy.utils.register_class(VIEW3D_PT_Exploratory_Studio)
-    # 5. Objectives Panel (CREATE mode)
+
     bpy.utils.register_class(VIEW3D_PT_Objectives) 
-    #6 Uploads
+
     bpy.utils.register_class(VIEW3D_PT_Exploratory_UploadHelper)
 
     bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
 
     bpy.utils.register_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+
+    bpy.utils.register_class(EXP_OT_FilterCreatePanels)
+
 
     bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
 
@@ -159,6 +163,9 @@ def register():
 
     bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
 
+    # ─── Demo scene ──────────────────────────────────
+    exp_demo_scene.register()
+
     # ─── Performance Culling ──────────────────────────────────
     register_performance()
 
@@ -201,6 +208,8 @@ def unregister():
     bpy.utils.unregister_class(ExploratoryCharacterPanel)
     bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
     bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
+    bpy.utils.unregister_class(EXP_OT_FilterCreatePanels)
+
 
     # --- Interactions & Reactions ---
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
@@ -221,6 +230,10 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+
+
+     # ─── DEMO DEMO ──────────────────────────────────
+    exp_demo_scene.unregister()
 
      # ─── Performance Culling ──────────────────────────────────
     unregister_performance()

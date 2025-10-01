@@ -11,11 +11,9 @@ import time
 
 class APPLY_FILTERS_SHOWUI_OT(bpy.types.Operator):
     """
-    1) Opens the UI if it's not already active.
-    2) Enables the scene.show_loading_image flag to display a 'loading' indicator.
-    3) Waits briefly so Blender can update the interface.
-    4) Fetches packages (only if they're not already in memory).
-    5) Disables the loading indicator and refreshes the UI with final thumbnails.
+    Open the Exploratory interface.
+    Browse by item type and/or filters.
+    Updates every 10 minutes if logged in.
     """
 
     bl_idname = "webapp.apply_filters_showui"
