@@ -143,3 +143,4 @@ def remove_steep_slope_component(move_dir, slope_normal, max_slope_dot=0.7):
 
     return Vector((m_xy.x, m_xy.y, 0.0))
 
+

@@ -30,6 +30,8 @@ class KCCConfig:
         self.jump_speed      = getattr(scene_cfg, "jump_speed", 7.0)
         self.steep_slide_gain = getattr(scene_cfg, "steep_slide_gain", 18.0)
         self.steep_min_speed  = getattr(scene_cfg, "steep_min_speed", 2.5)
+        
+
 
 class KinematicCharacterController:
     """
@@ -93,15 +95,6 @@ class KinematicCharacterController:
 
         return xy, (run_key in keys_pressed)
 
-    def _hit_in_step_band(self, hit_z: float, origin_z: float) -> bool:
-        """
-        True if a contact point is within the capsule-based step band:
-        [foot_z, foot_z + step_height]
-        foot_z is the bottom-sphere center height = origin_z + radius.
-        """
-        r = float(self.cfg.radius)
-        band_top = origin_z + r + float(self.cfg.step_height)
-        return hit_z <= (band_top + 0.005)
     
     def _accelerate(self, cur_xy, wish_dir_xy, target_speed, accel, dt):
         wish = Vector((wish_dir_xy[0], wish_dir_xy[1]))
@@ -149,9 +142,16 @@ class KinematicCharacterController:
         z1 = cap_origin.z + cap_height + pad
         return (sphere_center.z + sphere_radius) >= z0 and (sphere_center.z - sphere_radius) <= z1
 
-    def _raycast_any(self, static_bvh, dynamic_map, origin: Vector, direction: Vector, distance: float):
+    def _raycast_any(self, static_bvh, dynamic_map, origin: Vector, direction: Vector, distance: float,
+                     platform_motion_map=None,
+                     platform_ang_velocity_map=None,
+                     dt: float = 0.0):
         """
         Returns (hit_loc, hit_normal, hit_obj, hit_dist) or (None,None,None,None)
+
+        Anti-tunneling prefilter for dynamics:
+        pad = char_radius + approx_rad + |disp| + |ω|*approx_rad*dt
+        (The last term accounts for rotational sweep at the rim.)
         """
         if distance <= 1e-9 or direction.length <= 1e-9:
             return (None, None, None, None)
@@ -159,29 +159,46 @@ class KinematicCharacterController:
         dnorm = direction.normalized()
         best = (None, None, None, 1e9)
 
+        # STATIC
         if static_bvh:
             hit = static_bvh.ray_cast(origin, dnorm, distance)
             if hit and hit[0] is not None and hit[3] < best[3]:
                 best = (hit[0], hit[1], None, hit[3])
 
-        # Prefilter dynamic by ray/segment vs bounding sphere
+        # DYNAMIC with speculative pad
         if dynamic_map:
-            pf_pad = float(self.cfg.radius) + 0.05  # small Minkowski pad
-            for obj, (bvh_like, rad) in dynamic_map.items():
+            char_r = float(self.cfg.radius)
+            for obj, (bvh_like, approx_rad) in dynamic_map.items():
+                disp_len = 0.0
+                if platform_motion_map and obj in platform_motion_map:
+                    disp_len = platform_motion_map[obj].length
+
+                ang_sweep = 0.0
+                if platform_ang_velocity_map and obj in platform_ang_velocity_map and dt > 0.0:
+                    ang_sweep = platform_ang_velocity_map[obj].length * float(approx_rad) * float(dt)
+
+                pf_pad = char_r + float(approx_rad) + disp_len + ang_sweep
                 center = obj.matrix_world.translation
-                if not self._ray_hits_sphere_segment(origin, dnorm, distance, center, float(rad) + pf_pad):
-                    continue    
+                if not self._ray_hits_sphere_segment(origin, dnorm, distance, center, pf_pad):
+                    continue
+
                 hit = bvh_like.ray_cast(origin, dnorm, distance)
                 if hit and hit[0] is not None and hit[3] < best[3]:
                     best = (hit[0], hit[1], obj, hit[3])
 
         return best if best[0] is not None else (None, None, None, None)
 
-    def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float):
+
+
+    def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float,
+                          platform_motion_map=None,
+                          platform_ang_velocity_map=None,
+                          dt: float = 0.0):
         """
         Returns (loc, norm, obj, dist) or (None,None,None,None)
+        Uses the same angular/linear sweep pad in its quick prefilter.
         """
-        best = (None, None, None, 1e9)
+        best = (None, None, None, 1.0e9)
         d = Vector((0,0,-1))
         start = origin + Vector((0,0,1.0))
 
@@ -192,18 +209,24 @@ class KinematicCharacterController:
                 best = (hit[0], hit[1], None, dist)
 
         if dynamic_map:
-            pf_pad = float(self.cfg.radius) + 0.05
-            for obj, (bvh_like, rad) in dynamic_map.items():
+            char_r = float(self.cfg.radius)
+            for obj, (bvh_like, approx_rad) in dynamic_map.items():
+                # combined pad
+                disp_len = platform_motion_map.get(obj, Vector((0,0,0))).length if platform_motion_map else 0.0
+                ang_sweep = 0.0
+                if platform_ang_velocity_map and obj in platform_ang_velocity_map and dt > 0.0:
+                    ang_sweep = platform_ang_velocity_map[obj].length * float(approx_rad) * float(dt)
+                ring = char_r + float(approx_rad) + disp_len + ang_sweep
+
                 c = obj.matrix_world.translation
-                # Quick XY ring check around the ray line
                 dx = c.x - start.x; dy = c.y - start.y
-                ring = (float(rad) + pf_pad); ring2 = ring * ring
-                if (dx*dx + dy*dy) > ring2:
+                if (dx*dx + dy*dy) > (ring * ring):
                     continue
-                # Approximate Z overlap with the downward segment
+
+                # crude Z overlap window with same pad
                 seg_top = start.z
                 seg_bot = start.z - (max_dist + 1.0)
-                if (c.z + float(rad) + pf_pad) < seg_bot or (c.z - float(rad) - pf_pad) > seg_top:
+                if (c.z + float(approx_rad) + ring) < seg_bot or (c.z - float(approx_rad) - ring) > seg_top:
                     continue
 
                 hit = bvh_like.ray_cast(start, d, max_dist + 1.0)
@@ -215,61 +238,15 @@ class KinematicCharacterController:
         return best if best[0] is not None else (None, None, None, None)
 
 
-
-    def _sweep_limit_3d(self, static_bvh, dynamic_map, origin: Vector, disp: Vector):
-        """
-        Ray-based sweep along disp with capsule-aware distances.
-        Alternates between LOW-only and MID-only samples per physics step.
-        Returns (allowed_len_along_disp, hit_any, wall_normal).
-        """
-        move_len = disp.length
-        if move_len <= 1.0e-6:
-            return (0.0, False, None)
-
-        dnorm = disp / move_len
-        r = float(self.cfg.radius)
-
-        # Capsule-aware sweep range (Minkowski sum)
-        test_dist = move_len + r + 0.05
-        skin = 0.02
-
-        min_allowed = move_len
-        hit_any     = False
-        best_norm   = None
-
-        EARLY_OUT_FRACTION = 0.15
-        early_stop_len = move_len * EARLY_OUT_FRACTION
-
-        # ← only one height per step (alternating LOW ↔ MID)
-        for h in self._alt_sweep_heights():
-            o = origin.copy(); o.z += h
-            loc, n, _, dist = self._raycast_any(static_bvh, dynamic_map, o, dnorm, test_dist)
-            if loc is None or n is None:
-                continue
-
-            n = n.normalized()
-            hit_any = True
-
-            allowed = max(0.0, dist - r - skin)
-            if allowed < min_allowed:
-                min_allowed = allowed
-                best_norm   = n
-                if min_allowed <= early_stop_len:
-                    break
-
-        return (min_allowed, hit_any, best_norm)
-
-
-    
-
     def _try_step_up(self, static_bvh, dynamic_map, pos: Vector,
-                    forward: Vector, move_len: float,
-                    low_hit_normal: Vector, low_hit_dist: float):
+                     forward: Vector, move_len: float,
+                     low_hit_normal: Vector, low_hit_dist: float,
+                     platform_motion_map=None,
+                     platform_ang_velocity_map=None,
+                     dt: float = 0.0):
         """
         Cheaper step-up that reuses the low forward hit you just computed.
-        Only two extra rays max:
-        • 1 headroom up-ray
-        • 1 raised low forward ray
+        Now rotation-safe: all rays use the same linear+angular speculative pads.
         """
         if not self.on_ground or move_len <= 1.0e-6:
             return (False, pos)
@@ -282,13 +259,18 @@ class KinematicCharacterController:
         up = Vector((0, 0, 1))
         floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
 
-        # We only step if the low forward contact is a steep riser (not walkable)
+        # Only step if the low forward contact is a steep riser (not walkable)
         if low_hit_normal is None or low_hit_normal.dot(up) >= floor_cos:
             return (False, pos)
 
-        # 1) Headroom check at true top
+        # 1) Headroom at true top
         top_start = pos + Vector((0, 0, float(self.cfg.height)))
-        locUp, _, _, _ = self._raycast_any(static_bvh, dynamic_map, top_start, up, max_up)
+        locUp, _, _, _ = self._raycast_any(
+            static_bvh, dynamic_map, top_start, up, max_up,
+            platform_motion_map=platform_motion_map,
+            platform_ang_velocity_map=platform_ang_velocity_map,
+            dt=dt
+        )
         if locUp is not None:
             return (False, pos)  # no headroom
 
@@ -298,7 +280,12 @@ class KinematicCharacterController:
         # 3) Single raised low forward ray (capsule-aware stop)
         ray_len = move_len + r
         o_low_raised = raised_pos + Vector((0, 0, r))
-        h2, n2, _, d2 = self._raycast_any(static_bvh, dynamic_map, o_low_raised, forward, ray_len)
+        h2, n2, _, d2 = self._raycast_any(
+            static_bvh, dynamic_map, o_low_raised, forward, ray_len,
+            platform_motion_map=platform_motion_map,
+            platform_ang_velocity_map=platform_ang_velocity_map,
+            dt=dt
+        )
         if h2 is None:
             raised_pos += forward * move_len
         else:
@@ -306,10 +293,14 @@ class KinematicCharacterController:
             if allow2 > 0.0:
                 raised_pos += forward * allow2
 
-        # 4) Single shared downward pass will snap us after caller integrates Z.
-        # We still do a safety "drop budget" check here to avoid stepping onto voids.
+        # 4) Safety drop check using same pads
         drop_max = max_up + max(0.0, float(self.cfg.snap_down))
-        locD, nD, gobjD, _ = self._raycast_down_any(static_bvh, dynamic_map, raised_pos, drop_max)
+        locD, nD, gobjD, _ = self._raycast_down_any(
+            static_bvh, dynamic_map, raised_pos, drop_max,
+            platform_motion_map=platform_motion_map,
+            platform_ang_velocity_map=platform_ang_velocity_map,
+            dt=dt
+        )
         if locD is None or nD is None or nD.dot(up) < floor_cos:
             return (False, pos)
 
@@ -322,23 +313,6 @@ class KinematicCharacterController:
         self._coyote        = self.cfg.coyote_time
         return (True, new_pos)
 
-
-
-    
-    def _alt_sweep_heights(self):
-        """
-        Alternating horizontal sweep samples:
-        • Phase False: LOW only  -> (radius)
-        • Phase True:  MID only  -> (0.5 * height)
-        """
-        r = float(self.cfg.radius)
-        if not self._ray_phase:
-            return (r,)
-        else:
-            mid = 0.5 * float(self.cfg.height)
-            return (mid,)
-
-
     def step(
         self,
         dt,
@@ -349,16 +323,47 @@ class KinematicCharacterController:
         dynamic_map,
         platform_linear_velocity_map=None,
         platform_ang_velocity_map=None,
+        platform_motion_map=None,   # per-object frame displacement (Vector)
     ):
         """
-        SIMPLE MODE — further trimmed:
-        • Reuse low forward hit in step-up (no multi-height sweep inside).
-        • Exactly ONE downward ray per step (shared by vertical integrate + snap).
-        • Keep aggressive steep-slope slide + jump rules.
-        • Still: low forward + (optional) slide try + (optional) ceiling ray.
+        SIMPLE MODE — trimmed + anti-ghosting (unchanged aim)
+
+        Fixes in this version:
+        • Treat platform carry as full 3D (XY + Z) and include it in vertical integration.
+        • Expand snap window by the platform’s upward displacement for this step.
+        • Permit snap while riding a rising platform even if self.vel.z > 0.
         """
         pos = self.obj.location.copy()
         rot = self.obj.rotation_euler.copy()
+
+        # 0) Cheap proxy push (kept)
+        if dynamic_map:
+            cap_r   = float(self.cfg.radius)
+            cap_h   = float(self.cfg.height)
+            cap_org = pos.copy()
+            for obj, (_bvh_like, approx_rad) in dynamic_map.items():
+                v_lin = Vector((0, 0, 0))
+                if platform_linear_velocity_map and obj in platform_linear_velocity_map:
+                    v_lin = platform_linear_velocity_map[obj]
+
+                omega = Vector((0, 0, 0))
+                if platform_ang_velocity_map and obj in platform_ang_velocity_map:
+                    omega = platform_ang_velocity_map[obj]
+
+                if v_lin.length <= 1.0e-9 and omega.length <= 1.0e-9:
+                    continue
+
+                center = obj.matrix_world.translation
+                r_vec  = (pos - center)
+                v_rot  = omega.cross(r_vec)
+
+                swept = v_lin.length * dt + omega.length * float(approx_rad) * dt
+                push_r = float(approx_rad) + swept
+                if self._capsule_may_touch_sphere(cap_org, cap_h, cap_r, center, push_r, pad=0.0):
+                    if not (self.on_ground and self.ground_obj is obj):
+                        v_proxy = v_lin + v_rot
+                        if v_proxy.length > 0.0:
+                            pos += v_proxy * dt
 
         # 1) Input / speed
         wish_dir_xy, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
@@ -377,14 +382,13 @@ class KinematicCharacterController:
         up = Vector((0, 0, 1))
         floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
 
-        # 4) Vertical + steep behavior
+        # 4) Vertical + steep behavior (unchanged)
         if not self.on_ground:
             self.vel.z += self.cfg.gravity * dt
         else:
             if self.on_walkable:
                 self.vel.z = max(self.vel.z, 0.0)
             else:
-                # aggressive downhill on steep
                 n = self.ground_norm if self.ground_norm is not None else up
                 uphill = up - n * up.dot(n)
                 downhill = Vector((-uphill.x, -uphill.y, -uphill.z))
@@ -404,7 +408,7 @@ class KinematicCharacterController:
                             v_xy = v_xy - d_xy * along + d_xy * float(self.cfg.steep_min_speed)
                             self.vel.x, self.vel.y = v_xy.x, v_xy.y
 
-        # 5) Moving platform carry + yaw follow
+        # 5) Moving platform carry (NOW full 3D)
         carry = Vector((0, 0, 0))
         if self.on_ground and self.ground_obj:
             v_lin = Vector((0, 0, 0))
@@ -416,22 +420,27 @@ class KinematicCharacterController:
                 r_vec = (pos - self.ground_obj.matrix_world.translation)
                 v_rot = omega.cross(r_vec)
                 rot.z += omega.z * dt
-            carry = v_lin + v_rot
+            carry = v_lin + v_rot  # X, Y, and Z
 
-        # 6) Ceiling ray (only if going up)
+        # 6) Ceiling ray (only if going up) — pads preserved
         if self.vel.z > 0.0:
             top = pos + Vector((0, 0, float(self.cfg.height)))
             up_dist = self.vel.z * dt
-            loc_up, _, _, _ = self._raycast_any(static_bvh, dynamic_map, top, up, up_dist)
+            loc_up, _, _, _ = self._raycast_any(
+                static_bvh, dynamic_map, top, up, up_dist,
+                platform_motion_map=platform_motion_map,
+                platform_ang_velocity_map=platform_ang_velocity_map,
+                dt=dt
+            )
             if loc_up is not None:
                 pos.z = loc_up.z - float(self.cfg.height)
                 self.vel.z = 0.0
 
-        # 7) Horizontal move: low forward ray (and one slide try)
+        # 7) Horizontal move with single low ray (+ slide try) — pads preserved
         r = float(self.cfg.radius)
         hvel = Vector((self.vel.x + carry.x, self.vel.y + carry.y, 0.0))
 
-        if self.on_ground and self.ground_norm is not None and not self.on_walkable:
+        if self.on_ground and self.ground_norm is not None and not self._slope_ok(self.ground_norm):
             hv3 = Vector((hvel.x, hvel.y, 0.0))
             hv3 = remove_steep_slope_component(hv3, self.ground_norm, max_slope_dot=floor_cos)
             hvel = Vector((hv3.x, hv3.y, 0.0))
@@ -439,14 +448,18 @@ class KinematicCharacterController:
         move_len = hvel.length * dt
         forward  = hvel.normalized() if move_len > 0.0 else Vector((0, 0, 0))
 
-        # Precompute low forward hit ONCE; reuse for step-up decision
         low_hit_normal = None
         low_hit_dist   = 0.0
 
         if forward.length > 0.0:
             o_low = pos + Vector((0, 0, r))
             ray_len = move_len + r
-            hitL, nL, _, dL = self._raycast_any(static_bvh, dynamic_map, o_low, forward, ray_len)
+            hitL, nL, _, dL = self._raycast_any(
+                static_bvh, dynamic_map, o_low, forward, ray_len,
+                platform_motion_map=platform_motion_map,
+                platform_ang_velocity_map=platform_ang_velocity_map,
+                dt=dt
+            )
 
             if self.on_ground and self.cfg.step_height > 0.0 and hitL is not None:
                 low_hit_normal = nL.normalized()
@@ -456,7 +469,10 @@ class KinematicCharacterController:
             if self.on_ground and self.cfg.step_height > 0.0 and low_hit_normal is not None:
                 did_step, pos = self._try_step_up(
                     static_bvh, dynamic_map, pos, forward, move_len,
-                    low_hit_normal, low_hit_dist
+                    low_hit_normal, low_hit_dist,
+                    platform_motion_map=platform_motion_map,
+                    platform_ang_velocity_map=platform_ang_velocity_map,
+                    dt=dt
                 )
 
             if (not did_step):
@@ -465,7 +481,7 @@ class KinematicCharacterController:
                     pos += forward * move_len
                     moved = move_len
                 else:
-                    allowed = max(0.0, low_hit_dist - r)
+                    allowed = max(0.0, dL - r)
                     if allowed > 0.0:
                         pos += forward * allowed
                         moved = allowed
@@ -477,7 +493,6 @@ class KinematicCharacterController:
                         self.vel.x, self.vel.y = hvel.x - carry.x, hvel.y - carry.y
 
                     remaining = max(0.0, move_len - moved)
-                    # Only do a slide ray if there’s meaningful distance left
                     if remaining > (0.15 * r):
                         slide_dir = forward - hit_n * forward.dot(hit_n)
                         if hit_n.dot(up) < floor_cos:
@@ -485,7 +500,12 @@ class KinematicCharacterController:
                         if slide_dir.length > 0.0:
                             slide_dir.normalize()
                             o2 = pos + Vector((0, 0, r))
-                            h2, n2, _, d2 = self._raycast_any(static_bvh, dynamic_map, o2, slide_dir, remaining + r)
+                            h2, n2, _, d2 = self._raycast_any(
+                                static_bvh, dynamic_map, o2, slide_dir, remaining + r,
+                                platform_motion_map=platform_motion_map,
+                                platform_ang_velocity_map=platform_ang_velocity_map,
+                                dt=dt
+                            )
                             if h2 is None:
                                 pos += slide_dir * remaining
                             else:
@@ -493,35 +513,47 @@ class KinematicCharacterController:
                                 if allow2 > 0.0:
                                     pos += slide_dir * allow2
 
-        # 8) Single DOWNWARD ray shared by both vertical penetration and snap
-        dz = self.vel.z * dt
-        down_max = self.cfg.snap_down if dz >= 0.0 else max(self.cfg.snap_down, -dz)
-        locD, nD, gobjD, _ = self._raycast_down_any(static_bvh, dynamic_map, pos, down_max)
+        # 8) Downward grounding/snap — **include vertical carry**
+        dz = (self.vel.z + carry.z) * dt
 
-        if dz < 0.0:
-            if locD is not None and nD is not None and (pos.z + dz) <= locD.z:
-                pos.z = locD.z
-                self.vel.z = 0.0
+        # If we move up by dz this tick, allow extra snap budget equal to dz.
+        if dz >= 0.0:
+            down_max = float(self.cfg.snap_down) + dz
+        else:
+            down_max = max(float(self.cfg.snap_down), -dz)
+
+        locD, nD, gobjD, _ = self._raycast_down_any(
+            static_bvh, dynamic_map, pos, down_max,
+            platform_motion_map=platform_motion_map,
+            platform_ang_velocity_map=platform_ang_velocity_map,
+            dt=dt
+        )
+
+        # Integrate vertical with carry
+        pos.z += dz
+
+        was_grounded = self.on_ground
+
+        # Snap window expands by the amount we moved upward this step.
+        snap_window = float(self.cfg.snap_down) + max(0.0, dz)
+
+        if locD is not None and nD is not None and abs(locD.z - pos.z) <= snap_window:
+            # Allow snap if: (a) not moving up relative to support, or (b) we’re on/near a rising platform.
+            allow_snap = (self.vel.z <= 0.0) or (carry.z > 0.0) or (gobjD is not None and gobjD == self.ground_obj)
+            if allow_snap:
                 self.on_ground   = True
                 self.on_walkable = (nD.dot(up) >= floor_cos)
                 self.ground_norm = nD
                 self.ground_obj  = gobjD
+                pos.z            = locD.z
+                self.vel.z       = 0.0
                 self._coyote     = self.cfg.coyote_time
             else:
-                pos.z += dz
-        else:
-            pos.z += dz
-
-        # Snap/grounding using the SAME hit if it’s within snap window
-        was_grounded = self.on_ground
-        if locD is not None and nD is not None and (abs(locD.z - pos.z) <= float(self.cfg.snap_down)) and self.vel.z <= 0.0:
-            self.on_ground   = True
-            self.on_walkable = (nD.dot(up) >= floor_cos)
-            self.ground_norm = nD
-            self.ground_obj  = gobjD
-            pos.z            = locD.z
-            self.vel.z       = 0.0
-            self._coyote     = self.cfg.coyote_time
+                self.on_ground   = False
+                self.on_walkable = False
+                self.ground_obj  = None
+                if was_grounded:
+                    self._coyote = self.cfg.coyote_time
         else:
             self.on_ground   = False
             self.on_walkable = False
@@ -533,7 +565,6 @@ class KinematicCharacterController:
         self.obj.location = pos
         if abs(rot.z - self.obj.rotation_euler.z) > 0.0:
             self.obj.rotation_euler = rot
-
 
     def request_jump(self):
         self._jump_buf = self.cfg.jump_buffer

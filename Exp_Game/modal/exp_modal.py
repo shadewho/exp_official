@@ -593,6 +593,7 @@ class ExpModal(bpy.types.Operator):
                 dynamic_map=getattr(self, "dynamic_bvh_map", None),
                 platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
                 platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
+                platform_motion_map=getattr(self, "platform_motion_map", {}),
             )
 
             # Keep existing flags for animations/audio

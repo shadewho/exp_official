@@ -53,7 +53,7 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
 # Exploratory Modal Panel
 # --------------------------------------------------------------------
 class ExploratoryPanel(bpy.types.Panel):
-    bl_label = "Exploratory (BETA v1.2)"
+    bl_label = "Exploratory (BETA v1.3)"
     bl_idname = "VIEW3D_PT_exploratory_modal"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
