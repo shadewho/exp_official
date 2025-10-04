@@ -1,305 +1,595 @@
 import bpy
+import uuid
 from .base_nodes import ReactionNodeBase
 
-# Define a custom socket for the Reaction Node input ("Trigger Input")
+# Optional: standalone editing uses ReactionDefinition if available
+try:
+    from ..Exp_Game.reactions.exp_reaction_definition import ReactionDefinition
+except Exception:
+    ReactionDefinition = None
+
+
+# ───────────────────────── helpers ─────────────────────────
+def _scene():
+    scn = getattr(bpy.context, "scene", None)
+    return scn if scn else (bpy.data.scenes[0] if bpy.data.scenes else None)
+
+def _find_inter_by_uid(scene, uid: str):
+    if not scene or not hasattr(scene, "custom_interactions") or not uid:
+        return None
+    for it in scene.custom_interactions:
+        if getattr(it, "uid", "") == uid:
+            return it
+    return None
+
+# Trigger node ids we support (upstream root for reaction chains)
+_TRIGGER_NODE_IDS = {
+    "ProximityTriggerNodeType",
+    "CollisionTriggerNodeType",
+    "InteractTriggerNodeType",
+    "ObjectiveUpdateTriggerNodeType",
+    "TimerCompleteTriggerNodeType",
+}
+
+def _resolve_inter_from_trigger_node(trigger_node):
+    scn = _scene()
+    if not scn:
+        return None
+    uid = getattr(trigger_node, "interaction_uid", "")
+    if uid:
+        return _find_inter_by_uid(scn, uid)
+    return None
+
+def _resolve_inter_from_any_upstream(reaction_node, _visited=None):
+    """
+    Walk upstream from a Reaction node until we find a Trigger node.
+    If we hit another Reaction first, keep recursing.
+    """
+    if _visited is None:
+        _visited = set()
+    if reaction_node in _visited:
+        return None
+    _visited.add(reaction_node)
+
+    sock = reaction_node.inputs.get("Trigger Input")
+    if not sock or not sock.links:
+        return None
+
+    upstream = sock.links[0].from_node
+    if getattr(upstream, "bl_idname", "") in _TRIGGER_NODE_IDS:
+        return _resolve_inter_from_trigger_node(upstream)
+    if getattr(upstream, "bl_idname", "") in _ALL_REACTION_NODE_IDS:
+        return _resolve_inter_from_any_upstream(upstream, _visited)
+    return None
+
+
+# ───────────────────────── RNA copy helpers ─────────────────────────
+def _copy_reaction_values(src, dst):
+    """
+    Best-effort copy of simple RNA fields from src → dst.
+    Skips rna_type, collections, and read-only props.
+    """
+    if not src or not dst:
+        return
+    rna = src.bl_rna
+    for prop in rna.properties:
+        # Skip internal
+        if prop.identifier in {"rna_type"}:
+            continue
+        # Read-only or collections: skip
+        if prop.is_readonly or prop.is_collection:
+            continue
+        try:
+            val = getattr(src, prop.identifier)
+        except Exception:
+            continue
+        try:
+            setattr(dst, prop.identifier, val)
+        except Exception:
+            # Some pointer types may fail if incompatible; ignore gracefully
+            pass
+
+
+# ───────────────────────── sockets ─────────────────────────
 class ReactionTriggerInputSocket(bpy.types.NodeSocket):
     bl_idname = "ReactionTriggerInputSocketType"
-    bl_label = "Reaction Trigger Input Socket"
-    
+    bl_label  = "Reaction Trigger Input Socket"
     def draw(self, context, layout, node, text):
         layout.label(text=text)
-    
     def draw_color(self, context, node):
-        # Lighter blue (RGB: 0.4, 0.4, 1.0)
         return (0.4, 0.4, 1.0, 1.0)
 
-# Define a custom socket for the Reaction Node output ("Output")
 class ReactionOutputSocket(bpy.types.NodeSocket):
     bl_idname = "ReactionOutputSocketType"
-    bl_label = "Reaction Output Socket"
-    
+    bl_label  = "Reaction Output Socket"
     def draw(self, context, layout, node, text):
         layout.label(text=text)
-    
     def draw_color(self, context, node):
-        # Light green (for example, RGB: 0.7, 1.0, 0.7)
         return (0.7, 1.0, 0.7, 1.0)
 
-class ReactionNode(ReactionNodeBase):
-    bl_idname = "ReactionNodeType"
-    bl_label = "Reaction Node"
-    bl_icon = 'MODIFIER'
-    
-    # Each Reaction Node stores its own reaction index.
-    reaction_index: bpy.props.IntProperty(name="Reaction Index", default=-1)
 
+# ───────────── base class for all specific reaction nodes ─────────────
+class _ReactionNodeKind(ReactionNodeBase):
+    """Base for concrete reaction nodes. Subclasses must define KIND."""
+    KIND = None  # e.g. "CUSTOM_ACTION"
+
+    # Node → Reaction linkage (node is the owner)
+    reaction_uid: bpy.props.StringProperty(name="Reaction UID", default="")
+    owning_inter_uid: bpy.props.StringProperty(name="Owning Interaction UID", default="")
+
+    # Standalone edit buffer (no writes to Scene during draw/update)
+    local_reaction: bpy.props.PointerProperty(
+        name="Standalone Reaction",
+        type=ReactionDefinition if ReactionDefinition else bpy.types.PropertyGroup
+    )
+
+    # ── lifecycle ──
     def init(self, context):
-        # Create an input socket for receiving the trigger connection.
         self.inputs.new("ReactionTriggerInputSocketType", "Trigger Input")
-        # Create an output socket for broadcasting reaction results.
-        self.outputs.new("ReactionOutputSocketType", "Output")
+        self.outputs.new("ReactionOutputSocketType",      "Output")
         self.width = 300
-
-    def update(self):
-        """
-        Called automatically when the node updates.
-        If the node is connected to a trigger and no reaction exists (reaction_index < 0),
-        automatically add a new reaction to the underlying interaction.
-        """
-        trigger_socket = self.inputs.get("Trigger Input")
-        if trigger_socket and trigger_socket.links and self.reaction_index < 0:
-            # Get the connected Trigger Node.
-            trigger_node = trigger_socket.links[0].from_node
-            if hasattr(trigger_node, "interaction_owner"):
-                owner_index = trigger_node.interaction_owner
-                scene = bpy.context.scene
-                if hasattr(scene, "custom_interactions") and 0 <= owner_index < len(scene.custom_interactions):
-                    inter = scene.custom_interactions[owner_index]
-                    new_reaction = inter.reactions.add()
-                    new_reaction.name = "Reaction_%d" % len(inter.reactions)
-                    self.reaction_index = len(inter.reactions) - 1
-                    print("Auto-added new reaction; reaction_index set to", self.reaction_index)
 
     def copy(self, node):
         """
-        When duplicating this node, automatically add a new reaction entry and assign
-        the new reaction index to the duplicated node.
+        Duplicated nodes start detached: no backend link yet.
+        They will attach to whichever trigger they're connected to.
         """
-        try:
-            scene = bpy.context.scene
-            trigger_socket = self.inputs.get("Trigger Input")
-            if trigger_socket and trigger_socket.links:
-                trigger_node = trigger_socket.links[0].from_node
-                if hasattr(trigger_node, "interaction_owner"):
-                    owner_index = trigger_node.interaction_owner
-                    if hasattr(scene, "custom_interactions") and 0 <= owner_index < len(scene.custom_interactions):
-                        inter = scene.custom_interactions[owner_index]
-                        new_reaction = inter.reactions.add()
-                        new_reaction.name = "Reaction_%d" % len(inter.reactions)
-                        self.reaction_index = len(inter.reactions) - 1
-                    else:
-                        self.reaction_index = -1
-                else:
-                    self.reaction_index = -1
-            else:
-                self.reaction_index = -1
-        except Exception as e:
-            print("Error duplicating Reaction Node:", e)
-            self.reaction_index = -1
+        self.reaction_uid = ""
+        self.owning_inter_uid = ""
+
+    def free(self):
+        """
+        Node deleted → delete its backend reaction (if any).
+        Safe even if links are already gone.
+        """
+        uid = self.reaction_uid
+        ow_uid = self.owning_inter_uid
+        if not uid:
+            return
+        scn = _scene()
+        if not scn or not hasattr(scn, "custom_interactions"):
+            self.reaction_uid = ""
+            self.owning_inter_uid = ""
+            return
+
+        def _delete():
+            inter = _find_inter_by_uid(scn, ow_uid) if ow_uid else None
+            if inter and hasattr(inter, "reactions"):
+                for i in range(len(inter.reactions) - 1, -1, -1):
+                    r = inter.reactions[i]
+                    if getattr(r, "uid", "") == uid:
+                        inter.reactions.remove(i)
+                        break
+            try:
+                self.reaction_uid = ""
+                self.owning_inter_uid = ""
+            except Exception:
+                pass
+            return None
+
+        bpy.app.timers.register(_delete, first_interval=0.0)
+
+    def update(self):
+        """
+        Authoring-time sync:
+          - If connected upstream to a Trigger → ensure backend reaction exists (create if missing)
+          - If connected to a *different* Interaction than last time → MOVE the backend (no leaks, keep data)
+          - If disconnected                     → keep backend but do nothing until free() (user may reconnect)
+        All writes are deferred via timers to avoid illegal RNA writes during draw/update.
+        """
+        inter = _resolve_inter_from_any_upstream(self)
+        inter_uid_now = getattr(inter, "uid", "") if inter else ""
+
+        # Nothing to write if no upstream trigger
+        if not inter:
+            return
+
+        react_uid = self.reaction_uid
+        kind = self.KIND
+        prev_owner = self.owning_inter_uid
+
+        def _ensure_or_move():
+            scn = _scene()
+            if not scn:
+                return None
+
+            cur_inter = _find_inter_by_uid(scn, inter_uid_now)
+            if not cur_inter or not hasattr(cur_inter, "reactions"):
+                return None
+
+            # CASE 1: No backend yet → create new on current interaction
+            if not react_uid:
+                r = cur_inter.reactions.add()
+                r.name = "Reaction_%d" % len(cur_inter.reactions)
+                new_uid = str(uuid.uuid4())
+                r.uid = new_uid
+                try:
+                    if hasattr(r, "reaction_type") and kind and r.reaction_type != kind:
+                        r.reaction_type = kind
+                except Exception:
+                    pass
+                try:
+                    self.reaction_uid = new_uid
+                    self.owning_inter_uid = inter_uid_now
+                except Exception:
+                    pass
+                return None
+
+            # We have a backend uid, find it either in previous owner or current
+            prev_inter = _find_inter_by_uid(scn, prev_owner) if prev_owner else None
+            r_in_cur = None
+            if cur_inter:
+                for it in cur_inter.reactions:
+                    if getattr(it, "uid", "") == react_uid:
+                        r_in_cur = it
+                        break
+
+            # CASE 2: It already lives in current interaction → ensure type, update owner marker
+            if r_in_cur is not None:
+                try:
+                    if hasattr(r_in_cur, "reaction_type") and kind and r_in_cur.reaction_type != kind:
+                        r_in_cur.reaction_type = kind
+                    self.owning_inter_uid = inter_uid_now
+                except Exception:
+                    pass
+                return None
+
+            # CASE 3: It lives in previous interaction → MOVE it to current
+            r_in_prev = None
+            if prev_inter and hasattr(prev_inter, "reactions"):
+                for it in prev_inter.reactions:
+                    if getattr(it, "uid", "") == react_uid:
+                        r_in_prev = it
+                        break
+
+            if r_in_prev is not None:
+                # Create new item in current, copy data, delete old
+                new_r = cur_inter.reactions.add()
+                new_r.name = r_in_prev.name
+                new_r.uid = react_uid  # keep same id so node keeps tracking it
+                _copy_reaction_values(r_in_prev, new_r)
+                try:
+                    if hasattr(new_r, "reaction_type") and kind and new_r.reaction_type != kind:
+                        new_r.reaction_type = kind
+                except Exception:
+                    pass
+
+                # remove old
+                for i in range(len(prev_inter.reactions) - 1, -1, -1):
+                    if getattr(prev_inter.reactions[i], "uid", "") == react_uid:
+                        prev_inter.reactions.remove(i)
+                        break
+
+                # update owner marker
+                try:
+                    self.owning_inter_uid = inter_uid_now
+                except Exception:
+                    pass
+                return None
+
+            # CASE 4: Not found anywhere (stale marker) → recreate in current
+            r = cur_inter.reactions.add()
+            r.name = "Reaction_%d" % len(cur_inter.reactions)
+            r.uid = react_uid  # reuse uid if we have one
+            try:
+                if hasattr(r, "reaction_type") and kind and r.reaction_type != kind:
+                    r.reaction_type = kind
+            except Exception:
+                pass
+            try:
+                self.owning_inter_uid = inter_uid_now
+            except Exception:
+                pass
+            return None
+
+        bpy.app.timers.register(_ensure_or_move, first_interval=0.0)
+
+    # ── shared field drawers (read-only from Scene; no writes during draw) ──
+    def _draw_custom_action(self, box, r):
+        box.prop(r, "custom_action_message", text="Notes")
+        box.prop_search(r, "custom_action_target", bpy.context.scene, "objects", text="Object")
+        box.prop_search(r, "custom_action_action", bpy.data, "actions", text="Action")
+        box.prop(r, "custom_action_loop", text="Loop?")
+        if r.custom_action_loop:
+            box.prop(r, "custom_action_loop_duration", text="Loop Duration")
+
+    def _draw_char_action(self, box, r):
+        box.prop_search(r, "char_action_ref", bpy.data, "actions", text="Action")
+        box.prop(r, "char_action_mode", text="Mode")
+        if r.char_action_mode == 'LOOP':
+            box.prop(r, "char_action_loop_duration", text="Loop Duration")
+
+    def _draw_sound(self, box, r):
+        box.label(text="Play Packed Sound")
+        box.prop(r, "sound_volume", text="Relative Volume")
+        box.prop(r, "sound_use_distance", text="Use Distance?")
+        box.prop(r, "sound_pointer", text="Sound Datablock")
+        box.prop(r, "sound_play_mode", text="Mode")
+        if r.sound_play_mode == "DURATION":
+            box.prop(r, "sound_duration", text="Duration")
+        if r.sound_use_distance:
+            box.prop(r, "sound_distance_object", text="Distance Obj")
+            box.prop(r, "sound_max_distance", text="Max Distance")
+
+    def _draw_property(self, box, r):
+        box.prop(r, "property_data_path", text="Data Path")
+        row = box.row(); row.label(text=f"Detected Type: {r.property_type}")
+        box.prop(r, "property_transition_duration", text="Duration")
+        box.prop(r, "property_reset", text="Reset?")
+        if r.property_reset:
+            box.prop(r, "property_reset_delay", text="Reset Delay")
+        if r.property_type == "BOOL":
+            box.prop(r, "bool_value", text="New Bool Value")
+        elif r.property_type == "INT":
+            box.prop(r, "int_value", text="New Int Value")
+        elif r.property_type == "FLOAT":
+            box.prop(r, "float_value", text="New Float Value")
+        elif r.property_type == "STRING":
+            box.prop(r, "string_value", text="New String Value")
+        elif r.property_type == "VECTOR":
+            box.label(text=f"Vector length: {r.vector_length}")
+            box.prop(r, "vector_value", text="New Vector")
+        else:
+            box.label(text="No property detected or invalid path.")
+
+    def _draw_transform(self, box, r):
+        box.prop_search(r, "transform_object", bpy.context.scene, "objects", text="Object")
+        box.prop(r, "transform_mode", text="Mode")
+        if r.transform_mode == "TO_OBJECT":
+            box.prop_search(r, "transform_to_object", bpy.context.scene, "objects", text="To Object")
+        if r.transform_mode in {"OFFSET", "TO_LOCATION", "LOCAL_OFFSET"}:
+            box.prop(r, "transform_location", text="Location")
+            box.prop(r, "transform_rotation", text="Rotation")
+            box.prop(r, "transform_scale", text="Scale")
+        box.prop(r, "transform_duration", text="Duration")
+        if hasattr(r, "transform_distance"):
+            box.prop(r, "transform_distance", text="Distance")
+
+    def _draw_custom_ui_text(self, box, r):
+        box.prop(r, "custom_text_subtype", text="Subtype")
+        if r.custom_text_subtype == "STATIC":
+            box.prop(r, "custom_text_value", text="Text")
+            box.prop(r, "custom_text_indefinite", text="Indefinite?")
+            if not r.custom_text_indefinite:
+                box.prop(r, "custom_text_duration", text="Duration")
+            box.prop(r, "custom_text_anchor", text="Anchor")
+            box.prop(r, "custom_text_scale", text="Scale")
+            box.prop(r, "custom_text_margin_x", text="Margin X")
+            box.prop(r, "custom_text_margin_y", text="Margin Y")
+            box.prop(r, "custom_text_color", text="Color")
+        elif r.custom_text_subtype == "OBJECTIVE":
+            if hasattr(r, "text_objective_index"):
+                box.prop(r, "text_objective_index", text="Objective")
+            for fld, lbl in [
+                ("custom_text_prefix","Prefix"),
+                ("custom_text_include_counter","Show Counter"),
+                ("custom_text_suffix","Suffix"),
+            ]:
+                if hasattr(r, fld):
+                    box.prop(r, fld, text=lbl)
+            box.prop(r, "custom_text_indefinite", text="Indefinite?")
+            if not r.custom_text_indefinite:
+                box.prop(r, "custom_text_duration", text="Duration")
+            box.prop(r, "custom_text_anchor", text="Anchor")
+            box.prop(r, "custom_text_scale", text="Scale")
+            box.prop(r, "custom_text_margin_x", text="Margin X")
+            box.prop(r, "custom_text_margin_y", text="Margin Y")
+            box.prop(r, "custom_text_color", text="Color")
+        elif r.custom_text_subtype == "OBJECTIVE_TIMER_DISPLAY":
+            if hasattr(r, "text_objective_index"):
+                box.prop(r, "text_objective_index", text="Objective")
+            box.prop(r, "custom_text_indefinite", text="Indefinite?")
+            if not r.custom_text_indefinite:
+                box.prop(r, "custom_text_duration", text="Duration")
+            box.prop(r, "custom_text_anchor", text="Anchor")
+            box.prop(r, "custom_text_scale", text="Scale")
+            box.prop(r, "custom_text_margin_x", text="Margin X")
+            box.prop(r, "custom_text_margin_y", text="Margin Y")
+            box.prop(r, "custom_text_color", text="Color")
+
+    def _draw_objective_counter(self, box, r):
+        box.prop(r, "objective_index", text="Objective")
+        box.prop(r, "objective_op", text="Operation")
+        if r.objective_op in ("ADD", "SUBTRACT"):
+            box.prop(r, "objective_amount", text="Amount")
+
+    def _draw_objective_timer(self, box, r):
+        box.prop(r, "objective_index", text="Timer Objective")
+        box.prop(r, "objective_timer_op", text="Timer Operation")
+
+    def _draw_mobility_game(self, box, r):
+        mg = r.mobility_game_settings
+        box.prop(mg, "allow_movement", text="Allow Movement")
+        box.prop(mg, "allow_jump", text="Allow Jump")
+        box.prop(mg, "allow_sprint", text="Allow Sprint")
+
+    # ── main UI (no writes here) ──
+    def _linked_reaction(self):
+        inter = _resolve_inter_from_any_upstream(self)
+        if not inter:
+            return None
+        uid = self.reaction_uid
+        if not uid:
+            return None
+        for r in inter.reactions:
+            if getattr(r, "uid", "") == uid:
+                return r
+        return None
 
     def draw_buttons(self, context, layout):
-        # Force the node's UI to be active even if it isn't selected.
         layout.active = True
 
-        # Call update() to automatically add a reaction if needed.
-        self.update()
-
-        # Verify a trigger is connected.
-        trigger_socket = self.inputs.get("Trigger Input")
-        if not trigger_socket or not trigger_socket.links:
-            layout.label(text="No trigger connected", icon='ERROR')
+        # Try to fetch the linked backend for editing
+        r = self._linked_reaction()
+        if r:
+            box = layout.box()
+            box.label(text=f"{self.bl_label}", icon='MODIFIER')
+            self._draw_fields(box, r)
             return
 
-        # Get the connected trigger node to access its interaction data.
-        trigger_node = trigger_socket.links[0].from_node
-        if not hasattr(trigger_node, "interaction_owner"):
-            layout.label(text="Trigger missing interaction data", icon='ERROR')
-            return
-
-        owner_index = trigger_node.interaction_owner
-        scene = context.scene
-        if owner_index < 0 or owner_index >= len(scene.custom_interactions):
-            layout.label(text="Invalid interaction index", icon='ERROR')
-            return
-
-        inter = scene.custom_interactions[owner_index]
-        if self.reaction_index < 0 or self.reaction_index >= len(inter.reactions):
-            layout.label(text="No reaction selected", icon='INFO')
-            # With auto-creation in update(), this condition should rarely occur.
-            return
-
-        # Retrieve the reaction corresponding to this node.
-        reaction = inter.reactions[self.reaction_index]
-        box = layout.box()
-        box.label(text="Current Reaction", icon='OBJECT_DATA')
-        box.prop(reaction, "name", text="Name")
-        box.prop(reaction, "reaction_type", text="Type")
-
-
-        if reaction.reaction_type == "CUSTOM_ACTION":
-            box.prop(reaction, "custom_action_message", text="Notes")
-            box.prop_search(reaction, "custom_action_target", bpy.context.scene, "objects", text="Object")
-            box.prop_search(reaction, "custom_action_action", bpy.data, "actions", text="Action")
-            box.prop(reaction, "custom_action_loop", text="Loop?")
-            if reaction.custom_action_loop:
-                box.prop(reaction, "custom_action_loop_duration", text="Loop Duration")
-
-        elif reaction.reaction_type == "CHAR_ACTION":
-            box.prop_search(reaction, "char_action_ref", bpy.data, "actions", text="Action")
-            box.prop(reaction, "char_action_mode", text="Mode")
-            if reaction.char_action_mode == 'LOOP':
-                box.prop(reaction, "char_action_loop_duration", text="Loop Duration")
-
-        elif reaction.reaction_type == "OBJECTIVE_COUNTER":
-            box.prop(reaction, "objective_index", text="Objective")
-            box.prop(reaction, "objective_op", text="Operation")
-            if reaction.objective_op in ("ADD", "SUBTRACT"):
-                box.prop(reaction, "objective_amount", text="Amount")
-
-        elif reaction.reaction_type == "PROPERTY":
-            box.prop(reaction, "property_data_path", text="Data Path")
-            row = box.row()
-            row.label(text=f"Detected Type: {reaction.property_type}")
-            box.prop(reaction, "property_transition_duration", text="Duration")
-            box.prop(reaction, "property_reset", text="Reset?")
-            if reaction.property_reset:
-                box.prop(reaction, "property_reset_delay", text="Reset Delay")
-            if reaction.property_type == "BOOL":
-                box.prop(reaction, "bool_value", text="New Bool Value")
-            elif reaction.property_type == "INT":
-                box.prop(reaction, "int_value", text="New Int Value")
-            elif reaction.property_type == "FLOAT":
-                box.prop(reaction, "float_value", text="New Float Value")
-            elif reaction.property_type == "STRING":
-                box.prop(reaction, "string_value", text="New String Value")
-            elif reaction.property_type == "VECTOR":
-                box.label(text=f"Vector length: {reaction.vector_length}")
-                box.prop(reaction, "vector_value", text="New Vector")
-            else:
-                box.label(text="No property detected or invalid path.")
-
-        elif reaction.reaction_type == "TRANSFORM":
-            box.prop_search(reaction, "transform_object", bpy.context.scene, "objects", text="Object")
-            box.prop(reaction, "transform_mode", text="Mode")
-            if reaction.transform_mode == "TO_OBJECT":
-                box.prop_search(reaction, "transform_to_object", bpy.context.scene, "objects", text="To Object")
-            if reaction.transform_mode in {"OFFSET", "TO_LOCATION", "LOCAL_OFFSET"}:
-                box.prop(reaction, "transform_location", text="Location")
-                box.prop(reaction, "transform_rotation", text="Rotation")
-                box.prop(reaction, "transform_scale", text="Scale")
-            box.prop(reaction, "transform_duration", text="Duration")
-            box.prop(reaction, "transform_distance", text="Distance")
-
-        elif reaction.reaction_type == "CUSTOM_UI_TEXT":
-            box.prop(reaction, "custom_text_subtype", text="Subtype")
-            if reaction.custom_text_subtype == "STATIC":
-                box.prop(reaction, "custom_text_value", text="Text")
-                box.prop(reaction, "custom_text_indefinite", text="Indefinite?")
-                if not reaction.custom_text_indefinite:
-                    box.prop(reaction, "custom_text_duration", text="Duration")
-                box.prop(reaction, "custom_text_anchor", text="Anchor")
-                box.prop(reaction, "custom_text_scale", text="Scale")
-                box.prop(reaction, "custom_text_margin_x", text="Margin X")
-                box.prop(reaction, "custom_text_margin_y", text="Margin Y")
-                box.prop(reaction, "custom_text_color", text="Color")
-                
-            elif reaction.custom_text_subtype == "OBJECTIVE":
-                box.prop(reaction, "text_objective_index", text="Objective")
-                box.prop(reaction, "text_objective_format", text="Format")
-                box.prop(reaction, "custom_text_indefinite", text="Indefinite?")
-                if not reaction.custom_text_indefinite:
-                    box.prop(reaction, "custom_text_duration", text="Duration")
-                box.prop(reaction, "custom_text_anchor", text="Anchor")
-                box.prop(reaction, "custom_text_scale", text="Scale")
-                box.prop(reaction, "custom_text_margin_x", text="Margin X")
-                box.prop(reaction, "custom_text_margin_y", text="Margin Y")
-                box.prop(reaction, "custom_text_color", text="Color")
-
-            elif reaction.custom_text_subtype == "OBJECTIVE_TIMER_DISPLAY":
-                box.prop(reaction, "text_objective_index", text="Objective")
-                box.prop(reaction, "custom_text_indefinite", text="Indefinite?")
-                if not reaction.custom_text_indefinite:
-                    box.prop(reaction, "custom_text_duration", text="Duration")
-                box.prop(reaction, "custom_text_anchor", text="Anchor")
-                box.prop(reaction, "custom_text_scale", text="Scale")
-                box.prop(reaction, "custom_text_margin_x", text="Margin X")
-                box.prop(reaction, "custom_text_margin_y", text="Margin Y")
-                box.prop(reaction, "custom_text_color", text="Color")
-                
-        elif reaction.reaction_type == "OBJECTIVE_TIMER":
-            box.prop(reaction, "objective_index", text="Timer Objective")
-            box.prop(reaction, "objective_timer_op", text="Timer Operation")
-
-        elif reaction.reaction_type == "MOBILITY_GAME":
-            mg = reaction.mobility_game_settings
-            box.prop(mg, "allow_movement", text="Allow Movement")
-            box.prop(mg, "allow_jump", text="Allow Jump")
-            box.prop(mg, "allow_sprint", text="Allow Sprint")
-            
-        elif reaction.reaction_type == "SOUND":
-            box.label(text="Play Packed Sound")
-            box.prop(reaction, "sound_volume", text="Relative Volume")
-            box.prop(reaction, "sound_use_distance", text="Use Distance?")
-            box.prop(reaction, "sound_pointer", text="Sound Datablock")
-            box.prop(reaction, "sound_play_mode", text="Mode")
-            if reaction.sound_play_mode == "DURATION":
-                box.prop(reaction, "sound_duration", text="Duration")
-            if reaction.sound_use_distance:
-                box.prop(reaction, "sound_distance_object", text="Distance Obj")
-                box.prop(reaction, "sound_max_distance", text="Max Distance")
+        # Disconnected or not yet ensured: draw standalone editor
+        layout.label(text=f"{self.bl_label} (Standalone)", icon='DECORATE')
+        if self.local_reaction:
+            box = layout.box()
+            self._draw_fields(box, self.local_reaction)
         else:
-            box.label(text="Reaction type not recognized", icon='ERROR')
-    
-    def draw_label(self):
-        return "Reaction Node"
+            layout.label(text="(No local data)", icon='ERROR')
+
+    # Subclasses implement this to draw type-specific fields only
+    def _draw_fields(self, box, r):
+        box.label(text="No fields implemented", icon='INFO')
 
 
+# ───────────── concrete reaction nodes (one per type) ─────────────
+class ReactionCustomActionNode(_ReactionNodeKind):
+    bl_idname = "ReactionCustomActionNodeType"
+    bl_label  = "Custom Action"
+    KIND = "CUSTOM_ACTION"
+    def _draw_fields(self, box, r): self._draw_custom_action(box, r)
+
+class ReactionCharActionNode(_ReactionNodeKind):
+    bl_idname = "ReactionCharActionNodeType"
+    bl_label  = "Character Action"
+    KIND = "CHAR_ACTION"
+    def _draw_fields(self, box, r): self._draw_char_action(box, r)
+
+class ReactionSoundNode(_ReactionNodeKind):
+    bl_idname = "ReactionSoundNodeType"
+    bl_label  = "Play Sound"
+    KIND = "SOUND"
+    def _draw_fields(self, box, r): self._draw_sound(box, r)
+
+class ReactionPropertyNode(_ReactionNodeKind):
+    bl_idname = "ReactionPropertyNodeType"
+    bl_label  = "Property Value"
+    KIND = "PROPERTY"
+    def _draw_fields(self, box, r): self._draw_property(box, r)
+
+class ReactionTransformNode(_ReactionNodeKind):
+    bl_idname = "ReactionTransformNodeType"
+    bl_label  = "Transform"
+    KIND = "TRANSFORM"
+    def _draw_fields(self, box, r): self._draw_transform(box, r)
+
+class ReactionCustomTextNode(_ReactionNodeKind):
+    bl_idname = "ReactionCustomTextNodeType"
+    bl_label  = "Custom UI Text"
+    KIND = "CUSTOM_UI_TEXT"
+    def _draw_fields(self, box, r): self._draw_custom_ui_text(box, r)
+
+class ReactionObjectiveCounterNode(_ReactionNodeKind):
+    bl_idname = "ReactionObjectiveCounterNodeType"
+    bl_label  = "Objective Counter"
+    KIND = "OBJECTIVE_COUNTER"
+    def _draw_fields(self, box, r): self._draw_objective_counter(box, r)
+
+class ReactionObjectiveTimerNode(_ReactionNodeKind):
+    bl_idname = "ReactionObjectiveTimerNodeType"
+    bl_label  = "Objective Timer"
+    KIND = "OBJECTIVE_TIMER"
+    def _draw_fields(self, box, r): self._draw_objective_timer(box, r)
+
+class ReactionMobilityGameNode(_ReactionNodeKind):
+    bl_idname = "ReactionMobilityGameNodeType"
+    bl_label  = "Mobility & Game"
+    KIND = "MOBILITY_GAME"
+    def _draw_fields(self, box, r): self._draw_mobility_game(box, r)
+
+
+# Node idnames for recursion helper
+_ALL_REACTION_NODE_IDS = {
+    "ReactionCustomActionNodeType",
+    "ReactionCharActionNodeType",
+    "ReactionSoundNodeType",
+    "ReactionPropertyNodeType",
+    "ReactionTransformNodeType",
+    "ReactionCustomTextNodeType",
+    "ReactionObjectiveCounterNodeType",
+    "ReactionObjectiveTimerNodeType",
+    "ReactionMobilityGameNodeType",
+}
+
+
+# ────────────────── optional operator (menu button uses this) ──────────────────
 class NODE_OT_add_reaction_to_node(bpy.types.Operator):
-    """Add a new reaction to this Reaction Node"""
+    """Ensure a linked reaction in the owning Interaction of this node's chain."""
     bl_idname = "node.add_reaction_to_node"
-    bl_label = "Add Reaction to Node"
+    bl_label  = "Add Reaction to Node"
 
     def execute(self, context):
         node_tree = context.space_data.edit_tree
-        active_node = node_tree.nodes.active
-        if not active_node or active_node.bl_idname != "ReactionNodeType":
-            self.report({'WARNING'}, "Active node is not a Reaction Node.")
-            return {'CANCELLED'}
-        
-        # Get the linked trigger from the input socket.
-        if active_node.inputs["Trigger Input"].links:
-            trigger_node = active_node.inputs["Trigger Input"].links[0].from_node
-            if hasattr(trigger_node, "interaction_owner"):
-                owner_index = trigger_node.interaction_owner
-            else:
-                self.report({'WARNING'}, "Trigger node missing interaction data.")
-                return {'CANCELLED'}
-        else:
-            self.report({'WARNING'}, "No trigger connected.")
+        active = node_tree.nodes.active if node_tree else None
+        if not active or getattr(active, "bl_idname", "") not in _ALL_REACTION_NODE_IDS:
+            self.report({'WARNING'}, "Active node is not a Reaction node.")
             return {'CANCELLED'}
 
-        scene = context.scene
-        if not hasattr(scene, "custom_interactions"):
-            self.report({'WARNING'}, "Scene has no custom_interactions.")
+        inter = _resolve_inter_from_any_upstream(active)
+        if not inter:
+            self.report({'INFO'}, "This node is not connected (upstream) to a Trigger.")
             return {'CANCELLED'}
-        if owner_index < 0 or owner_index >= len(scene.custom_interactions):
-            self.report({'WARNING'}, "Invalid interaction index.")
-            return {'CANCELLED'}
-        inter = scene.custom_interactions[owner_index]
-        
-        # Add a new reaction entry to the interaction.
-        new_reaction = inter.reactions.add()
-        new_reaction.name = "Reaction_%d" % len(inter.reactions)
-        # Optionally, set default values for this reaction here.
-        
-        # Assign the new reaction's index to the Reaction Node.
-        active_node.reaction_index = len(inter.reactions) - 1
-        
-        self.report({'INFO'}, "New reaction added and linked to this node.")
+
+        inter_uid = getattr(inter, "uid", "")
+        react_uid = getattr(active, "reaction_uid", "")
+        kind = getattr(active, "KIND", "")
+
+        def _ensure():
+            scn = _scene()
+            if not scn:
+                return None
+            inter2 = _find_inter_by_uid(scn, inter_uid)
+            if not inter2 or not hasattr(inter2, "reactions"):
+                return None
+            r = None
+            if react_uid:
+                for it in inter2.reactions:
+                    if getattr(it, "uid", "") == react_uid:
+                        r = it
+                        break
+            if r is None:
+                r = inter2.reactions.add()
+                r.name = "Reaction_%d" % len(inter2.reactions)
+                new_uid = str(uuid.uuid4())
+                r.uid = new_uid
+                try:
+                    active.reaction_uid = new_uid
+                    active.owning_inter_uid = inter_uid
+                except Exception:
+                    pass
+            try:
+                if hasattr(r, "reaction_type") and kind and r.reaction_type != kind:
+                    r.reaction_type = kind
+            except Exception:
+                pass
+            return None
+
+        bpy.app.timers.register(_ensure, first_interval=0.0)
+        self.report({'INFO'}, "Linked reaction will be created/ensured.")
         return {'FINISHED'}
 
-# Make sure you register this operator.
 
-# Registration functions for this file
+# ───────────────────────── registration ─────────────────────────
+_CLASSES = [
+    ReactionTriggerInputSocket,
+    ReactionOutputSocket,
+    ReactionCustomActionNode,
+    ReactionCharActionNode,
+    ReactionSoundNode,
+    ReactionPropertyNode,
+    ReactionTransformNode,
+    ReactionCustomTextNode,
+    ReactionObjectiveCounterNode,
+    ReactionObjectiveTimerNode,
+    ReactionMobilityGameNode,
+    NODE_OT_add_reaction_to_node,
+]
+
 def register():
-    bpy.utils.register_class(ReactionTriggerInputSocket)
-    bpy.utils.register_class(ReactionOutputSocket)
-    bpy.utils.register_class(ReactionNode)
+    for c in _CLASSES:
+        bpy.utils.register_class(c)
 
 def unregister():
-    bpy.utils.unregister_class(ReactionNode)
-    bpy.utils.unregister_class(ReactionOutputSocket)
-    bpy.utils.unregister_class(ReactionTriggerInputSocket)
+    for c in reversed(_CLASSES):
+        bpy.utils.unregister_class(c)
 
 if __name__ == "__main__":
     register()

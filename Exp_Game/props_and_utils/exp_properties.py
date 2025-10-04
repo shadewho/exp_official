@@ -100,6 +100,7 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
     )
 
 
+
 ###---------------proxy meshes-------------###
 class ProxyMeshEntry(bpy.types.PropertyGroup):
     """

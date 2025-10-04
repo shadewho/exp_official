@@ -71,6 +71,10 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     Represents one 'Reaction' item, but stored in an Interaction’s
     sub-collection. We do not store these at the Scene level.
     """
+    uid: bpy.props.StringProperty(
+        name="UID",
+        default=""
+    )
     name: bpy.props.StringProperty(
         name="Name",
         default="Reaction"

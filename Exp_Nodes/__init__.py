@@ -17,36 +17,75 @@
 # ##### END GPL LICENSE BLOCK #####
 
 
+# File: Exp_Nodes/__init__.py
 from .node_editor import (
-    ExploratoryNodesTree, InteractionSocket, TriggerOutputSocket,
-    NODE_OT_create_exploratory_node_tree, NODE_PT_exploratory_panel,
-    NODE_OT_delete_exploratory_node_tree, node_categories, NODE_PT_character_actions_panel,
-    NODE_PT_exploratory_proxy, NODE_OT_select_exploratory_node_tree
-)
-from .trigger_nodes import TriggerNode
-from .reaction_nodes import ReactionNode, ReactionTriggerInputSocket, ReactionOutputSocket, NODE_OT_add_reaction_to_node
-from .interaction_nodes import InteractionNode, NODE_OT_add_interaction_to_node, NODE_OT_remove_interaction_from_node
-from .objective_nodes import ObjectiveNode
-
-# List each class only once
-classes = [
     ExploratoryNodesTree,
-    InteractionSocket,
     TriggerOutputSocket,
-    TriggerNode,
-    InteractionNode,
-    ReactionNode,
-    ObjectiveNode,
+    NODE_OT_create_exploratory_node_tree,
+    NODE_PT_exploratory_panel,
+    NODE_OT_delete_exploratory_node_tree,
+    NODE_OT_select_exploratory_node_tree,
+    node_categories,
+)
+
+# ── TRIGGERS: five separate nodes ──
+from .trigger_nodes import (
+    ProximityTriggerNode,
+    CollisionTriggerNode,
+    InteractTriggerNode,
+    ObjectiveUpdateTriggerNode,
+    TimerCompleteTriggerNode,
+)
+
+from .reaction_nodes import (
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
+    ReactionCustomActionNode,
+    ReactionCharActionNode,
+    ReactionSoundNode,
+    ReactionPropertyNode,
+    ReactionTransformNode,
+    ReactionCustomTextNode,
+    ReactionObjectiveCounterNode,
+    ReactionObjectiveTimerNode,
+    ReactionMobilityGameNode,
+    NODE_OT_add_reaction_to_node,
+)
+
+from .objective_nodes import ObjectiveNode
+
+classes = [
+    ExploratoryNodesTree,
+    TriggerOutputSocket,
+
+    # five concrete triggers
+    ProximityTriggerNode,
+    CollisionTriggerNode,
+    InteractTriggerNode,
+    ObjectiveUpdateTriggerNode,
+    TimerCompleteTriggerNode,
+
+    # reactions
+    ReactionTriggerInputSocket,
+    ReactionOutputSocket,
+    ReactionCustomActionNode,
+    ReactionCharActionNode,
+    ReactionSoundNode,
+    ReactionPropertyNode,
+    ReactionTransformNode,
+    ReactionCustomTextNode,
+    ReactionObjectiveCounterNode,
+    ReactionObjectiveTimerNode,
+    ReactionMobilityGameNode,
+
+    # objective
+    ObjectiveNode,
+
+    # ops / panel
     NODE_OT_add_reaction_to_node,
     NODE_OT_create_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
     NODE_PT_exploratory_panel,
-    NODE_PT_character_actions_panel,
-    NODE_PT_exploratory_proxy,
-    NODE_OT_add_interaction_to_node,
-    NODE_OT_remove_interaction_from_node,
     NODE_OT_delete_exploratory_node_tree,
 ]
 
@@ -66,3 +105,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+

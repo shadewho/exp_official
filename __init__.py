@@ -46,7 +46,7 @@ from .exp_preferences import (
 from .build_character import EXPLORATORY_OT_BuildCharacter
 
 # submodule APIs
-from . import Exp_Game, Exp_UI
+from . import Exp_Game, Exp_UI, Exp_Nodes
 
 def version_check_timer():
     if is_internet_available():
@@ -54,6 +54,8 @@ def version_check_timer():
     return 900.0  # run again in 15m
 
 def register():
+    import bpy
+
     # 1) register core classes
     for cls in (
         EXPLORATORY_OT_SetKeybind,
@@ -64,25 +66,40 @@ def register():
     ):
         bpy.utils.register_class(cls)
 
-    # 2) restore saved prefs right away
+    # 2) restore saved prefs right away + hot-reload persistence
     apply_prefs()
-    #    and keep it hooked for hot-reloads
     register_prefs_handlers()
 
-    # 3) version check
+    # 3) version check + background timer
     if is_internet_available():
         update_latest_version_cache()
     bpy.app.timers.register(version_check_timer, first_interval=0.0)
 
-    # 4) register your submodules (panels, operators, etc.)
+    # 4) register submodules
+    #    Order matters a bit: Game defines properties/types that node sockets may reference.
     Exp_Game.register()
     Exp_UI.register()
+    Exp_Nodes.register()   # <-- your Nodes system is now part of main init
+
 
 def unregister():
+    import bpy
+
     # 1) save & teardown prefs persistence
     unregister_prefs_handlers()
 
-    # 2) unregister submodules first
+    # 2) unregister submodules (reverse-ish order; remove Nodes before UI/Game to
+    #    avoid dangling menu/categories in the Node Editor)
+    try:
+        # Remove load_post helper if present
+        for h in list(bpy.app.handlers.load_post):
+            # We registered this as a local function; remove by name match if needed
+            if getattr(h, "__name__", "") == "_ensure_exploratory_nodes_tree":
+                bpy.app.handlers.load_post.remove(h)
+    except Exception:
+        pass
+
+    Exp_Nodes.unregister()
     Exp_UI.unregister()
     Exp_Game.unregister()
 
