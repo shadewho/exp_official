@@ -18,6 +18,42 @@ from ..reactions import exp_custom_ui
 _pending_trigger_tasks = []
 
 # -------------------------------------------------------------------
+# Find reactions linked to an interaction and run them
+# -------------------------------------------------------------------
+def _get_linked_reactions(inter, scene=None):
+    """
+    Resolve the interaction's link list to actual ReactionDefinition objects.
+    Invalid indices are skipped.
+    """
+    if scene is None:
+        scene = bpy.context.scene
+    out = []
+    links = getattr(inter, "reaction_links", [])
+    for link in links:
+        i = getattr(link, "reaction_index", -1)
+        if 0 <= i < len(scene.reactions):
+            out.append(scene.reactions[i])
+    return out
+def _is_reaction_already_linked(inter, reaction_index: int) -> bool:
+    """True if this Interaction already links the given global reaction index."""
+    for link in getattr(inter, "reaction_links", []):
+        if getattr(link, "reaction_index", -1) == reaction_index:
+            return True
+    return False
+
+def _fire_interaction(inter, current_time):
+    """
+    Runs the linked reactions for 'inter', honoring trigger_delay scheduling.
+    """
+    if inter.trigger_delay > 0.0:
+        schedule_trigger(inter, current_time + inter.trigger_delay)
+    else:
+        run_reactions(_get_linked_reactions(inter))
+    inter.has_fired = True
+    inter.last_trigger_time = current_time
+
+
+# -------------------------------------------------------------------
 # Dynamic trigger_mode items based on trigger_type
 # -------------------------------------------------------------------
 def trigger_mode_items(self, context):
@@ -66,49 +102,191 @@ class EXPLORATORY_OT_RemoveInteraction(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ─────────────────────────────────────────────────────────
+# Utility: deep-copy any PropertyGroup (handles nested pointers & collections)
+# ─────────────────────────────────────────────────────────
+def _deep_copy_pg(src, dst, skip: set[str] = frozenset()):
+    """
+    Copies writable RNA properties from src -> dst.
+    - Pointers to ID datablocks (Object, Action, Sound, etc.) are assigned directly.
+    - Pointers to PropertyGroups are copied recursively.
+    - Collections are recreated item-by-item (recursive).
+    """
+    import bpy
+    from bpy.types import ID as _ID
+
+    for prop in src.bl_rna.properties:
+        ident = prop.identifier
+        if ident in {"rna_type"} or ident in skip:
+            continue
+        if getattr(prop, "is_readonly", False):
+            continue
+
+        try:
+            value = getattr(src, ident)
+        except Exception:
+            continue
+
+        try:
+            if prop.type == 'POINTER':
+                # Datablock pointer → assign; PropertyGroup pointer → recurse
+                if isinstance(value, _ID) or value is None:
+                    setattr(dst, ident, value)
+                else:
+                    sub_dst = getattr(dst, ident)
+                    _deep_copy_pg(value, sub_dst)
+            elif prop.type == 'COLLECTION':
+                dst_coll = getattr(dst, ident)
+                # Clear destination collection
+                try:
+                    dst_coll.clear()
+                except AttributeError:
+                    while len(dst_coll):
+                        dst_coll.remove(len(dst_coll) - 1)
+                # Rebuild items
+                for src_item in value:
+                    dst_item = dst_coll.add()
+                    _deep_copy_pg(src_item, dst_item)
+            else:
+                setattr(dst, ident, value)
+        except Exception:
+            # Be robust; skip anything Blender won't let us set
+            pass
+
+
+# ─────────────────────────────────────────────────────────
+# Duplicate Interaction operator
+# ─────────────────────────────────────────────────────────
+class EXPLORATORY_OT_DuplicateInteraction(bpy.types.Operator):
+    """Duplicate the currently selected Interaction, including its Reaction links."""
+    bl_idname = "exploratory.duplicate_interaction"
+    bl_label = "Duplicate Interaction"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # Optional: allow duplicating a specific index; defaults to current selection
+    index: bpy.props.IntProperty(name="Index", default=-1)
+
+    def execute(self, context):
+        scn = context.scene
+        src_idx = self.index if self.index >= 0 else scn.custom_interactions_index
+        if not (0 <= src_idx < len(scn.custom_interactions)):
+            self.report({'WARNING'}, "No valid Interaction selected.")
+            return {'CANCELLED'}
+
+        src = scn.custom_interactions[src_idx]
+        dst = scn.custom_interactions.add()
+
+        # Copy everything except the reaction_links collection (we’ll do it explicitly)
+        _deep_copy_pg(src, dst, skip={"reaction_links", "reaction_links_index"})
+
+        # Copy reaction links (preserve the same global reaction indices)
+        for link in src.reaction_links:
+            new_link = dst.reaction_links.add()
+            new_link.reaction_index = link.reaction_index
+        dst.reaction_links_index = src.reaction_links_index
+
+        # Ensure trigger_type & mode remain consistent (handle update callback ordering)
+        try:
+            dst.trigger_type = src.trigger_type
+            dst.trigger_mode = src.trigger_mode
+        except Exception:
+            pass
+
+        # Friendly name; comment out if you want the exact same name
+        try:
+            dst.name = f"{src.name} (Copy)"
+        except Exception:
+            pass
+
+        scn.custom_interactions_index = len(scn.custom_interactions) - 1
+        return {'FINISHED'}
+
 ###############################################################################
 # 3) Operators for Adding/Removing Reactions within an Interaction
 ###############################################################################
 class EXPLORATORY_OT_AddReactionToInteraction(bpy.types.Operator):
-    """Add a new ReactionDefinition to the currently selected Interaction."""
+    """Link the currently selected global Reaction (scene.reactions_index) to the selected Interaction."""
     bl_idname = "exploratory.add_reaction_to_interaction"
-    bl_label = "Add Reaction to Interaction"
+    bl_label = "Link Selected Reaction"
 
     def execute(self, context):
         scene = context.scene
         i_idx = scene.custom_interactions_index
-        if i_idx < 0 or i_idx >= len(scene.custom_interactions):
+        if not (0 <= i_idx < len(scene.custom_interactions)):
             self.report({'WARNING'}, "No valid Interaction selected.")
             return {'CANCELLED'}
 
-        interaction = scene.custom_interactions[i_idx]
-        new_r = interaction.reactions.add()
-        new_r.name = f"Reaction_{len(interaction.reactions)}"
-        interaction.reactions_index = len(interaction.reactions) - 1
+        r_idx = scene.reactions_index
+        if not (0 <= r_idx < len(scene.reactions)):
+            self.report({'WARNING'}, "No valid Reaction selected in the Reactions panel.")
+            return {'CANCELLED'}
+
+        inter = scene.custom_interactions[i_idx]
+
+        # Enforce uniqueness
+        if _is_reaction_already_linked(inter, r_idx):
+            # Focus the existing link instead of adding a duplicate
+            for i, l in enumerate(inter.reaction_links):
+                if l.reaction_index == r_idx:
+                    inter.reaction_links_index = i
+                    break
+            self.report({'INFO'}, "Reaction already linked to this interaction.")
+            return {'CANCELLED'}
+
+        link = inter.reaction_links.add()
+        link.reaction_index = r_idx
+        inter.reaction_links_index = len(inter.reaction_links) - 1
         return {'FINISHED'}
 
 
 class EXPLORATORY_OT_RemoveReactionFromInteraction(bpy.types.Operator):
-    """Remove a ReactionDefinition from the currently selected Interaction by index."""
+    """Unlink a Reaction from the Interaction by the link's index."""
     bl_idname = "exploratory.remove_reaction_from_interaction"
-    bl_label = "Remove Reaction"
+    bl_label = "Unlink Reaction"
 
     index: bpy.props.IntProperty()
 
     def execute(self, context):
         scene = context.scene
         i_idx = scene.custom_interactions_index
-        if i_idx < 0 or i_idx >= len(scene.custom_interactions):
-            self.report({'WARNING'}, "No valid Interaction selected.")
+        if not (0 <= i_idx < len(scene.custom_interactions)):
             return {'CANCELLED'}
 
-        interaction = scene.custom_interactions[i_idx]
-        if 0 <= self.index < len(interaction.reactions):
-            interaction.reactions.remove(self.index)
-            interaction.reactions_index = max(
-                0, 
-                min(self.index, len(interaction.reactions) - 1)
-            )
+        inter = scene.custom_interactions[i_idx]
+        if 0 <= self.index < len(inter.reaction_links):
+            inter.reaction_links.remove(self.index)
+            inter.reaction_links_index = max(0, min(self.index, len(inter.reaction_links) - 1))
+        return {'FINISHED'}
+    
+class EXPLORATORY_OT_CreateReactionAndLink(bpy.types.Operator):
+    """Create a new Reaction in the global library and link it to the current Interaction."""
+    bl_idname = "exploratory.create_reaction_and_link"
+    bl_label = "New Reaction + Link"
+
+    def execute(self, context):
+        scene = context.scene
+
+        # Create a new global reaction
+        new_r = scene.reactions.add()
+        new_r.name = f"Reaction_{len(scene.reactions)}"
+        scene.reactions_index = len(scene.reactions) - 1
+        r_idx = scene.reactions_index
+
+        # Link it to the current interaction if any (guard against dupes)
+        i_idx = scene.custom_interactions_index
+        if 0 <= i_idx < len(scene.custom_interactions):
+            inter = scene.custom_interactions[i_idx]
+            if not _is_reaction_already_linked(inter, r_idx):
+                link = inter.reaction_links.add()
+                link.reaction_index = r_idx
+                inter.reaction_links_index = len(inter.reaction_links) - 1
+            else:
+                # Focus the existing link if it already exists
+                for i, l in enumerate(inter.reaction_links):
+                    if l.reaction_index == r_idx:
+                        inter.reaction_links_index = i
+                        break
+
         return {'FINISHED'}
 
 
@@ -169,10 +347,10 @@ def process_pending_triggers():
     fires its reactions and removes the task.
     """
     current_time = get_game_time()
-    # Iterate over a shallow copy so that removal does not affect the loop.
     for task in _pending_trigger_tasks[:]:
         if current_time >= task["fire_time"]:
-            run_reactions(task["interaction"].reactions)
+            inter = task["interaction"]
+            run_reactions(_get_linked_reactions(inter))
             _pending_trigger_tasks.remove(task)
 
 # -------------------------------------------------------------------
@@ -207,7 +385,7 @@ def handle_proximity_trigger(inter, current_time):
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
             else:
-                run_reactions(inter.reactions)
+                run_reactions(_get_linked_reactions(inter))
             inter.has_fired = True
             inter.last_trigger_time = current_time
 
@@ -231,7 +409,7 @@ def handle_proximity_trigger(inter, current_time):
                 if inter.trigger_delay > 0.0:
                     schedule_trigger(inter, current_time + inter.trigger_delay)
                 else:
-                    run_reactions(inter.reactions)
+                    run_reactions(_get_linked_reactions(inter))
                 inter.has_fired = True
                 inter.last_trigger_time = current_time
 
@@ -263,7 +441,7 @@ def handle_collision_trigger(inter, current_time):
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
             else:
-                run_reactions(inter.reactions)
+                run_reactions(_get_linked_reactions(inter))
             inter.has_fired = True
             inter.last_trigger_time = current_time
 
@@ -279,7 +457,7 @@ def handle_collision_trigger(inter, current_time):
                 if inter.trigger_delay > 0.0:
                     schedule_trigger(inter, current_time + inter.trigger_delay)
                 else:
-                    run_reactions(inter.reactions)
+                    run_reactions(_get_linked_reactions(inter))
                 inter.has_fired = True
                 inter.last_trigger_time = current_time
 
@@ -334,7 +512,7 @@ def handle_interact_trigger(inter, current_time, pressed_now, context):
         if inter.trigger_delay > 0.0:
             schedule_trigger(inter, current_time + inter.trigger_delay)
         else:
-            run_reactions(inter.reactions)
+            run_reactions(_get_linked_reactions(inter))
         inter.has_fired = True
         inter.last_trigger_time = current_time
 
@@ -573,7 +751,7 @@ def handle_objective_update_trigger(inter, current_time):
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
             else:
-                run_reactions(inter.reactions)
+                run_reactions(_get_linked_reactions(inter))
             inter.has_fired = True
             inter.last_trigger_time = current_time
 
@@ -607,7 +785,7 @@ def handle_timer_complete_trigger(inter):
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
             else:
-                run_reactions(inter.reactions)
+                run_reactions(_get_linked_reactions(inter))
             inter.has_fired = True
             inter.last_trigger_time = current_time
 

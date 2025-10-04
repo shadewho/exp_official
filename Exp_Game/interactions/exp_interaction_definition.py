@@ -1,8 +1,19 @@
 import bpy
-import uuid
 from ..reactions.exp_reaction_definition import ReactionDefinition, enum_objective_items
 from .exp_interactions import trigger_mode_items
+from ..reactions.exp_reaction_definition import register_reaction_library_properties
 
+
+class ReactionLinkPG(bpy.types.PropertyGroup):
+    """
+    A simple link: stores the index into scene.reactions.
+    """
+    reaction_index: bpy.props.IntProperty(
+        name="Reaction Index",
+        default=-1,
+        min=-1,
+        description="Index into scene.reactions; -1 means unassigned"
+    )
 
 def update_trigger_type(self, context):
     # ensure current mode is still valid when trigger_type changes
@@ -10,7 +21,7 @@ def update_trigger_type(self, context):
     if self.trigger_mode not in allowed:
         # reset to first allowed mode
         self.trigger_mode = allowed[0]
-
+        
 
 ###############################################################################
 # 1) InteractionDefinition
@@ -21,11 +32,6 @@ class InteractionDefinition(bpy.types.PropertyGroup):
       1) A trigger (trigger_type, etc.)
       2) A sub-collection of ReactionDefinition
     """
-
-    uid: bpy.props.StringProperty(
-        name="UID",
-        default=""
-    )
     name: bpy.props.StringProperty(
         name="Name",
         default="Interaction"
@@ -181,8 +187,8 @@ class InteractionDefinition(bpy.types.PropertyGroup):
 
 
     # Sub-collection for Reactions
-    reactions: bpy.props.CollectionProperty(type=ReactionDefinition)
-    reactions_index: bpy.props.IntProperty(default=0)
+    reaction_links: bpy.props.CollectionProperty(type=ReactionLinkPG)
+    reaction_links_index: bpy.props.IntProperty(default=0)
 
 
 
@@ -196,34 +202,8 @@ def register_interaction_properties():
     """
     bpy.types.Scene.custom_interactions = bpy.props.CollectionProperty(type=InteractionDefinition)
     bpy.types.Scene.custom_interactions_index = bpy.props.IntProperty(default=0)
-
+    register_reaction_library_properties()
 
 def unregister_interaction_properties():
     del bpy.types.Scene.custom_interactions
     del bpy.types.Scene.custom_interactions_index
-
-# NEW: helper to add a new Interaction with a fresh UID (optionally copying trigger fields)
-def new_interaction(scene: bpy.types.Scene, name: str = None, copy_from: InteractionDefinition = None) -> InteractionDefinition:
-    it = scene.custom_interactions.add()
-    it.uid = str(uuid.uuid4())
-    it.name = name or f"Interaction_{len(scene.custom_interactions)}"
-    if copy_from:
-        it.description          = copy_from.description
-        it.trigger_type         = copy_from.trigger_type
-        it.trigger_mode         = copy_from.trigger_mode
-        it.use_character        = copy_from.use_character
-        it.proximity_object_a   = copy_from.proximity_object_a
-        it.proximity_object_b   = copy_from.proximity_object_b
-        it.proximity_distance   = copy_from.proximity_distance
-        it.collision_object_a   = copy_from.collision_object_a
-        it.collision_object_b   = copy_from.collision_object_b
-        it.collision_margin     = copy_from.collision_margin
-        it.trigger_cooldown     = copy_from.trigger_cooldown
-        it.interact_object      = copy_from.interact_object
-        it.interact_distance    = copy_from.interact_distance
-        it.trigger_delay        = copy_from.trigger_delay
-        it.objective_index      = copy_from.objective_index
-        it.objective_condition  = copy_from.objective_condition
-        it.objective_condition_value = copy_from.objective_condition_value
-        it.timer_objective_index     = copy_from.timer_objective_index
-    return it

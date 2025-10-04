@@ -34,6 +34,11 @@ from .exp_ui import (
     VIEW3D_PT_Exploratory_Performance,
     VIEW3D_PT_Exploratory_PhysicsTuning,
     EXP_OT_FilterCreatePanels,
+    EXPLORATORY_UL_ReactionLibrary,
+    EXPLORATORY_OT_AddGlobalReaction,
+    EXPLORATORY_OT_RemoveGlobalReaction,
+    VIEW3D_PT_Exploratory_Reactions,
+    EXPLORATORY_OT_DuplicateGlobalReaction,
 )
 
 
@@ -58,13 +63,16 @@ from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLO
                         EXP_AUDIO_OT_LoadCharacterAudioFile
 )
 
-from .interactions.exp_interaction_definition import InteractionDefinition, register_interaction_properties, unregister_interaction_properties
+from .interactions.exp_interaction_definition import (InteractionDefinition, register_interaction_properties,
+                                                       unregister_interaction_properties, ReactionLinkPG,)
 
 from .interactions.exp_interactions import (
     EXPLORATORY_OT_AddInteraction,
     EXPLORATORY_OT_RemoveInteraction,
     EXPLORATORY_OT_AddReactionToInteraction,
     EXPLORATORY_OT_RemoveReactionFromInteraction,
+    EXPLORATORY_OT_CreateReactionAndLink,
+    EXPLORATORY_OT_DuplicateInteraction, 
 )
 from .reactions.exp_reaction_definition import ReactionDefinition
 from .systems.exp_objectives import (
@@ -93,12 +101,14 @@ def register():
     bpy.utils.register_class(EXPLORATORY_OT_ResetGame)
 
     # --- Interactions & Reactions ---
-    bpy.utils.register_class(ReactionDefinition)
+    bpy.utils.register_class(ReactionDefinition)   # must be before scene.reactions is attached
+    bpy.utils.register_class(ReactionLinkPG)       # link PG used inside InteractionDefinition
     bpy.utils.register_class(InteractionDefinition)
     bpy.utils.register_class(EXPLORATORY_OT_AddInteraction)
     bpy.utils.register_class(EXPLORATORY_OT_RemoveInteraction)
     bpy.utils.register_class(EXPLORATORY_OT_AddReactionToInteraction)
     bpy.utils.register_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
+    bpy.utils.register_class(EXPLORATORY_OT_CreateReactionAndLink)
     register_interaction_properties()
 
     # --- Panels & UILists (Ordered) ---
@@ -125,8 +135,15 @@ def register():
 
     # Register the UILists used in panels
     bpy.utils.register_class(EXPLORATORY_UL_CustomInteractions)
+    bpy.utils.register_class(EXPLORATORY_OT_DuplicateInteraction)
     bpy.utils.register_class(EXPLORATORY_UL_ReactionsInInteraction)
+    bpy.utils.register_class(EXPLORATORY_OT_DuplicateGlobalReaction)
     bpy.utils.register_class(EXPLORATORY_UL_Objectives)
+
+    bpy.utils.register_class(EXPLORATORY_UL_ReactionLibrary)
+    bpy.utils.register_class(EXPLORATORY_OT_AddGlobalReaction)
+    bpy.utils.register_class(EXPLORATORY_OT_RemoveGlobalReaction)
+    bpy.utils.register_class(VIEW3D_PT_Exploratory_Reactions)
 
     # --- Modal & Game Start Operators ---
     bpy.utils.register_class(ExpModal)
@@ -197,6 +214,10 @@ def unregister():
     bpy.utils.unregister_class(EXP_GAME_OT_StartGame)
 
     # --- Panels & UILists ---
+    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Reactions)
+    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveGlobalReaction)
+    bpy.utils.unregister_class(EXPLORATORY_OT_AddGlobalReaction)
+    bpy.utils.unregister_class(EXPLORATORY_UL_ReactionLibrary)
     bpy.utils.unregister_class(EXPLORATORY_UL_ReactionsInInteraction)
     bpy.utils.unregister_class(EXPLORATORY_UL_CustomInteractions)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Studio)
@@ -217,9 +238,13 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveInteraction)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddInteraction)
     bpy.utils.unregister_class(InteractionDefinition)
+    bpy.utils.unregister_class(ReactionLinkPG)
     bpy.utils.unregister_class(ReactionDefinition)
+    bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateInteraction)
+    bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateInteraction)
 
     bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
+
 
     # --- Character Actions & Proxy Mesh ---
     del bpy.types.Scene.character_actions
@@ -230,6 +255,7 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+
 
 
      # ─── DEMO DEMO ──────────────────────────────────

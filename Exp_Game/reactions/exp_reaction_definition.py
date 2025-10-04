@@ -71,10 +71,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     Represents one 'Reaction' item, but stored in an Interaction’s
     sub-collection. We do not store these at the Scene level.
     """
-    uid: bpy.props.StringProperty(
-        name="UID",
-        default=""
-    )
     name: bpy.props.StringProperty(
         name="Name",
         default="Reaction"
@@ -482,3 +478,23 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Mobility & Game Settings",
         type=MobilityGameReactionsPG
     )
+
+def register_reaction_library_properties():
+    """
+    Attach a top-level Reaction library to the Scene.
+    Reactions are *independent* from Interactions now.
+    """
+    from .exp_reaction_definition import ReactionDefinition  # self-import safe
+
+    if not hasattr(bpy.types.Scene, "reactions"):
+        bpy.types.Scene.reactions = bpy.props.CollectionProperty(type=ReactionDefinition)
+    if not hasattr(bpy.types.Scene, "reactions_index"):
+        bpy.types.Scene.reactions_index = bpy.props.IntProperty(default=0)
+
+
+def unregister_reaction_library_properties():
+    if hasattr(bpy.types.Scene, "reactions"):
+        del bpy.types.Scene.reactions
+    if hasattr(bpy.types.Scene, "reactions_index"):
+        del bpy.types.Scene.reactions_index
+    

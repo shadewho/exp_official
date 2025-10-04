@@ -379,16 +379,21 @@ class EXPLORATORY_UL_CustomInteractions(bpy.types.UIList):
 
 
 class EXPLORATORY_UL_ReactionsInInteraction(bpy.types.UIList):
-    """UIList that displays ReactionDefinition items within one Interaction."""
+    """Shows links (by index) to global reactions; displays the reaction's name if valid."""
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        # 'data' is the InteractionDefinition
-        # 'item' is the ReactionDefinition
+        # item is a ReactionLinkPG (inter.reaction_links[i])
+        scn = context.scene
+        name = "—"
+        i = getattr(item, "reaction_index", -1)
+        if 0 <= i < len(scn.reactions):
+            name = scn.reactions[i].name
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             row = layout.row(align=True)
-            row.prop(item, "name", text="", emboss=False, icon='DOT')
+            row.label(text=name, icon='DOT')
         elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
-            layout.label(text=item.name)
+            layout.label(text=name)
+
 
 class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
     """Your main Interactions panel, extended with Reactions sub-list."""
@@ -424,6 +429,7 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
         col = row.column(align=True)
         col.operator("exploratory.add_interaction", text="", icon='ADD')
         remove_op = col.operator("exploratory.remove_interaction", text="", icon='REMOVE')
+        col.operator("exploratory.duplicate_interaction", text="", icon='DUPLICATE')
         remove_op.index = scene.custom_interactions_index
 
         layout.separator()
@@ -504,299 +510,338 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
         layout.separator()
 
         ######################
-        # (B) Reactions sub-list
+        # (B) Linked Reactions (global library)
         ######################
         sub = box.box()
-        sub.label(text="Reactions for this Interaction", icon='OBJECT_DATA')
+        sub.label(text="Linked Reactions (from global library)", icon='OBJECT_DATA')
 
         row2 = sub.row()
         row2.template_list(
-            "EXPLORATORY_UL_ReactionsInInteraction",  # The nested UIList
+            "EXPLORATORY_UL_ReactionsInInteraction",
             "",
-            inter,               # Data is the InteractionDefinition
-            "reactions",         # The CollectionProperty of ReactionDefinitions
-            inter,               # Active data
-            "reactions_index",   # The property for the active reaction index
-            rows=3
+            inter,                    # InteractionDefinition
+            "reaction_links",         # Collection of links (ReactionLinkPG)
+            inter,                    # Active data
+            "reaction_links_index",   # Active index
+            rows=5
         )
         col2 = row2.column(align=True)
+
+        # Link the currently selected global reaction (scene.reactions_index)
         col2.operator("exploratory.add_reaction_to_interaction", text="", icon='ADD')
+
+        # Unlink the currently selected link
         rem_op = col2.operator("exploratory.remove_reaction_from_interaction", text="", icon='REMOVE')
-        rem_op.index = inter.reactions_index
+        rem_op.index = inter.reaction_links_index
 
-        # "Current Reaction" box
-        if not inter.reactions:
-            sub.label(text="(No reactions added)", icon='ERROR')
-            return
+        col2.separator()
+        # Create a brand new global reaction and link it here
+        col2.operator("exploratory.create_reaction_and_link", text="", icon='PLUS')
 
-        r_idx = inter.reactions_index
-        if r_idx < 0 or r_idx >= len(inter.reactions):
-            sub.label(text="(Select a reaction)", icon='INFO')
-            return
-
-        reaction = inter.reactions[r_idx]
-        box2 = sub.box()
-        box2.label(text="Current Reaction", icon='OBJECT_DATA')
-        box2.prop(reaction, "name", text="Name")
-        box2.prop(reaction, "reaction_type", text="Type")
-
-        #custom object action --------------
-        if reaction.reaction_type == "CUSTOM_ACTION":
-            box2.prop(reaction, "custom_action_message", text="Notes")
-            box2.prop_search(reaction, "custom_action_target", bpy.context.scene, "objects", text="Object")
-            box2.prop_search(reaction, "custom_action_action", bpy.data, "actions", text="Action")
-            box2.prop(reaction, "custom_action_loop", text="Loop?")
-            if reaction.custom_action_loop:
-                box2.prop(reaction, "custom_action_loop_duration", text="Loop Duration")
-
-        #custom character action -------------------
-        elif reaction.reaction_type == "CHAR_ACTION":
-            # Show the pointer to the Action
-            box2.prop_search(reaction, "char_action_ref", bpy.data, "actions", text="Action")
-
-            # Show the new dropdown
-            box2.prop(reaction, "char_action_mode", text="Mode")
-
-            # If user selected 'LOOP', show the loop duration
-            if reaction.char_action_mode == 'LOOP':
-                box2.prop(reaction, "char_action_loop_duration", text="Loop Duration")
-
-        #--Objective reaction----------------------------#
-        elif reaction.reaction_type == "OBJECTIVE_COUNTER":
-            # 1) Which objective to increment/decrement?
-            box2.prop(reaction, "objective_index", text="Objective")
-
-            # 2) The main operation (Add/Sub/Reset)
-            box2.prop(reaction, "objective_op", text="Operation")
-
-            # 3) If Add or Subtract, let user specify how much
-            if reaction.objective_op in ("ADD", "SUBTRACT"):
-                box2.prop(reaction, "objective_amount", text="Amount")
+        # (No embedded reaction editor here anymore; editing happens in the Reactions panel)
+        info = sub.box()
+        info.label(text="Edit reactions in the separate 'Reactions' panel.", icon='INFO')
+        info.label(text="Tip: select a reaction in the library, then click + to link it.")
 
 
 
-        #-Property reaction----------------------------#
-        elif reaction.reaction_type == "PROPERTY":
-            box2.label(
-                text="For node properties, copy the properties from the node graph (e.g. the specific node)",
-                icon='INFO'
-            )
-            box2.label(
-                text="Group input properties do not reflect real-time changes in the node graph.",
-                icon='INFO'
-            )
-            box2.prop(reaction, "property_data_path", text="Data Path")
-
-            # Show the detected property type
-            row = box2.row()
-            row.label(text=f"Detected Type: {reaction.property_type}")
-            box2.prop(reaction, "property_transition_duration", text="Duration")
-            box2.prop(reaction, "property_reset", text="Reset after")
-            if reaction.property_reset:
-                box2.prop(reaction, "property_reset_delay", text="Reset when target value is reached")
-            
-            # Display input fields based on the detected type.
-            if reaction.property_type == "BOOL":
-                box2.prop(reaction, "bool_value", text="Target Bool Value")
-                box2.prop(reaction, "default_bool_value", text="Default Bool Value")
-            elif reaction.property_type == "INT":
-                box2.prop(reaction, "int_value", text="Target Int Value")
-                box2.prop(reaction, "default_int_value", text="Default Int Value")
-            elif reaction.property_type == "FLOAT":
-                box2.prop(reaction, "float_value", text="Target Float Value")
-                box2.prop(reaction, "default_float_value", text="Default Float Value")
-            elif reaction.property_type == "STRING":
-                box2.prop(reaction, "string_value", text="Target String Value")
-                box2.prop(reaction, "default_string_value", text="Default String Value")
-            elif reaction.property_type == "VECTOR":
-                box2.label(text=f"Vector length: {reaction.vector_length}")
-                box2.prop(reaction, "vector_value", text="Target Vector")
-                box2.prop(reaction, "default_vector_value", text="Default Vector")
+# ─────────────────────────────────────────────────────────
+# Interactions and reactions -- Duplicate
+# ─────────────────────────────────────────────────────────
+def _deep_copy_pg(src, dst, skip: set[str] = frozenset()):
+    import bpy
+    from bpy.types import ID as _ID
+    for prop in src.bl_rna.properties:
+        ident = prop.identifier
+        if ident in {"rna_type"} or ident in skip:
+            continue
+        if getattr(prop, "is_readonly", False):
+            continue
+        try:
+            value = getattr(src, ident)
+        except Exception:
+            continue
+        try:
+            if prop.type == 'POINTER':
+                if isinstance(value, _ID) or value is None:
+                    setattr(dst, ident, value)
+                else:
+                    sub_dst = getattr(dst, ident)
+                    _deep_copy_pg(value, sub_dst)
+            elif prop.type == 'COLLECTION':
+                dst_coll = getattr(dst, ident)
+                try:
+                    dst_coll.clear()
+                except AttributeError:
+                    while len(dst_coll):
+                        dst_coll.remove(len(dst_coll) - 1)
+                for src_item in value:
+                    dst_item = dst_coll.add()
+                    _deep_copy_pg(src_item, dst_item)
             else:
-                box2.label(text="No property detected or invalid path.")
+                setattr(dst, ident, value)
+        except Exception:
+            pass
 
 
-        # ─── Custom Transform Reaction ────────────────────────────────
-        elif reaction.reaction_type == "TRANSFORM":
-            # 1) Use Character or manual object
-            box2.prop(reaction, "use_character", text="Use Character as Target")
-            if reaction.use_character:
+class EXPLORATORY_OT_DuplicateGlobalReaction(bpy.types.Operator):
+    """Duplicate the selected Reaction in the global library."""
+    bl_idname = "exploratory.duplicate_global_reaction"
+    bl_label = "Duplicate Reaction"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: bpy.props.IntProperty(name="Index", default=-1)
+
+    def execute(self, context):
+        scn = context.scene
+        src_idx = self.index if self.index >= 0 else scn.reactions_index
+        if not (0 <= src_idx < len(scn.reactions)):
+            self.report({'WARNING'}, "No valid Reaction selected.")
+            return {'CANCELLED'}
+
+        src = scn.reactions[src_idx]
+        dst = scn.reactions.add()
+
+        _deep_copy_pg(src, dst)
+
+        try:
+            dst.name = f"{src.name} (Copy)"
+        except Exception:
+            pass
+
+        scn.reactions_index = len(scn.reactions) - 1
+        return {'FINISHED'}
+
+
+# ─────────────────────────────────────────────────────────
+# Reactions Panel (Global Library + Editor)
+# ─────────────────────────────────────────────────────────
+
+class EXPLORATORY_UL_ReactionLibrary(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            layout.prop(item, "name", text="", emboss=False, icon='DOT')
+        elif self.layout_type == 'GRID':
+            layout.alignment = 'CENTER'
+            layout.label(text=item.name)
+
+
+class EXPLORATORY_OT_AddGlobalReaction(bpy.types.Operator):
+    bl_idname = "exploratory.add_global_reaction"
+    bl_label = "Add Reaction"
+
+    def execute(self, context):
+        scn = context.scene
+        r = scn.reactions.add()
+        r.name = f"Reaction_{len(scn.reactions)}"
+        scn.reactions_index = len(scn.reactions) - 1
+        return {'FINISHED'}
+
+
+class EXPLORATORY_OT_RemoveGlobalReaction(bpy.types.Operator):
+    bl_idname = "exploratory.remove_global_reaction"
+    bl_label = "Remove Reaction"
+
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        scn = context.scene
+        if 0 <= self.index < len(scn.reactions):
+            scn.reactions.remove(self.index)
+            scn.reactions_index = max(0, min(self.index, len(scn.reactions) - 1))
+        return {'FINISHED'}
+
+
+class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
+    bl_label = "Reactions"
+    bl_idname = "VIEW3D_PT_exploratory_reactions"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        # Keep independent from Interactions filter—show when in CREATE.
+        return (context.scene.main_category == 'CREATE')
+
+    def draw(self, context):
+        layout = self.layout
+        scn = context.scene
+
+        # Library list
+        row = layout.row()
+        row.template_list(
+            "EXPLORATORY_UL_ReactionLibrary", "",
+            scn, "reactions",
+            scn, "reactions_index",
+            rows=8
+        )
+        col = row.column(align=True)
+        col.operator("exploratory.add_global_reaction", text="", icon='ADD')
+        rem = col.operator("exploratory.remove_global_reaction", text="", icon='REMOVE')
+        col.operator("exploratory.duplicate_global_reaction", text="", icon='DUPLICATE')
+        rem.index = scn.reactions_index
+
+        idx = scn.reactions_index
+        if not (0 <= idx < len(scn.reactions)):
+            layout.label(text="(No reactions in library)", icon='ERROR')
+            return
+
+        r = scn.reactions[idx]
+        box = layout.box()
+        box.label(text="Reaction", icon='OBJECT_DATA')
+        box.prop(r, "name", text="Name")
+        box.prop(r, "reaction_type", text="Type")
+
+        # ===== Per-type UI (mirrors your previous fields) =====
+
+        if r.reaction_type == "CUSTOM_ACTION":
+            box.prop(r, "custom_action_message", text="Notes")
+            box.prop_search(r, "custom_action_target", bpy.context.scene, "objects", text="Object")
+            box.prop_search(r, "custom_action_action", bpy.data, "actions", text="Action")
+            box.prop(r, "custom_action_loop", text="Loop?")
+            if r.custom_action_loop:
+                box.prop(r, "custom_action_loop_duration", text="Loop Duration")
+
+        elif r.reaction_type == "CHAR_ACTION":
+            box.prop_search(r, "char_action_ref", bpy.data, "actions", text="Action")
+            box.prop(r, "char_action_mode", text="Mode")
+            if r.char_action_mode == 'LOOP':
+                box.prop(r, "char_action_loop_duration", text="Loop Duration")
+
+        elif r.reaction_type == "OBJECTIVE_COUNTER":
+            box.prop(r, "objective_index", text="Objective")
+            box.prop(r, "objective_op", text="Operation")
+            if r.objective_op in ("ADD", "SUBTRACT"):
+                box.prop(r, "objective_amount", text="Amount")
+
+        elif r.reaction_type == "PROPERTY":
+            box.label(text="Paste a Blender data path (Right-Click → Copy Data Path).", icon='INFO')
+            box.prop(r, "property_data_path", text="Data Path")
+            row = box.row()
+            row.label(text=f"Detected Type: {r.property_type}")
+            box.prop(r, "property_transition_duration", text="Duration")
+            box.prop(r, "property_reset", text="Reset after")
+            if r.property_reset:
+                box.prop(r, "property_reset_delay", text="Reset delay")
+            if r.property_type == "BOOL":
+                box.prop(r, "bool_value", text="Target Bool")
+                box.prop(r, "default_bool_value", text="Default Bool")
+            elif r.property_type == "INT":
+                box.prop(r, "int_value", text="Target Int")
+                box.prop(r, "default_int_value", text="Default Int")
+            elif r.property_type == "FLOAT":
+                box.prop(r, "float_value", text="Target Float")
+                box.prop(r, "default_float_value", text="Default Float")
+            elif r.property_type == "STRING":
+                box.prop(r, "string_value", text="Target String")
+                box.prop(r, "default_string_value", text="Default String")
+            elif r.property_type == "VECTOR":
+                box.label(text=f"Vector length: {r.vector_length}")
+                box.prop(r, "vector_value", text="Target Vector")
+                box.prop(r, "default_vector_value", text="Default Vector")
+
+        elif r.reaction_type == "TRANSFORM":
+            box.prop(r, "use_character", text="Use Character as Target")
+            if r.use_character:
                 char = context.scene.target_armature
-                box2.label(
-                    text=f"Character: {char.name if char else '—'}",
-                    icon='ARMATURE_DATA'
-                )
+                box.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
             else:
-                box2.prop_search(
-                    reaction, "transform_object",
-                    context.scene, "objects",
-                    text="Object"
-                )
+                box.prop_search(r, "transform_object", context.scene, "objects", text="Object")
+            box.prop(r, "transform_mode", text="Mode")
+            if r.transform_mode == "TO_OBJECT":
+                box.prop_search(r, "transform_to_object", context.scene, "objects", text="To Object")
+                colX = box.column(align=True)
+                colX.label(text="Copy Channels:")
+                colX.prop(r, "transform_use_location", text="Location")
+                colX.prop(r, "transform_use_rotation", text="Rotation")
+                colX.prop(r, "transform_use_scale",    text="Scale")
+            if r.transform_mode in {"OFFSET", "LOCAL_OFFSET", "TO_LOCATION"}:
+                box.prop(r, "transform_location", text="Location")
+                box.prop(r, "transform_rotation", text="Rotation")
+                box.prop(r, "transform_scale",    text="Scale")
+            box.prop(r, "transform_duration", text="Duration")
 
-            # 2) Transform Mode dropdown
-            box2.prop(reaction, "transform_mode", text="Mode")
-
-            # 3) If “To Object” mode, pick target + choose channels
-            if reaction.transform_mode == "TO_OBJECT":
-                # Object picker
-                box2.prop_search(
-                    reaction, "transform_to_object",
-                    context.scene, "objects",
-                    text="To Object"
-                )
-
-                # Vertical, full‐word toggles
-                box2.separator()
-                col = box2.column(align=True)
-                col.label(text="Copy Channels:")
-                col.prop(reaction, "transform_use_location", text="Location")
-                col.prop(reaction, "transform_use_rotation", text="Rotation")
-                col.prop(reaction, "transform_use_scale",    text="Scale")
-
-            # 4) For other modes, show manual Location/Rotation/Scale
-            if reaction.transform_mode in {"OFFSET", "LOCAL_OFFSET", "TO_LOCATION"}:
-                box2.prop(reaction, "transform_location", text="Location")
-                box2.prop(reaction, "transform_rotation", text="Rotation")
-                box2.prop(reaction, "transform_scale",    text="Scale")
-
-            # 5) Always show Duration
-            box2.prop(reaction, "transform_duration", text="Duration")
-
-
-        #custom UI text reaction ---------------
-        elif reaction.reaction_type == "CUSTOM_UI_TEXT":
-            # 1) Subtype selector
-            box2.prop(reaction, "custom_text_subtype", text="Subtype")
-            subtype = reaction.custom_text_subtype
-            # ── A) Content ─────────────────────────────────────────────────────────
-            content_box = box2.box()
+        elif r.reaction_type == "CUSTOM_UI_TEXT":
+            box.prop(r, "custom_text_subtype", text="Subtype")
+            subtype = r.custom_text_subtype
+            content_box = box.box()
             content_box.label(text="Text Content")
             if subtype == 'STATIC':
-                content_box.prop(reaction, "custom_text_value", text="Text")
+                content_box.prop(r, "custom_text_value", text="Text")
             else:
-                content_box.prop(reaction, "text_objective_index", text="Objective")
-
-            # ── B) Counter Formatting (OBJECTIVE only) ─────────────────────────────
+                content_box.prop(r, "text_objective_index", text="Objective")
             if subtype == 'OBJECTIVE':
                 fmt = content_box.box()
                 fmt.label(text="Counter Formatting")
-                fmt.prop(reaction, "custom_text_prefix", text="Prefix")
-                fmt.prop(reaction, "custom_text_include_counter", text="Show Counter")
-                fmt.prop(reaction, "custom_text_suffix", text="Suffix")
-
-            # ── C) Display Timing ───────────────────────────────────────────────────
-            timing_box = box2.box()
-            timing_box.label(text="Display Timing")
-            timing_box.prop(reaction, "custom_text_indefinite", text="Indefinite")
-            if not reaction.custom_text_indefinite:
-                timing_box.prop(reaction, "custom_text_duration", text="Duration (sec)")
-
-            # ── D) Position & Size ─────────────────────────────────────────────────
-            layout_box = box2.box()
+                fmt.prop(r, "custom_text_prefix", text="Prefix")
+                fmt.prop(r, "custom_text_include_counter", text="Show Counter")
+                fmt.prop(r, "custom_text_suffix", text="Suffix")
+            timing = box.box()
+            timing.label(text="Display Timing")
+            timing.prop(r, "custom_text_indefinite", text="Indefinite")
+            if not r.custom_text_indefinite:
+                timing.prop(r, "custom_text_duration", text="Duration (sec)")
+            layout_box = box.box()
             layout_box.label(text="Position & Size")
-            layout_box.prop(reaction, "custom_text_anchor", text="Anchor")
-            layout_box.prop(reaction, "custom_text_scale", text="Scale")
+            layout_box.prop(r, "custom_text_anchor", text="Anchor")
+            layout_box.prop(r, "custom_text_scale", text="Scale")
             margins = layout_box.column(align=True)
-            margins.prop(reaction, "custom_text_margin_x", text="Margin X")
-            margins.prop(reaction, "custom_text_margin_y", text="Margin Y")
+            margins.prop(r, "custom_text_margin_x", text="Margin X")
+            margins.prop(r, "custom_text_margin_y", text="Margin Y")
+            style = box.box()
+            style.label(text="Appearance")
+            style.prop(r, "custom_text_font",  text="Font")
+            style.prop(r, "custom_text_color", text="Color")
+            box.separator()
+            box.label(text="Note: preview in fullscreen for best results.", icon='INFO')
 
-            # ── E) Appearance ──────────────────────────────────────────────────────
-            style_box = box2.box()
-            style_box.label(text="Appearance")
-            style_box.prop(reaction, "custom_text_font",  text="Font")
-            style_box.prop(reaction, "custom_text_color", text="Color")
+        elif r.reaction_type == "OBJECTIVE_TIMER":
+            box.prop(r, "objective_index", text="Timer Objective")
+            box.prop(r, "objective_timer_op", text="Timer Operation")
+            box.prop(r, "interruptible", text="Interruptible")
 
-            # ── F) Preview Button ───────────────────────────────────────────────────
-            box2.separator()
-            box2.label(text="Note: Preview custom text in fullscreen mode for best results.")
-            box2.operator("exploratory.preview_custom_text", text="Preview Text")
+        elif r.reaction_type == "MOBILITY_GAME":
+            mg = r.mobility_game_settings
+            box.label(text="Character Mobility")
+            box.prop(mg, "allow_movement", text="Allow Movement")
+            box.prop(mg, "allow_jump", text="Allow Jump")
+            box.prop(mg, "allow_sprint", text="Allow Sprint")
+            box.separator()
+            box.label(text="Mesh Visibility Trigger")
+            box.prop(mg, "mesh_object", text="Mesh Object")
+            box.prop(mg, "mesh_action", text="Action")
+            box.separator()
+            box.label(text="Game Reset")
+            box.prop(mg, "reset_game", text="Reset Game")
 
+        elif r.reaction_type == "SOUND":
+            tip = box.box()
+            tip.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
 
-        # ===============================
-        # Objective Timer Start/Stop
-        # ===============================
-        elif reaction.reaction_type == "OBJECTIVE_TIMER":
-            box2.prop(reaction, "objective_index", text="Timer Objective")
-            box2.prop(reaction, "objective_timer_op", text="Timer Operation")
-            box2.prop(reaction, "interruptible", text="Interruptible")
+            box.prop(r, "sound_pointer", text="Sound")
 
-
-        # ===============================
-        # Character and Game Reactions
-        # ===============================
-        elif reaction.reaction_type == "MOBILITY_GAME":
-            mg = reaction.mobility_game_settings
-            box2.label(text="Character Mobility")
-            box2.prop(mg, "allow_movement", text="Allow Movement")
-            box2.prop(mg, "allow_jump", text="Allow Jump")
-            box2.prop(mg, "allow_sprint", text="Allow Sprint")
-            
-            box2.separator()
-            
-            box2.label(text="Mesh Visibility Trigger")
-            box2.prop(mg, "mesh_object", text="Mesh Object")
-            box2.prop(mg, "mesh_action", text="Action")
-
-            box2.separator()
-            box2.label(text="Game Reset")
-            box2.prop(mg, "reset_game", text="Reset Game")
-
-        # ===============================
-        # Sound Reaction
-        # ===============================
-        elif reaction.reaction_type == "SOUND":
-            # ───── Notice ─────
-            note_box = box2.box()
-            note_box.label(text="Notice: Custom Sounds must be packed into the .blend to work in-game.")
-            note_box.label(text="Reason: Custom sounds can't rely on external file sources.")
+            params = box.box()
+            params.label(text="Parameters")
+            params.prop(r, "sound_volume", text="Relative Volume")
+            params.prop(r, "sound_use_distance", text="Use Distance?")
+            if r.sound_use_distance:
+                dist_box = params.box()
+                dist_box.prop(r, "sound_distance_object", text="Distance Object")
+                dist_box.prop(r, "sound_max_distance", text="Max Distance")
+            params.prop(r, "sound_play_mode", text="Mode")
+            if r.sound_play_mode == "DURATION":
+                params.prop(r, "sound_duration", text="Duration")
 
             # ───── Packing ─────
+            box2 = box.box()
             pack_box = box2.box()
             pack_box.operator(
                 "exp_audio.pack_all_sounds",
                 text="Pack All Sounds",
                 icon='PACKAGE'
             )
-
-            # ───── Load / Test ─────
-            io_box = box2.box()
-            io_box.label(text="Load / Test Sound")
-            row = io_box.row(align=True)
-            row.prop(reaction, "sound_pointer", text="Sound")
-
-            load_op = row.operator(
-                "exp_audio.load_audio_file",
-                text="",
-                icon='FILE_FOLDER'
-            )
-            load_op.interaction_index = scene.custom_interactions_index
-            load_op.reaction_index    = inter.reactions_index
-
-            test_op = row.operator(
-                "exp_audio.test_reaction_sound",
-                text="",
-                icon='PLAY'
-            )
-            test_op.interaction_index = scene.custom_interactions_index
-            test_op.reaction_index    = inter.reactions_index
-
-            # ───── Parameters ─────
-            params_box = box2.box()
-            params_box.label(text="Parameters")
-            params_box.prop(reaction, "sound_volume", text="Relative Volume")
-            params_box.prop(reaction, "sound_use_distance", text="Use Distance?")
-
-            if reaction.sound_use_distance:
-                dist_box = params_box.box()
-                dist_box.prop(reaction, "sound_distance_object", text="Distance Object")
-                dist_box.prop(reaction, "sound_max_distance", text="Max Distance")
-
-            params_box.prop(reaction, "sound_play_mode", text="Mode")
-            if reaction.sound_play_mode == "DURATION":
-                params_box.prop(reaction, "sound_duration", text="Duration")
-
-
-
 
 
 

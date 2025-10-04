@@ -3,7 +3,7 @@
 import bpy
 from ..props_and_utils.exp_time import init_time
 from ..systems.exp_objectives import reset_all_objectives
-from ..reactions.exp_reactions import reset_all_tasks, _set_property_value
+from ..reactions.exp_reactions import reset_all_tasks, _assign_safely
 from ..interactions.exp_interactions import reset_all_interactions
 from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
@@ -85,32 +85,53 @@ def apply_hide_during_game(modal_op, context):
 
 def reset_property_reactions(scene):
     """
-    For each Interaction in the scene, find any PROPERTY reaction and reset the target property
-    to the user-defined default value.
-    """
-    # Assuming custom interactions are stored on scene.custom_interactions
-    for inter in scene.custom_interactions:
-        for reaction in inter.reactions:
-            if reaction.reaction_type == "PROPERTY":
-                path_str = reaction.property_data_path.strip()
-                if not path_str:
-                    continue
-                # Choose the default value based on the detected property type:
-                if reaction.property_type == "BOOL":
-                    def_val = reaction.default_bool_value
-                elif reaction.property_type == "INT":
-                    def_val = reaction.default_int_value
-                elif reaction.property_type == "FLOAT":
-                    def_val = reaction.default_float_value
-                elif reaction.property_type == "STRING":
-                    def_val = reaction.default_string_value
-                elif reaction.property_type == "VECTOR":
-                    def_val = list(reaction.default_vector_value[:reaction.vector_length])
-                else:
-                    continue
+    Reset all PROPERTY-type reactions to their default_* values at game start.
 
-                # Use the helper (_set_property_value) to assign the default value:
-                _set_property_value(path_str, def_val)
+    Works with the new architecture:
+      • Uses InteractionDefinition.reaction_links (indices → scene.reactions)
+      • Also resets standalone (unlinked) reactions in scene.reactions
+      • Deduplicates by property_data_path
+    """
+    # 1) Gather reactions referenced by interactions
+    to_visit = []
+    for inter in getattr(scene, "custom_interactions", []):
+        for link in getattr(inter, "reaction_links", []):
+            idx = getattr(link, "reaction_index", -1)
+            if 0 <= idx < len(scene.reactions):
+                to_visit.append(scene.reactions[idx])
+
+    # 2) Include all global reactions so standalones are reset too
+    to_visit.extend(getattr(scene, "reactions", []))
+
+    # 3) Reset each unique PROPERTY path to its declared default_* value
+    seen_paths = set()
+
+    for r in to_visit:
+        if getattr(r, "reaction_type", None) != "PROPERTY":
+            continue
+
+        path_str = (getattr(r, "property_data_path", "") or "").strip()
+        if not path_str or path_str in seen_paths:
+            continue
+
+        ptype = getattr(r, "property_type", "NONE")
+        if ptype == "BOOL":
+            def_val = bool(r.default_bool_value)
+        elif ptype == "INT":
+            def_val = int(r.default_int_value)
+        elif ptype == "FLOAT":
+            def_val = float(r.default_float_value)
+        elif ptype == "STRING":
+            def_val = r.default_string_value
+        elif ptype == "VECTOR":
+            def_val = list(r.default_vector_value[:getattr(r, "vector_length", 3)])
+        else:
+            # Unknown/undetected → skip
+            continue
+
+        # Assign safely (casts component-wise to the underlying property type)
+        _assign_safely(path_str, def_val)
+        seen_paths.add(path_str)
 
 class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
     bl_idname = "exploratory.reset_game"

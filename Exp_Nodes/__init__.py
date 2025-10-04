@@ -16,7 +16,6 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-
 # File: Exp_Nodes/__init__.py
 from .node_editor import (
     ExploratoryNodesTree,
@@ -27,6 +26,7 @@ from .node_editor import (
     NODE_OT_select_exploratory_node_tree,
     node_categories,
 )
+
 
 # ── TRIGGERS: five separate nodes ──
 from .trigger_nodes import (
@@ -49,7 +49,6 @@ from .reaction_nodes import (
     ReactionObjectiveCounterNode,
     ReactionObjectiveTimerNode,
     ReactionMobilityGameNode,
-    NODE_OT_add_reaction_to_node,
 )
 
 from .objective_nodes import ObjectiveNode
@@ -82,7 +81,6 @@ classes = [
     ObjectiveNode,
 
     # ops / panel
-    NODE_OT_add_reaction_to_node,
     NODE_OT_create_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
     NODE_PT_exploratory_panel,
