@@ -465,7 +465,6 @@ def _get_or_extract_temp_path(sound_data: bpy.types.Sound, temp_dir: str) -> str
             pass
     return path
 
-
 # ------------------------------------------------------------------------
 #Play sound reactions audio helpers -- for SOUND reactions only
 #-------------------------------------------------------------------------
@@ -488,9 +487,9 @@ class EXP_AUDIO_OT_LoadAudioFile(bpy.types.Operator, ImportHelper):
         # load & pack
         sound = bpy.data.sounds.load(self.filepath, check_existing=True)
         sound.pack()
-        # assign to the SOUND reaction
-        inter = context.scene.custom_interactions[self.interaction_index]
-        reaction = inter.reactions[self.reaction_index]
+        # assign to the SOUND reaction (independent global reaction)
+        scene = context.scene
+        reaction = scene.reactions[self.reaction_index]
         reaction.sound_pointer = sound
         self.report({'INFO'}, f"Loaded '{sound.name}' into '{reaction.name}'")
         return {'FINISHED'}
@@ -507,8 +506,7 @@ class EXP_AUDIO_OT_TestReactionSound(bpy.types.Operator):
     def execute(self, context):
         prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
-        inter = scene.custom_interactions[self.interaction_index]
-        reaction = inter.reactions[self.reaction_index]
+        reaction = scene.reactions[self.reaction_index]
         sound = reaction.sound_pointer
 
         if not sound or not sound.packed_file:

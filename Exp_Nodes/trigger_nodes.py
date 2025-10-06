@@ -2,13 +2,17 @@
 import bpy
 from bpy.types import Node
 from .base_nodes import TriggerNodeBase
-from .reaction_nodes import ReactionOutputSocket  # ensure socket classes loaded
-from .objective_nodes import enum_objective_items
 
-# Interactions live in the Scene collections you already have:
-from ..Exp_Game.interactions.exp_interaction_definition import InteractionDefinition
-
-
+def enum_objective_items(self, context):
+    scn = getattr(context, "scene", None) or getattr(bpy.context, "scene", None)
+    items = []
+    if scn and hasattr(scn, "objectives"):
+        for i, obj in enumerate(scn.objectives):
+            # identifier must be a string for EnumProperty
+            items.append((str(i), obj.name, f"Objective: {obj.name}"))
+    if not items:
+        items.append(("0", "No Objectives", ""))
+    return items
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────

@@ -17,18 +17,27 @@
 # ##### END GPL LICENSE BLOCK #####
 
 # File: Exp_Nodes/__init__.py
+import bpy
 from .node_editor import (
+    # tree + socket
     ExploratoryNodesTree,
     TriggerOutputSocket,
+
+    # operators + panel
     NODE_OT_create_exploratory_node_tree,
-    NODE_PT_exploratory_panel,
-    NODE_OT_delete_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
-    node_categories,
+    NODE_OT_delete_exploratory_node_tree,
+    NODE_PT_exploratory_panel,
+
+    # menus (native Add → Exploratory → …)
+    NODE_MT_exploratory_add_triggers,
+    NODE_MT_exploratory_add_reactions,
+    NODE_MT_exploratory_add_objectives,
+    # hook used to append menu entry to NODE_MT_add
+    _append_exploratory_entry,
 )
 
-
-# ── TRIGGERS: five separate nodes ──
+# ── TRIGGERS ──
 from .trigger_nodes import (
     ProximityTriggerNode,
     CollisionTriggerNode,
@@ -37,6 +46,7 @@ from .trigger_nodes import (
     TimerCompleteTriggerNode,
 )
 
+# ── REACTIONS ──
 from .reaction_nodes import (
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
@@ -51,13 +61,16 @@ from .reaction_nodes import (
     ReactionMobilityGameNode,
 )
 
+# ── OBJECTIVES ──
 from .objective_nodes import ObjectiveNode
 
+
 classes = [
+    # tree + socket
     ExploratoryNodesTree,
     TriggerOutputSocket,
 
-    # five concrete triggers
+    # triggers
     ProximityTriggerNode,
     CollisionTriggerNode,
     InteractTriggerNode,
@@ -80,26 +93,82 @@ classes = [
     # objective
     ObjectiveNode,
 
-    # ops / panel
+    # operators + panel
     NODE_OT_create_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
-    NODE_PT_exploratory_panel,
     NODE_OT_delete_exploratory_node_tree,
+    NODE_PT_exploratory_panel,
+
+    # menus
+    NODE_MT_exploratory_add_triggers,
+    NODE_MT_exploratory_add_reactions,
+    NODE_MT_exploratory_add_objectives,
 ]
 
-def register():
+EXPL_TREE_ID = "ExploratoryNodesTreeType"
+
+def _sanitize_open_node_editors_before_unload():
+    """Switch any open Node Editor that is currently showing our custom tree
+    to a built-in tree type to avoid enum -1 warnings during unregister."""
     import bpy
+    wm = getattr(bpy.context, "window_manager", None)
+    if not wm:
+        return
+
+    for win in wm.windows:
+        scr = getattr(win, "screen", None)
+        if not scr:
+            continue
+        for area in scr.areas:
+            if area.type != 'NODE_EDITOR':
+                continue
+            for space in area.spaces:
+                if getattr(space, "type", None) != 'NODE_EDITOR':
+                    continue
+                # If the space is currently bound to our custom tree, detach it.
+                if getattr(space, "tree_type", "") == EXPL_TREE_ID:
+                    try:
+                        # Drop the specific node tree reference first
+                        space.node_tree = None
+                    except Exception:
+                        pass
+                    try:
+                        # Pick a valid built-in tree. Shader is usually safe.
+                        space.tree_type = 'ShaderNodeTree'
+                    except Exception:
+                        # As a last resort, try blanking it.
+                        try:
+                            space.tree_type = ''
+                        except Exception:
+                            pass
+
+def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    from nodeitems_utils import register_node_categories
-    register_node_categories(ExploratoryNodesTree.bl_idname, node_categories)
+
+    # Append the scoped Shift+A entry (only shows in our editor)
+    from bpy.types import NODE_MT_add
+    NODE_MT_add.append(_append_exploratory_entry)
+
 
 def unregister():
-    from nodeitems_utils import unregister_node_categories
-    unregister_node_categories(ExploratoryNodesTree.bl_idname)
-    import bpy
+    # 0) Detach any UI that’s still looking at our tree to prevent enum -1 spam
+    _sanitize_open_node_editors_before_unload()
+
+    # 1) Remove the scoped Shift+A entry first
+    from bpy.types import NODE_MT_add
+    try:
+        NODE_MT_add.remove(_append_exploratory_entry)
+    except Exception:
+        pass
+
+    # 2) Unregister classes (reverse order)
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        try:
+            bpy.utils.unregister_class(cls)
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     register()

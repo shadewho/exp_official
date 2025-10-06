@@ -162,6 +162,12 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         except Exception as e:
             print(f"[WARN] stop_custom_actions_and_rewind_strips failed: {e}")
 
+        # ─── 0.6) Stop all playing sounds ─────────────────────────────────
+        try:
+            exp_globals.stop_all_sounds()
+        except Exception as e:
+            print(f"[WARN] stop_all_sounds failed: {e}")
+
         # 1) only restore the scene if skip_restore is False
         if not self.skip_restore:
             restore_scene_state(modal_op, context)

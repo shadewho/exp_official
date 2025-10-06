@@ -3,12 +3,6 @@ import bpy
 from bpy.types import Node
 from .base_nodes import ReactionNodeBase
 
-try:
-    from ..Exp_Game.reactions.exp_reaction_definition import ReactionDefinition
-except Exception:
-    ReactionDefinition = None
-
-
 # ───────────────────────── helpers ─────────────────────────
 
 def _scene() -> bpy.types.Scene | None:
@@ -117,18 +111,41 @@ def _draw_common_fields(layout, r, kind: str):
             header.prop(r, "char_action_loop_duration", text="Loop Duration")
 
     elif t == "SOUND":
-        tip = header.box(); tip.label(text="Custom sounds should be packed.", icon='INFO')
+        # Sound pointer
         header.prop(r, "sound_pointer", text="Sound")
+
+        # Parameters
         params = header.box()
         params.label(text="Parameters")
         params.prop(r, "sound_volume", text="Relative Volume")
         params.prop(r, "sound_use_distance", text="Use Distance?")
         if getattr(r, "sound_use_distance", False):
-            params.prop(r, "sound_distance_object", text="Distance Object")
-            params.prop(r, "sound_max_distance", text="Max Distance")
+            dist_box = params.box()
+            dist_box.prop(r, "sound_distance_object", text="Distance Object")
+            dist_box.prop(r, "sound_max_distance", text="Max Distance")
         params.prop(r, "sound_play_mode", text="Mode")
         if getattr(r, "sound_play_mode", "") == "DURATION":
             params.prop(r, "sound_duration", text="Duration")
+
+        # Pack helper (message + button in ONE box at bottom)
+        pack = header.box()
+        pack.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
+        row = pack.row(align=True)
+        row.operator("exp_audio.pack_all_sounds", text="Pack All Sounds", icon='PACKAGE')
+        
+
+        # ---- Test button (preview playback) ----
+        scn = bpy.context.scene
+        ridx = -1
+        for i, rx in enumerate(getattr(scn, "reactions", [])):
+            if rx == r:
+                ridx = i
+                break
+        test_box = header.box()
+        row = test_box.row(align=True)
+        op  = row.operator("exp_audio.test_reaction_sound", text="Test Sound", icon='PLAY')
+        op.reaction_index = ridx
+
 
     elif t == "PROPERTY":
         header.label(text="Paste a Blender data path (Right-Click → Copy Data Path).", icon='INFO')
@@ -181,31 +198,50 @@ def _draw_common_fields(layout, r, kind: str):
     elif t == "CUSTOM_UI_TEXT":
         header.prop(r, "custom_text_subtype", text="Subtype")
         subtype = getattr(r, "custom_text_subtype", "STATIC")
-        content = header.box(); content.label(text="Text Content")
+
+        # Text content
+        content = header.box()
+        content.label(text="Text Content")
         if subtype == "STATIC":
             content.prop(r, "custom_text_value", text="Text")
         else:
             content.prop(r, "text_objective_index", text="Objective")
         if subtype == "OBJECTIVE":
-            fmt = content.box(); fmt.label(text="Counter Formatting")
+            fmt = content.box()
+            fmt.label(text="Counter Formatting")
             fmt.prop(r, "custom_text_prefix", text="Prefix")
             fmt.prop(r, "custom_text_include_counter", text="Show Counter")
             fmt.prop(r, "custom_text_suffix", text="Suffix")
 
-        timing = header.box(); timing.label(text="Display Timing")
+        # Timing
+        timing = header.box()
+        timing.label(text="Display Timing")
         timing.prop(r, "custom_text_indefinite", text="Indefinite")
         if not getattr(r, "custom_text_indefinite", False):
             timing.prop(r, "custom_text_duration", text="Duration (sec)")
 
-        layout_box = header.box(); layout_box.label(text="Position & Size")
+        # Position & Size
+        layout_box = header.box()
+        layout_box.label(text="Position & Size")
         layout_box.prop(r, "custom_text_anchor", text="Anchor")
         layout_box.prop(r, "custom_text_scale", text="Scale")
-        layout_box.prop(r, "custom_text_margin_x", text="Margin X")
-        layout_box.prop(r, "custom_text_margin_y", text="Margin Y")
+        margins = layout_box.column(align=True)
+        margins.prop(r, "custom_text_margin_x", text="Margin X")
+        margins.prop(r, "custom_text_margin_y", text="Margin Y")
 
-        style = header.box(); style.label(text="Appearance")
+        # Appearance
+        style = header.box()
+        style.label(text="Appearance")
         style.prop(r, "custom_text_font",  text="Font")
         style.prop(r, "custom_text_color", text="Color")
+
+        # Preview (same structure as N-panel)
+        preview_box = header.box()
+        preview_box.label(text="Note: preview in fullscreen for best results.", icon='INFO')
+        row = preview_box.row(align=True)
+        op  = row.operator("exploratory.preview_custom_text", text="Preview Custom Text", icon='HIDE_OFF')
+        op.duration = 5.0
+
 
     elif t == "OBJECTIVE_COUNTER":
         header.prop(r, "objective_index", text="Objective")

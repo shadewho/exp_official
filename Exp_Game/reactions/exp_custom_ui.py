@@ -326,7 +326,31 @@ def clear_text_reactions():
     _reaction_texts.clear()
 
 
-
+def _tag_all_view3d_for_redraw():
+    """Force every 3D View 'WINDOW' region to redraw now."""
+    found = False
+    wm = bpy.context.window_manager
+    if not wm:
+        return False
+    for win in wm.windows:
+        scr = win.screen
+        if not scr:
+            continue
+        for area in scr.areas:
+            if area.type == 'VIEW_3D':
+                # Tag both area + its WINDOW region(s)
+                area.tag_redraw()
+                for reg in area.regions:
+                    if reg.type == 'WINDOW':
+                        reg.tag_redraw()
+                found = True
+    if found:
+        # Nudge Blender to swap a frame even if focus is elsewhere.
+        try:
+            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        except Exception:
+            pass
+    return found
 
 class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
     """Preview all custom text items for 5 seconds without starting the game."""
@@ -341,51 +365,42 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
     )
 
     def execute(self, context):
-    
+
         clear_all_text()
         
         # Get a reference time.
         current_time = get_game_time() or time.time()
         end_time = current_time + self.duration
 
-        # Search for custom UI text reactions defined by the user.
-        interactions = getattr(context.scene, "custom_interactions", None)
+        # Search for all GLOBAL reactions that are CUSTOM_UI_TEXT
+        scene = context.scene
         custom_text_count = 0
-        if interactions:
-            for inter in interactions:
-                for reaction in inter.reactions:
-                    if reaction.reaction_type == "CUSTOM_UI_TEXT":
-                        # Local import to avoid circular dependency.
-                        from .exp_reactions import execute_custom_ui_text_reaction
-                        execute_custom_ui_text_reaction(reaction)
-                        custom_text_count += 1
-        else:
-            print("No custom interactions found in the scene.")
+        for reaction in getattr(scene, "reactions", []):
+            if getattr(reaction, "reaction_type", None) == "CUSTOM_UI_TEXT":
+                # Local import to avoid circular dependency.
+                from .exp_reactions import execute_custom_ui_text_reaction
+                execute_custom_ui_text_reaction(reaction)
+                custom_text_count += 1
 
         # For previewing objective counters and timer displays, override the text field with dummy text.
         for item in _reaction_texts:
             subtype = item.get("subtype", "STATIC")
             if subtype == "OBJECTIVE":
-                # Construct text from prefix, counter, and suffix.
-                # In the preview, you can use a dummy counter value (e.g. 42)
                 prefix = item.get("custom_text_prefix", "Objective: ")
                 suffix = item.get("custom_text_suffix", " pts")
-                # Optionally, check if the counter should be included.
                 include_counter = item.get("custom_text_include_counter", True)
-                if include_counter:
-                    item["text"] = f"{prefix}42{suffix}"
-                else:
-                    item["text"] = f"{prefix}{suffix}"
+                item["text"] = f"{prefix}42{suffix}" if include_counter else f"{prefix}{suffix}"
             elif subtype == "OBJECTIVE_TIMER_DISPLAY":
                 item["text"] = "00:00s"
 
-        
         # Ensure the draw handler is registered so that text is drawn.
-        from .exp_custom_ui import register_ui_draw
-        register_ui_draw()
+        register_ui_draw()  # <-- call directly; no import-from-self
+        
+        _tag_all_view3d_for_redraw()
 
         # Request an immediate redraw so the UI is updated.
-        context.area.tag_redraw()
+        if getattr(context, "area", None):
+            context.area.tag_redraw()
         self.report({'INFO'}, f"Preview text added for {self.duration:.1f} seconds. (Custom texts: {custom_text_count})")
         
         # ----------------------------------------------------------------
@@ -402,6 +417,7 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
         # ----------------------------------------------------------------
         
         return {'FINISHED'}
+
     
 
 def show_controls_info(duration: float = 10.0):

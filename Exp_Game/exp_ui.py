@@ -396,8 +396,8 @@ class EXPLORATORY_UL_ReactionsInInteraction(bpy.types.UIList):
 
 
 class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
-    """Your main Interactions panel, extended with Reactions sub-list."""
-    bl_label = "Interactions and Reactions"
+    """Your main Interactions panel."""
+    bl_label = "Interactions"
     bl_idname = "VIEW3D_PT_exploratory_studio"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -724,7 +724,7 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
             box.prop(r, "property_transition_duration", text="Duration")
             box.prop(r, "property_reset", text="Reset after")
             if r.property_reset:
-                box.prop(r, "property_reset_delay", text="Reset delay")
+                box.prop(r, "property_reset_delay", text="Reset when target value is reached")
             if r.property_type == "BOOL":
                 box.prop(r, "bool_value", text="Target Bool")
                 box.prop(r, "default_bool_value", text="Default Bool")
@@ -794,8 +794,13 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
             style.label(text="Appearance")
             style.prop(r, "custom_text_font",  text="Font")
             style.prop(r, "custom_text_color", text="Color")
-            box.separator()
-            box.label(text="Note: preview in fullscreen for best results.", icon='INFO')
+            preview_box = box.box()
+            preview_box.label(text="Note: preview in fullscreen for best results.", icon='INFO')
+
+            row = preview_box.row(align=True)
+            op  = row.operator("exploratory.preview_custom_text", text="Preview Custom Text", icon='HIDE_OFF')
+            op.duration = 5.0  # default preview length (seconds)
+
 
         elif r.reaction_type == "OBJECTIVE_TIMER":
             box.prop(r, "objective_index", text="Timer Objective")
@@ -817,9 +822,6 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
             box.prop(mg, "reset_game", text="Reset Game")
 
         elif r.reaction_type == "SOUND":
-            tip = box.box()
-            tip.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
-
             box.prop(r, "sound_pointer", text="Sound")
 
             params = box.box()
@@ -834,14 +836,15 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
             if r.sound_play_mode == "DURATION":
                 params.prop(r, "sound_duration", text="Duration")
 
-            # ───── Packing ─────
-            box2 = box.box()
-            pack_box = box2.box()
-            pack_box.operator(
-                "exp_audio.pack_all_sounds",
-                text="Pack All Sounds",
-                icon='PACKAGE'
-            )
+            # ───── Pack helper (message + button in ONE box at bottom) ─────
+            pack = box.box()
+            pack.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
+            row = pack.row(align=True)
+            row.operator("exp_audio.pack_all_sounds", text="Pack All Sounds", icon='PACKAGE')
+            test_box = box.box()
+            row = test_box.row(align=True)
+            op  = row.operator("exp_audio.test_reaction_sound", text="Test Sound", icon='PLAY')
+            op.reaction_index = scn.reactions_index  # current selection in the global library
 
 
 

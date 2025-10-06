@@ -74,7 +74,7 @@ from .interactions.exp_interactions import (
     EXPLORATORY_OT_CreateReactionAndLink,
     EXPLORATORY_OT_DuplicateInteraction, 
 )
-from .reactions.exp_reaction_definition import ReactionDefinition
+from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties
 from .systems.exp_objectives import (
     ObjectiveDefinition,
     EXPLORATORY_OT_AddObjective,
@@ -90,6 +90,7 @@ from .systems.exp_performance import (
 from .reactions.exp_mobility_and_game_reactions import MobilityGameReactionsPG
 from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
 from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
+
 
 
 def register():
@@ -192,6 +193,7 @@ def unregister():
     remove_scene_properties()
     unregister_interaction_properties()
     unregister_objective_properties()
+    unregister_reaction_library_properties()
 
     # --- Mobility Game Reactions ---
     del bpy.types.Scene.mobility_game
@@ -216,6 +218,7 @@ def unregister():
     # --- Panels & UILists ---
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Reactions)
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveGlobalReaction)
+    bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateGlobalReaction)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddGlobalReaction)
     bpy.utils.unregister_class(EXPLORATORY_UL_ReactionLibrary)
     bpy.utils.unregister_class(EXPLORATORY_UL_ReactionsInInteraction)
@@ -240,7 +243,9 @@ def unregister():
     bpy.utils.unregister_class(InteractionDefinition)
     bpy.utils.unregister_class(ReactionLinkPG)
     bpy.utils.unregister_class(ReactionDefinition)
-    bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateInteraction)
+    bpy.utils.unregister_class(EXPLORATORY_OT_CreateReactionAndLink)
+
+
     bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateInteraction)
 
     bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
