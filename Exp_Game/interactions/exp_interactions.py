@@ -11,7 +11,12 @@ from ..reactions.exp_reactions import (execute_transform_reaction,
 from ..animations.exp_custom_animations import execute_custom_action_reaction
 from ..props_and_utils.exp_time import get_game_time
 from ..systems.exp_objectives import update_all_objective_timers
-from ..reactions.exp_mobility_and_game_reactions import execute_mobility_reaction
+from ..reactions.exp_mobility_and_game_reactions import (
+    execute_mobility_reaction,
+    execute_mesh_visibility_reaction,
+    execute_reset_game_reaction,
+)
+
 from ..reactions import exp_custom_ui
 
 # Global list to hold pending trigger tasks.
@@ -158,7 +163,10 @@ def _deep_copy_pg(src, dst, skip: set[str] = frozenset()):
 # Duplicate Interaction operator
 # ─────────────────────────────────────────────────────────
 class EXPLORATORY_OT_DuplicateInteraction(bpy.types.Operator):
-    """Duplicate the currently selected Interaction, including its Reaction links."""
+    """
+    Duplicate the currently selected Interaction, copying all trigger/settings,
+    but **NOT** carrying over any linked reactions.
+    """
     bl_idname = "exploratory.duplicate_interaction"
     bl_label = "Duplicate Interaction"
     bl_options = {'REGISTER', 'UNDO'}
@@ -176,30 +184,34 @@ class EXPLORATORY_OT_DuplicateInteraction(bpy.types.Operator):
         src = scn.custom_interactions[src_idx]
         dst = scn.custom_interactions.add()
 
-        # Copy everything except the reaction_links collection (we’ll do it explicitly)
+        # Copy everything EXCEPT reaction_links
         _deep_copy_pg(src, dst, skip={"reaction_links", "reaction_links_index"})
 
-        # Copy reaction links (preserve the same global reaction indices)
-        for link in src.reaction_links:
-            new_link = dst.reaction_links.add()
-            new_link.reaction_index = link.reaction_index
-        dst.reaction_links_index = src.reaction_links_index
+        # Ensure the duplicate has zero links (explicit)
+        try:
+            dst.reaction_links.clear()
+        except AttributeError:
+            while len(dst.reaction_links):
+                dst.reaction_links.remove(len(dst.reaction_links) - 1)
+        dst.reaction_links_index = 0
 
-        # Ensure trigger_type & mode remain consistent (handle update callback ordering)
+        # Keep trigger_type/mode consistent (in case copy order matters)
         try:
             dst.trigger_type = src.trigger_type
             dst.trigger_mode = src.trigger_mode
         except Exception:
             pass
 
-        # Friendly name; comment out if you want the exact same name
+        # Friendly name
         try:
-            dst.name = f"{src.name} (Copy)"
+            base = getattr(src, "name", "Interaction")
+            dst.name = f"{base} (Copy)"
         except Exception:
             pass
 
         scn.custom_interactions_index = len(scn.custom_interactions) - 1
         return {'FINISHED'}
+
 
 ###############################################################################
 # 3) Operators for Adding/Removing Reactions within an Interaction
@@ -571,8 +583,12 @@ def run_reactions(reactions):
             execute_property_reaction(r)
         elif r.reaction_type == "CUSTOM_UI_TEXT":
             execute_custom_ui_text_reaction(r)
-        elif r.reaction_type == "MOBILITY_GAME":
+        elif r.reaction_type == "MOBILITY":
             execute_mobility_reaction(r)
+        elif r.reaction_type == "MESH_VISIBILITY":
+            execute_mesh_visibility_reaction(r)
+        elif r.reaction_type == "RESET_GAME":
+            execute_reset_game_reaction(r)
 
         
 

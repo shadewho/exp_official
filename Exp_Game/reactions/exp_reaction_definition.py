@@ -1,7 +1,10 @@
 #Exploratory/Exp_UI/exp_reaction_definition.py
 
 import bpy
-from .exp_mobility_and_game_reactions import MobilityGameReactionsPG
+from .exp_mobility_and_game_reactions import (
+    MobilityReactionsPG,
+    MeshVisibilityReactionsPG,
+)
 from .exp_fonts import discover_fonts 
 #---custom propertys--#
 def update_property_data_path(self, context):
@@ -66,6 +69,74 @@ def enum_objective_items(self, context):
         items.append((str(i), objv.name, f"Objective: {objv.name}"))
     return items
 
+
+# ─────────────────────────────────────────────────────────
+# Interactions and reactions -- Duplicate
+# ─────────────────────────────────────────────────────────
+def _deep_copy_pg(src, dst, skip: set[str] = frozenset()):
+    from bpy.types import ID as _ID
+    for prop in src.bl_rna.properties:
+        ident = prop.identifier
+        if ident in {"rna_type"} or ident in skip:
+            continue
+        if getattr(prop, "is_readonly", False):
+            continue
+        try:
+            value = getattr(src, ident)
+        except Exception:
+            continue
+        try:
+            if prop.type == 'POINTER':
+                if isinstance(value, _ID) or value is None:
+                    setattr(dst, ident, value)
+                else:
+                    sub_dst = getattr(dst, ident)
+                    _deep_copy_pg(value, sub_dst)
+            elif prop.type == 'COLLECTION':
+                dst_coll = getattr(dst, ident)
+                try:
+                    dst_coll.clear()
+                except AttributeError:
+                    while len(dst_coll):
+                        dst_coll.remove(len(dst_coll) - 1)
+                for src_item in value:
+                    dst_item = dst_coll.add()
+                    _deep_copy_pg(src_item, dst_item)
+            else:
+                setattr(dst, ident, value)
+        except Exception:
+            pass
+
+
+class EXPLORATORY_OT_DuplicateGlobalReaction(bpy.types.Operator):
+    """Duplicate the selected Reaction in the global library."""
+    bl_idname = "exploratory.duplicate_global_reaction"
+    bl_label = "Duplicate Reaction"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: bpy.props.IntProperty(name="Index", default=-1)
+
+    def execute(self, context):
+        scn = context.scene
+        src_idx = self.index if self.index >= 0 else scn.reactions_index
+        if not (0 <= src_idx < len(scn.reactions)):
+            self.report({'WARNING'}, "No valid Reaction selected.")
+            return {'CANCELLED'}
+
+        src = scn.reactions[src_idx]
+        dst = scn.reactions.add()
+
+        _deep_copy_pg(src, dst)
+
+        try:
+            dst.name = f"{src.name} (Copy)"
+        except Exception:
+            pass
+
+        scn.reactions_index = len(scn.reactions) - 1
+        return {'FINISHED'}
+
+
 class ReactionDefinition(bpy.types.PropertyGroup):
     """
     Represents one 'Reaction' item, but stored in an Interaction’s
@@ -87,7 +158,9 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("CUSTOM_UI_TEXT",    "Custom UI Text", ""),
             ("OBJECTIVE_COUNTER", "Objective Counter", ""),
             ("OBJECTIVE_TIMER",   "Objective Timer", "Start/Stop an objective's timer"),
-            ("MOBILITY_GAME", "Mobility & Game", "Enable/Disable movement, jump, sprint, time, etc.")
+            ("MOBILITY",        "Mobility",             "Enable/Disable movement, jump, sprint"),
+            ("MESH_VISIBILITY", "Mesh Visibility",      "Hide/Unhide/Toggle a mesh object"),
+            ("RESET_GAME",      "Reset Game",           "Reset the game state"),
         ],
         default="CUSTOM_ACTION"
     )
@@ -474,9 +547,14 @@ class ReactionDefinition(bpy.types.PropertyGroup):
 #############################################
 ##### mobility and game reactions
 #############################################
-    mobility_game_settings: bpy.props.PointerProperty(
-        name="Mobility & Game Settings",
-        type=MobilityGameReactionsPG
+    mobility_settings: bpy.props.PointerProperty(
+        name="Mobility Settings",
+        type=MobilityReactionsPG
+    )
+
+    mesh_visibility: bpy.props.PointerProperty(
+        name="Mesh Visibility",
+        type=MeshVisibilityReactionsPG
     )
 
 def register_reaction_library_properties():

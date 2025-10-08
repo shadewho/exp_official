@@ -1,6 +1,5 @@
 # File: Exp_Nodes/base_nodes.py
 import bpy
-from bpy.types import Node
 
 # ─────────────────────────────────────────────────────────
 # Restrict ALL Exploratory nodes to ONLY our node tree type
@@ -24,8 +23,7 @@ class TriggerNodeBase(_ExploratoryNodeOnly, bpy.types.Node):
     bl_label = "Trigger Node Base"
 
     def execute_trigger(self, context):
-        # Optional hook in concrete trigger nodes
-        self.report({'INFO'}, "Trigger executed from base class.")
+        pass
 
 
 class ReactionNodeBase(_ExploratoryNodeOnly, bpy.types.Node):
@@ -33,5 +31,5 @@ class ReactionNodeBase(_ExploratoryNodeOnly, bpy.types.Node):
     bl_label = "Reaction Node Base"
 
     def execute_reaction(self, context):
-        # Optional hook in concrete reaction nodes
-        self.report({'INFO'}, "Reaction executed from base class.")
+        pass
+

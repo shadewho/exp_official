@@ -30,6 +30,41 @@ def _fix_interaction_reaction_indices_after_remove(removed_index: int) -> None:
             if idx > removed_index:
                 l.reaction_index = idx - 1
 
+def _reindex_reaction_nodes_after_remove(removed_index: int) -> None:
+    """
+    After removing scene.reactions[removed_index], all subsequent items shift -1.
+    This walks every Exploratory node tree and fixes each Reaction node's
+    node-local reaction_index so it still points to the same logical Reaction.
+    """
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            # Only touch our reaction nodes that carry a reaction_index
+            blid = getattr(node, "bl_idname", "")
+            if not blid.startswith("Reaction"):
+                continue
+            if not hasattr(node, "reaction_index"):
+                continue
+
+            idx = getattr(node, "reaction_index", -1)
+            if idx < 0:
+                continue
+
+            if idx == removed_index:
+                # This node is being freed (or points at the removed slot).
+                # If somehow we got here for a surviving node, mark invalid to avoid mis-pointing.
+                try:
+                    node.reaction_index = -1
+                except Exception:
+                    pass
+            elif idx > removed_index:
+                # Shift down by one to track the same logical item.
+                try:
+                    node.reaction_index = idx - 1
+                except Exception:
+                    pass
+
 
 def _ensure_reaction(kind_label: str) -> int:
     scn = _scene()
@@ -254,14 +289,23 @@ def _draw_common_fields(layout, r, kind: str):
         header.prop(r, "objective_timer_op", text="Timer Operation")
         header.prop(r, "interruptible", text="Interruptible")
 
-    elif t == "MOBILITY_GAME":
-        mg = getattr(r, "mobility_game_settings", None)
-        if mg:
-            header.label(text="Character Mobility")
-            header.prop(mg, "allow_movement", text="Allow Movement")
-            header.prop(mg, "allow_jump", text="Allow Jump")
-            header.prop(mg, "allow_sprint", text="Allow Sprint")
+    elif t == "MOBILITY":
+        ms = getattr(r, "mobility_settings", None)
+        if ms:
+            header.label(text="Mobility")
+            header.prop(ms, "allow_movement", text="Allow Movement")
+            header.prop(ms, "allow_jump",     text="Allow Jump")
+            header.prop(ms, "allow_sprint",   text="Allow Sprint")
 
+    elif t == "MESH_VISIBILITY":
+        vs = getattr(r, "mesh_visibility", None)
+        if vs:
+            header.label(text="Mesh Visibility")
+            header.prop(vs, "mesh_object", text="Mesh Object")
+            header.prop(vs, "mesh_action", text="Action")
+
+    elif t == "RESET_GAME":
+        header.label(text="Reset Game on trigger", icon='FILE_REFRESH')
 
 # ───────────────────────── sockets ─────────────────────────
 
@@ -286,10 +330,21 @@ class _ReactionNodeKind(ReactionNodeBase):
 
     reaction_index: bpy.props.IntProperty(name="Reaction Index", default=-1, min=-1)
 
+
+    # subtle mid-green (body) to contrast triggers/objectives without shouting
+    _EXPL_TINT_REACTION = (0.18, 0.24, 0.18)
+    def _tint(self):
+        try:
+            self.use_custom_color = True
+            self.color = self._EXPL_TINT_REACTION
+        except Exception:
+            pass
+
     def init(self, context):
-        self.inputs.new("ReactionTriggerInputSocketType", "Trigger Input")
-        self.outputs.new("ReactionOutputSocketType",      "Output")
+        self.inputs.new("ReactionTriggerInputSocketType", "Reaction Input")
+        self.outputs.new("ReactionOutputSocketType",      "Reaction Output")
         self.width = 300
+        self._tint()
         self.reaction_index = _ensure_reaction(self.KIND or "CUSTOM_ACTION")
 
     def copy(self, node):
@@ -298,11 +353,22 @@ class _ReactionNodeKind(ReactionNodeBase):
         self.width = getattr(node, "width", 300)
 
     def free(self):
+        """
+        Deleting a Reaction node should:
+          1) Remove its reaction from scene.reactions
+          2) Fix InteractionDefinition.reaction_links indices
+          3) Fix every other Reaction node's reaction_index so they don't drift
+        """
         scn = _scene()
         idx = self.reaction_index
         if scn and hasattr(scn, "reactions") and 0 <= idx < len(scn.reactions):
+            # 1) remove the actual reaction item
             scn.reactions.remove(idx)
+            # 2) repair interaction link collections
             _fix_interaction_reaction_indices_after_remove(idx)
+            # 3) repair all other nodes' local indices
+            _reindex_reaction_nodes_after_remove(idx)
+
         self.reaction_index = -1
 
     def draw_buttons(self, context, layout):
@@ -312,14 +378,11 @@ class _ReactionNodeKind(ReactionNodeBase):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
-        # No identifier strip; simple caption
-        cap = layout.box()
-        cap.label(text=self.bl_label, icon='LINKED')
-        # Draw fields for this node's KIND without exposing "Type"
         _draw_common_fields(layout, r, self.KIND or "CUSTOM_ACTION")
 
     def execute_reaction(self, context):
         pass
+
 
 
 # ───────────────────────── concrete nodes ─────────────────────────
@@ -364,11 +427,20 @@ class ReactionObjectiveTimerNode(_ReactionNodeKind):
     bl_label  = "Objective Timer"
     KIND = "OBJECTIVE_TIMER"
 
-class ReactionMobilityGameNode(_ReactionNodeKind):
-    bl_idname = "ReactionMobilityGameNodeType"
-    bl_label  = "Mobility & Game"
-    KIND = "MOBILITY_GAME"
+class ReactionMobilityNode(_ReactionNodeKind):
+    bl_idname = "ReactionMobilityNodeType"
+    bl_label  = "Mobility"
+    KIND = "MOBILITY"
 
+class ReactionMeshVisibilityNode(_ReactionNodeKind):
+    bl_idname = "ReactionMeshVisibilityNodeType"
+    bl_label  = "Mesh Visibility"
+    KIND = "MESH_VISIBILITY"
+
+class ReactionResetGameNode(_ReactionNodeKind):
+    bl_idname = "ReactionResetGameNodeType"
+    bl_label  = "Reset Game"
+    KIND = "RESET_GAME"
 
 # ───────────────────────── registration ─────────────────────────
 
@@ -383,8 +455,11 @@ _CLASSES = [
     ReactionCustomTextNode,
     ReactionObjectiveCounterNode,
     ReactionObjectiveTimerNode,
-    ReactionMobilityGameNode,
+    ReactionMobilityNode,
+    ReactionMeshVisibilityNode,
+    ReactionResetGameNode,
 ]
+
 
 def register():
     for c in _CLASSES:

@@ -202,14 +202,13 @@ def add_scene_properties():
         items=[
             ("CHAR",   "Character / Actions / Audio", "Character, actions, and audio panel"),
             ("PROXY",  "Proxy Mesh & Spawn",          "Proxy mesh list and spawn settings"),
-            ("STUDIO", "Interactions & Reactions",    "Custom interactions and reactions"),
             ("OBJ",    "Objectives & Timers",         "Objectives and timer settings"),
             ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
             ("PERF",   "Performance",                 "Live performance + culling tools"),
             ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'STUDIO', 'OBJ', 'UPLOAD', 'PERF', 'PHYS'}
+        default={'CHAR', 'PROXY', 'OBJ', 'UPLOAD', 'PERF', 'PHYS'}
     )
 
     #---proxy mesh --#

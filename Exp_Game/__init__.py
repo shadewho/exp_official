@@ -18,27 +18,16 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-
 import bpy
 from .modal.exp_modal import ExpModal
 from .exp_ui import (
     ExploratoryPanel,
     ExploratoryCharacterPanel,
     ExploratoryProxyMeshPanel,
-    VIEW3D_PT_Exploratory_Studio,
-    EXPLORATORY_UL_CustomInteractions,
-    EXPLORATORY_UL_ReactionsInInteraction,
-    VIEW3D_PT_Objectives,
-    EXPLORATORY_UL_Objectives,
     VIEW3D_PT_Exploratory_UploadHelper,
     VIEW3D_PT_Exploratory_Performance,
     VIEW3D_PT_Exploratory_PhysicsTuning,
     EXP_OT_FilterCreatePanels,
-    EXPLORATORY_UL_ReactionLibrary,
-    EXPLORATORY_OT_AddGlobalReaction,
-    EXPLORATORY_OT_RemoveGlobalReaction,
-    VIEW3D_PT_Exploratory_Reactions,
-    EXPLORATORY_OT_DuplicateGlobalReaction,
 )
 
 
@@ -74,7 +63,7 @@ from .interactions.exp_interactions import (
     EXPLORATORY_OT_CreateReactionAndLink,
     EXPLORATORY_OT_DuplicateInteraction, 
 )
-from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties
+from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties, EXPLORATORY_OT_DuplicateGlobalReaction
 from .systems.exp_objectives import (
     ObjectiveDefinition,
     EXPLORATORY_OT_AddObjective,
@@ -87,17 +76,20 @@ from .systems.exp_performance import (
     register   as register_performance,
     unregister as unregister_performance
 )
-from .reactions.exp_mobility_and_game_reactions import MobilityGameReactionsPG
+from .reactions.exp_mobility_and_game_reactions import (
+    MobilityReactionsPG,
+    MeshVisibilityReactionsPG,
+)
 from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
 from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
 
 
 
 def register():
-    # --- Mobility Game Reactions ---
-    bpy.utils.register_class(MobilityGameReactionsPG)
-    bpy.types.Scene.mobility_game = bpy.props.PointerProperty(type=MobilityGameReactionsPG)
-
+    # --- Mobility / Mesh Visibility PGs (must be registered before ReactionDefinition) ---
+    bpy.utils.register_class(MobilityReactionsPG)
+    bpy.utils.register_class(MeshVisibilityReactionsPG)
+    bpy.types.Scene.mobility_game = bpy.props.PointerProperty(type=MobilityReactionsPG)
     # --- Reset Game ---
     bpy.utils.register_class(EXPLORATORY_OT_ResetGame)
 
@@ -119,10 +111,6 @@ def register():
 
     bpy.utils.register_class(ExploratoryProxyMeshPanel)
 
-    bpy.utils.register_class(VIEW3D_PT_Exploratory_Studio)
-
-    bpy.utils.register_class(VIEW3D_PT_Objectives) 
-
     bpy.utils.register_class(VIEW3D_PT_Exploratory_UploadHelper)
 
     bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
@@ -135,16 +123,8 @@ def register():
     bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
 
     # Register the UILists used in panels
-    bpy.utils.register_class(EXPLORATORY_UL_CustomInteractions)
     bpy.utils.register_class(EXPLORATORY_OT_DuplicateInteraction)
-    bpy.utils.register_class(EXPLORATORY_UL_ReactionsInInteraction)
     bpy.utils.register_class(EXPLORATORY_OT_DuplicateGlobalReaction)
-    bpy.utils.register_class(EXPLORATORY_UL_Objectives)
-
-    bpy.utils.register_class(EXPLORATORY_UL_ReactionLibrary)
-    bpy.utils.register_class(EXPLORATORY_OT_AddGlobalReaction)
-    bpy.utils.register_class(EXPLORATORY_OT_RemoveGlobalReaction)
-    bpy.utils.register_class(VIEW3D_PT_Exploratory_Reactions)
 
     # --- Modal & Game Start Operators ---
     bpy.utils.register_class(ExpModal)
@@ -195,9 +175,11 @@ def unregister():
     unregister_objective_properties()
     unregister_reaction_library_properties()
 
-    # --- Mobility Game Reactions ---
+    # --- Mobility / Mesh Visibility PGs ---
     del bpy.types.Scene.mobility_game
-    bpy.utils.unregister_class(MobilityGameReactionsPG)
+    bpy.utils.unregister_class(MeshVisibilityReactionsPG)
+    bpy.utils.unregister_class(MobilityReactionsPG)
+
     bpy.utils.unregister_class(EXPLORATORY_OT_ResetGame)
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveCharacter)
 
@@ -216,19 +198,10 @@ def unregister():
     bpy.utils.unregister_class(EXP_GAME_OT_StartGame)
 
     # --- Panels & UILists ---
-    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Reactions)
-    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveGlobalReaction)
     bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateGlobalReaction)
-    bpy.utils.unregister_class(EXPLORATORY_OT_AddGlobalReaction)
-    bpy.utils.unregister_class(EXPLORATORY_UL_ReactionLibrary)
-    bpy.utils.unregister_class(EXPLORATORY_UL_ReactionsInInteraction)
-    bpy.utils.unregister_class(EXPLORATORY_UL_CustomInteractions)
-    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Studio)
     bpy.utils.unregister_class(ExploratoryPanel)
-    bpy.utils.unregister_class(VIEW3D_PT_Objectives)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_UploadHelper)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Performance)
-    bpy.utils.unregister_class(EXPLORATORY_UL_Objectives)
     bpy.utils.unregister_class(ExploratoryCharacterPanel)
     bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
     bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
@@ -260,7 +233,6 @@ def unregister():
     bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
     bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
-
 
 
      # ─── DEMO DEMO ──────────────────────────────────

@@ -27,6 +27,7 @@ from .node_editor import (
     NODE_OT_create_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
     NODE_OT_delete_exploratory_node_tree,
+    NODE_OT_rename_exploratory_node_tree,
     NODE_PT_exploratory_panel,
 
     # menus (native Add → Exploratory → …)
@@ -58,7 +59,21 @@ from .reaction_nodes import (
     ReactionCustomTextNode,
     ReactionObjectiveCounterNode,
     ReactionObjectiveTimerNode,
-    ReactionMobilityGameNode,
+    ReactionMobilityNode,
+    ReactionMeshVisibilityNode,
+    ReactionResetGameNode,
+)
+
+from .trig_react_obj_lists import(
+    VIEW3D_PT_Exploratory_Studio,
+    EXPLORATORY_UL_CustomInteractions,
+    EXPLORATORY_UL_ReactionsInInteraction,
+    EXPLORATORY_UL_ReactionLibrary,
+    EXPLORATORY_OT_AddGlobalReaction,
+    EXPLORATORY_OT_RemoveGlobalReaction,
+    VIEW3D_PT_Exploratory_Reactions,
+    VIEW3D_PT_Objectives,
+    EXPLORATORY_UL_Objectives,
 )
 
 # ── OBJECTIVES ──
@@ -88,7 +103,9 @@ classes = [
     ReactionCustomTextNode,
     ReactionObjectiveCounterNode,
     ReactionObjectiveTimerNode,
-    ReactionMobilityGameNode,
+    ReactionMobilityNode,
+    ReactionMeshVisibilityNode,
+    ReactionResetGameNode,
 
     # objective
     ObjectiveNode,
@@ -97,12 +114,23 @@ classes = [
     NODE_OT_create_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
     NODE_OT_delete_exploratory_node_tree,
+    NODE_OT_rename_exploratory_node_tree,
     NODE_PT_exploratory_panel,
 
     # menus
     NODE_MT_exploratory_add_triggers,
     NODE_MT_exploratory_add_reactions,
     NODE_MT_exploratory_add_objectives,
+
+    VIEW3D_PT_Exploratory_Studio,
+    EXPLORATORY_UL_CustomInteractions,
+    EXPLORATORY_UL_ReactionsInInteraction,
+    EXPLORATORY_UL_ReactionLibrary,
+    EXPLORATORY_OT_AddGlobalReaction,
+    EXPLORATORY_OT_RemoveGlobalReaction,
+    VIEW3D_PT_Exploratory_Reactions,
+    VIEW3D_PT_Objectives,
+    EXPLORATORY_UL_Objectives,
 ]
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"

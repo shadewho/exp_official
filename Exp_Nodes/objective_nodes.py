@@ -1,6 +1,5 @@
 # File: Exp_Nodes/objective_nodes.py
 import bpy
-from bpy.types import Node
 from .base_nodes import _ExploratoryNodeOnly
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -124,16 +123,25 @@ class ObjectiveNode(_ExploratoryNodeOnly, bpy.types.Node):
     - Creating the node creates an objective and binds it.
     - Duplicating the node duplicates the bound objective and binds the copy.
     - Deleting the node deletes the bound objective.
-    No add/remove operators. If the node exists, its objective exists.
     """
     bl_idname = "ObjectiveNodeType"
-    bl_label = "Objective"
-    bl_icon = 'TRACKER'
+    bl_label  = "Objective"
+
+    # Subtle, near-default blue-ish body tint (header color is theme-controlled)
+    _EXPL_TINT_OBJECTIVE = (0.18, 0.20, 0.24)
 
     objective_index: bpy.props.IntProperty(name="Objective Index", default=-1, min=-1)
 
+    def _tint(self):
+        try:
+            self.use_custom_color = True
+            self.color = self._EXPL_TINT_OBJECTIVE
+        except Exception:
+            pass
+
     def init(self, context):
         self.width = 300
+        self._tint()
         self.objective_index = _create_objective()
 
     def copy(self, node):
