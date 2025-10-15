@@ -14,7 +14,7 @@ from ..startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old
                             ensure_timeline_at_zero, ensure_object_mode, clear_all_exp_custom_strips)  
 from ..interactions.exp_interactions import set_interact_pressed, reset_all_interactions
 from ..reactions.exp_reactions import reset_all_tasks
-from ..props_and_utils.exp_time import init_time, FixedStepClock
+from ..props_and_utils.exp_time import init_time
 from ..reactions.exp_custom_ui import register_ui_draw, clear_all_text, show_controls_info
 from ..systems.exp_objectives import reset_all_objectives
 from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
@@ -570,38 +570,48 @@ class ExpModal(bpy.types.Operator):
         if not self.target_object or steps <= 0:
             return
 
-        prefs = context.preferences.addons["Exploratory"].preferences
+        # Cache addon prefs once (lazy init), then reuse every call
+        prefs = getattr(self, "_prefs", None)
+        if prefs is None:
+            prefs = context.preferences.addons["Exploratory"].preferences
+            self._prefs = prefs
 
-        # We resolve movement keys once and reuse inside the loop
-        resolved_keys = None
+        # Bind hot attributes to locals (fewer attribute lookups in the loop)
+        pc = self.physics_controller
+        dt = self.physics_dt
+        yaw = self.yaw
+        static_bvh = self.bvh_tree
+        dyn_map = getattr(self, "dynamic_bvh_map", None)
+        v_lin_map = getattr(self, "platform_linear_velocity_map", {})
+        v_ang_map = getattr(self, "platform_ang_velocity_map", {})
 
+        # Resolve movement keys once for this batch
+        resolved_keys = _resolved_move_keys(self)
+
+        # Fixed 30 Hz steps
         for _ in range(int(steps)):
-            # One fixed 30 Hz step (independent of time_scale)
-            self.physics_controller.try_consume_jump()
+            pc.try_consume_jump()
 
-            # Compute once and cache for this batch if not done yet
-            if resolved_keys is None:
-                resolved_keys = _resolved_move_keys(self)
-
-            self.physics_controller.step(
-                dt=self.physics_dt,
+            pc.step(
+                dt=dt,
                 prefs=prefs,
                 keys_pressed=resolved_keys,
-                camera_yaw=self.yaw,
-                static_bvh=self.bvh_tree,
-                dynamic_map=getattr(self, "dynamic_bvh_map", None),
-                platform_linear_velocity_map=getattr(self, "platform_linear_velocity_map", {}),
-                platform_ang_velocity_map=getattr(self, "platform_ang_velocity_map", {}),
+                camera_yaw=yaw,
+                static_bvh=static_bvh,
+                dynamic_map=dyn_map,
+                platform_linear_velocity_map=v_lin_map,
+                platform_ang_velocity_map=v_ang_map,
             )
 
             # Keep existing flags for animations/audio
-            self.z_velocity        = self.physics_controller.vel.z
-            self.is_grounded       = self.physics_controller.on_ground
-            self.grounded_platform = self.physics_controller.ground_obj
+            self.z_velocity        = pc.vel.z
+            self.is_grounded       = pc.on_ground
+            self.grounded_platform = pc.ground_obj
 
         # Rotate character toward camera ONCE per frame if actually moving
-        if self.physics_controller and (self.physics_controller.vel.x**2 + self.physics_controller.vel.y**2) > 1e-6:
+        if pc and (pc.vel.x * pc.vel.x + pc.vel.y * pc.vel.y) > 1e-6:
             smooth_rotate_towards_camera(self)
+
 
 
 

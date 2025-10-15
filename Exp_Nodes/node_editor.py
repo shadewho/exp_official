@@ -37,7 +37,7 @@ class TriggerOutputSocket(NodeSocket):
         layout.label(text=text)
 
     def draw_color(self, context, node):
-        return (0.8, 0.3, 0.8, 1.0)
+        return (0.15, 0.55, 1.0, 1.0)
 
 
 # ─────────────────────────────────────────────────────────

@@ -183,8 +183,8 @@ def _draw_common_fields(layout, r, kind: str):
 
 
     elif t == "PROPERTY":
-        header.label(text="Paste a Blender data path (Right-Click → Copy Data Path).", icon='INFO')
-        header.prop(r, "property_data_path", text="Data Path")
+        header.label(text="Paste a Blender full data path (Right-Click → Copy Full Data Path).", icon='INFO')
+        header.prop(r, "property_data_path", text="Full Data Path")
         row = header.row(); row.label(text=f"Detected Type: {getattr(r, 'property_type', 'NONE')}")
         header.prop(r, "property_transition_duration", text="Duration")
         header.prop(r, "property_reset", text="Reset after")
@@ -313,13 +313,13 @@ class ReactionTriggerInputSocket(bpy.types.NodeSocket):
     bl_idname = "ReactionTriggerInputSocketType"
     bl_label  = "Reaction Trigger Input"
     def draw(self, context, layout, node, text): layout.label(text=text)
-    def draw_color(self, context, node): return (0.4, 0.4, 1.0, 1.0)
+    def draw_color(self, context, node): return (0.15, 0.55, 1.0, 1.0)
 
 class ReactionOutputSocket(bpy.types.NodeSocket):
     bl_idname = "ReactionOutputSocketType"
     bl_label  = "Reaction Output"
     def draw(self, context, layout, node, text): layout.label(text=text)
-    def draw_color(self, context, node): return (0.7, 1.0, 0.7, 1.0)
+    def draw_color(self, context, node): return (0.15, 0.55, 1.0, 1.0)
 
 
 # ───────────────────────── base class ─────────────────────────

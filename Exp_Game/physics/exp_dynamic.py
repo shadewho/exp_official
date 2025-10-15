@@ -1,6 +1,5 @@
 import bpy
 import mathutils
-from mathutils import Vector
 from .exp_bvh_local import LocalBVH
 
 def update_dynamic_meshes(modal_op):
@@ -111,15 +110,17 @@ def update_dynamic_meshes(modal_op):
         if lbvh is None:
             lbvh = LocalBVH(dyn_obj)
             modal_op.cached_local_bvhs[dyn_obj] = lbvh
-            # Compute & cache a conservative world-space radius referenced at the OBJECT ORIGIN.
+
+        # NEW: cache inverse transforms once this frame
+        lbvh.update_xform(cur_M)
+
+        # Compute & cache a conservative world-space radius referenced at the OBJECT ORIGIN.
+        if dyn_obj not in modal_op._cached_dyn_radius:
             bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
             center_world = sum(bbox_world, mathutils.Vector()) / 8.0
-            # radius about the bbox center
             rad_center = max((p - center_world).length for p in bbox_world)
-            # offset between object origin and bbox center
             origin_world = dyn_obj.matrix_world.translation
             center_offset = (center_world - origin_world).length
-            # store radius that encloses the mesh when the sphere is centered at the ORIGIN
             modal_op._cached_dyn_radius[dyn_obj] = rad_center + center_offset
 
         rad = modal_op._cached_dyn_radius.get(dyn_obj, 0.0)

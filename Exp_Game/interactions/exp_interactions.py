@@ -572,7 +572,7 @@ def run_reactions(reactions):
         elif r.reaction_type == "OBJECTIVE_COUNTER":
             execute_objective_counter_reaction(r)
         elif r.reaction_type == "OBJECTIVE_TIMER":
-            execute_objective_timer_reaction(r)  # <--- NEW
+            execute_objective_timer_reaction(r)
         elif r.reaction_type == "CHAR_ACTION":
             execute_char_action_reaction(r)
         elif r.reaction_type == "SOUND":
@@ -597,8 +597,6 @@ def run_reactions(reactions):
 ###############################################################################
 # 6) Collision Helper
 ###############################################################################
-import mathutils
-from mathutils import Vector
 
 def bounding_sphere_collision(obj_a, obj_b, margin=0.0):
     """

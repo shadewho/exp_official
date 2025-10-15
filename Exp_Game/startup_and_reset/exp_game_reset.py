@@ -8,8 +8,7 @@ from ..interactions.exp_interactions import reset_all_interactions
 from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
-from ..systems.exp_performance import rearm_performance_after_reset, update_performance_culling
-from ..animations.exp_custom_animations import stop_custom_actions_and_rewind_strips
+from ..systems.exp_performance import rearm_performance_after_reset
 
 
 def capture_scene_state(self, context):

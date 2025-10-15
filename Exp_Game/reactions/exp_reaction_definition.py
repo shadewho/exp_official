@@ -10,46 +10,101 @@ from .exp_fonts import discover_fonts
 def update_property_data_path(self, context):
     """
     Called whenever the user changes 'property_data_path'.
-    We'll eval() the string to find the property,
-    detect its type, and store the current value.
+
+    Fixes:
+      • Evaluate the path with proper globals so 'bpy', 'mathutils' resolve.
+      • Robust type detection for BOOL / INT / FLOAT / STRING / VECTOR.
+      • Seed both the target value fields and the *default_* fields from
+        the current property so reset/revert behaves correctly.
     """
+    import mathutils
+
     # Clear type initially
     self.property_type = "NONE"
 
-    path_str = self.property_data_path.strip()
+    path_str = (self.property_data_path or "").strip()
     if not path_str:
-        return  # user left it blank
-
-    # Attempt to evaluate the data path
-    try:
-        prop_ref = eval(path_str)  # e.g. eval("bpy.data.materials['Mat'].node_tree...")
-    except Exception as ex:
         return
 
-    # Now 'prop_ref' is the property. Let's detect its type:
-    #  - bool, int, float, str, or array (vector).
+    # Evaluate with a safe, known environment so expressions like
+    # "bpy.data.materials['Mat']..." actually work.
+    env = {"bpy": bpy, "mathutils": mathutils}
+    try:
+        prop_ref = eval(path_str, env)
+    except Exception:
+        # Invalid path or not currently resolvable.
+        return
+
+    # ---- Scalar types -------------------------------------------------
     if isinstance(prop_ref, bool):
-        self.property_type = "BOOL"
-        self.bool_value = prop_ref
-    elif isinstance(prop_ref, int):
-        self.property_type = "INT"
-        self.int_value = prop_ref
-    elif isinstance(prop_ref, float):
-        self.property_type = "FLOAT"
-        self.float_value = prop_ref
-    elif isinstance(prop_ref, str):
-        self.property_type = "STRING"
-        self.string_value = prop_ref
-    elif hasattr(prop_ref, "__getitem__") and hasattr(prop_ref, "__len__"):
-        # It's likely an array property
-        self.property_type = "VECTOR"
-        length = len(prop_ref)
-        self.vector_length = min(length, 4)
-        # copy up to 4 components
-        tmp = [prop_ref[i] for i in range(self.vector_length)]
-        self.vector_value = tmp
-    else:
-        self.property_type = "NONE"
+        self.property_type        = "BOOL"
+        self.bool_value           = bool(prop_ref)
+        self.default_bool_value   = bool(prop_ref)
+        return
+
+    if isinstance(prop_ref, int) and not isinstance(prop_ref, bool):
+        self.property_type        = "INT"
+        self.int_value            = int(prop_ref)
+        self.default_int_value    = int(prop_ref)
+        return
+
+    if isinstance(prop_ref, float):
+        self.property_type        = "FLOAT"
+        self.float_value          = float(prop_ref)
+        self.default_float_value  = float(prop_ref)
+        return
+
+    if isinstance(prop_ref, str):
+        self.property_type        = "STRING"
+        self.string_value         = str(prop_ref)
+        self.default_string_value = str(prop_ref)
+        return
+
+    # ---- Vector/array-like -------------------------------------------
+    # Covers Blender RNA float/int arrays and mathutils.Vector/Color/etc.
+    try:
+        is_seq = hasattr(prop_ref, "__len__") and hasattr(prop_ref, "__getitem__")
+        length = len(prop_ref) if is_seq else 0
+    except Exception:
+        is_seq = False
+        length = 0
+
+    if is_seq and length > 0:
+        self.property_type   = "VECTOR"
+        # Clamp vector UI to 4 channels (common for colors/locations).
+        self.vector_length   = min(int(length), 4)
+
+        # Convert the current value to a list[float] up to vector_length.
+        cur_vals = []
+        for i in range(self.vector_length):
+            try:
+                v = prop_ref[i]
+                # Cast bool→float/ int→float for a smooth interpolation path
+                if isinstance(v, bool):
+                    v = 1.0 if v else 0.0
+                elif isinstance(v, (int, float)):
+                    v = float(v)
+                elif isinstance(v, mathutils.Vector):
+                    v = float(v)  # unlikely; but keep conversion symmetry
+                else:
+                    # If it’s something exotic, best effort float()
+                    v = float(v)
+            except Exception:
+                v = 0.0
+            cur_vals.append(v)
+
+        # Pad to 4 to satisfy RNA fixed-size storage
+        while len(cur_vals) < 4:
+            cur_vals.append(0.0)
+
+        # Seed both the target and default vector fields
+        self.vector_value         = cur_vals
+        self.default_vector_value = cur_vals
+        return
+
+    # If we reach here, we don’t support the referenced type
+    self.property_type = "NONE"
+
 
 #---objective counter--#
 def enum_objective_items(self, context):
@@ -454,7 +509,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     ###########################################
     property_data_path: bpy.props.StringProperty(
         name="Data Path (eval)",
-        description="Paste the full Blender data path (e.g. from Right-Click -> Copy Data Path)",
+        description="Paste the full Blender data path (e.g. from Right-Click -> Copy Full Data Path)",
         default="",
         update=update_property_data_path  # callback
     )

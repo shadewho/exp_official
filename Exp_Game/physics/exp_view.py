@@ -1,7 +1,6 @@
 # Exploratory/Exp_Game/physics/exp_view.py
 import math
 import time
-import mathutils
 from mathutils import Vector
 from .exp_raycastutils import raycast_closest_any
 
@@ -113,25 +112,88 @@ def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist,
     """
     Center ray only: treat camera like a point (then subtract r_cam).
     Returns (nearest_hit_distance, hit_obj_token) or (None, None).
+    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
     """
     if direction.length <= 1e-9 or max_dist <= 1e-9:
         return (None, None)
     dnorm = direction.normalized()
-    hl, hn, ho, hd = raycast_closest_any(static_bvh, dynamic_bvh_map, origin, dnorm, max_dist)
-    if hl is None:
-        return (None, None)
-    return (hd, "__STATIC__" if ho is None else ho)
+
+    best = (None, None)
+
+    # Static first
+    if static_bvh:
+        hit = static_bvh.ray_cast(origin, dnorm, max_dist)
+        if hit and hit[0] is not None:
+            best = (hit[3], _STATIC_TOKEN)
+
+    # Dynamic movers
+    if dynamic_bvh_map:
+        # small prefilter radius for movers
+        pf_pad = 0.05 + r_cam
+        for obj, (bvh_like, approx_rad) in dynamic_bvh_map.items():
+            try:
+                # quick sphere segment test (center ray)
+                center = obj.matrix_world.translation
+                oc = center - origin
+                t = oc.dot(dnorm)
+                if t < -approx_rad or t > max_dist + approx_rad:
+                    pass
+                else:
+                    # distance from segment to center
+                    if t < 0.0:
+                        closest = oc
+                    elif t > max_dist:
+                        closest = oc - dnorm * max_dist
+                    else:
+                        closest = oc - dnorm * t
+                    if closest.length_squared <= (approx_rad + pf_pad) * (approx_rad + pf_pad):
+                        h = bvh_like.ray_cast(origin, dnorm, max_dist)
+                        if h and h[0] is not None:
+                            d = h[3]
+                            if best[0] is None or d < best[0]:
+                                best = (d, obj)
+            except Exception:
+                # any bad obj/bvh should not tank the frame
+                continue
+
+    return best if best[0] is not None else (None, None)
+
 
 def _los_blocked(static_bvh, dynamic_bvh_map, a: Vector, b: Vector):
+    """
+    True if anything blocks the line segment a→b.
+    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
+    """
     d = b - a
     dist = d.length
     if dist <= 1e-9:
         return False
     dnorm = d / dist
-    h = raycast_closest_any(static_bvh, dynamic_bvh_map, a, dnorm, max(0.0, dist - _LOS_EPS))
-    return (h[0] is not None)
+
+    # Static
+    if static_bvh:
+        h = static_bvh.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
+        if h and h[0] is not None:
+            return True
+
+    # Dynamic
+    if dynamic_bvh_map:
+        for _obj, (bvh_like, _r) in dynamic_bvh_map.items():
+            try:
+                h = bvh_like.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
+                if h and h[0] is not None:
+                    return True
+            except Exception:
+                continue
+
+    return False
+
 
 def _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction, low, high, steps):
+    """
+    Find the nearest distance along 'direction' from 'anchor' that has clear LoS.
+    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
+    """
     lo, hi = low, high
     for _ in range(max(1, int(steps))):
         mid = 0.5 * (lo + hi)
@@ -140,21 +202,22 @@ def _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction, low
             hi = mid
         else:
             lo = mid
-    return lo  # closest guaranteed-clear distance (>=low)
+    return lo
+
 
 def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_iters=_PUSHOUT_ITERS):
     """Tiny nearest-point pushout vs static + all active dynamic BVHs."""
-    if radius <= 1e-6:
+    if radius <= 1.0e-6:
         return pos
 
-    def push_once(bvh_like, p):
+    def push_once_bvh(bvh_like, p):
         try:
             res = bvh_like.find_nearest(p)
         except Exception:
             return p, False
         if not res or res[0] is None or res[1] is None:
             return p, False
-        hit_co, hit_n, _, dist = res
+        hit_co, hit_n, _idx, dist = res
         n = hit_n
         if (p - hit_co).dot(n) < 0.0:
             n = -n
@@ -168,10 +231,10 @@ def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_ite
     while moved and it < max(1, int(max_iters)):
         moved = False
         if static_bvh:
-            p, m = push_once(static_bvh, p); moved = moved or m
+            p, m = push_once_bvh(static_bvh, p); moved = moved or m
         if dynamic_bvh_map:
-            for _, (bvh_like, _approx_rad) in dynamic_bvh_map.items():
-                p, m = push_once(bvh_like, p); moved = moved or m
+            for _obj, (bvh_like, _r) in dynamic_bvh_map.items():
+                p, m = push_once_bvh(bvh_like, p); moved = moved or m
         it += 1
     return p
 
@@ -180,16 +243,7 @@ def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_ite
 # -------------------------
 def update_camera_for_operator(context, op):
     """
-    The ONE function `exp_loop` should call each frame.
-
-    Responsibilities:
-    - Build direction, anchor, nearclip→r_cam, desired boom
-    - Early-out if pose unchanged within small eps + heartbeat
-    - Solve obstruction distance (static + dynamic)
-    - Guarantee clear LoS with small binary search
-    - Tiny pushout vs thin geometry
-    - Temporal latch + smoothing
-    - Apply to exactly ONE cached rv3d, skipping redundant writes
+    The ONE function exp_loop should call each frame (no dynamic-map copying).
     """
     if not op or not getattr(op, "target_object", None):
         return
@@ -239,24 +293,17 @@ def update_camera_for_operator(context, op):
             # reuse last allowed; only refresh anchor/dir for apply
             view["anchor"]    = anchor
             view["direction"] = direction
+            _apply_to_viewport(context, op, view)
             return
 
     view["last_params"] = params
     view["last_time"]   = now
 
-    # --- 6) Obstruction solve (static + dynamic)
+    # --- 6) Obstruction solve (static + dynamic) — use dynamic map directly
     static_bvh = getattr(op, "bvh_tree", None)
-    dyn_map    = getattr(op, "dynamic_bvh_map", None)
-    # normalize dyn_map to { idx: (bvh_like, rad) } for helpers
-    dyn_for_helpers = None
-    if dyn_map:
-        if isinstance(dyn_map, dict):
-            dyn_for_helpers = {i: pair for i, pair in enumerate(dyn_map.values())}
-        else:
-            # assume snapshot tuple: ((id, bvh_like, rad), ...)
-            dyn_for_helpers = {i: (b, float(r)) for i, (_id, b, r) in enumerate(dyn_map)}
+    dynamic_bvh_map = getattr(op, "dynamic_bvh_map", None)
 
-    hit_dist, hit_token = _multi_ray_min_hit(static_bvh, dyn_for_helpers, anchor, direction, desired_max, r_cam)
+    hit_dist, hit_token = _multi_ray_min_hit(static_bvh, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
     if hit_dist is not None:
         base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
         allowed      = max(min_cam, base_allowed - (_EXTRA_PULL_METERS + _EXTRA_PULL_R_K * r_cam))
@@ -265,13 +312,13 @@ def update_camera_for_operator(context, op):
 
     # --- 7) Ensure clear LoS (binary search inward if needed)
     candidate = anchor + direction * allowed
-    if _los_blocked(static_bvh, dyn_for_helpers, anchor, candidate):
-        allowed = _binary_search_clear_los(static_bvh, dyn_for_helpers, anchor, direction,
+    if _los_blocked(static_bvh, dynamic_bvh_map, anchor, candidate):
+        allowed = _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction,
                                            low=min_cam, high=allowed, steps=_LOS_STEPS)
         candidate = anchor + direction * allowed
 
-    # --- 8) Tiny nearest-point pushout to avoid embedding
-    candidate = _camera_sphere_pushout_any(static_bvh, dyn_for_helpers, candidate, r_cam, max_iters=_PUSHOUT_ITERS)
+    # --- 8) Tiny nearest-point pushout
+    candidate = _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, candidate, r_cam, max_iters=_PUSHOUT_ITERS)
     allowed_after_push = (candidate - anchor).length
 
     # --- 9) Latch + smoothing
@@ -286,6 +333,7 @@ def update_camera_for_operator(context, op):
 
     # --- 10) Apply to ONE cached rv3d, skipping redundant writes
     _apply_to_viewport(context, op, view)
+
 
 def _apply_to_viewport(context, op, view):
     anchor    = view.get("anchor");    direction = view.get("direction")

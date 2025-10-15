@@ -77,7 +77,7 @@ class GameLoop:
             update_performance_culling(op, context)
             perf_mark(op, 'culling', t0)
 
-            # poll threaded results once per frame (apply cull batches) <<<
+            # poll threaded results once per frame (apply cull batches)
             t0 = perf_mark(op, 'threads_poll')
             self._poll_and_apply_thread_results()
             perf_mark(op, 'threads_poll', t0)
@@ -95,7 +95,6 @@ class GameLoop:
                     self._last_anim_state = cur_state
             perf_mark(op, 'anim_audio', t0)
 
-
         # C) Input gating based on game mobility flags (unchanged)
         mg = context.scene.mobility_game
         if not mg.allow_movement:
@@ -111,20 +110,22 @@ class GameLoop:
         op.update_movement_and_gravity(context, steps)
         perf_mark(op, 'physics', t0)
 
-        # E) Camera update ()
+        # E) Camera update
         t0 = perf_mark(op, 'camera')
         update_camera_for_operator(context, op)
         perf_mark(op, 'camera', t0)
 
-        # F) Interactions/UI/SFX (SIM timers already advanced)
-        t0 = perf_mark(op, 'interact_ui_audio')
-        check_interactions(context)
-        update_text_reactions()
-        update_sound_tasks()
-        perf_mark(op, 'interact_ui_audio', t0)
+        # F) Interactions/UI/SFX (only if sim actually advanced)
+        if steps:
+            t0 = perf_mark(op, 'interact_ui_audio')
+            check_interactions(context)
+            update_text_reactions()
+            update_sound_tasks()
+            perf_mark(op, 'interact_ui_audio', t0)
 
         # ---- END FRAME ----
         perf_frame_end(op, context)
+
 
 
     def handle_key_input(self, event):

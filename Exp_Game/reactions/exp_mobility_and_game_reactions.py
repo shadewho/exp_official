@@ -91,10 +91,15 @@ def execute_mesh_visibility_reaction(reaction):
 
 def execute_reset_game_reaction(_reaction):
     """
-    Reset the game immediately via operator.
-    (Simple and direct — no timers.)
+    Make RESET_GAME from reactions behave exactly like the reset key:
+    run the operator on the next tick so no trigger handler writes happen after it.
     """
-    try:
-        bpy.ops.exploratory.reset_game('INVOKE_DEFAULT')
-    except Exception:
-        pass
+
+    def _do_reset():
+        try:
+            bpy.ops.exploratory.reset_game('INVOKE_DEFAULT')
+        except Exception:
+            pass
+        return None  # run once
+
+    bpy.app.timers.register(_do_reset, first_interval=0.0)
