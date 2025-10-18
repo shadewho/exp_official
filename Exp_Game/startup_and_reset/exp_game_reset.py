@@ -9,6 +9,7 @@ from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
 from ..systems.exp_performance import rearm_performance_after_reset
+from ..reactions.exp_crosshairs import disable_crosshairs
 
 
 def capture_scene_state(self, context):
@@ -204,8 +205,12 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         reset_all_objectives(context.scene)
         reset_property_reactions(context.scene)
 
-        # ─── 3) Clear any on-screen text and respawn the user ───────
+        # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
         clear_all_text()
+        try:
+            disable_crosshairs()
+        except Exception:
+            pass
         spawn_user()
 
         # Re-arm performance culling after restoring visibility

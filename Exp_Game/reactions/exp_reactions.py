@@ -10,7 +10,6 @@ from ..props_and_utils.exp_time import get_game_time
 from . import exp_custom_ui
 from ..audio.exp_audio import extract_packed_sound
 from ...exp_preferences import get_addon_path
-
 # ------------------------------
 # TransformTask + Manager
 # ------------------------------
@@ -591,7 +590,11 @@ def _assign_safely(path_str, val):
 def reset_all_tasks():
     _active_property_tasks.clear()
     _active_transform_tasks.clear()
-
+    try:
+        from . import exp_projectiles as _proj
+        _proj.clear()
+    except Exception:
+        pass
 
 
 def execute_char_action_reaction(r):

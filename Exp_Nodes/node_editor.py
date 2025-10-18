@@ -58,8 +58,10 @@ class NODE_MT_exploratory_add_triggers(Menu):
         add("Proximity",        "ProximityTriggerNodeType")
         add("Collision",        "CollisionTriggerNodeType")
         add("Interact Key",     "InteractTriggerNodeType")
+        add("Action Key",       "ActionTriggerNodeType")
         add("Objective Update", "ObjectiveUpdateTriggerNodeType")
         add("Timer Complete",   "TimerCompleteTriggerNodeType")
+        add("On Game Start",    "OnGameStartTriggerNodeType")
 
 
 class NODE_MT_exploratory_add_reactions(Menu):
@@ -81,11 +83,15 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Property Value",    "ReactionPropertyNodeType")
         add("Transform",         "ReactionTransformNodeType")
         add("Custom UI Text",    "ReactionCustomTextNodeType")
+        add("Enable Crosshairs", "ReactionCrosshairsNodeType")
+        add("Hitscan",           "ReactionHitscanNodeType")
+        add("Projectile",        "ReactionProjectileNodeType")
         add("Objective Counter", "ReactionObjectiveCounterNodeType")
         add("Objective Timer",   "ReactionObjectiveTimerNodeType")
         add("Mobility",          "ReactionMobilityNodeType")
         add("Mesh Visibility",   "ReactionMeshVisibilityNodeType")
         add("Reset Game",        "ReactionResetGameNodeType")
+        add("Action Keys",           "ReactionActionKeysNodeType")
 
 class NODE_MT_exploratory_add_objectives(Menu):
     bl_idname = "NODE_MT_exploratory_add_objectives"
@@ -96,7 +102,15 @@ class NODE_MT_exploratory_add_objectives(Menu):
         op = layout.operator("node.add_node", text="Objective", icon='NONE')
         op.type = "ObjectiveNodeType"
         op.use_transform = True
+class NODE_MT_exploratory_add_actions(Menu):
+    bl_idname = "NODE_MT_exploratory_add_actions"
+    bl_label  = "Action Keys"
 
+    def draw(self, context):
+        layout = self.layout
+        op = layout.operator("node.add_node", text="Create Action Key", icon='NONE')
+        op.type = "CreateActionKeyNodeType"
+        op.use_transform = True
 
 # Append hook the init module will attach to NODE_MT_add:
 # it inserts our three categories directly into Shift+A (no icons).
@@ -104,6 +118,7 @@ def _append_exploratory_entry(self, context):
     if _in_exploratory_editor(context):
         self.layout.menu("NODE_MT_exploratory_add_triggers",   text="Triggers")
         self.layout.menu("NODE_MT_exploratory_add_reactions",  text="Reactions")
+        self.layout.menu("NODE_MT_exploratory_add_actions",    text="Action Keys")
         self.layout.menu("NODE_MT_exploratory_add_objectives", text="Objectives")
 
 
@@ -361,6 +376,93 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
         except Exception:
             pass
 
+    # ---------- ACTION KEYS ----------
+    @classmethod
+    def _reindex_create_action_nodes_after_remove(cls, removed_index: int) -> None:
+        """Shift CreateActionKeyNode.action_key_index across ALL trees after a removal."""
+        for ng in bpy.data.node_groups:
+            if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+                continue
+            for node in ng.nodes:
+                if getattr(node, "bl_idname", "") != "CreateActionKeyNodeType":
+                    continue
+                idx = getattr(node, "action_key_index", -1)
+                if idx < 0:
+                    continue
+                if idx == removed_index:
+                    try:
+                        node.action_key_index = -1
+                        node.action_key_name = ""
+                    except Exception:
+                        pass
+                elif idx > removed_index:
+                    try:
+                        node.action_key_index = idx - 1
+                        scn = cls._scene()
+                        if scn and 0 <= node.action_key_index < len(getattr(scn, "action_keys", [])):
+                            node.action_key_name = scn.action_keys[node.action_key_index].name
+                    except Exception:
+                        pass
+
+    @classmethod
+    def _fix_action_key_references_after_remove(cls, removed_index: int, old_name: str) -> None:
+        """Clear/shift all places that referenced the removed action key."""
+        scn = cls._scene()
+        if not scn:
+            return
+
+        # Triggers: clear string if it matched
+        try:
+            for inter in getattr(scn, "custom_interactions", []):
+                if getattr(inter, "trigger_type", "") == "ACTION":
+                    if getattr(inter, "action_key_id", "") == old_name:
+                        inter.action_key_id = ""
+        except Exception:
+            pass
+
+        # Reactions: clear/shift index; clear string if it matched
+        try:
+            for r in getattr(scn, "reactions", []):
+                if getattr(r, "reaction_type", "") != "ACTION_KEYS":
+                    continue
+                ridx  = getattr(r, "action_key_index", -1)
+                rname = getattr(r, "action_key_name", "")
+                if rname == old_name:
+                    r.action_key_name  = ""
+                    r.action_key_id    = ""
+                    r.action_key_index = -1
+                elif ridx > removed_index:
+                    r.action_key_index = ridx - 1
+        except Exception:
+            pass
+
+    @classmethod
+    def _collect_action_keys_from_tree(cls, nt):
+        """Return list[(index, name)] of Create Action Key nodes found in this node tree."""
+        pairs = []
+        for node in getattr(nt, "nodes", []):
+            if getattr(node, "bl_idname", "") == "CreateActionKeyNodeType":
+                i = getattr(node, "action_key_index", -1)
+                n = getattr(node, "action_key_name", "")
+                if i >= 0:
+                    pairs.append((i, n))
+        return pairs
+
+    @classmethod
+    def _delete_action_key_at(cls, index: int, old_name: str) -> None:
+        """Remove Scene.action_keys[index] and repair indices + references."""
+        scn = cls._scene()
+        if not scn or not hasattr(scn, "action_keys") or not (0 <= index < len(scn.action_keys)):
+            return
+        try:
+            scn.action_keys.remove(index)
+        except Exception:
+            return
+        # Repair references + reindex Create nodes everywhere
+        cls._fix_action_key_references_after_remove(index, old_name)
+        cls._reindex_create_action_nodes_after_remove(index)
+
+
     # ───────────────────────── operator flow ─────────────────────────
 
     def invoke(self, context, event):
@@ -373,10 +475,11 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
             self.report({'WARNING'}, "Node tree not found")
             return {'CANCELLED'}
 
-        # 1) Collect all Interactions, Reactions, and Objectives referenced by nodes in THIS tree
+        # 1) Collect all Interactions, Reactions, Objectives, and Action Keys referenced by nodes in THIS tree
         inter_indices = set()
         react_indices = set()
         objv_indices  = set()
+        ak_pairs      = self._collect_action_keys_from_tree(nt)  # [(index, name)]
 
         for node in nt.nodes:
             if hasattr(node, "interaction_index"):
@@ -387,7 +490,6 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
                 r_idx = getattr(node, "reaction_index", -1)
                 if r_idx >= 0:
                     react_indices.add(r_idx)
-            # Objective nodes
             if getattr(node, "bl_idname", "") == "ObjectiveNodeType":
                 o_idx = getattr(node, "objective_index", -1)
                 if o_idx >= 0:
@@ -412,12 +514,18 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
         for o_idx in sorted(objv_indices, reverse=True):
             self._delete_objective_at(o_idx)
 
+        # 6) Fully delete all referenced Action Keys (DESC order avoids index drift)
+        for i, name in sorted(ak_pairs, key=lambda p: p[0], reverse=True):
+            self._delete_action_key_at(i, name)
+
         self.report(
             {'INFO'},
             f"Deleted node tree and removed {len(inter_indices)} interaction(s), "
-            f"{len(react_indices)} reaction(s), {len(objv_indices)} objective(s)."
+            f"{len(react_indices)} reaction(s), {len(objv_indices)} objective(s), "
+            f"{len(ak_pairs)} action key(s)."
         )
         return {'FINISHED'}
+
 
 class NODE_OT_rename_exploratory_node_tree(Operator):
     bl_idname = "node.rename_exploratory_node_tree"

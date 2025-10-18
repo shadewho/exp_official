@@ -1,8 +1,4 @@
 #Exp_Game/modal/exp_loop.py
-import time
-import math
-from mathutils import Vector
-import bpy
 
 from ..systems.exp_live_performance import (
     perf_frame_begin, perf_mark, perf_frame_end
@@ -10,6 +6,7 @@ from ..systems.exp_live_performance import (
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time
 from ..animations.exp_custom_animations import update_all_custom_managers
 from ..reactions.exp_reactions import update_transform_tasks, update_property_tasks
+from ..reactions.exp_projectiles import update_projectile_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_thread_result
 from ..physics.exp_dynamic import update_dynamic_meshes
 from ..physics.exp_view import update_camera_for_operator
@@ -65,6 +62,7 @@ class GameLoop:
                 update_all_custom_managers(dt_sim)
                 update_transform_tasks()
                 update_property_tasks()
+                update_projectile_tasks(dt_sim)
             perf_mark(op, 'custom_tasks', t0)
 
             # B2) Dynamic proxies + platform v/ω (heavy): once per frame

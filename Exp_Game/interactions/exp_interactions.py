@@ -6,19 +6,24 @@ from ..reactions.exp_reactions import (execute_transform_reaction,
                              schedule_transform, execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
                              execute_objective_counter_reaction,
-                             execute_objective_timer_reaction, execute_sound_reaction
+                             execute_objective_timer_reaction, execute_sound_reaction,
 )
+from ..reactions.exp_projectiles import execute_projectile_reaction, execute_hitscan_reaction
 from ..animations.exp_custom_animations import execute_custom_action_reaction
 from ..props_and_utils.exp_time import get_game_time
 from ..systems.exp_objectives import update_all_objective_timers
 from ..reactions.exp_mobility_and_game_reactions import (
     execute_mobility_reaction,
     execute_mesh_visibility_reaction,
-    execute_reset_game_reaction,
+    execute_reset_game_reaction
 )
-
+from ..reactions.exp_crosshairs import execute_crosshairs_reaction
 from ..reactions import exp_custom_ui
-
+from ..reactions.exp_action_keys import (
+    is_enabled as is_action_key_enabled,
+    execute_action_key_reaction,
+    seed_defaults_from_scene,
+)
 # Global list to hold pending trigger tasks.
 _pending_trigger_tasks = []
 
@@ -62,6 +67,11 @@ def _fire_interaction(inter, current_time):
 # Dynamic trigger_mode items based on trigger_type
 # -------------------------------------------------------------------
 def trigger_mode_items(self, context):
+    ttype = getattr(self, "trigger_type", "")
+    if ttype == "ON_GAME_START":
+        # Game-start triggers should be single-shot only
+        return [("ONE_SHOT", "One-Shot", "Fire once at game start/reset")]
+    
     # always include One‑Shot and Cooldown
     items = [
         ("ONE_SHOT", "One-Shot",    "Fire once only, never again"),
@@ -316,6 +326,7 @@ def check_interactions(context):
             inter.trigger_mode = allowed[0]
 
     pressed_this_frame = was_interact_pressed()
+    pressed_action   = was_action_pressed() 
 
     update_all_objective_timers(context.scene)
 
@@ -328,17 +339,23 @@ def check_interactions(context):
             handle_collision_trigger(inter, current_time)
         elif t == "INTERACT":
             handle_interact_trigger(inter, current_time, pressed_this_frame, context)
+        elif t == "ACTION":  # NEW
+            handle_action_trigger(inter, current_time, pressed_action)
         elif t == "OBJECTIVE_UPDATE":
             handle_objective_update_trigger(inter, current_time)
         elif t == "TIMER_COMPLETE":
             handle_timer_complete_trigger(inter)
+        elif t == "ON_GAME_START":
+            handle_on_game_start_trigger(inter, current_time)
 
 
     # Now process any pending triggers that have matured.
     process_pending_triggers()
 
-    global _global_interact_pressed
+    # Clear edge-like key flags at frame end
+    global _global_interact_pressed, _global_action_pressed
     _global_interact_pressed = False
+    _global_action_pressed   = False
 
 
 ###############################################################################
@@ -473,6 +490,79 @@ def handle_collision_trigger(inter, current_time):
                 inter.has_fired = True
                 inter.last_trigger_time = current_time
 
+###############################################################################
+# Game start trigger
+###############################################################################
+def handle_on_game_start_trigger(inter, current_time):
+    """
+    Fire once per game start/reset.
+    Resets via reset_all_interactions() which clears inter.has_fired.
+    """
+    if inter.has_fired:
+        return
+    if inter.trigger_delay > 0.0:
+        schedule_trigger(inter, current_time + inter.trigger_delay)
+    else:
+        run_reactions(_get_linked_reactions(inter))
+    inter.has_fired = True
+    inter.last_trigger_time = current_time
+
+
+###############################################################################
+# Action Key Trigger
+###############################################################################
+def handle_action_trigger(inter, current_time, pressed_now):
+    """
+    Action key trigger gated by a named Action Key string.
+      • ONE_SHOT   → fire once and never again
+      • COOLDOWN   → fire if cooldown elapsed since last fire
+    Fires only if:
+      1) An Action Key name is set on this interaction,
+      2) That name exists in Scene.action_keys *right now*, and
+      3) That name is currently enabled via the Action Keys reaction.
+    """
+    key_id = (getattr(inter, "action_key_id", "") or "").strip()
+    if not key_id:
+        return
+
+    # Hard gate: if the key no longer exists in the Scene registry, ignore.
+    scn = bpy.context.scene
+    exists = False
+    try:
+        for it in getattr(scn, "action_keys", []):
+            if getattr(it, "name", "") == key_id:
+                exists = True
+                break
+    except Exception:
+        exists = False
+    if not exists:
+        return
+
+    # Also require enabled flag
+    if not is_action_key_enabled(key_id):
+        return
+
+    # One-shot already fired?
+    if inter.trigger_mode == "ONE_SHOT" and inter.has_fired:
+        return
+
+    if not pressed_now:
+        if inter.trigger_mode != "ONE_SHOT" and inter.has_fired:
+            if inter.trigger_mode == 'COOLDOWN':
+                time_since = current_time - inter.last_trigger_time
+                if time_since >= inter.trigger_cooldown:
+                    inter.has_fired = False
+            else:
+                inter.has_fired = False
+        return
+
+    if can_fire_trigger(inter, current_time):
+        if inter.trigger_delay > 0.0:
+            schedule_trigger(inter, current_time + inter.trigger_delay)
+        else:
+            run_reactions(_get_linked_reactions(inter))
+        inter.has_fired = True
+        inter.last_trigger_time = current_time
 
 
 ###############################################################################
@@ -583,13 +673,20 @@ def run_reactions(reactions):
             execute_property_reaction(r)
         elif r.reaction_type == "CUSTOM_UI_TEXT":
             execute_custom_ui_text_reaction(r)
+        elif r.reaction_type == "ENABLE_CROSSHAIRS":
+            execute_crosshairs_reaction(r)
+        elif r.reaction_type == "HITSCAN":
+            execute_hitscan_reaction(r)
+        elif r.reaction_type == "PROJECTILE":
+            execute_projectile_reaction(r)
         elif r.reaction_type == "MOBILITY":
             execute_mobility_reaction(r)
         elif r.reaction_type == "MESH_VISIBILITY":
             execute_mesh_visibility_reaction(r)
         elif r.reaction_type == "RESET_GAME":
             execute_reset_game_reaction(r)
-
+        elif r.reaction_type == "ACTION_KEYS":
+            execute_action_key_reaction(r)
         
 
 
@@ -678,8 +775,8 @@ def approximate_bounding_sphere_radius(obj):
 # 7) Interact Helper
 ###############################################################################
 
-_global_interact_pressed = False  # <--- global placeholder
-
+_global_interact_pressed = False  # <--- global placeholders
+_global_action_pressed   = False
 def set_interact_pressed(value: bool):
     """
     Called by the modal operator to tell us the Interact key was pressed or released.
@@ -698,8 +795,22 @@ def was_interact_pressed():
         return True
     return False
 
+def set_action_pressed(value: bool):
+    """
+    Called by the modal operator to tell us the Action key was pressed or released.
+    """
+    global _global_action_pressed
+    _global_action_pressed = bool(value)
+
+def was_action_pressed():
+    """
+    Edge-like usage: check once per frame in check_interactions();
+    the flag is cleared at the end of check_interactions().
+    """
+    return bool(_global_action_pressed)
 
 def reset_all_interactions(scene):
+    seed_defaults_from_scene(scene)
     now = get_game_time()
     for inter in scene.custom_interactions:
         inter.has_fired = False

@@ -12,7 +12,7 @@ from ..startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene, revert_to_original_scene,
                             ensure_timeline_at_zero, ensure_object_mode, clear_all_exp_custom_strips)  
-from ..interactions.exp_interactions import set_interact_pressed, reset_all_interactions
+from ..interactions.exp_interactions import set_interact_pressed, set_action_pressed, reset_all_interactions
 from ..reactions.exp_reactions import reset_all_tasks
 from ..props_and_utils.exp_time import init_time
 from ..reactions.exp_custom_ui import register_ui_draw, clear_all_text, show_controls_info
@@ -117,6 +117,7 @@ class ExpModal(bpy.types.Operator):
 
     # Keep track of pressed keys
     keys_pressed = set()
+    action_pressed: bool = False
     _press_seq: int = 0
     _axis_last = {'x': None, 'y': None}          # selected key per axis
     _axis_candidates = {'x': {}, 'y': {}}        # held keys → press order
@@ -136,7 +137,8 @@ class ExpModal(bpy.types.Operator):
     pref_right_key:    str = "D"
     pref_jump_key:     str = "SPACE"
     pref_run_key:      str = "LEFT_SHIFT"
-    pref_interact_key: str = "LEFTMOUSE"
+    pref_interact_key: str = "E"
+    pref_action_key:   str = "LEFTMOUSE"
     pref_reset_key:    str = "R"
     pref_end_game_key: str = "ESC"
     
@@ -263,6 +265,7 @@ class ExpModal(bpy.types.Operator):
         self.pref_right_key    = addon_prefs.key_right
         self.pref_jump_key     = addon_prefs.key_jump
         self.pref_run_key      = addon_prefs.key_run
+        self.pref_action_key   = addon_prefs.key_action
         self.pref_interact_key = addon_prefs.key_interact
         self.pref_reset_key    = addon_prefs.key_reset
         self.pref_end_game_key = addon_prefs.key_end_game
@@ -420,7 +423,7 @@ class ExpModal(bpy.types.Operator):
         elif event.type in {
             self.pref_forward_key, self.pref_backward_key, self.pref_left_key,
             self.pref_right_key,  self.pref_run_key,       self.pref_jump_key,
-            self.pref_interact_key, self.pref_reset_key,
+            self.pref_interact_key, self.pref_reset_key,   self.pref_action_key, 
         }:
             # Option A: delegate to loop (keeps modal slim)
             if self._loop:
@@ -612,9 +615,6 @@ class ExpModal(bpy.types.Operator):
         if pc and (pc.vel.x * pc.vel.x + pc.vel.y * pc.vel.y) > 1e-6:
             smooth_rotate_towards_camera(self)
 
-
-
-
     # ---------------------------
     # Event Handlers
     # ---------------------------
@@ -629,7 +629,16 @@ class ExpModal(bpy.types.Operator):
             elif event.value == 'RELEASE':
                 set_interact_pressed(False)
 
-        # 2) Reset key
+        # 2) Action key => set/clear (global flag)
+        if event.type == self.pref_action_key:
+            if event.value == 'PRESS':
+                self.action_pressed = True  # local (optional for you)
+                set_action_pressed(True)    # global → interactions system
+            elif event.value == 'RELEASE':
+                self.action_pressed = False
+                set_action_pressed(False)
+
+        # 2.5) Reset key
         if event.type == self.pref_reset_key and event.value == 'PRESS':
             bpy.ops.exploratory.reset_game('INVOKE_DEFAULT')
             return

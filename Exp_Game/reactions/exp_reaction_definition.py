@@ -6,6 +6,7 @@ from .exp_mobility_and_game_reactions import (
     MeshVisibilityReactionsPG,
 )
 from .exp_fonts import discover_fonts 
+from .exp_action_keys import _update_action_key_name
 #---custom propertys--#
 def update_property_data_path(self, context):
     """
@@ -211,11 +212,16 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("PROPERTY",          "Property Value", ""),
             ("TRANSFORM",         "Transform", ""),
             ("CUSTOM_UI_TEXT",    "Custom UI Text", ""),
+            ("ENABLE_CROSSHAIRS", "Enable Crosshairs", "Pixel based crosshair at screen center"),
+            ("HITSCAN",           "Hitscan",   "Instant ray from origin to max range"),
+            ("PROJECTILE",        "Projectile","Simulated projectile with gravity"),
             ("OBJECTIVE_COUNTER", "Objective Counter", ""),
             ("OBJECTIVE_TIMER",   "Objective Timer", "Start/Stop an objective's timer"),
             ("MOBILITY",        "Mobility",             "Enable/Disable movement, jump, sprint"),
             ("MESH_VISIBILITY", "Mesh Visibility",      "Hide/Unhide/Toggle a mesh object"),
             ("RESET_GAME",      "Reset Game",           "Reset the game state"),
+            ("ACTION_KEYS",      "Action Keys",        "Enable/Disable/Toggle a named Action Key"),
+
         ],
         default="CUSTOM_ACTION"
     )
@@ -599,9 +605,9 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     )
 
 
-#############################################
-##### mobility and game reactions
-#############################################
+    #############################################
+    ##### mobility and game reactions
+    #############################################
     mobility_settings: bpy.props.PointerProperty(
         name="Mobility Settings",
         type=MobilityReactionsPG
@@ -610,6 +616,163 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     mesh_visibility: bpy.props.PointerProperty(
         name="Mesh Visibility",
         type=MeshVisibilityReactionsPG
+    )
+
+
+
+    # --------------------------------------------------
+    # CROSSHAIRS REACTION FIELDS
+    # --------------------------------------------------
+    crosshair_style: bpy.props.EnumProperty(
+        name="Style",
+        items=[
+            ("PLUS",     "Plus",         "+"),
+            ("PLUS_DOT", "+ with Dot",   "+ with center dot"),
+            ("X",        "X",            "Diagonal cross"),
+            ("X_DOT",    "X with Dot",   "Diagonal cross with dot"),
+        ],
+        default="PLUS"
+    )
+    crosshair_length_px: bpy.props.IntProperty(
+        name="Arm Length (px)", default=12, min=0, max=512
+    )
+    crosshair_gap_px: bpy.props.IntProperty(
+        name="Gap (px)", default=6, min=0, max=256
+    )
+    crosshair_thickness_px: bpy.props.IntProperty(
+        name="Line Thickness (px)", default=2, min=1, max=16
+    )
+    crosshair_dot_radius_px: bpy.props.IntProperty(
+        name="Dot Radius (px)", default=0, min=0, max=32
+    )
+    crosshair_color: bpy.props.FloatVectorProperty(
+        name="Color", size=4, subtype='COLOR', min=0.0, max=1.0,
+        default=(1.0, 1.0, 1.0, 0.85)
+    )
+    crosshair_indefinite: bpy.props.BoolProperty(
+        name="Indefinite?", default=True,
+        description="If True, stays until reset or disabled"
+    )
+    crosshair_duration: bpy.props.FloatProperty(
+        name="Duration (sec)", default=5.0, min=0.0,
+        description="Only used when Indefinite is off"
+    )
+
+
+    # --------------------------------------------------
+    # PROJECTILE / HITSCAN REACTION FIELDS
+    # --------------------------------------------------
+
+    # Where the shot starts
+    proj_use_character_origin: bpy.props.BoolProperty(
+        name="Use Character as Origin",
+        default=True,
+        description="If True, start from scene.target_armature + offset; else from the chosen origin object"
+    )
+    proj_origin_object: bpy.props.PointerProperty(
+        name="Origin Object",
+        type=bpy.types.Object,
+        description="Used if Use Character Origin = False"
+    )
+    proj_origin_offset: bpy.props.FloatVectorProperty(
+        name="Origin Offset (local)",
+        subtype='TRANSLATION',
+        default=(0.0, 0.2, 1.4),
+        description="Local offset from origin (e.g. slightly in front/up from the chest)"
+    )
+
+    # Where we aim
+    proj_aim_source: bpy.props.EnumProperty(
+        name="Aim",
+        description="How to aim the shot",
+        items=[
+            ("CROSSHAIR",    "Crosshair (Center)", "Ray from the center of the active 3D View; target point determines direction"),
+            ("CHAR_FORWARD", "Character Forward",  "Use the character's facing (+Y local)"),
+        ],
+        default="CROSSHAIR"
+    )
+
+    # Optional visual object to manipulate
+    proj_object: bpy.props.PointerProperty(
+        name="Projectile Object",
+        type=bpy.types.Object,
+        description="Optional object to visualize the shot (moved on hitscan, animated for projectile)"
+    )
+    proj_align_object_to_velocity: bpy.props.BoolProperty(
+        name="Align Object to Velocity",
+        default=True,
+        description="Rotate the object so its +Y axis points along velocity/direction"
+    )
+
+    # Hitscan tuning
+    proj_max_range: bpy.props.FloatProperty(
+        name="Hitscan Max Range",
+        default=60.0, min=0.1, max=1000.0
+    )
+    proj_place_hitscan_object: bpy.props.BoolProperty(
+        name="Place Object at Impact",
+        default=True,
+        description="If a projectile object is set, move it to the impact (or end of range on miss)"
+    )
+
+    # Projectile (sim) tuning
+    proj_speed: bpy.props.FloatProperty(
+        name="Initial Speed (m/s)",
+        default=24.0, min=0.0, max=300.0
+    )
+    proj_gravity: bpy.props.FloatProperty(
+        name="Gravity (m/s²)",
+        default=-21.0, min=-60.0, max=0.0,
+        description="Downward acceleration; usually matches Scene.char_physics.gravity"
+    )
+    proj_lifetime: bpy.props.FloatProperty(
+        name="Lifetime (sec)",
+        default=3.0, min=0.0, max=30.0,
+        description="Max time before the projectile auto-despawns"
+    )
+    proj_on_contact_stop: bpy.props.BoolProperty(
+        name="Stop on Contact",
+        default=True,
+        description="Stop and despawn on the first collision"
+    )
+    proj_radius: bpy.props.FloatProperty(
+        name="Radius (m)",
+        default=0.05, min=0.0, max=1.0,
+        description="Optional radius hint for future expansion; current pass uses ray tests"
+    )
+    proj_pool_limit: bpy.props.IntProperty(
+        name="Max Active Projectiles",
+        default=8, min=1, max=64,
+        description="Hard cap to protect the frame budget"
+    )
+
+
+
+    # --------------------------------------------------
+    # ACTION KEYS REACTION FIELDS
+    # --------------------------------------------------
+    action_key_op: bpy.props.EnumProperty(
+        name="Operation",
+        items=[
+            ("ENABLE",  "Enable",  "Enable the specified Action"),
+            ("DISABLE", "Disable", "Disable the specified Action"),
+            ("TOGGLE",  "Toggle",  "Toggle the specified Action"),
+        ],
+        default="ENABLE"
+    )
+
+    # New authoritative name field the user edits on the reaction node.
+    action_key_name: bpy.props.StringProperty(
+        name="Action Name",
+        default="",
+        update=_update_action_key_name  # keeps Scene registry, legacy id, and triggers in sync
+    )
+
+    # Hidden index into Scene.action_keys for robust rename/delete.
+    action_key_index: bpy.props.IntProperty(
+        name="Action Index",
+        default=-1,
+        min=-1
     )
 
 def register_reaction_library_properties():

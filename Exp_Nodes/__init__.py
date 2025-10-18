@@ -36,7 +36,10 @@ from .node_editor import (
     NODE_MT_exploratory_add_objectives,
     # hook used to append menu entry to NODE_MT_add
     _append_exploratory_entry,
+
+    NODE_MT_exploratory_add_actions,
 )
+from .action_key_nodes import CreateActionKeyNode
 
 # ── TRIGGERS ──
 from .trigger_nodes import (
@@ -45,6 +48,8 @@ from .trigger_nodes import (
     InteractTriggerNode,
     ObjectiveUpdateTriggerNode,
     TimerCompleteTriggerNode,
+    OnGameStartTriggerNode,
+    ActionTriggerNode
 )
 
 # ── REACTIONS ──
@@ -62,6 +67,10 @@ from .reaction_nodes import (
     ReactionMobilityNode,
     ReactionMeshVisibilityNode,
     ReactionResetGameNode,
+    ReactionCrosshairsNode,
+    ReactionProjectileNode,
+    ReactionHitscanNode,
+    ReactionActionKeysNode,
 )
 
 from .trig_react_obj_lists import(
@@ -91,6 +100,9 @@ classes = [
     InteractTriggerNode,
     ObjectiveUpdateTriggerNode,
     TimerCompleteTriggerNode,
+    OnGameStartTriggerNode,
+    ActionTriggerNode,
+
 
     # reactions
     ReactionTriggerInputSocket,
@@ -106,9 +118,16 @@ classes = [
     ReactionMobilityNode,
     ReactionMeshVisibilityNode,
     ReactionResetGameNode,
+    ReactionCrosshairsNode,
+    ReactionProjectileNode,
+    ReactionHitscanNode,
+    ReactionActionKeysNode,
 
     # objective
     ObjectiveNode,
+
+    #actions
+    CreateActionKeyNode,
 
     # operators + panel
     NODE_OT_create_exploratory_node_tree,
@@ -121,6 +140,7 @@ classes = [
     NODE_MT_exploratory_add_triggers,
     NODE_MT_exploratory_add_reactions,
     NODE_MT_exploratory_add_objectives,
+    NODE_MT_exploratory_add_actions,
 
     VIEW3D_PT_Exploratory_Studio,
     EXPLORATORY_UL_CustomInteractions,

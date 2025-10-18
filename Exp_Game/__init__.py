@@ -83,6 +83,7 @@ from .reactions.exp_mobility_and_game_reactions import (
 from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
 from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
 
+from .reactions.exp_action_keys import ActionKeyItemPG, register_action_key_properties, unregister_action_key_properties
 
 
 def register():
@@ -92,6 +93,10 @@ def register():
     bpy.types.Scene.mobility_game = bpy.props.PointerProperty(type=MobilityReactionsPG)
     # --- Reset Game ---
     bpy.utils.register_class(EXPLORATORY_OT_ResetGame)
+
+    # --- action keys ---
+    bpy.utils.register_class(ActionKeyItemPG)
+    register_action_key_properties()
 
     # --- Interactions & Reactions ---
     bpy.utils.register_class(ReactionDefinition)   # must be before scene.reactions is attached
@@ -103,6 +108,7 @@ def register():
     bpy.utils.register_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
     bpy.utils.register_class(EXPLORATORY_OT_CreateReactionAndLink)
     register_interaction_properties()
+
 
     # --- Panels & UILists (Ordered) ---
     bpy.utils.register_class(ExploratoryPanel)
@@ -174,7 +180,7 @@ def unregister():
     unregister_interaction_properties()
     unregister_objective_properties()
     unregister_reaction_library_properties()
-
+    unregister_action_key_properties()
     # --- Mobility / Mesh Visibility PGs ---
     del bpy.types.Scene.mobility_game
     bpy.utils.unregister_class(MeshVisibilityReactionsPG)
@@ -207,6 +213,8 @@ def unregister():
     bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
     bpy.utils.unregister_class(EXP_OT_FilterCreatePanels)
 
+    # --- actions ---
+    bpy.utils.unregister_class(ActionKeyItemPG)
 
     # --- Interactions & Reactions ---
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveReactionFromInteraction)

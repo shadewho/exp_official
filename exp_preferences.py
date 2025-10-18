@@ -267,7 +267,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     key_right:    bpy.props.StringProperty(default="D", name="Right Key")
     key_jump:     bpy.props.StringProperty(default="SPACE", name="Jump Key")
     key_run:      bpy.props.StringProperty(default="LEFT_SHIFT", name="Run Modifier")
-    key_interact: bpy.props.StringProperty(default="LEFTMOUSE", name="Interact Key")
+    key_action:   bpy.props.StringProperty(default="LEFTMOUSE",  name="Action Key")
+    key_interact: bpy.props.StringProperty(default="E",          name="Interact Key")
     key_end_game: bpy.props.StringProperty(default="ESC",         name="End Game Key")
     key_reset:    bpy.props.StringProperty(default="R", name="Reset Key")
 
@@ -596,7 +597,8 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             ("Jump:",     "key_jump"),
             ("Run:",      "key_run"),
             ("Reset:",    "key_reset"),
-            ("Interact:",  "key_interact"),
+            ("Action:",   "key_action"),
+            ("Interact:", "key_interact"),
             ("End Game:",  "key_end_game"),
         ]:
             row = box.row()

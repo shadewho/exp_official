@@ -23,7 +23,28 @@ def _scene() -> bpy.types.Scene | None:
         return scn
     return bpy.data.scenes[0] if bpy.data.scenes else None
 
-
+def enum_action_key_items(self, context):
+    scn = getattr(context, "scene", None) or _scene()
+    items = []
+    if scn and hasattr(scn, "action_keys") and scn.action_keys:
+        for ak in scn.action_keys:
+            nm = getattr(ak, "name", "")
+            if nm:
+                items.append((nm, nm, f"Action: {nm}"))
+    if not items:
+        items.append(("", "(No Action Keys)", "Add a 'Create Action Key' node first"))
+    return items
+def _on_action_key_changed_node(self, context):
+    """Update the real Interaction field when the node's enum changes."""
+    scn = _scene()
+    if not scn or not (0 <= self.interaction_index < len(getattr(scn, "custom_interactions", []))):
+        return
+    inter = scn.custom_interactions[self.interaction_index]
+    try:
+        inter.action_key_id = self.node_action_key or ""
+    except Exception:
+        pass
+    
 def _ensure_interaction(kind: str) -> int:
     """
     Create a new InteractionDefinition in scn.custom_interactions and return its index.
@@ -365,6 +386,8 @@ class _TriggerNodeKind(TriggerNodeBase):
     def _draw_timer_complete(self, layout, _scn, inter):
         layout.prop(self, "node_timer_objective_index", text="Timer Objective")
 
+
+
     # ── Node UI ──
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -377,8 +400,10 @@ class _TriggerNodeKind(TriggerNodeBase):
             "PROXIMITY": "Proximity",
             "COLLISION": "Collision",
             "INTERACT": "Interact Key",
+            "ACTION":          "Action Key",
             "OBJECTIVE_UPDATE": "Objective Update",
             "TIMER_COMPLETE": "Timer Complete",
+            "ON_GAME_START":  "On Game Start",
         }.get(self.KIND or "PROXIMITY", self.KIND or "PROXIMITY")
 
         layout.label(text=nice, icon='HAND')
@@ -389,6 +414,8 @@ class _TriggerNodeKind(TriggerNodeBase):
             self._draw_collision(layout, scn, inter)
         elif self.KIND == "INTERACT":
             self._draw_interact(layout, scn, inter)
+        elif self.KIND == "ACTION":
+            self._draw_action(layout, scn, inter)
         elif self.KIND == "OBJECTIVE_UPDATE":
             self._draw_objective_update(layout, scn, inter)
         elif self.KIND == "TIMER_COMPLETE":
@@ -430,3 +457,43 @@ class TimerCompleteTriggerNode(_TriggerNodeKind):
     bl_idname = 'TimerCompleteTriggerNodeType'
     bl_label  = 'Timer Complete'
     KIND = "TIMER_COMPLETE"
+class OnGameStartTriggerNode(_TriggerNodeKind):
+    bl_idname = 'OnGameStartTriggerNodeType'
+    bl_label  = 'On Game Start'
+    KIND = "ON_GAME_START"
+class ActionTriggerNode(_TriggerNodeKind):
+    bl_idname = 'ActionTriggerNodeType'
+    bl_label  = 'Action Key'
+    KIND = "ACTION"
+
+    # Node-local enum that mirrors Scene.action_keys; updates the real Interaction’s string
+    node_action_key: bpy.props.EnumProperty(
+        name="Action",
+        items=enum_action_key_items,
+        update=_on_action_key_changed_node,  # ← top-level function, not lambda
+    )
+
+    def update(self):
+        # keep base behavior (type pinning + link sync)
+        super().update()
+        # Sync node enum selection from the Interaction’s current string
+        scn = _scene()
+        if not scn or not (0 <= self.interaction_index < len(getattr(scn, "custom_interactions", []))):
+            return
+        inter = scn.custom_interactions[self.interaction_index]
+        want = getattr(inter, "action_key_id", "")
+        if not want:
+            return
+        # Only set if value exists in current enum (avoid invalid assignment)
+        try:
+            valid = {it[0] for it in enum_action_key_items(self, bpy.context)}
+            if want in valid and getattr(self, "node_action_key", "") != want:
+                self.node_action_key = want
+        except Exception:
+            pass
+
+    def _draw_action(self, layout, _scn, inter):
+        # Present an enum (no manual typing)
+        layout.prop(self, "node_action_key", text="Action")
+        layout.label(text="Fires only when the selected Action is enabled.", icon='INFO')
+

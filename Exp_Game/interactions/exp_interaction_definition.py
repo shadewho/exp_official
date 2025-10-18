@@ -48,8 +48,10 @@ class InteractionDefinition(bpy.types.PropertyGroup):
             ("PROXIMITY",       "Proximity",        "Triggers when within distance"),
             ("COLLISION",       "Collision",        "Triggers on collision"),
             ("INTERACT",        "Interact Key",     "Triggers on user pressing Interact"),
+            ("ACTION",           "Action Key",       "Triggers on user pressing Action"), 
             ("OBJECTIVE_UPDATE","Objective Update", "Triggers when an objective changes"),
             ("TIMER_COMPLETE",  "Timer Complete",   "Fires when an objective’s timer ends"),
+            ("ON_GAME_START",  "On Game Start",   "Fires once right after gameplay begins or a reset"),
         ],
         default="PROXIMITY",
         update=update_trigger_type,  # ← ensure mode stays valid
@@ -185,6 +187,14 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         default=0.0
     )
 
+    # Action Key Trigger config
+    action_key_id: bpy.props.StringProperty(
+        name="Action Key ID",
+        default="",
+        description="Unique identifier for this Action trigger. "
+                    "This must be ENABLED by the 'Action Keys' reaction to fire."
+    )
+
 
     # Sub-collection for Reactions
     reaction_links: bpy.props.CollectionProperty(type=ReactionLinkPG)
@@ -203,7 +213,7 @@ def register_interaction_properties():
     bpy.types.Scene.custom_interactions = bpy.props.CollectionProperty(type=InteractionDefinition)
     bpy.types.Scene.custom_interactions_index = bpy.props.IntProperty(default=0)
     register_reaction_library_properties()
-
+    
 def unregister_interaction_properties():
     del bpy.types.Scene.custom_interactions
     del bpy.types.Scene.custom_interactions_index

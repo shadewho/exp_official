@@ -441,6 +441,7 @@ def show_controls_info(duration: float = 10.0):
         (prefs.key_jump,     "Jump"),
         (prefs.key_run,      "Sprint"),
         (prefs.key_interact, "Interact"),
+        (prefs.key_action,   "Action Key"), 
     ]
 
     # Stack each on its own row

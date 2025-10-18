@@ -11,6 +11,17 @@ def _scene() -> bpy.types.Scene | None:
         return scn
     return bpy.data.scenes[0] if bpy.data.scenes else None
 
+def _enum_action_key_items(self, context):
+    scn = getattr(context, "scene", None) or _scene()
+    items = []
+    if scn and hasattr(scn, "action_keys") and scn.action_keys:
+        for it in scn.action_keys:
+            nm = getattr(it, "name", "")
+            if nm:
+                items.append((nm, nm, f"Action: {nm}"))
+    if not items:
+        items.append(("", "(No Action Keys)", "Add a 'Create Action Key' node first"))
+    return items
 
 def _fix_interaction_reaction_indices_after_remove(removed_index: int) -> None:
     scn = _scene()
@@ -277,6 +288,23 @@ def _draw_common_fields(layout, r, kind: str):
         op  = row.operator("exploratory.preview_custom_text", text="Preview Custom Text", icon='HIDE_OFF')
         op.duration = 5.0
 
+    elif t == "ENABLE_CROSSHAIRS":
+        header.prop(r, "crosshair_style", text="Style")
+
+        dims = header.box()
+        dims.label(text="Dimensions (pixels)")
+        dims.prop(r, "crosshair_length_px",    text="Arm Length")
+        dims.prop(r, "crosshair_gap_px",       text="Gap")
+        dims.prop(r, "crosshair_thickness_px", text="Thickness")
+        dims.prop(r, "crosshair_dot_radius_px", text="Dot Radius")
+
+        header.prop(r, "crosshair_color", text="Color")
+
+        timing = header.box()
+        timing.label(text="Timing")
+        timing.prop(r, "crosshair_indefinite", text="Indefinite")
+        if not getattr(r, "crosshair_indefinite", True):
+            timing.prop(r, "crosshair_duration", text="Duration (sec)")
 
     elif t == "OBJECTIVE_COUNTER":
         header.prop(r, "objective_index", text="Objective")
@@ -383,7 +411,163 @@ class _ReactionNodeKind(ReactionNodeBase):
     def execute_reaction(self, context):
         pass
 
+class ReactionHitscanNode(_ReactionNodeKind):
+    bl_idname = "ReactionHitscanNodeType"
+    bl_label  = "Hitscan"
+    KIND = "HITSCAN"
 
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        org = layout.box()
+        org.label(text="Origin")
+        org.prop(r, "proj_use_character_origin", text="Use Character Origin")
+        if not r.proj_use_character_origin:
+            org.prop_search(r, "proj_origin_object", bpy.context.scene, "objects", text="Origin Object")
+        org.prop(r, "proj_origin_offset", text="Offset")
+
+        aim = layout.box()
+        aim.label(text="Aim")
+        aim.prop(r, "proj_aim_source", text="Aim Source")
+
+        vis = layout.box()
+        vis.label(text="Visual (Optional)")
+        vis.prop_search(r, "proj_object", bpy.context.scene, "objects", text="Place Object")
+        vis.prop(r, "proj_align_object_to_velocity", text="Align to Direction")
+
+        hs = layout.box()
+        hs.label(text="Hitscan")
+        hs.prop(r, "proj_max_range", text="Max Range")
+        hs.prop(r, "proj_place_hitscan_object", text="Place Object at Impact")
+
+
+class ReactionProjectileNode(_ReactionNodeKind):
+    bl_idname = "ReactionProjectileNodeType"
+    bl_label  = "Projectile"
+    KIND = "PROJECTILE"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        org = layout.box()
+        org.label(text="Origin")
+        org.prop(r, "proj_use_character_origin", text="Use Character Origin")
+        if not r.proj_use_character_origin:
+            org.prop_search(r, "proj_origin_object", bpy.context.scene, "objects", text="Origin Object")
+        org.prop(r, "proj_origin_offset", text="Offset")
+
+        aim = layout.box()
+        aim.label(text="Aim")
+        aim.prop(r, "proj_aim_source", text="Aim Source")
+
+        vis = layout.box()
+        vis.label(text="Visual (Optional)")
+        vis.prop_search(r, "proj_object", bpy.context.scene, "objects", text="Projectile Object")
+        vis.prop(r, "proj_align_object_to_velocity", text="Align to Velocity")
+
+        pj = layout.box()
+        pj.label(text="Projectile")
+        pj.prop(r, "proj_speed", text="Speed")
+        pj.prop(r, "proj_gravity", text="Gravity")
+        pj.prop(r, "proj_lifetime", text="Lifetime")
+        pj.prop(r, "proj_on_contact_stop", text="Stop on Contact")
+        pj.prop(r, "proj_pool_limit", text="Max Active")
+
+
+
+class ReactionActionKeysNode(_ReactionNodeKind):
+    bl_idname = "ReactionActionKeysNodeType"
+    bl_label  = "Action Keys"
+    KIND = "ACTION_KEYS"
+
+    node_action_key: bpy.props.EnumProperty(
+        name="Action",
+        items=_enum_action_key_items,
+        description="Choose which Action Key this reaction will enable/disable/toggle",
+        update=lambda self, ctx: self._on_node_action_changed(ctx),
+    )
+
+    def _on_node_action_changed(self, context):
+        scn = _scene()
+        idx = getattr(self, "reaction_index", -1)
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            return
+        r = scn.reactions[idx]
+        name = getattr(self, "node_action_key", "") or ""
+        # mirror into ReactionDefinition for executor
+        try:
+            r.action_key_name = name
+            r.action_key_id   = name
+        except Exception:
+            pass
+        # best-effort index mirror for reindexing on list edits
+        if hasattr(scn, "action_keys"):
+            match = -1
+            try:
+                for i, it in enumerate(scn.action_keys):
+                    if getattr(it, "name", "") == name:
+                        match = i
+                        break
+            except Exception:
+                pass
+            try:
+                r.action_key_index = match
+            except Exception:
+                pass
+
+    def update(self):
+        # keep chooser in sync with ReactionDefinition (no base update required)
+        scn = _scene()
+        idx = getattr(self, "reaction_index", -1)
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            return
+
+        r = scn.reactions[idx]
+        want = getattr(r, "action_key_name", "") or getattr(r, "action_key_id", "")
+        if not want:
+            return
+
+        try:
+            valid = {it[0] for it in _enum_action_key_items(self, bpy.context)}
+            if want in valid and getattr(self, "node_action_key", "") != want:
+                self.node_action_key = want
+        except Exception:
+            pass
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        row = layout.row(align=True)
+        row.prop(r, "action_key_op", text="Operation")
+
+        layout.prop(self, "node_action_key", text="Action")
+
+        info = layout.box()
+        info.label(text="Pick an existing Action Key. No creation here.", icon='INFO')
 
 # ───────────────────────── concrete nodes ─────────────────────────
 
@@ -441,6 +625,11 @@ class ReactionResetGameNode(_ReactionNodeKind):
     bl_idname = "ReactionResetGameNodeType"
     bl_label  = "Reset Game"
     KIND = "RESET_GAME"
+
+class ReactionCrosshairsNode(_ReactionNodeKind):
+    bl_idname = "ReactionCrosshairsNodeType"
+    bl_label  = "Enable Crosshairs"
+    KIND = "ENABLE_CROSSHAIRS"
 
 # ───────────────────────── registration ─────────────────────────
 
