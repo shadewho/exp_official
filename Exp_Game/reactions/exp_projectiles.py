@@ -1,148 +1,79 @@
-# Exploratory / Exp_Game / reactions / exp_projectiles.py
-# KEEPING OLD BVH COLLISION BEHAVIOR EXACTLY:
-# - Ray tests use the modal's proxy-mesh BVH (same as your old code)
-# - Projectiles stop on proxy meshes (BVH hit) exactly as before
-# - Lightweight pooled, linked duplicates for visuals (per-reaction Max Active)
-# - No idle work when nothing is active
-# - Full cleanup via clear()
-
+# Exploratory/Exp_Game/reactions/exp_projectiles.py
 import bpy
 import math
-from mathutils import Vector, Euler
+from mathutils import Vector
 from bpy_extras import view3d_utils
+
 from ..props_and_utils.exp_time import get_game_time
-from ..audio import exp_globals  # ACTIVE_MODAL_OP
+from ..audio import exp_globals  # for ACTIVE_MODAL_OP
+from ..physics.exp_raycastutils import raycast_closest_any
 
 # ─────────────────────────────────────────────────────────
-# Globals
+# Lightweight, demand-driven projectile manager (O(1) idle)
 # ─────────────────────────────────────────────────────────
-_POOLS = {}  # key(str) -> {"src": Object, "free": [Object], "active": set(Object)}
-_ACTIVE_PROJECTILES = []  # each: {'obj','pos','vel','gravity','despawn_time','stop_on_contact','align','ignore_objs'}
-_ACTIVE_VISUALS = []      # list[{'obj','despawn_time'}] for hitscan decals / markers
-_MAX_GLOBAL_PROJECTILES = 64  # safety ceiling
 
-# ─────────────────────────────────────────────────────────
-# Modal / scene helpers
-# ─────────────────────────────────────────────────────────
+# Entry schema:
+# {
+#   'r_id': object,                    # the ReactionDefinition python proxy
+#   'obj':  bpy.types.Object | None,   # visual clone (optional)
+#   'pos':  Vector,                    # world
+#   'vel':  Vector,                    # world (m/s)
+#   'g':    float,                     # gravity (m/s^2)
+#   'end_time': float,                 # absolute game time when it expires
+#   'stop_on_contact': bool,
+#   'align': bool,                     # align visual to velocity while flying
+# }
+_active_projectiles: list[dict] = []
+
+# All visuals we created (for safe cleanup on reset)
+_spawned_visual_clones: set[bpy.types.Object] = set()
+
+# NEW: per-reaction FIFO of visuals currently present in the scene (stuck or flying)
+# Keyed by a stable owner key (see _owner_key()).
+_per_reaction_visual_fifo: dict[int, list[bpy.types.Object]] = {}
+
+# Reverse map visual -> owner key, for quick eviction bookkeeping
+_visual_owner: dict[bpy.types.Object, int] = {}
+
+_MAX_GLOBAL_PROJECTILES = 64  # hard ceiling safeguard
+
+
+# ---------- Public helpers ----------
+def has_active() -> bool:
+    return bool(_active_projectiles)
+
+
+def clear():
+    """
+    Clear active projectiles and delete visuals we spawned.
+    Safe to call on reset/cancel.
+    """
+    _active_projectiles.clear()
+
+    to_delete = list(_spawned_visual_clones)
+    _spawned_visual_clones.clear()
+    for ob in to_delete:
+        _hard_delete_object(ob)
+
+    _per_reaction_visual_fifo.clear()
+    _visual_owner.clear()
+
+
+# ---------- Internals ----------
 def _active_modal():
     return getattr(exp_globals, "ACTIVE_MODAL_OP", None)
 
-def _scene():
-    scn = getattr(bpy.context, "scene", None)
-    if scn:
-        return scn
-    return bpy.data.scenes[0] if bpy.data.scenes else None
 
-def _character_object() -> bpy.types.Object | None:
-    scn = _scene()
-    return getattr(scn, "target_armature", None)
-
-# ─────────────────────────────────────────────────────────
-# Pool helpers (linked duplicates; minimal overhead)
-# ─────────────────────────────────────────────────────────
-def _pool_key(obj: bpy.types.Object) -> str:
-    """Stable, session-unique key as a STRING (avoid 32-bit int overflow)."""
-    if not obj:
-        return "0"
+def _owner_key(r) -> int:
+    """
+    Stable integer key for a ReactionDefinition proxy.
+    """
     try:
-        return f"{int(obj.as_pointer()):x}"
+        return int(r.as_pointer())
     except Exception:
-        try:
-            return f"data:{int(obj.data.as_pointer()):x}"
-        except Exception:
-            return f"name:{getattr(obj, 'name', 'unknown')}"
+        return id(r)
 
-def _link_to_scene(obj: bpy.types.Object):
-    scn = _scene()
-    if not scn or not obj:
-        return
-    try:
-        scn.collection.objects.link(obj)
-    except Exception:
-        pass
 
-def _unique_name_like(base: str) -> str:
-    scn = _scene()
-    existing = {o.name for o in getattr(scn, "objects", [])}
-    if base not in existing:
-        return base
-    i = 1
-    while True:
-        nm = f"{base} (EXP {i})"
-        if nm not in existing:
-            return nm
-        i += 1
-
-def _make_instance(src: bpy.types.Object) -> bpy.types.Object:
-    inst = src.copy()              # linked duplicate (shares mesh data)
-    try:
-        inst.data = src.data
-    except Exception:
-        pass
-    inst.animation_data_clear()
-    inst.hide_viewport = True
-    inst.hide_render   = True
-    inst.name = _unique_name_like(src.name)
-    inst["_exp_pool_key"] = _pool_key(src)  # store STRING key
-    _link_to_scene(inst)
-    return inst
-
-def _acquire(src: bpy.types.Object, cap: int) -> bpy.types.Object | None:
-    if not src:
-        return None
-    k = _pool_key(src)
-    pool = _POOLS.get(k)
-    if pool is None:
-        pool = {"src": src, "free": [], "active": set()}
-        _POOLS[k] = pool
-
-    if len(pool["active"]) >= max(1, int(cap)):
-        return None
-
-    inst = pool["free"].pop() if pool["free"] else _make_instance(src)
-    pool["active"].add(inst)
-    inst.hide_viewport = False
-    inst.hide_render   = False
-    return inst
-
-def _release(inst: bpy.types.Object):
-    if not inst:
-        return
-    k = None
-    try:
-        k = inst["_exp_pool_key"]
-    except Exception:
-        pass
-    if not isinstance(k, str) or not k:
-        try:
-            k = _pool_key(inst)
-        except Exception:
-            k = None
-    inst.hide_viewport = True
-    inst.hide_render   = True
-    if not k:
-        return
-    pool = _POOLS.get(k)
-    if pool:
-        pool["active"].discard(inst)
-        pool["free"].append(inst)
-
-def _destroy(inst: bpy.types.Object):
-    if not inst:
-        return
-    try:
-        for coll in list(inst.users_collection):
-            try:
-                coll.objects.unlink(inst)
-            except Exception:
-                pass
-        bpy.data.objects.remove(inst, do_unlink=True)
-    except Exception:
-        pass
-
-# ─────────────────────────────────────────────────────────
-# OLD aiming/origin helpers (unchanged behavior)
-# ─────────────────────────────────────────────────────────
 def _get_active_view3d_region():
     """Return (area, region, rv3d) for the first VIEW_3D/WINDOW found."""
     wm = bpy.context.window_manager
@@ -155,20 +86,17 @@ def _get_active_view3d_region():
         for area in scr.areas:
             if area.type != 'VIEW_3D':
                 continue
-            rv3d = None
-            try:
-                rv3d = area.spaces.active.region_3d
-            except Exception:
-                rv3d = None
+            rv3d = getattr(area.spaces.active, "region_3d", None)
             for reg in area.regions:
                 if reg.type == 'WINDOW':
                     return area, reg, rv3d
     return None, None, None
 
+
 def _center_ray_world(max_range: float):
     """
     Crosshair ray in WORLD space from the active 3D View.
-    Returns (origin_world, dir_world, far_point_world) or (None, None, None).
+    Returns (origin_world, dir_world_normalized, far_point_world) or (None, None, None).
     """
     area, region, rv3d = _get_active_view3d_region()
     if not (area and region and rv3d):
@@ -180,11 +108,12 @@ def _center_ray_world(max_range: float):
     far_w    = origin_w + dir_w * float(max_range)
     return origin_w, dir_w, far_w
 
+
 def _character_forward_from_scene():
     """
     World forward from character (+Y local). Falls back to op.yaw if needed.
     """
-    scn = _scene()
+    scn = bpy.context.scene
     arm = getattr(scn, "target_armature", None)
     if arm:
         try:
@@ -195,74 +124,46 @@ def _character_forward_from_scene():
     yaw = float(getattr(op, "yaw", 0.0)) if op else 0.0
     return Vector((math.cos(yaw), math.sin(yaw), 0.0)).normalized()
 
-def _origin_from_reaction(r) -> Vector:
+
+def _resolve_origin(r):
     """
-    EXACTLY like old: origin = base.translation + (base.rotation * local_offset)
-    (Ignores scale to match your previous behavior.)
+    Spawn origin in WORLD space. Offset is applied in the origin object's LOCAL space.
     """
-    scn = _scene()
+    scn = bpy.context.scene
     base_obj = scn.target_armature if getattr(r, "proj_use_character_origin", True) else getattr(r, "proj_origin_object", None)
     off_local = Vector(getattr(r, "proj_origin_offset", (0.0, 0.2, 1.4)))
+
     if base_obj:
         base_loc = base_obj.matrix_world.translation.copy()
         off_world = base_obj.matrix_world.to_3x3() @ off_local
         return base_loc + off_world
+
+    # No base object → treat offset as world-space
     return off_local.copy()
 
-def _align_object_to_dir(obj, direction: Vector):
-    try:
-        q = direction.normalized().to_track_quat('Y', 'Z')  # +Y forward, Z up
-        obj.rotation_euler = q.to_euler('XYZ')
-    except Exception:
-        pass
 
-# ─────────────────────────────────────────────────────────
-# OLD BVH raycast (unchanged semantics) + guarded fallback
-# ─────────────────────────────────────────────────────────
-def _raycast_world(op, origin: Vector, direction: Vector, max_dist: float, ignore: set | None = None):
+def _raycast_any(op, origin: Vector, direction: Vector, max_dist: float):
     """
-    EXACT old behavior when BVH is present:
-      - Raycast against proxy-mesh BVH built by the modal (static only).
-    Only if BVH is missing do we fallback to scene.ray_cast, where we ignore
-    a small set (instance, source, character) to avoid self-hits while moving.
-    Returns (hit:bool, loc:Vector|None, normal:Vector|None, dist:float|None)
+    Unified ray against STATIC BVH + DYNAMIC LocalBVHs.
+    Returns (hit:bool, loc:Vector|None, normal:Vector|None, hit_obj:bpy.types.Object|None, dist:float|None)
     """
-    if max_dist <= 1e-6:
-        return (False, None, None, None)
+    if not op or max_dist <= 1e-9 or direction.length <= 1e-9:
+        return (False, None, None, None, None)
 
-    # OLD: BVH path
-    bvh = getattr(op, "bvh_tree", None) if op else None
-    if bvh:
-        dir_n = direction.normalized()
-        hit = bvh.ray_cast(origin, dir_n, max_dist)
-        if not hit or hit[0] is None:
-            return (False, None, None, None)
-        loc, nor, _idx, _d = hit
-        d = (loc - origin).length
-        return (True, loc, nor, d)
+    static_bvh = getattr(op, "bvh_tree", None)
+    dynamic_map = getattr(op, "dynamic_bvh_map", None)
 
-    # Fallback only if BVH missing (keep it robust while moving)
-    scn = _scene()
-    if not scn:
-        return (False, None, None, None)
-    deps = bpy.context.evaluated_depsgraph_get()
-    dir_n = direction.normalized()
-    try:
-        h, loc, nor, _face, hit_obj, _mtx = scn.ray_cast(deps, origin, dir_n, distance=max_dist)
-    except TypeError:
-        h, loc, nor, _face, hit_obj, _mtx = scn.ray_cast(deps, origin, dir_n * max_dist)
-    if h:
-        if ignore and hit_obj in ignore:
-            return (False, None, None, None)
-        d = (loc - origin).length
-        return (True, loc, nor, d)
-    return (False, None, None, None)
+    dnorm = direction.normalized()
+    loc, nor, obj, dist = raycast_closest_any(static_bvh, dynamic_map, origin, dnorm, max_dist)
+    if loc is None:
+        return (False, None, None, None, None)
+    return (True, loc, nor, obj, dist)
 
-def _resolve_direction(r, origin) -> Vector:
+
+def _resolve_direction(r, origin):
     """
-    EXACT old aiming logic:
-      CROSSHAIR: aim from camera center; use BVH to pick target if available.
-      otherwise: character forward.
+    Resolve a world-space direction using proj_aim_source.
+    If CROSSHAIR: aim from camera center across static/dynamic; else use character forward.
     """
     aim_src = (getattr(r, "proj_aim_source", "CROSSHAIR") or "CROSSHAIR")
     if aim_src == "CAMERA":  # legacy alias
@@ -273,203 +174,322 @@ def _resolve_direction(r, origin) -> Vector:
         cam_o, cam_dir, cam_far = _center_ray_world(max_range=hs_range)
         if cam_o is not None:
             op = _active_modal()
-            ok, loc, _n, _d = _raycast_world(op, cam_o, cam_dir, hs_range)
-            target = loc if ok else cam_far
-            d = (target - origin)
-            return d.normalized() if d.length > 0.0 else _character_forward_from_scene()
-        return _character_forward_from_scene()
-    else:
+            hit, loc, _n, _obj, _d = _raycast_any(op, cam_o, cam_dir, hs_range)
+            target = loc if hit else cam_far
+            return (target - origin).normalized()
         return _character_forward_from_scene()
 
+    # CHAR_FORWARD
+    return _character_forward_from_scene()
+
+
+def _align_object_to_dir(obj, direction: Vector):
+    if not obj:
+        return
+    try:
+        q = direction.normalized().to_track_quat('Y', 'Z')  # +Y forward, Z up
+        obj.rotation_euler = q.to_euler('XYZ')
+    except Exception:
+        pass
+
+
+def _spawn_visual_instance(template_obj: bpy.types.Object | None, owner_key: int) -> bpy.types.Object | None:
+    """
+    Create a lightweight visual clone (linked mesh). Returns the new object or None.
+    Also registers it in the per-reaction FIFO and reverse map.
+    """
+    if not template_obj:
+        return None
+    try:
+        new_ob = bpy.data.objects.new(name=f"{template_obj.name}_Shot", object_data=template_obj.data)
+        bpy.context.scene.collection.objects.link(new_ob)
+        new_ob.hide_viewport = False
+        new_ob.hide_render = False
+        new_ob.display_type = template_obj.display_type
+        new_ob.scale = template_obj.scale.copy()
+
+        _spawned_visual_clones.add(new_ob)
+        _visual_owner[new_ob] = owner_key
+        _per_reaction_visual_fifo.setdefault(owner_key, []).append(new_ob)
+        return new_ob
+    except Exception:
+        return None
+
+
+def _hard_delete_object(ob: bpy.types.Object | None):
+    """Unparent, unlink, and remove an object datablock safely."""
+    if not ob:
+        return
+    try:
+        ob.parent = None
+        for coll in list(ob.users_collection):
+            try:
+                coll.objects.unlink(ob)
+            except Exception:
+                pass
+        bpy.data.objects.remove(ob, do_unlink=True)
+    except Exception:
+        pass
+
+
+def _remove_active_entries_by_visual(ob: bpy.types.Object | None):
+    """Remove any active sim entries that reference this visual."""
+    if not ob or not _active_projectiles:
+        return
+    keep = []
+    for p in _active_projectiles:
+        if p.get('obj') is ob:
+            # drop entry
+            continue
+        keep.append(p)
+    _active_projectiles[:] = keep
+
+
+def _delete_visual_if_clone(ob: bpy.types.Object | None):
+    """Remove 'ob' only if it is one of the clones we created, and update FIFO bookkeeping."""
+    if not ob or ob not in _spawned_visual_clones:
+        return
+    _spawned_visual_clones.discard(ob)
+
+    # Remove from FIFO & reverse map
+    key = _visual_owner.pop(ob, None)
+    if key is not None:
+        lst = _per_reaction_visual_fifo.get(key)
+        if lst:
+            try:
+                lst.remove(ob)
+            except ValueError:
+                pass
+            if not lst:
+                _per_reaction_visual_fifo.pop(key, None)
+
+    # If still flying, drop its sim entry too
+    _remove_active_entries_by_visual(ob)
+
+    _hard_delete_object(ob)
+
+
+def _prune_expired(now: float):
+    """
+    Remove expired projectiles immediately (so counts are accurate when firing rapidly).
+    Deletes their visuals too.
+    """
+    if not _active_projectiles:
+        return
+    keep = []
+    for p in _active_projectiles:
+        if now >= p['end_time']:
+            _delete_visual_if_clone(p.get('obj'))
+        else:
+            keep.append(p)
+    _active_projectiles[:] = keep
+
+
+def _evict_oldest_visuals_for_reaction(owner_key: int, n_to_evict: int):
+    """
+    FIFO eviction on the real, visible OBJECTS for this reaction.
+    Also removes their active sim entries if still flying.
+    """
+    if n_to_evict <= 0:
+        return
+    lst = _per_reaction_visual_fifo.get(owner_key)
+    if not lst:
+        return
+    count = min(n_to_evict, len(lst))
+    for _ in range(count):
+        ob = lst.pop(0)
+        _delete_visual_if_clone(ob)
+    if not lst:
+        _per_reaction_visual_fifo.pop(owner_key, None)
+
+
+def _evict_oldest_active_for_reaction(r, n_to_evict: int):
+    """
+    Fallback FIFO eviction for reactions with NO visuals (just sim entries).
+    """
+    if n_to_evict <= 0 or not _active_projectiles:
+        return
+    removed = 0
+    keep = []
+    for p in _active_projectiles:
+        if removed < n_to_evict and p.get('r_id') is r:
+            _delete_visual_if_clone(p.get('obj'))  # usually None in this mode
+            removed += 1
+            continue
+        keep.append(p)
+    _active_projectiles[:] = keep
+
+
 # ─────────────────────────────────────────────────────────
-# Executors
+# Executors (called by reaction dispatcher)
 # ─────────────────────────────────────────────────────────
+
 def execute_hitscan_reaction(r):
     """
-    Instant ray from origin along resolved direction (BVH). On hit, optional pooled visual.
+    Instant ray from origin along resolved direction.
+    If a visual object is set and proj_place_hitscan_object is True, it is placed
+    at the impact (or end of range on miss). Direction is aligned if requested.
     """
     op = _active_modal()
     if not op:
         return
 
-    origin = _origin_from_reaction(r)
+    origin = _resolve_origin(r)
     direction = _resolve_direction(r, origin)
     max_range = float(getattr(r, "proj_max_range", 60.0))
 
-    hit, loc, _nor, _dist = _raycast_world(op, origin, direction, max_range)
+    hit, loc, _nor, _hit_obj, _dist = _raycast_any(op, origin, direction, max_range)
     impact = loc if hit else (origin + direction * max_range)
 
-    vis_src = getattr(r, "proj_object", None)
-    if vis_src and getattr(r, "proj_place_hitscan_object", True):
-        inst = _acquire(vis_src, int(getattr(r, "proj_pool_limit", 8)))
-        if inst:
-            inst.location = impact
-            if getattr(r, "proj_align_object_to_velocity", True):
-                _align_object_to_dir(inst, direction)
-            ttl = float(getattr(r, "proj_lifetime", 0.0))
-            if ttl > 0.0:
-                _ACTIVE_VISUALS.append({"obj": inst, "despawn_time": get_game_time() + ttl})
+    obj = getattr(r, "proj_object", None)
+    if obj and getattr(r, "proj_place_hitscan_object", True):
+        obj.location = impact
+        if getattr(r, "proj_align_object_to_velocity", True):
+            _align_object_to_dir(obj, direction)
+
 
 def execute_projectile_reaction(r):
     """
-    Spawn a pooled visual and simulate simple ballistic motion (BVH collision).
+    Spawn a simulated projectile advanced by update_projectile_tasks().
+    Enforces per-reaction FIFO cap on the actual visible objects:
+      - If adding would exceed r.proj_pool_limit, delete the oldest stuck/flying visuals first.
+      - If no visual template is set, cap the active sim entries instead.
     """
     op = _active_modal()
     if not op:
-        return
-
-    if len(_ACTIVE_PROJECTILES) >= _MAX_GLOBAL_PROJECTILES:
-        return
-
-    src = getattr(r, "proj_object", None)
-    if not src:
-        return  # nothing to visualize; keep it cheap
-
-    inst = _acquire(src, int(getattr(r, "proj_pool_limit", 8)))
-    if not inst:
-        return  # per-reaction cap reached
-
-    origin = _origin_from_reaction(r)
-    direction = _resolve_direction(r, origin)
-
-    speed   = float(getattr(r, "proj_speed", 24.0))
-    gravity = float(getattr(r, "proj_gravity", -21.0))
-    life    = float(getattr(r, "proj_lifetime", 3.0))
-    stop_on_contact = bool(getattr(r, "proj_on_contact_stop", True))
-    align   = bool(getattr(r, "proj_align_object_to_velocity", True))
-
-    inst.location = origin
-    if align and speed > 0.0:
-        _align_object_to_dir(inst, direction)
-
-    # Only used for fallback (if BVH missing)
-    ignore_objs = {inst, src}
-    ch = _character_object()
-    if ch:
-        ignore_objs.add(ch)
-
-    _ACTIVE_PROJECTILES.append({
-        "obj": inst,
-        "pos": origin.copy(),
-        "vel": direction * speed,
-        "gravity": gravity,
-        "align": align,
-        "stop_on_contact": stop_on_contact,
-        "despawn_time": get_game_time() + max(0.0, life) if life > 0.0 else None,
-        "ignore_objs": ignore_objs,
-    })
-
-# ─────────────────────────────────────────────────────────
-# Fixed-step updater (30 Hz). Exact stop-on-proxy behavior via BVH.
-# ─────────────────────────────────────────────────────────
-def update_projectile_tasks(dt: float):
-    """
-    Advance active projectiles by dt (seconds). O(1) when idle.
-    """
-    if dt <= 0.0 and not _ACTIVE_VISUALS:
-        return
-
-    op = _active_modal()
-    if not op:
-        _ACTIVE_PROJECTILES.clear()
-        _reclaim_visuals()
         return
 
     now = get_game_time()
-    keep = []
+    _prune_expired(now)  # keep counts honest when spamming shots
 
-    for p in _ACTIVE_PROJECTILES:
-        obj = p["obj"]
-        if not obj:
+    # Global guardrail (simple)
+    if len(_active_projectiles) >= _MAX_GLOBAL_PROJECTILES:
+        return
+
+    # Per-reaction cap (≥1)
+    per_cap = int(getattr(r, "proj_pool_limit", 8) or 8)
+    if per_cap < 1:
+        per_cap = 1
+
+    template = getattr(r, "proj_object", None)
+    owner = _owner_key(r)
+
+    if template is not None:
+        # Enforce on **visuals present** (stuck or flying)
+        present = len(_per_reaction_visual_fifo.get(owner, []))
+        if present >= per_cap:
+            _evict_oldest_visuals_for_reaction(owner, present - per_cap + 1)
+    else:
+        # No visuals → enforce on active sim entries only
+        acc = sum(1 for p in _active_projectiles if p.get('r_id') is r)
+        if acc >= per_cap:
+            _evict_oldest_active_for_reaction(r, acc - per_cap + 1)
+
+    # Resolve spawn state AFTER eviction
+    origin = _resolve_origin(r)
+    direction = _resolve_direction(r, origin)
+
+    speed = float(getattr(r, "proj_speed", 24.0))
+    g     = float(getattr(r, "proj_gravity", -21.0))
+    life  = float(getattr(r, "proj_lifetime", 3.0))
+
+    vel = direction * speed
+
+    # Visual: clone per shot (tracked in FIFO)
+    pov = _spawn_visual_instance(template, owner) if template is not None else None
+    if pov:
+        pov.matrix_world.translation = origin
+        if getattr(r, "proj_align_object_to_velocity", True) and vel.length > 1e-6:
+            _align_object_to_dir(pov, vel)
+
+    entry = {
+        'r_id': r,
+        'obj': pov,
+        'pos': origin.copy(),
+        'vel': vel.copy(),
+        'g': g,
+        'end_time': now + life,
+        'stop_on_contact': bool(getattr(r, "proj_on_contact_stop", True)),
+        'align': bool(getattr(r, "proj_align_object_to_velocity", True)),
+    }
+    _active_projectiles.append(entry)
+
+
+# ─────────────────────────────────────────────────────────
+# 30 Hz updater (call from your fixed-step loop)
+# ─────────────────────────────────────────────────────────
+
+def update_projectile_tasks(dt: float):
+    """
+    Advance active projectiles by dt (seconds). O(1) cost when idle.
+    On contact with static mesh: freeze visual at hit point and despawn entry.
+    On contact with dynamic proxy: parent the visual to the hit object (sticks) and despawn entry.
+    """
+    if not _active_projectiles:
+        return
+
+    op = _active_modal()
+    if not op:
+        clear()
+        return
+
+    now = get_game_time()
+    keep: list[dict] = []
+
+    for p in _active_projectiles:
+        if now >= p['end_time']:
+            _delete_visual_if_clone(p.get('obj'))
             continue
 
-        # Lifetime
-        endt = p.get("despawn_time")
-        if endt is not None and now >= endt:
-            _release(obj)
-            continue
+        old_pos = p['pos']
+        vel = p['vel']
 
-        old_pos = p["pos"]
-        vel = p["vel"]
+        # integrate with gravity
+        vel.z += p['g'] * dt
+        new_pos = old_pos + vel * dt
 
-        # integrate with gravity (world -Z)
-        vel.z += p["gravity"] * dt
-        step = vel * dt
+        # sweep test segment old_pos -> new_pos
+        seg = new_pos - old_pos
+        seg_len = seg.length
 
-        # Ray between old_pos → new_pos (BVH path => exact old behavior)
-        start = old_pos
-        seg_len = step.length
         hit = False
         hit_loc = None
+        hit_obj = None
 
         if seg_len > 1e-7:
-            ok, loc, _n, _d = _raycast_world(op, start, step / seg_len, seg_len, ignore=p.get("ignore_objs"))
+            ok, loc, _n, obj, _d = _raycast_any(op, old_pos, seg / seg_len, seg_len)
             if ok:
                 hit = True
                 hit_loc = loc
+                hit_obj = obj
 
-        if hit and p.get("stop_on_contact", True):
-            p["pos"] = hit_loc
-            try:
-                obj.location = hit_loc
-            except ReferenceError:
-                pass
-            _release(obj)
+        if hit and p['stop_on_contact']:
+            # Freeze at impact
+            p['pos'] = hit_loc
+            obj_v = p.get('obj')
+            if obj_v:
+                obj_v.location = hit_loc
+                # Stick to dynamic movers
+                if hit_obj:
+                    try:
+                        obj_v.parent = hit_obj
+                        obj_v.matrix_parent_inverse = hit_obj.matrix_world.inverted()
+                    except Exception:
+                        pass
+            # Despawn the sim entry; the visual remains (possibly parented) and is
+            # still tracked in the per-reaction FIFO for future evictions.
             continue
 
         # keep flying
-        new_pos = start + step
-        p["pos"] = new_pos
-        p["vel"] = vel
-        try:
-            obj.location = new_pos
-            if p["align"] and vel.length > 1e-6:
-                _align_object_to_dir(obj, vel)
-        except ReferenceError:
-            # instance killed externally; drop it
-            continue
+        p['pos'] = new_pos
+        p['vel'] = vel
+
+        obj_v = p.get('obj')
+        if obj_v:
+            obj_v.location = new_pos
+            if p['align'] and vel.length > 1e-6:
+                _align_object_to_dir(obj_v, vel)
 
         keep.append(p)
 
-    _ACTIVE_PROJECTILES[:] = keep
-    _reclaim_visuals()
-
-def _reclaim_visuals():
-    """Releases TTL-based hitscan visuals that have expired."""
-    if not _ACTIVE_VISUALS:
-        return
-    now = get_game_time()
-    keep = []
-    for v in _ACTIVE_VISUALS:
-        obj = v.get("obj")
-        if not obj:
-            continue
-        t = v.get("despawn_time")
-        if t is not None and now >= t:
-            _release(obj)
-        else:
-            keep.append(v)
-    _ACTIVE_VISUALS[:] = keep
-
-# ─────────────────────────────────────────────────────────
-# Public helpers
-# ─────────────────────────────────────────────────────────
-def has_active() -> bool:
-    return bool(_ACTIVE_PROJECTILES or _ACTIVE_VISUALS)
-
-def clear():
-    """
-    Full cleanup:
-      - Release and DELETE every pooled instance (free+active)
-      - Clear active lists
-    Called by reset_all_tasks() on reset/game end.
-    """
-    for k, pool in list(_POOLS.items()):
-        for inst in list(pool["active"]):
-            _destroy(inst)
-        for inst in list(pool["free"]):
-            _destroy(inst)
-    _POOLS.clear()
-
-    _ACTIVE_PROJECTILES.clear()
-    _ACTIVE_VISUALS.clear()
+    _active_projectiles[:] = keep

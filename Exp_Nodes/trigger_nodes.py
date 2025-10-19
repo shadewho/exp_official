@@ -82,36 +82,38 @@ def _delete_interaction_at(index: int) -> None:
 def _iter_downstream_reaction_nodes_from(trigger_node: Node):
     """
     Breadth-first traversal from the trigger's 'Trigger Output' socket, yielding
-    reaction nodes in a stable link-order (good enough for ordered chains).
+    reaction-capable nodes in link order. A node is considered a reaction node
+    if it carries a 'reaction_index' attribute (all _ReactionNodeKind nodes,
+    including UtilityDelayNode, do).
     """
     out_sock = trigger_node.outputs.get("Trigger Output")
     if not out_sock:
         return
+
     visited = set()
     queue = [lk.to_node for lk in out_sock.links if lk.to_node]
+
     while queue:
         node = queue.pop(0)
         if node is None or node in visited:
             continue
         visited.add(node)
 
-        blid = getattr(node, "bl_idname", "")
-        if blid.startswith("Reaction") and hasattr(node, "reaction_index"):
+        # Capability-based detection: any node with a reaction_index counts
+        if hasattr(node, "reaction_index"):
             yield node
-
-            # continue chain through this reaction node's "Output"
+            # continue the linear chain via the standard reaction output
             out2 = node.outputs.get("Reaction Output") or node.outputs.get("Output")
             if out2:
                 for lk in out2.links:
                     if lk.to_node:
                         queue.append(lk.to_node)
         else:
-            # passthrough (e.g. reroute) — traverse all outputs
+            # passthrough (reroutes, frames, etc.): traverse all outputs
             for sock in node.outputs:
                 for lk in sock.links:
                     if lk.to_node:
                         queue.append(lk.to_node)
-
 
 def _sync_interaction_links_from_graph(trigger_node: Node, inter_index: int) -> None:
     """

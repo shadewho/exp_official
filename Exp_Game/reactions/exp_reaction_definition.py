@@ -221,6 +221,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("MESH_VISIBILITY", "Mesh Visibility",      "Hide/Unhide/Toggle a mesh object"),
             ("RESET_GAME",      "Reset Game",           "Reset the game state"),
             ("ACTION_KEYS",      "Action Keys",        "Enable/Disable/Toggle a named Action Key"),
+            ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
 
         ],
         default="CUSTOM_ACTION"
@@ -505,6 +506,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         min=0.0,
         description="How long a looping custom action will continue before it stops"
     )
+    
     custom_action_message: bpy.props.StringProperty(
         name="Details about your custom action",
         default=""
@@ -773,6 +775,15 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Action Index",
         default=-1,
         min=-1
+    )
+
+
+    # --- Utility: Delay ---
+    utility_delay_seconds: bpy.props.FloatProperty(
+        name="Delay (sec)",
+        default=0.25,
+        min=0.0,
+        description="Pauses the chain by this many seconds; affects subsequent reactions in the same Interaction."
     )
 
 def register_reaction_library_properties():

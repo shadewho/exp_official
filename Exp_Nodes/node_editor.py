@@ -112,6 +112,20 @@ class NODE_MT_exploratory_add_actions(Menu):
         op.type = "CreateActionKeyNodeType"
         op.use_transform = True
 
+class NODE_MT_exploratory_add_utilities(Menu):
+    bl_idname = "NODE_MT_exploratory_add_utilities"
+    bl_label  = "Utilities"
+
+    def draw(self, context):
+        layout = self.layout
+
+        def add(lbl, idname):
+            op = layout.operator("node.add_node", text=lbl, icon='NONE')
+            op.type = idname
+            op.use_transform = True
+
+        add("Delay", "UtilityDelayNodeType")
+
 # Append hook the init module will attach to NODE_MT_add:
 # it inserts our three categories directly into Shift+A (no icons).
 def _append_exploratory_entry(self, context):
@@ -120,6 +134,7 @@ def _append_exploratory_entry(self, context):
         self.layout.menu("NODE_MT_exploratory_add_reactions",  text="Reactions")
         self.layout.menu("NODE_MT_exploratory_add_actions",    text="Action Keys")
         self.layout.menu("NODE_MT_exploratory_add_objectives", text="Objectives")
+        self.layout.menu("NODE_MT_exploratory_add_utilities",  text="Utilities")
 
 
 # ─────────────────────────────────────────────────────────

@@ -192,7 +192,7 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
         update=_enabled_changed,
     )
 
-    _EXPL_TINT_ACTION = (0.5, 0.5, 0.5)
+    _EXPL_TINT_ACTION = (0.28, 0.2, 0.3)
 
     def _tint(self):
         try:

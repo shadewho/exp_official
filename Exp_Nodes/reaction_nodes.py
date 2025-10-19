@@ -44,17 +44,13 @@ def _fix_interaction_reaction_indices_after_remove(removed_index: int) -> None:
 def _reindex_reaction_nodes_after_remove(removed_index: int) -> None:
     """
     After removing scene.reactions[removed_index], all subsequent items shift -1.
-    This walks every Exploratory node tree and fixes each Reaction node's
-    node-local reaction_index so it still points to the same logical Reaction.
+    Fix every node that carries a 'reaction_index' (not just those whose
+    bl_idname starts with 'Reaction'), including UtilityDelayNode.
     """
     for ng in bpy.data.node_groups:
         if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
             continue
         for node in ng.nodes:
-            # Only touch our reaction nodes that carry a reaction_index
-            blid = getattr(node, "bl_idname", "")
-            if not blid.startswith("Reaction"):
-                continue
             if not hasattr(node, "reaction_index"):
                 continue
 
@@ -63,14 +59,11 @@ def _reindex_reaction_nodes_after_remove(removed_index: int) -> None:
                 continue
 
             if idx == removed_index:
-                # This node is being freed (or points at the removed slot).
-                # If somehow we got here for a surviving node, mark invalid to avoid mis-pointing.
                 try:
                     node.reaction_index = -1
                 except Exception:
                     pass
             elif idx > removed_index:
-                # Shift down by one to track the same logical item.
                 try:
                     node.reaction_index = idx - 1
                 except Exception:
@@ -335,6 +328,7 @@ def _draw_common_fields(layout, r, kind: str):
     elif t == "RESET_GAME":
         header.label(text="Reset Game on trigger", icon='FILE_REFRESH')
 
+
 # ───────────────────────── sockets ─────────────────────────
 
 class ReactionTriggerInputSocket(bpy.types.NodeSocket):
@@ -568,6 +562,38 @@ class ReactionActionKeysNode(_ReactionNodeKind):
 
         info = layout.box()
         info.label(text="Pick an existing Action Key. No creation here.", icon='INFO')
+
+
+class UtilityDelayNode(_ReactionNodeKind):
+    bl_idname = "UtilityDelayNodeType"
+    bl_label  = "Delay"
+    KIND = "DELAY"
+
+    _EXPL_TINT_UTILITY = (0.35, 0.35, 0.35)
+
+    def _tint(self):
+        try:
+            self.use_custom_color = True
+            self.color = self._EXPL_TINT_UTILITY
+        except Exception:
+            pass
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Delay Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+        box.prop(r, "utility_delay_seconds", text="Delay (sec)")
+
+        info = layout.box()
+        info.label(text="Delays all reactions AFTER this node by the amount above.", icon='TIME')
+
+
 
 # ───────────────────────── concrete nodes ─────────────────────────
 

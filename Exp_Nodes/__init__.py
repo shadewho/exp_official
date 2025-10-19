@@ -34,10 +34,10 @@ from .node_editor import (
     NODE_MT_exploratory_add_triggers,
     NODE_MT_exploratory_add_reactions,
     NODE_MT_exploratory_add_objectives,
+    NODE_MT_exploratory_add_actions,
+    NODE_MT_exploratory_add_utilities,
     # hook used to append menu entry to NODE_MT_add
     _append_exploratory_entry,
-
-    NODE_MT_exploratory_add_actions,
 )
 from .action_key_nodes import CreateActionKeyNode
 
@@ -71,6 +71,7 @@ from .reaction_nodes import (
     ReactionProjectileNode,
     ReactionHitscanNode,
     ReactionActionKeysNode,
+    UtilityDelayNode,
 )
 
 from .trig_react_obj_lists import(
@@ -104,6 +105,9 @@ classes = [
     ActionTriggerNode,
 
 
+    # utilities
+    UtilityDelayNode, 
+
     # reactions
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
@@ -122,6 +126,7 @@ classes = [
     ReactionProjectileNode,
     ReactionHitscanNode,
     ReactionActionKeysNode,
+
 
     # objective
     ObjectiveNode,
@@ -151,6 +156,7 @@ classes = [
     VIEW3D_PT_Exploratory_Reactions,
     VIEW3D_PT_Objectives,
     EXPLORATORY_UL_Objectives,
+    NODE_MT_exploratory_add_utilities,
 ]
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"

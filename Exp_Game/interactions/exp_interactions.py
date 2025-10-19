@@ -25,7 +25,77 @@ from ..reactions.exp_action_keys import (
     seed_defaults_from_scene,
 )
 # Global list to hold pending trigger tasks.
+_pending_reaction_batches = []
 _pending_trigger_tasks = []
+def _execute_reaction_now(r):
+    """
+    Execute a single reaction immediately (no scheduling).
+    'DELAY' is handled at the sequencing level and is ignored here.
+    """
+    t = getattr(r, "reaction_type", "")
+
+    if t == "DELAY":
+        return  # sequencing-only marker
+
+    # --- map reaction types to executors (same mapping you already use) ---
+    if t == "CUSTOM_ACTION":
+        execute_custom_action_reaction(r)
+    elif t == "OBJECTIVE_COUNTER":
+        execute_objective_counter_reaction(r)
+    elif t == "OBJECTIVE_TIMER":
+        execute_objective_timer_reaction(r)
+    elif t == "CHAR_ACTION":
+        execute_char_action_reaction(r)
+    elif t == "SOUND":
+        execute_sound_reaction(r)
+    elif t == "TRANSFORM":
+        execute_transform_reaction(r)
+    elif t == "PROPERTY":
+        execute_property_reaction(r)
+    elif t == "CUSTOM_UI_TEXT":
+        execute_custom_ui_text_reaction(r)
+    elif t == "ENABLE_CROSSHAIRS":
+        execute_crosshairs_reaction(r)
+    elif t == "HITSCAN":
+        execute_hitscan_reaction(r)
+    elif t == "PROJECTILE":
+        execute_projectile_reaction(r)
+    elif t == "MOBILITY":
+        execute_mobility_reaction(r)
+    elif t == "MESH_VISIBILITY":
+        execute_mesh_visibility_reaction(r)
+    elif t == "RESET_GAME":
+        execute_reset_game_reaction(r)
+    elif t == "ACTION_KEYS":
+        execute_action_key_reaction(r)
+
+
+def _execute_reaction_list_now(reactions):
+    """Execute a list of reactions immediately (skips any DELAY markers)."""
+    for r in (reactions or []):
+        if getattr(r, "reaction_type", "") != "DELAY":
+            _execute_reaction_now(r)
+
+
+def schedule_reaction_batch(reactions, fire_time):
+    """Queue a batch (list of ReactionDefinition) to run at fire_time."""
+    if not reactions:
+        return
+    _pending_reaction_batches.append({
+        "reactions": list(reactions),
+        "fire_time": float(fire_time)
+    })
+
+
+def process_pending_reaction_batches():
+    """Run any queued reaction batches whose time has arrived."""
+    now = get_game_time()
+    for task in _pending_reaction_batches[:]:
+        if now >= task["fire_time"]:
+            _execute_reaction_list_now(task["reactions"])
+            _pending_reaction_batches.remove(task)
+
+
 
 # -------------------------------------------------------------------
 # Find reactions linked to an interaction and run them
@@ -339,7 +409,7 @@ def check_interactions(context):
             handle_collision_trigger(inter, current_time)
         elif t == "INTERACT":
             handle_interact_trigger(inter, current_time, pressed_this_frame, context)
-        elif t == "ACTION":  # NEW
+        elif t == "ACTION":  #
             handle_action_trigger(inter, current_time, pressed_action)
         elif t == "OBJECTIVE_UPDATE":
             handle_objective_update_trigger(inter, current_time)
@@ -372,8 +442,8 @@ def schedule_trigger(interaction, fire_time):
 
 def process_pending_triggers():
     """
-    Checks the pending trigger tasks. For each task whose fire_time has passed,
-    fires its reactions and removes the task.
+    Checks pending trigger tasks and fires their reactions when due.
+    Also processes any matured reaction batches (Utilities → Delay).
     """
     current_time = get_game_time()
     for task in _pending_trigger_tasks[:]:
@@ -381,6 +451,10 @@ def process_pending_triggers():
             inter = task["interaction"]
             run_reactions(_get_linked_reactions(inter))
             _pending_trigger_tasks.remove(task)
+
+    # New: also run matured reaction batches each frame
+    process_pending_reaction_batches()
+
 
 # -------------------------------------------------------------------
 # 4.1) Proximity Trigger:
@@ -444,6 +518,27 @@ def handle_proximity_trigger(inter, current_time):
 
 
 
+# ─────────────────────────────────────────────────────────
+# Game Start trigger (fires once per game start/reset)
+# ─────────────────────────────────────────────────────────
+def handle_on_game_start_trigger(inter, current_time):
+    """
+    Fire once after gameplay begins (or after a reset). Subsequent frames do nothing
+    until reset_all_interactions() clears 'has_fired'.
+    Honors the per-interaction trigger_delay just like other triggers.
+    """
+    if inter.has_fired:
+        return
+
+    if getattr(inter, "trigger_delay", 0.0) > 0.0:
+        schedule_trigger(inter, current_time + inter.trigger_delay)
+    else:
+        run_reactions(_get_linked_reactions(inter))
+
+    inter.has_fired = True
+    inter.last_trigger_time = current_time
+
+
 # -------------------------------------------------------------------
 # 4.2) Collision Trigger: ENTER/LEAVE (updated)
 # -------------------------------------------------------------------
@@ -491,21 +586,38 @@ def handle_collision_trigger(inter, current_time):
                 inter.last_trigger_time = current_time
 
 ###############################################################################
-# Game start trigger
+# reset interactions
 ###############################################################################
-def handle_on_game_start_trigger(inter, current_time):
-    """
-    Fire once per game start/reset.
-    Resets via reset_all_interactions() which clears inter.has_fired.
-    """
-    if inter.has_fired:
-        return
-    if inter.trigger_delay > 0.0:
-        schedule_trigger(inter, current_time + inter.trigger_delay)
-    else:
-        run_reactions(_get_linked_reactions(inter))
-    inter.has_fired = True
-    inter.last_trigger_time = current_time
+def reset_all_interactions(scene):
+
+    seed_defaults_from_scene(scene)
+
+    # Clear any queued triggers and delayed reaction batches
+    global _pending_trigger_tasks, _pending_reaction_batches
+    try:
+        _pending_trigger_tasks.clear()
+    except Exception:
+        _pending_trigger_tasks = []
+    try:
+        _pending_reaction_batches.clear()
+    except Exception:
+        _pending_reaction_batches = []
+
+    now = get_game_time()
+    for inter in scene.custom_interactions:
+        inter.has_fired = False
+        inter.last_trigger_time = now
+        inter.is_in_zone = False
+
+        if inter.trigger_type == "OBJECTIVE_UPDATE":
+            if inter.objective_index.isdigit():
+                idx = int(inter.objective_index)
+                if 0 <= idx < len(scene.objectives):
+                    inter.last_known_count = scene.objectives[idx].current_value
+                else:
+                    inter.last_known_count = -1
+            else:
+                inter.last_known_count = -1
 
 
 ###############################################################################
@@ -656,37 +768,36 @@ def reset_interaction_if_needed(inter):
 # In exp_interactions.py (inside run_reactions)
 
 def run_reactions(reactions):
+    """
+    Execute reactions honoring Utilities → Delay nodes in the sequence.
+    Any 'DELAY' item partitions the list; segments after it are queued by
+    the cumulative delay time.
+
+    Assumes the execution order is the Interaction's link order.
+    """
+    if not reactions:
+        return
+
+    now = get_game_time()
+    fire_time = now
+    segment = []
+
     for r in reactions:
-        if r.reaction_type == "CUSTOM_ACTION":
-            execute_custom_action_reaction(r)
-        elif r.reaction_type == "OBJECTIVE_COUNTER":
-            execute_objective_counter_reaction(r)
-        elif r.reaction_type == "OBJECTIVE_TIMER":
-            execute_objective_timer_reaction(r)
-        elif r.reaction_type == "CHAR_ACTION":
-            execute_char_action_reaction(r)
-        elif r.reaction_type == "SOUND":
-            execute_sound_reaction(r)
-        elif r.reaction_type == "TRANSFORM":
-            execute_transform_reaction(r)
-        elif r.reaction_type == "PROPERTY":
-            execute_property_reaction(r)
-        elif r.reaction_type == "CUSTOM_UI_TEXT":
-            execute_custom_ui_text_reaction(r)
-        elif r.reaction_type == "ENABLE_CROSSHAIRS":
-            execute_crosshairs_reaction(r)
-        elif r.reaction_type == "HITSCAN":
-            execute_hitscan_reaction(r)
-        elif r.reaction_type == "PROJECTILE":
-            execute_projectile_reaction(r)
-        elif r.reaction_type == "MOBILITY":
-            execute_mobility_reaction(r)
-        elif r.reaction_type == "MESH_VISIBILITY":
-            execute_mesh_visibility_reaction(r)
-        elif r.reaction_type == "RESET_GAME":
-            execute_reset_game_reaction(r)
-        elif r.reaction_type == "ACTION_KEYS":
-            execute_action_key_reaction(r)
+        if getattr(r, "reaction_type", "") == "DELAY":
+            # flush current segment at current fire_time
+            if segment:
+                schedule_reaction_batch(segment, fire_time)
+                segment = []
+            # accumulate delay
+            d = float(getattr(r, "utility_delay_seconds", 0.0) or 0.0)
+            if d > 0.0:
+                fire_time += d
+        else:
+            segment.append(r)
+
+    # flush trailing segment
+    if segment:
+        schedule_reaction_batch(segment, fire_time)
         
 
 
@@ -808,24 +919,6 @@ def was_action_pressed():
     the flag is cleared at the end of check_interactions().
     """
     return bool(_global_action_pressed)
-
-def reset_all_interactions(scene):
-    seed_defaults_from_scene(scene)
-    now = get_game_time()
-    for inter in scene.custom_interactions:
-        inter.has_fired = False
-        inter.last_trigger_time = now
-        inter.is_in_zone = False
-
-        if inter.trigger_type == "OBJECTIVE_UPDATE":
-            if inter.objective_index.isdigit():
-                idx = int(inter.objective_index)
-                if 0 <= idx < len(scene.objectives):
-                    inter.last_known_count = scene.objectives[idx].current_value
-                else:
-                    inter.last_known_count = -1
-            else:
-                inter.last_known_count = -1
 
 
 ###############################################################################
