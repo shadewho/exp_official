@@ -6,6 +6,7 @@ import os
 from ...exp_preferences import get_addon_path
 from ..props_and_utils.exp_utilities import get_game_world
 from .exp_fullscreen import enter_fullscreen_once
+from ..animations.exp_custom_animations import purge_all_game_custom_nla
 
 # ────────────────────────────────────
 # Global for restoring scene
@@ -322,18 +323,14 @@ def disable_live_perf_overlay_next_tick():
 #---------clear custom actions in NLA --- updated or changed actions replace action strips
 def clear_all_exp_custom_strips():
     """
-    Delete all strips inside tracks named 'exp_custom' for all objects.
-    Non-destructive: we do NOT delete the tracks themselves or touch other tracks.
-    Call this on game start to ensure newly edited Actions re-push cleanly.
+    HARD-WIPE for game START. See purge_all_game_custom_nla() for rules.
     """
-    for obj in bpy.data.objects:
-        ad = getattr(obj, "animation_data", None)
-        if not ad:
-            continue
-        tr = ad.nla_tracks.get("exp_custom")
-        if tr:
-            for s in list(tr.strips):
-                tr.strips.remove(s)
+    try:
+        purge_all_game_custom_nla()
+    except Exception as e:
+        print(f"[WARN] purge_all_game_custom_nla failed: {e}")
+
+
 #----------------------------------------------------------------------------------------
 
 

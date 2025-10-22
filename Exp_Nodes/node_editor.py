@@ -13,6 +13,7 @@ def _in_exploratory_editor(context) -> bool:
     return bool(sd) and getattr(sd, "tree_type", "") == EXPL_TREE_ID
 
 
+
 # ─────────────────────────────────────────────────────────
 # Custom Node Tree & Sockets
 # ─────────────────────────────────────────────────────────
@@ -33,11 +34,21 @@ class TriggerOutputSocket(NodeSocket):
     bl_idname = "TriggerOutputSocketType"
     bl_label  = "Trigger Output Socket"
 
+    _RICH_RED = (0.92, 0.18, 0.18, 1.0)
+    _BLUE     = (0.15, 0.55, 1.0, 1.0)
+
     def draw(self, context, layout, node, text):
         layout.label(text=text)
 
     def draw_color(self, context, node):
-        return (0.15, 0.55, 1.0, 1.0)
+        # solid red if this output has multiple outgoing links
+        try:
+            if self.is_output and len(self.links) > 1:
+                return self._RICH_RED
+        except Exception:
+            pass
+        return self._BLUE
+
 
 
 # ─────────────────────────────────────────────────────────
@@ -92,6 +103,7 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Mesh Visibility",   "ReactionMeshVisibilityNodeType")
         add("Reset Game",        "ReactionResetGameNodeType")
         add("Action Keys",           "ReactionActionKeysNodeType")
+        add("Parent / Unparent", "ReactionParentingNodeType")
 
 class NODE_MT_exploratory_add_objectives(Menu):
     bl_idname = "NODE_MT_exploratory_add_objectives"

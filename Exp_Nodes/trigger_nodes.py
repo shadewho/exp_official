@@ -378,6 +378,7 @@ class _TriggerNodeKind(TriggerNodeBase):
     def _draw_interact(self, layout, _scn, inter):
         layout.prop(inter, "interact_object", text="Object")
         layout.prop(inter, "interact_distance", text="Distance")
+        
 
     def _draw_objective_update(self, layout, _scn, inter):
         layout.prop(self, "node_objective_index", text="Objective")

@@ -5,8 +5,10 @@ from ..systems.exp_live_performance import (
 )
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time
 from ..animations.exp_custom_animations import update_all_custom_managers
-from ..reactions.exp_reactions import update_transform_tasks, update_property_tasks
+from ..animations.exp_animations import nla_is_locked
+from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import update_projectile_tasks
+from ..reactions.exp_transforms import update_transform_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_thread_result
 from ..physics.exp_dynamic import update_dynamic_meshes
 from ..physics.exp_view import update_camera_for_operator
@@ -59,7 +61,9 @@ class GameLoop:
             # B1) Custom/scripted tasks (SIM-timed): cheap → step-per-step
             t0 = perf_mark(op, 'custom_tasks')
             for _ in range(steps):
-                update_all_custom_managers(dt_sim)
+                # >>> guard: skip NLA custom managers while reset/start wipes <<<
+                if not nla_is_locked():
+                    update_all_custom_managers(dt_sim)
                 update_transform_tasks()
                 update_property_tasks()
                 update_projectile_tasks(dt_sim)
@@ -82,7 +86,8 @@ class GameLoop:
 
             # B4) Animations & audio: once with aggregated dt
             t0 = perf_mark(op, 'anim_audio')
-            if op.animation_manager:
+            # >>> guard: skip character animation update while reset/start wipes <<<
+            if not nla_is_locked() and op.animation_manager:
                 op.animation_manager.update(
                     op.keys_pressed, agg_dt, op.is_grounded, op.z_velocity
                 )

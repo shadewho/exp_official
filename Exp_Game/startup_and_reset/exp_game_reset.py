@@ -22,18 +22,24 @@ def capture_scene_state(self, context):
     # Clear any old data
     self._initial_game_state.clear()
 
-    # 1) Make a subdict for all object transforms
+    # 1) object transforms + viewport visibility + parent inverse
     self._initial_game_state["object_transforms"] = {}
-
     for obj in scene.objects:
-        # Capture the object's transform data plus viewport visibility.
         self._initial_game_state["object_transforms"][obj.name] = {
-            "location": obj.location.copy(),
-            "rotation": obj.rotation_euler.copy(),
-            "scale":    obj.scale.copy(),
-            "hide_viewport": obj.hide_viewport,   # <-- Capture the viewport visibility.
+            "location":      obj.location.copy(),
+            "rotation":      obj.rotation_euler.copy(),
+            "scale":         obj.scale.copy(),
+            "hide_viewport": obj.hide_viewport,
+            "parent_inv":    obj.matrix_parent_inverse.copy(),  # ← NEW
         }
         
+
+    # 1.5) original parent relationships for all objects
+    try:
+        from ..reactions import exp_parenting as _parenting
+        _parenting.capture_original_parents(self, context)
+    except Exception as e:
+        print(f"[WARN] capture_original_parents failed: {e}")
 
     # 2) Add another subdict for scene‐level data if you want
     self._initial_game_state["scene_data"] = {}
@@ -45,22 +51,41 @@ def capture_scene_state(self, context):
     }
 
 def restore_scene_state(modal_op, context):
+    """
+    Correct order:
+      A) restore original parents (also removes runtime Child-Of constraints)
+      B) then restore local transforms and visibility
+    """
     state = getattr(modal_op, "_initial_game_state", None)
     if not state:
         return
 
-    # A) Per-object transforms
+    # A) parents first (so local transforms below mean the same thing again)
+    try:
+        from ..reactions import exp_parenting as _parenting
+        _parenting.restore_original_parents(modal_op, context)
+    except Exception as e:
+        print(f"[WARN] restore_original_parents failed: {e}")
+
+    # B) Per-object transforms + viewport visibility
     obj_transforms = state.get("object_transforms", {})
     for obj_name, xform_data in obj_transforms.items():
         obj = bpy.data.objects.get(obj_name)
-        if obj:
+        if not obj:
+            continue
+        try:
             obj.location       = xform_data["location"]
             obj.rotation_euler = xform_data["rotation"]
             obj.scale          = xform_data["scale"]
+        except Exception:
+            pass
 
-            # Restore viewport visibility if it was captured.
+        # Restore viewport visibility if it was captured.
+        try:
             if "hide_viewport" in xform_data:
                 obj.hide_viewport = xform_data["hide_viewport"]
+        except Exception:
+            pass
 
 
 def apply_hide_during_game(modal_op, context):
@@ -150,74 +175,94 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             self.report({'WARNING'}, "No active ExpModal found.")
             return {'CANCELLED'}
 
-        # ─── 0) Reset the game clock first ───────────────────────────
-        #    so that any "last_trigger_time" stamps use the new zero baseline.
-        init_time()
-
-        # ─── 0.5) Stop custom actions and rewind exp_custom strips ───
-        # Do this BEFORE restoring object transforms, so strips can't "fight" the pose.
+        # --- NLA critical section so scrubbing can't fight the wipe ---
+        from ..animations.exp_animations import nla_guard_enter, nla_guard_exit, get_global_animation_manager
+        nla_guard_enter()
         try:
-            from ..animations.exp_custom_animations import stop_custom_actions_and_rewind_strips
-            stop_custom_actions_and_rewind_strips()
-        except Exception as e:
-            print(f"[WARN] stop_custom_actions_and_rewind_strips failed: {e}")
+            # Quiesce the animation manager so no stale strip refs remain
+            try:
+                mgr = get_global_animation_manager()
+                if mgr:
+                    mgr.active_actions.clear()
+                    mgr.one_time_in_progress = False
+                    mgr.last_action_name = None
+            except Exception:
+                pass
 
-        # ─── 0.6) Stop all playing sounds ─────────────────────────────────
-        try:
-            exp_globals.stop_all_sounds()
-        except Exception as e:
-            print(f"[WARN] stop_all_sounds failed: {e}")
+            # ─── 0) Reset the game clock first ───────────────────────────
+            #    so that any "last_trigger_time" stamps use the new zero baseline.
+            init_time()
 
-        # 1) only restore the scene if skip_restore is False
-        if not self.skip_restore:
-            restore_scene_state(modal_op, context)
+            # ─── 0.5) Stop custom actions and rewind exp_custom strips ───
+            # Do this BEFORE restoring object transforms, so strips can't "fight" the pose.
+            try:
+                from ..animations.exp_custom_animations import stop_custom_actions_and_rewind_strips
+                stop_custom_actions_and_rewind_strips()
+            except Exception as e:
+                print(f"[WARN] stop_custom_actions_and_rewind_strips failed: {e}")
 
-            apply_hide_during_game(modal_op, context)
+            # ─── 0.6) Stop all playing sounds ─────────────────────────────────
+            try:
+                exp_globals.stop_all_sounds()
+            except Exception as e:
+                print(f"[WARN] stop_all_sounds failed: {e}")
 
-        # ---- Reset dynamic platform state so no stale deltas apply after reset ----
-        # Clear BVH caches so they rebuild against the restored transforms
-        modal_op.cached_dynamic_bvhs = {}
-        modal_op.dynamic_bvh_map = {}
+            # 1) only restore the scene if skip_restore is False
+            if not self.skip_restore:
+                restore_scene_state(modal_op, context)
+                apply_hide_during_game(modal_op, context)
 
-        # Drop any notion of being "on a platform"
-        modal_op.grounded_platform = None
+            # ---- Reset dynamic platform state so no stale deltas apply after reset ----
+            # Clear BVH caches so they rebuild against the restored transforms
+            modal_op.cached_dynamic_bvhs = {}
+            modal_op.dynamic_bvh_map = {}
 
-        # Re-seed prev positions/matrices to CURRENT matrices post-restore
-        modal_op.platform_motion_map = {}
-        modal_op.platform_delta_map = {}
+            # Drop any notion of being "on a platform"
+            modal_op.grounded_platform = None
 
-        if hasattr(modal_op, "moving_meshes"):
-            modal_op.platform_prev_positions = {}
-            modal_op.platform_prev_matrices  = {}
-            for dyn_obj in modal_op.moving_meshes:
-                if dyn_obj:
-                    modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
-                    modal_op.platform_prev_matrices[dyn_obj]  = dyn_obj.matrix_world.copy()
+            # Re-seed prev positions/matrices to CURRENT matrices post-restore
+            modal_op.platform_motion_map = {}
+            modal_op.platform_delta_map = {}
 
-        # Optional: suppress one frame of platform-delta application (see Patch 3)
-        from ..props_and_utils.exp_time import get_game_time
-        modal_op._suppress_platform_delta_until = get_game_time() + 1e-6
+            if hasattr(modal_op, "moving_meshes"):
+                modal_op.platform_prev_positions = {}
+                modal_op.platform_prev_matrices  = {}
+                for dyn_obj in modal_op.moving_meshes:
+                    if dyn_obj:
+                        modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
+                        modal_op.platform_prev_matrices[dyn_obj]  = dyn_obj.matrix_world.copy()
 
-        # ─── 2) Reset interactions, tasks, objectives, and properties ─
-        #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
-        reset_all_interactions(context.scene)
-        reset_all_tasks()
-        reset_all_objectives(context.scene)
-        reset_property_reactions(context.scene)
+            # Optional: suppress one frame of platform-delta application (see Patch 3)
+            from ..props_and_utils.exp_time import get_game_time
+            modal_op._suppress_platform_delta_until = get_game_time() + 1e-6
 
-        # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
-        clear_all_text()
-        try:
-            disable_crosshairs()
-        except Exception:
-            pass
-        spawn_user()
+            # ─── 2) Reset interactions, tasks, objectives, and properties ─
+            #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
+            reset_all_interactions(context.scene)
+            reset_all_tasks()
+            reset_all_objectives(context.scene)
+            reset_property_reactions(context.scene)
 
-        # Re-arm performance culling after restoring visibility
-        rearm_performance_after_reset(modal_op, context)
+            # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
+            clear_all_text()
+            try:
+                disable_crosshairs()
+            except Exception:
+                pass
+            spawn_user()
 
-        self.report({'INFO'}, "Game fully reset.")
-        return {'FINISHED'}
+            # Re-arm performance culling after restoring visibility
+            rearm_performance_after_reset(modal_op, context)
+
+            self.report({'INFO'}, "Game fully reset.")
+            return {'FINISHED'}
+
+        finally:
+            # Leave the NLA critical section so scrubbing can resume next tick
+            try:
+                nla_guard_exit()
+            except Exception:
+                pass
 
 
 

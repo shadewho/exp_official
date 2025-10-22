@@ -3,7 +3,7 @@
 import bpy
 import enum
 from ..props_and_utils.exp_time import get_game_time
-
+import re
 
 _global_anim_manager = None
 
@@ -22,6 +22,20 @@ def get_global_animation_manager():
     """
     return _global_anim_manager
 
+_nla_write_lock = 0
+
+def nla_guard_enter():
+    """Enter a global NLA write critical section (re-entrant)."""
+    global _nla_write_lock
+    _nla_write_lock += 1
+
+def nla_guard_exit():
+    """Leave the global NLA write critical section."""
+    global _nla_write_lock
+    _nla_write_lock = max(0, _nla_write_lock - 1)
+
+def nla_is_locked():
+    return _nla_write_lock > 0
 
 ############################################
 # 1) AnimState & (Optional) Transitions
@@ -103,6 +117,7 @@ class AnimationStateManager:
 
         # We keep a single track
         self.track_name     = "exp_character"
+
         self.active_actions = []
 
         # Controls how quickly we shift frames
@@ -113,6 +128,87 @@ class AnimationStateManager:
 
         # For jump => only trigger on press, not hold
         self.jump_key_held = False
+
+
+    def _ensure_base_track(self, obj):
+        """
+        Ensure ONLY the base locomotion track exists.
+        Do NOT touch other tracks (overlays, etc).
+        """
+        if not obj.animation_data:
+            obj.animation_data_create()
+        ad = obj.animation_data
+        base = ad.nla_tracks.get(self.track_name)
+        if not base:
+            base = ad.nla_tracks.new()
+            base.name = self.track_name
+        obj.animation_data.action = None  # ensure NLA evaluation
+        return base
+
+    def _create_overlay_track(self, obj, action_name: str):
+        """
+        Create a NEW overlay track, named after the action.
+        If a track with that exact name already exists AND has strips, we make a unique suffix (.001, .002, ...).
+        We tag the track with a custom prop so resets can find it.
+        """
+        if not obj.animation_data:
+            obj.animation_data_create()
+        ad = obj.animation_data
+
+        base = (action_name or "overlay").strip()
+        # sanitize (keep it readable for you)
+        safe = re.sub(r"[^A-Za-z0-9_.\- ]+", "_", base).strip() or "overlay"
+
+        name = safe
+        existing = ad.nla_tracks.get(name)
+        if existing is not None and len(existing.strips) == 0:
+            tr = existing
+        else:
+            if existing is not None:
+                # find a unique suffix
+                idx = 1
+                while ad.nla_tracks.get(f"{safe}.{idx:03d}") is not None:
+                    idx += 1
+                name = f"{safe}.{idx:03d}"
+            tr = ad.nla_tracks.new()
+            tr.name = name
+
+        # mark as our overlay for safe cleanup later
+        try:
+            tr["exp_overlay"] = True
+            tr["exp_overlay_action"] = safe
+        except Exception:
+            pass
+
+        # best-effort: move newly created track to TOP (evaluate last)
+        try:
+            tracks = ad.nla_tracks
+            # find current index
+            cur_idx = None
+            for i, t in enumerate(tracks):
+                if t == tr:
+                    cur_idx = i
+                    break
+            if cur_idx is not None and hasattr(tracks, "move"):
+                tracks.move(cur_idx, len(tracks) - 1)
+        except Exception:
+            pass
+
+        obj.animation_data.action = None
+        return tr
+
+    def _prune_track_if_empty(self, obj, track):
+        """
+        If a non-base track has no strips, delete it immediately.
+        (We don't rely on tags; any empty non-base track is pruned.)
+        """
+        if not obj or not getattr(obj, "animation_data", None) or not track:
+            return
+        try:
+            if track.name != self.track_name and len(track.strips) == 0:
+                obj.animation_data.nla_tracks.remove(track)
+        except Exception:
+            pass
 
 
 
@@ -351,171 +447,17 @@ class AnimationStateManager:
         if not act:
             return
 
-        # If not loop => one_time_in_progress
+        # For base track, one-time blocks the state machine until finished
         if not loop:
             self.one_time_in_progress = True
 
-        # If "override" => remove any existing strips no matter what
-        self._ensure_track(obj)
-        track = obj.animation_data.nla_tracks.get(self.track_name)
+        base_track = self._ensure_base_track(obj)
 
-        for s in list(track.strips):
-            track.strips.remove(s)
-        self.active_actions.clear()
+        # Clear only the BASE track & its records (unchanged behavior)
+        self._clear_track_and_records(base_track)
 
         a_len = act.frame_range[1] - act.frame_range[0]
-        new_strip = track.strips.new(act.name, start=0, action=act)
-        new_strip.frame_start = 0
-        new_strip.frame_end   = a_len
-        new_strip.blend_in  = 0.0
-        new_strip.blend_out = 0.0
-
-        obj.animation_data.action = None
-
-        record = {
-            "action_name":   action_name,
-            "type":          action_type,
-            "loop":          loop,
-            "override":      override,
-            "chain":         chain,
-            "speed":         speed,
-            "strip":         new_strip,
-            "action_length": a_len,
-            "play_fully":    play_fully,
-
-            # Add optional loop_duration if custom wants it; default=0 => no forced end
-            "loop_duration": 0.0,
-            "start_time":    get_game_time()
-        }
-        self.active_actions.append(record)
-        self.last_action_name = action_name
-
-
-    # -------------------------------------------------
-    # 4) scrub => shift frames each frame (time-based cutoff for custom loops)
-    # -------------------------------------------------
-    def scrub_nla_strips(self, delta_time):
-        """
-        EXACT your code, plus an early check for "CUSTOM_CHAR" with a time-limited loop.
-        If rec["loop_duration"] > 0 and the time is up, we remove it immediately
-        without waiting for the strip frames to end.
-        """
-
-        obj = self.target_object
-        if not obj or not obj.animation_data:
-            return
-        track = obj.animation_data.nla_tracks.get(self.track_name)
-        if not track:
-            return
-
-        now = get_game_time()
-        to_remove = []
-
-        for rec in self.active_actions:
-            s     = rec["strip"]
-            loop  = rec["loop"]
-            a_len = rec["action_length"]
-            spd   = rec["speed"]
-
-            # -- (A) If this is a custom-labeled record (e.g. type="CUSTOM_CHAR")
-            #        and they stored some loop_duration>0.0 => forcibly remove
-            #        once real time has passed, ignoring frames.
-            #        (We do this check BEFORE seeing if s.frame_end<=0).
-            if rec.get("type") == "CUSTOM_CHAR" and loop:
-                loop_dur = rec.get("loop_duration", 0.0)
-                if loop_dur > 0.0:
-                    elapsed = now - rec.get("start_time", 0.0)
-                    if elapsed >= loop_dur:
-                        # time is up => remove it right now
-                        to_remove.append(rec)
-                        continue  # skip the normal frame logic below
-
-            # -- (B) Normal shifting logic (unchanged)
-            shift_amount = delta_time * self.base_speed_factor * spd
-            s.frame_start -= shift_amount
-            s.frame_end   -= shift_amount
-
-            if s.frame_end <= 0:
-                if loop:
-                    # wrap around
-                    s.frame_start = 0
-                    s.frame_end   = a_len
-                else:
-                    to_remove.append(rec)
-
-        # remove ended
-        for r in to_remove:
-            st = r["strip"]
-            for existing_strip in track.strips:
-                if existing_strip == st:
-                    track.strips.remove(existing_strip)
-                    break
-
-            self.active_actions.remove(r)
-            self.last_action_name = None
-
-            if self.one_time_in_progress:
-                self.one_time_in_progress = False
-
-            # If this action was the LAND anim => forcibly set anim_state=IDLE
-            if (self.anim_state == AnimState.LAND):
-                self.anim_state = AnimState.IDLE
-                self.landing_in_progress = False
-
-            # If there's a 'chain'
-            nxt = r.get("chain", None)
-            if nxt:
-                self.start_action(nxt, loop=False, override=False, chain=None, speed=1.0)
-
-    # -------------------------------------------------
-    # 5) track & helper (unchanged)
-    # -------------------------------------------------
-    def _ensure_track(self, obj):
-        """
-        Removes all other NLA tracks, ensures 'exp_character' track,
-        clears .action so it doesn't appear in Action Editor.
-        """
-        if not obj.animation_data:
-            obj.animation_data_create()
-
-        existing = None
-        remove_list = []
-        for t in obj.animation_data.nla_tracks:
-            if t.name == self.track_name:
-                existing = t
-            else:
-                remove_list.append(t)
-
-        for t in remove_list:
-            obj.animation_data.nla_tracks.remove(t)
-
-        if not existing:
-            existing = obj.animation_data.nla_tracks.new()
-            existing.name = self.track_name
-
-        obj.animation_data.action = None
-
-    def _current_has_one_time(self):
-        # Return True if any record has loop=False
-        return any(not rec["loop"] for rec in self.active_actions)
-    
-
-    def play_char_action(self, action, loop=False, loop_duration=0.0):
-        if not action:
-            return
-        obj = self.target_object
-        if not obj:
-            return
-        
-        self._ensure_track(obj)
-        track = obj.animation_data.nla_tracks.get(self.track_name)
-
-        for s in list(track.strips):
-            track.strips.remove(s)
-        self.active_actions.clear()
-
-        a_len = action.frame_range[1] - action.frame_range[0]
-        new_strip = track.strips.new(action.name, start=0, action=action)
+        new_strip = base_track.strips.new(act.name, start=0, action=act)
         new_strip.frame_start = 0
         new_strip.frame_end   = a_len
         new_strip.blend_in    = 0.0
@@ -524,17 +466,322 @@ class AnimationStateManager:
         obj.animation_data.action = None
 
         record = {
-            "action_name":   action.name,
-            # Change 'CHAR_REACTION' --> 'CUSTOM_CHAR'
-            "type":          "CUSTOM_CHAR",
+            "action_name":   action_name,
+            "type":          action_type,
+            "layer":         "BASE",
             "loop":          loop,
-            "loop_duration": loop_duration,
+            "override":      override,
+            "chain":         chain,
+            "speed":         speed,
             "strip":         new_strip,
+            "track":         base_track,
             "action_length": a_len,
-            "speed":         1.0,
-            "start_time":    get_game_time(),
+            "play_fully":    play_fully,
+            "loop_duration": 0.0,
+            "start_time":    get_game_time()
         }
         self.active_actions.append(record)
+        self.last_action_name = action_name
 
-        self.one_time_in_progress = True
 
+
+    # -------------------------------------------------
+    # 4) scrub => shift frames each frame (time-based cutoff for custom loops)
+    # -------------------------------------------------
+    def scrub_nla_strips(self, delta_time):
+        """
+        Shift frames for all active records (base + overlays).
+        Looping records obey loop_duration. Removes finished strips.
+        Guarded by the global NLA lock. Robust strip removal with identity/name/action fallbacks.
+        Also vacuums any stale empty non-base tracks.
+        """
+        # Skip while reset/start is wiping tracks
+        try:
+            if nla_is_locked():
+                return
+        except Exception:
+            pass
+
+        obj = self.target_object
+        if not obj or not obj.animation_data:
+            return
+
+        ad = obj.animation_data
+        now = get_game_time()
+        to_remove = []
+
+        # --- advance & mark finished ---
+        for rec in list(self.active_actions):
+            s   = rec.get("strip")
+            trk = rec.get("track")
+            if not s or not trk:
+                to_remove.append(rec)
+                continue
+
+            loop  = bool(rec.get("loop", False))
+            a_len = float(rec.get("action_length", 0.0))
+            spd   = max(0.05, float(rec.get("speed", 1.0)))
+
+            if loop:
+                loop_dur = float(rec.get("loop_duration", 0.0))
+                if loop_dur > 0.0:
+                    if now - float(rec.get("start_time", 0.0)) >= loop_dur:
+                        to_remove.append(rec)
+                        continue
+
+            shift_amount = delta_time * self.base_speed_factor * spd
+            try:
+                s.frame_start -= shift_amount
+                s.frame_end   -= shift_amount
+            except Exception:
+                to_remove.append(rec)
+                continue
+
+            if s.frame_end <= 0.0:
+                if loop and a_len > 0.0:
+                    s.frame_start = 0.0
+                    s.frame_end   = a_len
+                else:
+                    to_remove.append(rec)
+
+        # --- delete strips + prune tracks ---
+        for r in to_remove:
+            st  = r.get("strip")
+            trk = r.get("track")
+
+            if trk:
+                # Robust removal: identity OR name OR action+range match
+                try:
+                    removed = False
+                    for s2 in list(trk.strips):
+                        if s2 is st or s2.name == getattr(st, "name", None):
+                            trk.strips.remove(s2)
+                            removed = True
+                            break
+                    if (not removed) and st and getattr(st, "action", None) is not None:
+                        a = st.action
+                        fs, fe = float(getattr(st, "frame_start", 0.0)), float(getattr(st, "frame_end", 0.0))
+                        for s2 in list(trk.strips):
+                            if s2.action == a and abs(s2.frame_start - fs) < 1e-4 and abs(s2.frame_end - fe) < 1e-4:
+                                trk.strips.remove(s2)
+                                break
+                except Exception:
+                    pass
+
+            # Drop record regardless (defensive against partial removals)
+            try:
+                self.active_actions.remove(r)
+            except Exception:
+                pass
+
+            self.last_action_name = None
+
+            # Unblock base when its one-shot ends
+            if self.one_time_in_progress and r.get("layer") == "BASE":
+                self.one_time_in_progress = False
+
+            # LAND finishing behavior for base track stays as-is
+            if (self.anim_state == AnimState.LAND) and r.get("layer") == "BASE":
+                self.anim_state = AnimState.IDLE
+                self.landing_in_progress = False
+
+            # Simple chain
+            nxt = r.get("chain", None)
+            if nxt:
+                self.start_action(nxt, loop=False, override=False, chain=None, speed=1.0)
+
+            # Prune empty non-base track immediately
+            try:
+                if trk and trk.name != self.track_name and len(trk.strips) == 0:
+                    ad.nla_tracks.remove(trk)
+            except Exception:
+                pass
+
+        # --- vacuum pass: clean any stale non-base tracks with no active record ---
+        try:
+            for tr in list(ad.nla_tracks):
+                if tr.name == self.track_name:
+                    continue
+                # skip tracks still referenced by active records
+                if any(rec.get("track") is tr for rec in self.active_actions):
+                    continue
+                # remove expired strips if any slipped past
+                for s in list(tr.strips):
+                    try:
+                        if s.frame_end <= 0.0:
+                            tr.strips.remove(s)
+                    except Exception:
+                        try:
+                            tr.strips.remove(s)
+                        except Exception:
+                            pass
+                if len(tr.strips) == 0:
+                    try:
+                        ad.nla_tracks.remove(tr)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
+    # -------------------------------------------------
+    # 5) track & helper (unchanged)
+    # -------------------------------------------------
+    def _ensure_track(self, obj):
+        """
+        Ensure BOTH allowed tracks exist:
+          • 'exp_character'   (base locomotion)
+          • 'exp_char_custom' (overlay/blend)
+        Remove any other stray tracks. Clear .action.
+        """
+        if not obj.animation_data:
+            obj.animation_data_create()
+
+        allowed = {self.track_name, self.overlay_track_name}
+        base_track = None
+        overlay_track = None
+        to_remove = []
+
+        for t in obj.animation_data.nla_tracks:
+            if t.name == self.track_name:
+                base_track = t
+            elif t.name == self.overlay_track_name:
+                overlay_track = t
+            else:
+                to_remove.append(t)
+
+        for t in to_remove:
+            obj.animation_data.nla_tracks.remove(t)
+
+        if not base_track:
+            base_track = obj.animation_data.nla_tracks.new()
+            base_track.name = self.track_name
+
+        if not overlay_track:
+            overlay_track = obj.animation_data.nla_tracks.new()
+            overlay_track.name = self.overlay_track_name
+
+        obj.animation_data.action = None
+        
+    def _clear_track_and_records(self, track):
+        """Remove all strips from the given track and drop matching records."""
+        if not track:
+            return
+        # snapshot current strips for filtering active_records
+        removed = list(track.strips)
+        for s in list(track.strips):
+            track.strips.remove(s)
+        # keep records not tied to the removed strips
+        self.active_actions = [
+            rec for rec in self.active_actions
+            if rec.get("strip") not in removed and rec.get("track") is not track
+        ]
+    def _clear_overlay_track(self, obj, delete_track: bool = True):
+        """
+        Remove ALL strips from the overlay track ('exp_char_custom'), and optionally
+        delete the track itself. Safe no-op if track doesn't exist.
+
+        We call this whenever there is no active OVERLAY record so the overlay
+        can never influence the base locomotion.
+        """
+        ad = getattr(obj, "animation_data", None)
+        if not ad:
+            return
+        tr = ad.nla_tracks.get(self.overlay_track_name)
+        if not tr:
+            return
+
+        # Remove all strips
+        for s in list(tr.strips):
+            try:
+                tr.strips.remove(s)
+            except Exception:
+                pass
+
+        # Optionally remove the empty track as well
+        if delete_track:
+            try:
+                ad.nla_tracks.remove(tr)
+            except Exception:
+                pass
+    def _current_has_one_time(self):
+        # Return True if any record has loop=False
+        return any(not rec["loop"] for rec in self.active_actions)
+    
+
+    def play_char_action(self, action, loop=False, loop_duration=0.0, speed=1.0, blend=False):
+        """
+        Character action trigger:
+        • blend=False (default): plays on base track 'exp_character' (replaces locomotion like before)
+        • blend=True:  creates a NEW overlay track named after the action, adds a single strip,
+                        and lets it run independently. When finished, we delete the strip AND the track.
+                        Multiple overlays can coexist.
+        """
+        if not action:
+            return
+        obj = self.target_object
+        if not obj:
+            return
+
+        if not obj.animation_data:
+            obj.animation_data_create()
+
+        spd = max(0.05, float(speed))
+
+        if not blend:
+            # BASE (unchanged)
+            base_track = self._ensure_base_track(obj)
+            self._clear_track_and_records(base_track)
+
+            a_len = action.frame_range[1] - action.frame_range[0]
+            new_strip = base_track.strips.new(action.name, start=0, action=action)
+            new_strip.frame_start = 0
+            new_strip.frame_end   = a_len
+            new_strip.blend_in    = 0.0
+            new_strip.blend_out   = 0.0
+
+            obj.animation_data.action = None
+
+            record = {
+                "action_name":   action.name,
+                "type":          "CUSTOM_CHAR",
+                "layer":         "BASE",
+                "loop":          bool(loop),
+                "loop_duration": float(loop_duration) if loop else 0.0,
+                "strip":         new_strip,
+                "track":         base_track,
+                "action_length": a_len,
+                "speed":         spd,
+                "start_time":    get_game_time(),
+                "play_fully":    not loop,
+            }
+            self.active_actions.append(record)
+            self.one_time_in_progress = True  # preserve old behavior
+            return
+
+        # OVERLAY path: create a fresh topmost track named after the action
+        tr = self._create_overlay_track(obj, action.name)
+        a_len = action.frame_range[1] - action.frame_range[0]
+        s = tr.strips.new(action.name, start=0, action=action)
+        s.frame_start = 0
+        s.frame_end   = a_len
+        s.blend_in    = 0.0
+        s.blend_out   = 0.0
+
+        obj.animation_data.action = None
+
+        rec = {
+            "action_name":   action.name,
+            "type":          "CHAR_BLEND",
+            "layer":         "OVERLAY",
+            "loop":          bool(loop),
+            "loop_duration": float(loop_duration) if loop else 0.0,
+            "strip":         s,
+            "track":         tr,
+            "action_length": a_len,
+            "speed":         spd,
+            "start_time":    get_game_time(),
+            "play_fully":    not loop,
+        }
+        self.active_actions.append(rec)
+        # Note: overlays never set one_time_in_progress

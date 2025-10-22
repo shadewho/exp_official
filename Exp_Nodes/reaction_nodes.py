@@ -142,12 +142,17 @@ def _draw_common_fields(layout, r, kind: str):
         header.prop(r, "custom_action_loop", text="Loop?")
         if getattr(r, "custom_action_loop", False):
             header.prop(r, "custom_action_loop_duration", text="Loop Duration")
+        # NEW: per-reaction speed
+        header.prop(r, "custom_action_speed", text="Speed Multiplier")
 
     elif t == "CHAR_ACTION":
         header.prop_search(r, "char_action_ref", bpy.data, "actions", text="Action")
         header.prop(r, "char_action_mode", text="Mode")
         if getattr(r, "char_action_mode", "") == "LOOP":
             header.prop(r, "char_action_loop_duration", text="Loop Duration")
+        # NEW: per-reaction speed
+        header.prop(r, "char_action_speed", text="Speed Multiplier")
+        header.prop(r, "char_action_blend", text="Blend (overlay track)")
 
     elif t == "SOUND":
         # Sound pointer
@@ -216,23 +221,48 @@ def _draw_common_fields(layout, r, kind: str):
     elif t == "TRANSFORM":
         header.prop(r, "use_character", text="Use Character as Target")
         if getattr(r, "use_character", False):
-            char = bpy.context.scene.target_armature
-            header.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
+            char = getattr(bpy.context.scene, "target_armature", None)
+            header.label(text=f"Target: {char.name if char else '—'}", icon='ARMATURE_DATA')
         else:
-            header.prop_search(r, "transform_object", bpy.context.scene, "objects", text="Object")
+            header.prop_search(r, "transform_object", bpy.context.scene, "objects", text="Target Object")
+
         header.prop(r, "transform_mode", text="Mode")
-        if getattr(r, "transform_mode", "") == "TO_OBJECT":
-            header.prop_search(r, "transform_to_object", bpy.context.scene, "objects", text="To Object")
+        mode = getattr(r, "transform_mode", "OFFSET")
+
+        if mode in {"OFFSET", "LOCAL_OFFSET", "TO_LOCATION"}:
+            header.prop(r, "transform_location", text="Location")
+            header.prop(r, "transform_rotation", text="Rotation")
+            header.prop(r, "transform_scale",    text="Scale")
+
+        elif mode == "TO_OBJECT":
+            row = header.row(align=True)
+            row.prop(r, "transform_to_use_character", text="Use Character as 'To Object'")
+            if getattr(r, "transform_to_use_character", False):
+                c = getattr(bpy.context.scene, "target_armature", None)
+                header.label(text=f"To Object: {c.name if c else '—'}", icon='ARMATURE_DATA')
+            else:
+                header.prop_search(r, "transform_to_object", bpy.context.scene, "objects", text="To Object")
+
             col = header.column(align=True)
             col.label(text="Copy Channels:")
             col.prop(r, "transform_use_location", text="Location")
             col.prop(r, "transform_use_rotation", text="Rotation")
             col.prop(r, "transform_use_scale",    text="Scale")
-        if getattr(r, "transform_mode", "") in {"OFFSET","LOCAL_OFFSET","TO_LOCATION"}:
-            header.prop(r, "transform_location", text="Location")
-            header.prop(r, "transform_rotation", text="Rotation")
-            header.prop(r, "transform_scale",    text="Scale")
+
+        elif mode == "TO_BONE":
+            header.prop(r, "transform_to_bone_use_character", text="Use Character Armature")
+            if not getattr(r, "transform_to_bone_use_character", True):
+                header.prop_search(r, "transform_to_armature", bpy.context.scene, "objects", text="Armature")
+            header.prop(r, "transform_bone_name", text="Bone (name)")
+
+            col = header.column(align=True)
+            col.label(text="Copy Channels:")
+            col.prop(r, "transform_use_location", text="Location")
+            col.prop(r, "transform_use_rotation", text="Rotation")
+            col.prop(r, "transform_use_scale",    text="Scale")
+
         header.prop(r, "transform_duration", text="Duration")
+
 
     elif t == "CUSTOM_UI_TEXT":
         header.prop(r, "custom_text_subtype", text="Subtype")
@@ -334,14 +364,47 @@ def _draw_common_fields(layout, r, kind: str):
 class ReactionTriggerInputSocket(bpy.types.NodeSocket):
     bl_idname = "ReactionTriggerInputSocketType"
     bl_label  = "Reaction Trigger Input"
-    def draw(self, context, layout, node, text): layout.label(text=text)
-    def draw_color(self, context, node): return (0.15, 0.55, 1.0, 1.0)
+
+    _RICH_RED = (0.92, 0.18, 0.18, 1.0)
+    _BLUE     = (0.15, 0.55, 1.0, 1.0)
+    _MULTI_FROM_TYPES = {"TriggerOutputSocketType", "ReactionOutputSocketType"}
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text)
+
+    def draw_color(self, context, node):
+        """
+        If any incoming link comes from an output socket that has >1 outgoing links,
+        color this input red so the entire wire is red (no gradient).
+        """
+        try:
+            for lk in getattr(self, "links", []):
+                fs = getattr(lk, "from_socket", None)
+                if fs and getattr(fs, "bl_idname", "") in self._MULTI_FROM_TYPES:
+                    if getattr(fs, "is_output", False) and len(getattr(fs, "links", [])) > 1:
+                        return self._RICH_RED
+        except Exception:
+            pass
+        return self._BLUE
 
 class ReactionOutputSocket(bpy.types.NodeSocket):
     bl_idname = "ReactionOutputSocketType"
     bl_label  = "Reaction Output"
-    def draw(self, context, layout, node, text): layout.label(text=text)
-    def draw_color(self, context, node): return (0.15, 0.55, 1.0, 1.0)
+
+    _RICH_RED = (0.92, 0.18, 0.18, 1.0)
+    _BLUE     = (0.15, 0.55, 1.0, 1.0)
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text)
+
+    def draw_color(self, context, node):
+        # solid red if this output has multiple outgoing links
+        try:
+            if self.is_output and len(self.links) > 1:
+                return self._RICH_RED
+        except Exception:
+            pass
+        return self._BLUE
 
 
 # ───────────────────────── base class ─────────────────────────
@@ -593,6 +656,75 @@ class UtilityDelayNode(_ReactionNodeKind):
         info = layout.box()
         info.label(text="Delays all reactions AFTER this node by the amount above.", icon='TIME')
 
+
+
+class ReactionParentingNode(_ReactionNodeKind):
+    bl_idname = "ReactionParentingNodeType"
+    bl_label  = "Parent / Unparent"
+    KIND = "PARENTING"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        # Operation
+        row = box.row(align=True)
+        row.prop(r, "parenting_op", text="Operation")
+        row.prop(r, "parenting_follow_mode", text="Mode")
+
+        # Target (child)
+        tgt = layout.box()
+        tgt.label(text="Target (Child)")
+        tgt.prop(r, "parenting_target_use_character", text="Use Character as Target")
+        if not getattr(r, "parenting_target_use_character", False):
+            tgt.prop_search(r, "parenting_target_object", bpy.context.scene, "objects", text="Target Object")
+        else:
+            char = getattr(bpy.context.scene, "target_armature", None)
+            tgt.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
+
+        # Parent side
+        par = layout.box()
+        par.label(text="Parent")
+        par.prop(r, "parenting_parent_use_armature", text="Use Character Armature")
+        if getattr(r, "parenting_parent_use_armature", True):
+            char = getattr(bpy.context.scene, "target_armature", None)
+            par.label(text=f"Armature: {char.name if char else '—'}", icon='ARMATURE_DATA')
+            par.prop(r, "parenting_bone_name", text="Bone (name)")
+        else:
+            par.prop_search(r, "parenting_parent_object", bpy.context.scene, "objects", text="Parent Object")
+
+        # Child-Of options
+        if getattr(r, "parenting_follow_mode", "PARENT") == "CHILD_OF":
+            fo = layout.box()
+            fo.label(text="Child-Of (Selective Follow)")
+            row = fo.row(align=True)
+            row.prop(r, "parenting_follow_influence", text="Influence")
+
+            col = fo.column(align=True)
+            col.prop(r, "parenting_follow_loc", text="Follow Location")
+            if r.parenting_follow_loc:
+                sub = col.row(align=True)
+                sub.prop(r, "parenting_follow_loc_x"); sub.prop(r, "parenting_follow_loc_y"); sub.prop(r, "parenting_follow_loc_z")
+
+            col.prop(r, "parenting_follow_rot", text="Follow Rotation")
+            if r.parenting_follow_rot:
+                sub = col.row(align=True)
+                sub.prop(r, "parenting_follow_rot_x"); sub.prop(r, "parenting_follow_rot_y"); sub.prop(r, "parenting_follow_rot_z")
+
+            col.prop(r, "parenting_follow_scl", text="Follow Scale")
+            if r.parenting_follow_scl:
+                sub = col.row(align=True)
+                sub.prop(r, "parenting_follow_scl_x"); sub.prop(r, "parenting_follow_scl_y"); sub.prop(r, "parenting_follow_scl_z")
+
+        info = layout.box()
+        info.label(text="Unparent restores original parent (captured at game start) and removes runtime Child-Of.", icon='INFO')
 
 
 # ───────────────────────── concrete nodes ─────────────────────────

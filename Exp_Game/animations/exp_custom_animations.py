@@ -20,18 +20,23 @@ def get_custom_manager_for_object(obj):
 
 
 def execute_custom_action_reaction(reaction):
-    target_obj = reaction.custom_action_target
-    action_ref = reaction.custom_action_action
+    target_obj   = reaction.custom_action_target
+    action_ref   = reaction.custom_action_action
     if not target_obj or not action_ref:
         return
 
-    loop = getattr(reaction, "custom_action_loop", False)
+    loop          = getattr(reaction, "custom_action_loop", False)
     loop_duration = getattr(reaction, "custom_action_loop_duration", 10.0)
+    speed         = max(0.05, float(getattr(reaction, "custom_action_speed", 1.0) or 1.0))
 
     mgr = get_custom_manager_for_object(target_obj)
     if mgr:
-        mgr.play_custom_action(action_ref, loop=loop, loop_duration=loop_duration)
-
+        mgr.play_custom_action(
+            action_ref,
+            loop=loop,
+            loop_duration=loop_duration,
+            speed=speed,
+        )
 
 def update_all_custom_managers(delta_time):
     """
@@ -41,36 +46,121 @@ def update_all_custom_managers(delta_time):
     for mgr in _custom_managers.values():
         mgr.scrub_time_update(delta_time)
 
-def stop_custom_actions_and_rewind_strips():
-    """
-    Stop all queued/active custom actions (no deletion), and rewind all NLA
-    strips on 'exp_custom' tracks to [0..action_length].
-    """
 
-    # A) Stop playback in all per-object managers (no strip deletion)
-    for mgr in _custom_managers.values():
-        # halt all queued/active strips for this manager
-        mgr.active_strips.clear()
+def _wipe_track_safe(ad, track):
+    """Remove all strips from track, then remove the track. Safe no-op on errors."""
+    if not ad or not track:
+        return
+    try:
+        for s in list(track.strips):
+            try:
+                track.strips.remove(s)
+            except Exception:
+                pass
+        try:
+            ad.nla_tracks.remove(track)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
-    # B) Rewind every 'exp_custom' strip across the file
-    for obj in bpy.data.objects:
+
+def purge_all_game_custom_nla(scene=None):
+    """
+    Hard wipe for custom/overlay NLA on game START/RESET.
+
+    Rules:
+      • On the target armature: remove EVERY track except 'exp_character',
+        and also clear all strips from 'exp_character' so base starts clean.
+      • On all other objects: remove tracks named 'exp_custom' or 'exp_char_custom'
+        (legacy), any track tagged exp_overlay==True, and any empty track.
+      • Always clear obj.animation_data.action = None when touching NLA.
+    """
+    import bpy
+    if scene is None:
+        scene = bpy.context.scene
+
+    base_name = "exp_character"
+    arm = getattr(scene, "target_armature", None)
+
+    for obj in list(bpy.data.objects):
         ad = getattr(obj, "animation_data", None)
         if not ad:
             continue
-        tr = ad.nla_tracks.get("exp_custom")
-        if not tr:
+
+        # —— Armature: keep the base track only (but clear its strips) ——
+        if obj == arm:
+            # remove every non-base track outright
+            for tr in list(ad.nla_tracks):
+                if tr.name != base_name:
+                    _wipe_track_safe(ad, tr)
+            # clear base strips
+            base = ad.nla_tracks.get(base_name)
+            if base:
+                for s in list(base.strips):
+                    try:
+                        base.strips.remove(s)
+                    except Exception:
+                        pass
+            # ensure action slot is cleared
+            try:
+                ad.action = None
+            except Exception:
+                pass
             continue
-        for s in tr.strips:
-            act = s.action
-            if not act:
-                # nothing to size against; just zero out start/end
-                s.frame_start = 0.0
-                s.frame_end   = 0.0
+
+        # —— Other objects: remove only our custom/overlay tracks ——
+        for tr in list(ad.nla_tracks):
+            # tag-based (new overlays)
+            try:
+                is_tagged_overlay = bool(int(tr.get("exp_overlay", 0)))
+            except Exception:
+                is_tagged_overlay = False
+
+            is_custom_name = (
+                tr.name == "exp_custom" or
+                tr.name == "exp_char_custom" or               # legacy
+                tr.name.startswith("exp_char_custom")         # legacy variants
+            )
+
+            if is_tagged_overlay or is_custom_name:
+                _wipe_track_safe(ad, tr)
                 continue
-            a0, a1 = act.frame_range
-            a_len  = max(0.0, a1 - a0)
-            s.frame_start = 0.0
-            s.frame_end   = a_len
+
+            # prune empties anywhere (keeps things tidy)
+            if len(tr.strips) == 0:
+                _wipe_track_safe(ad, tr)
+
+        # clear action slot if we touched anything
+        try:
+            ad.action = None
+        except Exception:
+            pass
+
+
+def stop_custom_actions_and_rewind_strips():
+    """
+    STOP any per-object custom playback and HARD-WIPE all custom/overlay NLA:
+      • Clears managers' active queues.
+      • Removes overlay tracks (tagged), 'exp_custom' and legacy 'exp_char_custom' tracks.
+      • On the target armature: keeps only 'exp_character' and clears its strips.
+      • Prunes any empty tracks.
+    """
+    # stop per-object managers
+    for mgr in _custom_managers.values():
+        try:
+            mgr.active_strips.clear()
+        except Exception:
+            pass
+
+    # full purge
+    try:
+        purge_all_game_custom_nla()
+    except Exception:
+        pass
+
+
+
 
 class CustomActionManager:
     """
@@ -85,16 +175,14 @@ class CustomActionManager:
         self.base_speed_factor = 30.0
         self.active_strips = []
 
-    def play_custom_action(self, action, loop=False, loop_duration=10.0):
+    def play_custom_action(self, action, loop=False, loop_duration=10.0, speed=1.0):
         obj = bpy.data.objects.get(self.object_name)
         if not obj:
             return
 
-        # Ensure animation_data
         if not obj.animation_data:
             obj.animation_data_create()
 
-        # Remove all tracks except 'exp_custom'
         existing_custom_track = None
         to_delete = []
         for track in obj.animation_data.nla_tracks:
@@ -105,15 +193,12 @@ class CustomActionManager:
         for t in to_delete:
             obj.animation_data.nla_tracks.remove(t)
 
-        # Create 'exp_custom' if needed
         if not existing_custom_track:
             existing_custom_track = obj.animation_data.nla_tracks.new()
             existing_custom_track.name = "exp_custom"
 
-        # Clear active action (so it doesn't appear in the Action Editor)
         obj.animation_data.action = None
 
-        # Check for existing strip
         a_len = action.frame_range[1] - action.frame_range[0]
         existing_strip = None
         for s in existing_custom_track.strips:
@@ -121,38 +206,34 @@ class CustomActionManager:
                 existing_strip = s
                 break
 
-        # We'll get the current game time for loop timing
         now = get_game_time()
+        spd = max(0.05, float(speed))
 
         if existing_strip:
-            # Reset start/end
             existing_strip.frame_start = 0
-            existing_strip.frame_end = a_len
+            existing_strip.frame_end   = a_len
 
-            # See if it's already in self.active_strips
             found_data = None
             for d in self.active_strips:
                 if d["strip"] == existing_strip:
                     found_data = d
                     break
-
             if not found_data:
-                # Add a new dictionary entry
                 self.active_strips.append({
-                    "track": existing_custom_track,
-                    "strip": existing_strip,
+                    "track":         existing_custom_track,
+                    "strip":         existing_strip,
                     "action_length": a_len,
-                    "loop": loop,
+                    "loop":          loop,
                     "loop_duration": loop_duration,
-                    "start_time": now  # store the game time when we started
+                    "start_time":    now,
+                    "speed":         spd,
                 })
             else:
-                # Update existing
-                found_data["loop"] = loop
+                found_data["loop"]          = loop
                 found_data["loop_duration"] = loop_duration
-                found_data["start_time"] = now  # reset so it loops fresh
+                found_data["start_time"]    = now
+                found_data["speed"]         = spd
         else:
-            # Create new strip
             new_strip = existing_custom_track.strips.new(action.name, start=0, action=action)
             new_strip.frame_start = 0
             new_strip.frame_end   = a_len
@@ -160,21 +241,30 @@ class CustomActionManager:
             new_strip.blend_out   = 0.0
 
             self.active_strips.append({
-                "track": existing_custom_track,
-                "strip": new_strip,
+                "track":         existing_custom_track,
+                "strip":         new_strip,
                 "action_length": a_len,
-                "loop": loop,
+                "loop":          loop,
                 "loop_duration": loop_duration,
-                "start_time": now
+                "start_time":    now,
+                "speed":         spd,
             })
+
 
     def scrub_time_update(self, delta_time):
         """
-        1) We shift the strip frames by (delta_time * base_speed_factor),
-           so the animation "plays" quickly or slowly.
-        2) If loop=True, we measure how long we've been looping by comparing
-           (game_time_now - start_time) to loop_duration.
+        1) Shift strip frames by (delta_time * base_speed_factor).
+        2) Stop when loop timer expires or play-once ends.
+        Skips if the global NLA write lock is active.
         """
+        # Guard against concurrent wipes (reset/start)
+        try:
+            from ..animations.exp_animations import nla_is_locked
+            if nla_is_locked():
+                return
+        except Exception:
+            pass
+
         if not self.active_strips:
             return
 
@@ -182,47 +272,47 @@ class CustomActionManager:
         if not obj or not obj.animation_data:
             return
 
-        # We'll do the NLA scrubbing by shift_amount:
-        shift_amount = delta_time * self.base_speed_factor
         to_remove = []
-
         now = get_game_time()
 
-        for data in self.active_strips:
+        for data in list(self.active_strips):
             strip = data["strip"]
             loop = data["loop"]
             a_len = data["action_length"]
             loop_duration = data["loop_duration"]
             start_time = data["start_time"]
+            spd = max(0.05, float(data.get("speed", 1.0)))
+            shift_amount = delta_time * self.base_speed_factor * spd
 
-            # A) If loop=True => check if time is up
             if loop:
                 elapsed = now - start_time
                 if elapsed >= loop_duration:
-                    # done looping
                     to_remove.append(data)
                     continue
 
-            # B) Shift frames for "playback"
-            strip.frame_start -= shift_amount
-            strip.frame_end   -= shift_amount
+            try:
+                strip.frame_start -= shift_amount
+                strip.frame_end   -= shift_amount
+            except Exception:
+                to_remove.append(data)
+                continue
 
-            # C) If we reached the end of the strip
             if strip.frame_end <= 0:
                 if loop:
-                    # Reset to [0..a_len]
                     strip.frame_start = 0
                     strip.frame_end   = a_len
                 else:
                     to_remove.append(data)
 
-        # Finally remove any strips flagged
         for d in to_remove:
             strip = d["strip"]
             track = d["track"]
-            # Safely remove the strip from the track if it still exists
-            if any(s is strip for s in track.strips):
-                track.strips.remove(strip)
-            # Remove from our active list
-            if d in self.active_strips:
+            try:
+                if any(s is strip for s in track.strips):
+                    track.strips.remove(strip)
+            except Exception:
+                pass
+            try:
                 self.active_strips.remove(d)
+            except Exception:
+                pass

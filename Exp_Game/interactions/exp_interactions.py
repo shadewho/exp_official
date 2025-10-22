@@ -2,12 +2,12 @@
 
 import bpy
 from mathutils import Vector
-from ..reactions.exp_reactions import (execute_transform_reaction,
-                             schedule_transform, execute_property_reaction,
+from ..reactions.exp_reactions import ( execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
                              execute_objective_counter_reaction,
                              execute_objective_timer_reaction, execute_sound_reaction,
 )
+from ..reactions.exp_transforms import execute_transform_reaction
 from ..reactions.exp_projectiles import execute_projectile_reaction, execute_hitscan_reaction
 from ..animations.exp_custom_animations import execute_custom_action_reaction
 from ..props_and_utils.exp_time import get_game_time
@@ -17,6 +17,7 @@ from ..reactions.exp_mobility_and_game_reactions import (
     execute_mesh_visibility_reaction,
     execute_reset_game_reaction
 )
+
 from ..reactions.exp_crosshairs import execute_crosshairs_reaction
 from ..reactions import exp_custom_ui
 from ..reactions.exp_action_keys import (
@@ -24,6 +25,8 @@ from ..reactions.exp_action_keys import (
     execute_action_key_reaction,
     seed_defaults_from_scene,
 )
+from ..reactions.exp_parenting import execute_parenting_reaction
+
 # Global list to hold pending trigger tasks.
 _pending_reaction_batches = []
 _pending_trigger_tasks = []
@@ -68,6 +71,8 @@ def _execute_reaction_now(r):
         execute_reset_game_reaction(r)
     elif t == "ACTION_KEYS":
         execute_action_key_reaction(r)
+    elif r.reaction_type == "PARENTING":
+        execute_parenting_reaction(r)
 
 
 def _execute_reaction_list_now(reactions):
@@ -417,6 +422,7 @@ def check_interactions(context):
             handle_timer_complete_trigger(inter)
         elif t == "ON_GAME_START":
             handle_on_game_start_trigger(inter, current_time)
+
 
 
     # Now process any pending triggers that have matured.

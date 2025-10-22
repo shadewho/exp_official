@@ -72,6 +72,7 @@ from .reaction_nodes import (
     ReactionHitscanNode,
     ReactionActionKeysNode,
     UtilityDelayNode,
+    ReactionParentingNode,
 )
 
 from .trig_react_obj_lists import(
@@ -126,7 +127,7 @@ classes = [
     ReactionProjectileNode,
     ReactionHitscanNode,
     ReactionActionKeysNode,
-
+    ReactionParentingNode,
 
     # objective
     ObjectiveNode,

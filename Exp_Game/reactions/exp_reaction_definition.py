@@ -222,6 +222,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("RESET_GAME",      "Reset Game",           "Reset the game state"),
             ("ACTION_KEYS",      "Action Keys",        "Enable/Disable/Toggle a named Action Key"),
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
+            ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
 
         ],
         default="CUSTOM_ACTION"
@@ -236,7 +237,14 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         type=bpy.types.Action,
         description="Which Action to play on the main character"
     )
-
+    
+    char_action_speed: bpy.props.FloatProperty(
+        name="Speed Multiplier",
+        default=1.0,
+        min=0.05,
+        soft_max=5.0,
+        description="1.0 = normal. Multiplies playback speed for this character action."
+    )
     char_action_loop_duration: bpy.props.FloatProperty(
         name="Loop Duration (sec)",
         default=10.0,
@@ -251,6 +259,11 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("LOOP", "Loop", "Loop the action for up to loop_duration")
         ],
         default="PLAY_ONCE"
+    )
+    char_action_blend: bpy.props.BoolProperty(
+        name="Blend animation",
+        default=False,
+        description="If enabled, this action plays on the overlay track (exp_char_custom) and combines with locomotion instead of replacing it."
     )
 
     #--------------------------------------------------------
@@ -303,79 +316,105 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     # --------------------------------------------------
     # 1) TRANSFORM REACTION FIELDS
     # --------------------------------------------------
-    # (NEW) The user can pick which object to transform:
-
+    # Which object will be transformed (target to move)?
     use_character: bpy.props.BoolProperty(
         name="Use Character",
         default=False,
         description="If True, transform the scene’s target_armature instead of the chosen object"
     )
-
-    transform_mode: bpy.props.EnumProperty(
-        name="Transform Mode",
-        description="How we interpret the transform (absolute location, offset, move to object, etc.)",
-        items=[
-            ("OFFSET",    "Global Offset",    "Add location/rotation/scale to the current transforms (existing behavior)"),
-            ("LOCAL_OFFSET","Local Offset","Offset the transforms in local space, rather than world space"),
-            ("TO_LOCATION", "To Location", "Teleport or animate to a specific global 3D location (and optional rotation/scale)"),
-            ("TO_OBJECT",   "To Object",   "Animate or teleport to another object’s transforms"),
-        ],
-        default="OFFSET"
-    )
     transform_object: bpy.props.PointerProperty(
         name="Transform Object",
         type=bpy.types.Object,
-        description="Which object will be transformed?"
+        description="Object to transform when Use Character is False"
     )
+
+    # How we interpret the transform
+    transform_mode: bpy.props.EnumProperty(
+        name="Transform Mode",
+        description="How to compute the destination transform",
+        items=[
+            ("OFFSET",       "Global Offset", "Add location/rotation/scale in world space"),
+            ("LOCAL_OFFSET", "Local Offset",  "Add location/rotation/scale in local space"),
+            ("TO_LOCATION",  "To Location",   "Move to an explicit world-space transform"),
+            ("TO_OBJECT",    "To Object",     "Copy transforms from another object"),
+            ("TO_BONE",      "To Bone",       "Copy transforms from a specific bone on an armature"),
+        ],
+        default="OFFSET"
+    )
+
+    # ----- TO_OBJECT source -----
     transform_to_object: bpy.props.PointerProperty(
         name="Target Object (To Object)",
         type=bpy.types.Object,
-        description="If Transform Mode = 'TO_OBJECT', we use this object’s location/rotation/scale"
+        description="If Transform Mode = 'TO_OBJECT' and the toggle below is OFF, copy from this object"
+    )
+    transform_to_use_character: bpy.props.BoolProperty(
+        name="Use Character as 'To Object'",
+        default=False,
+        description="If True in TO_OBJECT mode, copy transforms from scene.target_armature instead of a picked object"
     )
 
-    # ─── ^TO_OBJECT per-channel toggles ────────────────────────────────
+    # Per-channel toggles for TO_OBJECT/TO_BONE
     transform_use_location: bpy.props.BoolProperty(
         name="Location",
         default=True,
-        description="Copy the target object's location"
+        description="Copy the source location"
     )
     transform_use_rotation: bpy.props.BoolProperty(
         name="Rotation",
         default=True,
-        description="Copy the target object's rotation"
+        description="Copy the source rotation"
     )
     transform_use_scale: bpy.props.BoolProperty(
         name="Scale",
         default=True,
-        description="Copy the target object's scale"
+        description="Copy the source scale"
     )
-    ## ─── ^^end TO_OBJECT per-channel toggles ────────────────────────────────
-    #----------------------------------------------------
 
+    # ----- TO_BONE source -----
+    transform_to_bone_use_character: bpy.props.BoolProperty(
+        name="Use Character Armature",
+        default=True,
+        description="If True in TO_BONE mode, read the bone from scene.target_armature"
+    )
+    transform_to_armature: bpy.props.PointerProperty(
+        name="Armature",
+        type=bpy.types.Object,
+        description="If not using the character, read the bone from this armature object"
+    )
+    transform_bone_name: bpy.props.StringProperty(
+        name="Bone Name",
+        default="",
+        description="Bone name to copy from (string only; survives armature rebuilds)"
+    )
+
+    # Values for OFFSET / LOCAL_OFFSET / TO_LOCATION
     transform_location: bpy.props.FloatVectorProperty(
         name="Location",
         default=(0.0, 0.0, 0.0),
         subtype='TRANSLATION',
-        description="Destination location"
+        description="Destination (world) location or offset"
     )
     transform_rotation: bpy.props.FloatVectorProperty(
         name="Rotation (Euler)",
         default=(0.0, 0.0, 0.0),
         subtype='EULER',
-        description="Destination rotation (XYZ eulers)"
+        description="Destination (world) rotation (XYZ) or offset"
     )
     transform_scale: bpy.props.FloatVectorProperty(
         name="Scale",
         default=(1.0, 1.0, 1.0),
         subtype='XYZ',
-        description="Destination scale"
+        description="Destination scale or multiplicative local scale"
     )
+
     transform_duration: bpy.props.FloatProperty(
         name="Duration",
         default=1.0,
         min=0.0,
-        description="How long the transform should take"
+        description="How long the transform should take (0 = instant)"
     )
+    
 
     # --------------------------------------------------
     # 2) CUSTOM UI TEXT REACTION FIELDS
@@ -493,6 +532,13 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Custom Action",
         type=bpy.types.Action,
         description="Which Action to play (NLA track in exp_custom_actions)"
+    )
+    custom_action_speed: bpy.props.FloatProperty(
+        name="Speed Multiplier",
+        default=1.0,
+        min=0.05,
+        soft_max=5.0,
+        description="1.0 = normal. Multiplies playback speed for this custom action."
     )
     custom_action_loop: bpy.props.BoolProperty(
         name="Loop?",
@@ -785,6 +831,87 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         min=0.0,
         description="Pauses the chain by this many seconds; affects subsequent reactions in the same Interaction."
     )
+
+
+
+    #############################################
+    ##### PARENTING REACTION FIELDS (NEW)
+    #############################################
+    parenting_op: bpy.props.EnumProperty(
+        name="Operation",
+        items=[
+            ("PARENT_TO", "Parent To", "Parent the target to the chosen parent"),
+            ("UNPARENT",  "Unparent",  "Restore the target's original parent from game start"),
+        ],
+        default="PARENT_TO"
+    )
+
+    # Child (the object being parented/unparented)
+    parenting_target_use_character: bpy.props.BoolProperty(
+        name="Use Character as Target",
+        default=False,
+        description="If True, the child to (un)parent is the scene.target_armature"
+    )
+    parenting_target_object: bpy.props.PointerProperty(
+        name="Target Object",
+        type=bpy.types.Object,
+        description="Object to (un)parent if not using the character"
+    )
+
+    # Parent side: either armature (optionally specific bone) or any object
+    parenting_parent_use_armature: bpy.props.BoolProperty(
+        name="Parent to Character Armature",
+        default=True,
+        description="If True, parent to scene.target_armature (optionally a specific bone by name)"
+    )
+    parenting_parent_object: bpy.props.PointerProperty(
+        name="Parent Object",
+        type=bpy.types.Object,
+        description="If not using armature, parent to this object"
+    )
+    parenting_bone_name: bpy.props.StringProperty(
+        name="Bone (name)",
+        default="",
+        description="Optional bone name on the character armature. Uses a string to survive armature rebuilds."
+    )
+
+    # -----------------------------
+    # Selective follow via Child-Of
+    # -----------------------------
+    parenting_follow_mode: bpy.props.EnumProperty(
+        name="Follow Mode",
+        items=[
+            ("PARENT",   "Real Parent", "Set Blender parent (full transform)"),
+            ("CHILD_OF", "Child Of",    "Use a Child-Of constraint with per-channel toggles"),
+        ],
+        default="PARENT",
+        description="Choose hard parenting or Child-Of constraint for partial follow"
+    )
+
+    # Group toggles (coarse)
+    parenting_follow_loc: bpy.props.BoolProperty(name="Follow Location", default=True)
+    parenting_follow_rot: bpy.props.BoolProperty(name="Follow Rotation", default=True)
+    parenting_follow_scl: bpy.props.BoolProperty(name="Follow Scale",    default=True)
+
+    # Per-axis toggles (fine)
+    parenting_follow_loc_x: bpy.props.BoolProperty(name="X", default=True)
+    parenting_follow_loc_y: bpy.props.BoolProperty(name="Y", default=True)
+    parenting_follow_loc_z: bpy.props.BoolProperty(name="Z", default=True)
+
+    parenting_follow_rot_x: bpy.props.BoolProperty(name="X", default=True)
+    parenting_follow_rot_y: bpy.props.BoolProperty(name="Y", default=True)
+    parenting_follow_rot_z: bpy.props.BoolProperty(name="Z", default=True)
+
+    parenting_follow_scl_x: bpy.props.BoolProperty(name="X", default=True)
+    parenting_follow_scl_y: bpy.props.BoolProperty(name="Y", default=True)
+    parenting_follow_scl_z: bpy.props.BoolProperty(name="Z", default=True)
+
+    parenting_follow_influence: bpy.props.FloatProperty(
+        name="Influence", default=1.0, min=0.0, max=1.0,
+        description="Influence for Child-Of follow"
+    )
+
+
 
 def register_reaction_library_properties():
     """

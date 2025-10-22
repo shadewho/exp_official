@@ -236,3 +236,90 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 return None
 
         return bpy.data.actions.get(action_name)
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Operator: Build Armature (append from add-on asset)
+# ──────────────────────────────────────────────────────────────────────────────
+class EXPLORATORY_OT_BuildArmature(bpy.types.Operator):
+    bl_idname = "exploratory.build_armature"
+    bl_label = "Build Armature"
+    bl_description = (
+        "• Append the default armature\n"
+        "• Compatible with all default actions\n"
+        "• Useful for parenting a character mesh without creating or mapping new actions\n"
+        "• If you want to use your own armature, you must also map or create new actions\n"
+        "• You can adjust armature bone loc/rot/scale in any way (A-pose, different character size/shape etc.)\n" 
+        "• Adding/removing/renaming bones may cause errors. That data is what default actions depend on."
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ARMATURE_BLEND = os.path.join(
+        get_addon_path(),
+        "Exp_Game", "exp_assets", "Armature", "Armature.blend"
+    )
+
+    def _resolve_path(self) -> str | None:
+        p = self.ARMATURE_BLEND
+        if os.path.isfile(p):
+            return p
+        # fallback to .blend1 if present
+        alt = os.path.splitext(p)[0] + ".blend1"
+        if os.path.isfile(alt):
+            return alt
+        return None
+
+    def execute(self, context):
+        scene = context.scene
+        blend_path = self._resolve_path()
+        if not blend_path:
+            self.report({'ERROR'}, "Armature .blend not found: Exp_Game/exp_assets/Armature/Armature.blend")
+            return {'CANCELLED'}
+
+        # 1) Try to append any OBJECTs whose names look like an armature; then filter by type.
+        try:
+            with bpy.data.libraries.load(blend_path, link=False) as (df, dt):
+                names = list(df.objects)
+                likely = [n for n in names if "armature" in n.lower() or "rig" in n.lower()]
+                dt.objects = likely if likely else names
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed reading {blend_path}: {e}")
+            return {'CANCELLED'}
+
+        chosen = None
+        for ob in dt.objects:
+            if not ob:
+                continue
+            if getattr(ob, "type", "") != 'ARMATURE':
+                continue
+            context.scene.collection.objects.link(ob)
+            chosen = ob  # last one wins if multiple
+        # 2) Fallback: append raw Armature datablock and create an Object for it.
+        if not chosen:
+            try:
+                with bpy.data.libraries.load(blend_path, link=False) as (df2, dt2):
+                    if df2.armatures:
+                        dt2.armatures = [df2.armatures[0]]
+                    else:
+                        dt2.armatures = []
+                if dt2.armatures:
+                    arm_data = dt2.armatures[0]
+                    chosen = bpy.data.objects.new(arm_data.name, arm_data)
+                    context.scene.collection.objects.link(chosen)
+            except Exception as e:
+                self.report({'ERROR'}, f"Could not append armature from {blend_path}: {e}")
+                return {'CANCELLED'}
+
+        if not chosen:
+            self.report({'ERROR'}, "No armature found in the library.")
+            return {'CANCELLED'}
+
+        # Point the panel’s Target Armature to the appended armature
+        try:
+            scene.target_armature = chosen
+        except Exception:
+            pass
+
+        self.report({'INFO'}, f"Armature appended: {chosen.name}")
+        return {'FINISHED'}

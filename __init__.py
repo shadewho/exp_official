@@ -43,7 +43,7 @@ from .exp_preferences import (
     ExploratoryAddonPreferences,
     EXPLORATORY_OT_SetKeybind,
 )
-from .build_character import EXPLORATORY_OT_BuildCharacter
+from .build_character import EXPLORATORY_OT_BuildCharacter, EXPLORATORY_OT_BuildArmature
 
 # submodule APIs
 from . import Exp_Game, Exp_UI, Exp_Nodes
@@ -54,13 +54,12 @@ def version_check_timer():
     return 900.0  # run again in 15m
 
 def register():
-    import bpy
-
     # 1) register core classes
     for cls in (
         EXPLORATORY_OT_SetKeybind,
         ExploratoryAddonPreferences,
         EXPLORATORY_OT_BuildCharacter,
+        EXPLORATORY_OT_BuildArmature,
         WEBAPP_OT_UpdateAddon,
         WEBAPP_OT_RefreshVersion,
     ):
@@ -107,6 +106,7 @@ def unregister():
     for cls in reversed((
         WEBAPP_OT_RefreshVersion,
         WEBAPP_OT_UpdateAddon,
+        EXPLORATORY_OT_BuildArmature,
         EXPLORATORY_OT_BuildCharacter,
         EXPLORATORY_OT_SetKeybind,
         ExploratoryAddonPreferences,

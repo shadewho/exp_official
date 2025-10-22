@@ -2,7 +2,7 @@ import bpy
 from ..reactions.exp_reaction_definition import ReactionDefinition, enum_objective_items
 from .exp_interactions import trigger_mode_items
 from ..reactions.exp_reaction_definition import register_reaction_library_properties
-
+from ..reactions.exp_fonts import discover_fonts
 
 class ReactionLinkPG(bpy.types.PropertyGroup):
     """
@@ -123,6 +123,7 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         min=0.0,
         description="How close the player must be to interact_object (in Blender units)."
     )
+ 
     trigger_delay: bpy.props.FloatProperty(
     name="Trigger Delay",
     default=0.0,

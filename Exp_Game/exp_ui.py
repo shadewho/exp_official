@@ -165,6 +165,13 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             text="Build Character",
             icon='ARMATURE_DATA'
         )
+        #Build Armature (append only the armature from Armature.blend)
+        row = box.row(align=True)
+        row.operator(
+            "exploratory.build_armature",
+            text="Build Armature",
+            icon='ARMATURE_DATA'
+        )
 
         # ─── Animations & Speeds ───
         box = layout.box()
