@@ -404,6 +404,7 @@ class _TriggerNodeKind(TriggerNodeBase):
             "COLLISION": "Collision",
             "INTERACT": "Interact Key",
             "ACTION":          "Action Key",
+            "EXTERNAL":         "Trigger",
             "OBJECTIVE_UPDATE": "Objective Update",
             "TIMER_COMPLETE": "Timer Complete",
             "ON_GAME_START":  "On Game Start",
@@ -464,6 +465,20 @@ class OnGameStartTriggerNode(_TriggerNodeKind):
     bl_idname = 'OnGameStartTriggerNodeType'
     bl_label  = 'On Game Start'
     KIND = "ON_GAME_START"
+
+class ExternalTriggerNode(_TriggerNodeKind):
+    bl_idname = 'ExternalTriggerNodeType'
+    bl_label  = 'Trigger'
+    KIND = "EXTERNAL"
+
+    def init(self, context):
+        # Input first (boolean) then the standard trigger output
+        self.inputs.new('TriggerInputSocketType', "Trigger Input")
+        self.outputs.new('TriggerOutputSocketType', "Trigger Output")
+        self.width = 300
+        self._tint()
+        self.interaction_index = _ensure_interaction(self.KIND)
+        
 class ActionTriggerNode(_TriggerNodeKind):
     bl_idname = 'ActionTriggerNodeType'
     bl_label  = 'Action Key'

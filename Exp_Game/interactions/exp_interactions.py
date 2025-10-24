@@ -422,6 +422,8 @@ def check_interactions(context):
             handle_timer_complete_trigger(inter)
         elif t == "ON_GAME_START":
             handle_on_game_start_trigger(inter, current_time)
+        elif t == "EXTERNAL":
+            handle_external_trigger(inter, current_time)
 
 
 
@@ -523,6 +525,25 @@ def handle_proximity_trigger(inter, current_time):
                 inter.last_trigger_time = current_time
 
 
+
+# ─────────────────────────────────────────────────────────
+# External Trigger (boolean input)
+# ─────────────────────────────────────────────────────────
+def handle_external_trigger(inter, current_time):
+    """
+    External boolean-driven trigger.
+      • ONE_SHOT  → first True fires, then never again
+      • COOLDOWN  → while True, re-fire whenever cooldown has elapsed
+    Delay is honored through the standard _fire_interaction path.
+    """
+    gate = bool(getattr(inter, "external_signal", False))
+
+    # If not True, nothing to do (we do not require an edge; COOLDOWN can repeat while held True)
+    if not gate:
+        return
+
+    if can_fire_trigger(inter, current_time):
+        _fire_interaction(inter, current_time)
 
 # ─────────────────────────────────────────────────────────
 # Game Start trigger (fires once per game start/reset)

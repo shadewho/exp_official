@@ -25,6 +25,7 @@ from ..physics.exp_raycastutils import raycast_closest_any
 # }
 _active_projectiles: list[dict] = []
 
+_active_hitscan_visuals: list[dict] = []
 # All visuals we created (for safe cleanup on reset)
 _spawned_visual_clones: set[bpy.types.Object] = set()
 
@@ -37,8 +38,225 @@ _visual_owner: dict[bpy.types.Object, int] = {}
 
 _MAX_GLOBAL_PROJECTILES = 64  # hard ceiling safeguard
 
+# --- Impact event queue ---
+_impact_events: dict[int, list[dict]] = {}
+
+def _emit_impact_event(r, loc: Vector, when: float):
+    key = _owner_key(r)
+    _impact_events.setdefault(key, []).append({"time": float(when), "loc": loc.copy()})
+
+def pop_impact_events_by_owner_key(owner_key: int) -> list[dict]:
+    return _impact_events.pop(int(owner_key), [])
+
+def _reaction_from_owner_key(owner_key: int):
+    """Return (reaction_obj, reaction_index) from the scene by owner_key, or (None, -1)."""
+    scn = bpy.context.scene
+    for i, rx in enumerate(getattr(scn, "reactions", [])):
+        try:
+            if _owner_key(rx) == int(owner_key):
+                return rx, i
+        except Exception:
+            pass
+    return None, -1
+
+def _nodes_for_reaction_index(r_idx: int):
+    """Yield Reaction nodes whose .reaction_index == r_idx in any Exploratory node tree."""
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in getattr(ng, "nodes", []):
+            if getattr(node, "reaction_index", -1) == r_idx:
+                yield node
+
+def _dest_nodes_from_outputs(src_node):
+    """Collect unique to_nodes from the Projectile/Hit-scan node's Impact outputs."""
+    outs = []
+    for sock in getattr(src_node, "outputs", []):
+        if getattr(sock, "bl_idname", "") in {"ImpactEventOutputSocketType",
+                                              "ImpactLocationOutputSocketType"}:
+            outs.append(sock)
+    dest = []
+    seen = set()
+    for s in outs:
+        for lk in getattr(s, "links", []):
+            n = getattr(lk, "to_node", None)
+            if n and n not in seen:
+                dest.append(n); seen.add(n)
+    return dest
+
+def _collect_chain_indices_from_reaction_node(start_node):
+    """
+    From a Reaction node, follow its 'Reaction Output' through the graph and
+    return an ordered list of reaction indices to execute.
+    """
+    res = []
+    visited = set()
+    queue = [start_node]
+
+    while queue:
+        n = queue.pop(0)
+        if not n or n in visited:
+            continue
+        visited.add(n)
+
+        if hasattr(n, "reaction_index"):
+            idx = getattr(n, "reaction_index", -1)
+            if idx >= 0:
+                res.append(idx)
+            # only continue via the standard Reaction Output chain
+            out2 = n.outputs.get("Reaction Output") or n.outputs.get("Output")
+            if out2:
+                for lk in out2.links:
+                    if lk.to_node:
+                        queue.append(lk.to_node)
+        else:
+            # passthrough nodes (frames/reroutes)
+            for s in n.outputs:
+                for lk in s.links:
+                    if lk.to_node:
+                        queue.append(lk.to_node)
+    return res
+
+def _flush_impact_events_to_graph():
+    """Dispatch queued Impact (Bool) events via the Impact socket only."""
+    if not _impact_events:
+        return
+
+    from ..interactions.exp_interactions import run_reactions, _fire_interaction  # lazy import
+
+    scn = bpy.context.scene
+    owners = list(_impact_events.keys())
+    for owner in owners:
+        events = pop_impact_events_by_owner_key(owner)
+        if not events:
+            continue
+
+        _r, r_idx = _reaction_from_owner_key(owner)
+        if r_idx < 0:
+            continue
+
+        # Ensure one node per reaction index
+        src_nodes = _ensure_unique_node_binding_for_reaction_index(r_idx)
+
+        for src in src_nodes:
+            # Only nodes wired from the Impact (Bool) output
+            for dst in _dest_nodes_from_impact_event_outputs(src):
+                # A) Impact → Reaction Input (kick a chain)
+                if hasattr(dst, "reaction_index"):
+                    chain = _collect_chain_indices_from_reaction_node(dst)
+                    if not chain:
+                        continue
+                    to_run = [scn.reactions[i] for i in chain if 0 <= i < len(scn.reactions)]
+                    for _ev in events:
+                        run_reactions(to_run)
+
+                # B) Impact → Trigger node (EXTERNAL)
+                elif getattr(dst, "bl_idname", "") == "ExternalTriggerNodeType" or getattr(dst, "KIND", "") == "EXTERNAL":
+                    iidx = getattr(dst, "interaction_index", -1)
+                    if 0 <= iidx < len(getattr(scn, "custom_interactions", [])):
+                        inter = scn.custom_interactions[iidx]
+                        for ev in events:
+                            _fire_interaction(inter, ev["time"])
+
+
+
+def _ensure_unique_node_binding_for_reaction_index(r_idx: int):
+    """
+    Guarantee one node → one ReactionDefinition.
+    If multiple nodes reference r_idx, duplicate the reaction for all but the first,
+    rebind those nodes, and return the single kept node list.
+    """
+    # Find all nodes currently bound to this reaction index
+    nodes = list(_nodes_for_reaction_index(r_idx))
+    if len(nodes) <= 1:
+        return nodes
+
+    scn = bpy.context.scene
+    keep = nodes[0]  # keep the first node on the original index
+
+    # Duplicate reaction for the rest and rebind
+    for n in nodes[1:]:
+        try:
+            res = bpy.ops.exploratory.duplicate_global_reaction('EXEC_DEFAULT', index=r_idx)
+            if 'CANCELLED' in res:
+                continue
+            new_idx = len(scn.reactions) - 1
+            n.reaction_index = new_idx
+        except Exception:
+            pass
+
+    # Return only the node still bound to r_idx
+    return [keep]                         
+
+
+# --- Impact-Location wiring (vector only) ------------------------------------
+
+def _reaction_index_of(r) -> int:
+    """Return the index of ReactionDefinition 'r' in scene.reactions, or -1."""
+    scn = bpy.context.scene
+    for i, rx in enumerate(getattr(scn, "reactions", [])):
+        if rx == r:
+            return i
+    return -1
+
+
+def _dest_nodes_from_impact_event_outputs(src_node):
+    """
+    Collect unique to_nodes wired from the *Impact (Bool)* output only.
+    (We deliberately ignore Impact Location here.)
+    """
+    dest = []
+    seen = set()
+    for sock in getattr(src_node, "outputs", []):
+        if getattr(sock, "bl_idname", "") != "ImpactEventOutputSocketType":
+            continue
+        for lk in getattr(sock, "links", []):
+            n = getattr(lk, "to_node", None)
+            if n and n not in seen:
+                dest.append(n); seen.add(n)
+    return dest
+
+
+def _push_impact_location_to_links(r, vec):
+    """
+    Send 'vec' (x,y,z) ONLY through the 'Impact Location' socket wiring.
+    If a link goes to a UtilityCaptureFloatVector node, we write straight to its store.
+    No reaction chains, no triggers. If the target node exposes write_from_graph(vec),
+    we call it (generic hook for future capture nodes).
+    """
+    r_idx = _reaction_index_of(r)
+    if r_idx < 0:
+        return
+
+    for src in _nodes_for_reaction_index(r_idx):
+        for sock in getattr(src, "outputs", []):
+            if getattr(sock, "bl_idname", "") != "ImpactLocationOutputSocketType":
+                continue
+            for lk in getattr(sock, "links", []):
+                to_node = getattr(lk, "to_node", None)
+                if not to_node:
+                    continue
+
+                # Preferred: our capture node
+                if getattr(to_node, "bl_idname", "") == "UtilityCaptureFloatVectorNodeType":
+                    try:
+                        to_node.write_from_graph(vec, timestamp=get_game_time())
+                    except Exception:
+                        pass
+                    continue
+
+                # Generic fallback: if node advertises a writer, use it
+                writer = getattr(to_node, "write_from_graph", None)
+                if callable(writer):
+                    try:
+                        writer(vec, timestamp=get_game_time())
+                    except Exception:
+                        pass
+
 
 # ---------- Public helpers ----------
+
+
 def has_active() -> bool:
     return bool(_active_projectiles)
 
@@ -49,6 +267,7 @@ def clear():
     Safe to call on reset/cancel.
     """
     _active_projectiles.clear()
+    _active_hitscan_visuals.clear()
 
     to_delete = list(_spawned_visual_clones)
     _spawned_visual_clones.clear()
@@ -57,6 +276,7 @@ def clear():
 
     _per_reaction_visual_fifo.clear()
     _visual_owner.clear()
+    _impact_events.clear()
 
 
 # ---------- Internals ----------
@@ -325,11 +545,6 @@ def _evict_oldest_active_for_reaction(r, n_to_evict: int):
 # ─────────────────────────────────────────────────────────
 
 def execute_hitscan_reaction(r):
-    """
-    Instant ray from origin along resolved direction.
-    If a visual object is set and proj_place_hitscan_object is True, it is placed
-    at the impact (or end of range on miss). Direction is aligned if requested.
-    """
     op = _active_modal()
     if not op:
         return
@@ -341,11 +556,51 @@ def execute_hitscan_reaction(r):
     hit, loc, _nor, _hit_obj, _dist = _raycast_any(op, origin, direction, max_range)
     impact = loc if hit else (origin + direction * max_range)
 
-    obj = getattr(r, "proj_object", None)
-    if obj and getattr(r, "proj_place_hitscan_object", True):
-        obj.location = impact
-        if getattr(r, "proj_align_object_to_velocity", True):
-            _align_object_to_dir(obj, direction)
+    # --- Visual handling ---
+    template = getattr(r, "proj_object", None)
+    place = bool(getattr(r, "proj_place_hitscan_object", True))
+    align = bool(getattr(r, "proj_align_object_to_velocity", True))
+
+    if template and place:
+        life = float(getattr(r, "proj_lifetime", 0.0) or 0.0)
+        if life > 0.0:
+            # Per-reaction FIFO cap (reuse projectile pool_limit)
+            cap = int(getattr(r, "proj_pool_limit", 8) or 8)
+            if cap < 1:
+                cap = 1
+            owner = _owner_key(r)
+
+            # Enforce cap on **visuals present** (stuck/alive)
+            present = len(_per_reaction_visual_fifo.get(owner, []))
+            if present >= cap:
+                _evict_oldest_visuals_for_reaction(owner, present - cap + 1)
+
+            # Clone and place
+            new_ob = _spawn_visual_instance(template, owner)
+            if new_ob:
+                new_ob.location = impact
+                if align:
+                    _align_object_to_dir(new_ob, direction)
+                # Track for timed despawn
+                now = get_game_time()
+                _active_hitscan_visuals.append({"obj": new_ob, "end_time": now + life})
+        else:
+            # Lifetime == 0 → legacy behavior: move the template (no clone, no pooling)
+            try:
+                template.location = impact
+                if align:
+                    _align_object_to_dir(template, direction)
+            except Exception:
+                pass
+
+    # --- Impact event + vector push ---
+    if hit:
+        _push_impact_location_to_links(r, (loc.x, loc.y, loc.z))
+        _emit_impact_event(r, loc, get_game_time())
+        _flush_impact_events_to_graph()  # immediate for hitscan
+
+
+
 
 
 def execute_projectile_reaction(r):
@@ -421,9 +676,12 @@ def execute_projectile_reaction(r):
 
 def update_projectile_tasks(dt: float):
     """
-    Advance active projectiles by dt (seconds). O(1) cost when idle.
-    On contact with static mesh: freeze visual at hit point and despawn entry.
-    On contact with dynamic proxy: parent the visual to the hit object (sticks) and despawn entry.
+    Advance active projectiles by dt (seconds). O(1) when idle.
+    On contact:
+      • freeze visual at impact (and parent to dynamic hit object),
+      • push Impact Location vector to linked nodes,
+      • queue Impact (Bool) event,
+      • remove the sim entry (visual remains for FIFO/eviction).
     """
     if not _active_projectiles:
         return
@@ -437,6 +695,7 @@ def update_projectile_tasks(dt: float):
     keep: list[dict] = []
 
     for p in _active_projectiles:
+        # lifetime check
         if now >= p['end_time']:
             _delete_visual_if_clone(p.get('obj'))
             continue
@@ -444,11 +703,11 @@ def update_projectile_tasks(dt: float):
         old_pos = p['pos']
         vel = p['vel']
 
-        # integrate with gravity
+        # Integrate gravity and predict next position
         vel.z += p['g'] * dt
         new_pos = old_pos + vel * dt
 
-        # sweep test segment old_pos -> new_pos
+        # Segment sweep: old_pos -> new_pos
         seg = new_pos - old_pos
         seg_len = seg.length
 
@@ -464,23 +723,26 @@ def update_projectile_tasks(dt: float):
                 hit_obj = obj
 
         if hit and p['stop_on_contact']:
-            # Freeze at impact
+            # Freeze visual at impact (stick to dynamic if present)
             p['pos'] = hit_loc
             obj_v = p.get('obj')
             if obj_v:
                 obj_v.location = hit_loc
-                # Stick to dynamic movers
                 if hit_obj:
                     try:
                         obj_v.parent = hit_obj
                         obj_v.matrix_parent_inverse = hit_obj.matrix_world.inverted()
                     except Exception:
                         pass
-            # Despawn the sim entry; the visual remains (possibly parented) and is
-            # still tracked in the per-reaction FIFO for future evictions.
+
+            # Vector-only ping through Impact Location socket + queue bool event
+            _push_impact_location_to_links(p.get('r_id'), (hit_loc.x, hit_loc.y, hit_loc.z))
+            _emit_impact_event(p.get('r_id'), hit_loc, now)
+
+            # Despawn sim entry (visual remains for FIFO/eviction)
             continue
 
-        # keep flying
+        # Keep flying
         p['pos'] = new_pos
         p['vel'] = vel
 
@@ -493,3 +755,25 @@ def update_projectile_tasks(dt: float):
         keep.append(p)
 
     _active_projectiles[:] = keep
+    _flush_impact_events_to_graph()
+
+
+def update_hitscan_tasks():
+    """
+    Despawn cloned hitscan visuals when their lifetime ends.
+    O(1) idle overhead. Safe if called multiple times per frame.
+    """
+    if not _active_hitscan_visuals:
+        return
+    now = get_game_time()
+    keep: list[dict] = []
+    for rec in _active_hitscan_visuals:
+        ob = rec.get("obj")
+        # Dropped earlier via eviction or already deleted?
+        if not ob or ob not in _spawned_visual_clones:
+            continue
+        if now >= float(rec.get("end_time", 0.0)):
+            _delete_visual_if_clone(ob)
+            continue
+        keep.append(rec)
+    _active_hitscan_visuals[:] = keep

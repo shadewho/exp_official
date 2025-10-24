@@ -48,7 +48,18 @@ class TriggerOutputSocket(NodeSocket):
         except Exception:
             pass
         return self._BLUE
+    
+class TriggerInputSocket(NodeSocket):
+    bl_idname = "TriggerInputSocketType"
+    bl_label  = "Trigger Input Socket"
 
+    _COLOR = (0.85, 0.6, 0.8, 1.0)
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._COLOR
 
 
 # ─────────────────────────────────────────────────────────
@@ -70,6 +81,7 @@ class NODE_MT_exploratory_add_triggers(Menu):
         add("Collision",        "CollisionTriggerNodeType")
         add("Interact Key",     "InteractTriggerNodeType")
         add("Action Key",       "ActionTriggerNodeType")
+        add("Trigger",          "ExternalTriggerNodeType")
         add("Objective Update", "ObjectiveUpdateTriggerNodeType")
         add("Timer Complete",   "TimerCompleteTriggerNodeType")
         add("On Game Start",    "OnGameStartTriggerNodeType")
@@ -137,6 +149,7 @@ class NODE_MT_exploratory_add_utilities(Menu):
             op.use_transform = True
 
         add("Delay", "UtilityDelayNodeType")
+        add("Capture Float Vector",  "UtilityCaptureFloatVectorNodeType")
 
 # Append hook the init module will attach to NODE_MT_add:
 # it inserts our three categories directly into Shift+A (no icons).

@@ -52,6 +52,7 @@ class InteractionDefinition(bpy.types.PropertyGroup):
             ("OBJECTIVE_UPDATE","Objective Update", "Triggers when an objective changes"),
             ("TIMER_COMPLETE",  "Timer Complete",   "Fires when an objective’s timer ends"),
             ("ON_GAME_START",  "On Game Start",   "Fires once right after gameplay begins or a reset"),
+            ("EXTERNAL",        "Trigger",          "Fires when an external boolean input is True"),
         ],
         default="PROXIMITY",
         update=update_trigger_type,  # ← ensure mode stays valid
@@ -194,6 +195,13 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         default="",
         description="Unique identifier for this Action trigger. "
                     "This must be ENABLED by the 'Action Keys' reaction to fire."
+    )
+
+    # External trigger input (set this from outside to make the EXTERNAL trigger fire)
+    external_signal: bpy.props.BoolProperty(
+        name="External Signal",
+        default=False,
+        description="External boolean gate. When True, the EXTERNAL Trigger may fire according to mode/cooldown."
     )
 
 

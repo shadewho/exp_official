@@ -18,11 +18,23 @@
 
 # File: Exp_Nodes/__init__.py
 import bpy
+
+from ..Exp_Game.props_and_utils.exp_utility_store import (
+    register_utility_store_properties,
+    unregister_utility_store_properties,
+)
+
+from .utility_nodes import (
+    FloatVectorInputSocket,
+    FloatVectorOutputSocket,
+    UtilityCaptureFloatVectorNode,
+)
+
 from .node_editor import (
     # tree + socket
     ExploratoryNodesTree,
     TriggerOutputSocket,
-
+    TriggerInputSocket,
     # operators + panel
     NODE_OT_create_exploratory_node_tree,
     NODE_OT_select_exploratory_node_tree,
@@ -49,13 +61,16 @@ from .trigger_nodes import (
     ObjectiveUpdateTriggerNode,
     TimerCompleteTriggerNode,
     OnGameStartTriggerNode,
-    ActionTriggerNode
+    ActionTriggerNode,
+    ExternalTriggerNode, 
 )
 
 # ── REACTIONS ──
 from .reaction_nodes import (
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
+    ImpactEventOutputSocket,
+    ImpactLocationOutputSocket,
     ReactionCustomActionNode,
     ReactionCharActionNode,
     ReactionSoundNode,
@@ -90,11 +105,11 @@ from .trig_react_obj_lists import(
 # ── OBJECTIVES ──
 from .objective_nodes import ObjectiveNode
 
-
 classes = [
     # tree + socket
     ExploratoryNodesTree,
     TriggerOutputSocket,
+    TriggerInputSocket, 
 
     # triggers
     ProximityTriggerNode,
@@ -104,14 +119,21 @@ classes = [
     TimerCompleteTriggerNode,
     OnGameStartTriggerNode,
     ActionTriggerNode,
+    ExternalTriggerNode, 
+
 
 
     # utilities
     UtilityDelayNode, 
-
+    FloatVectorInputSocket,
+    FloatVectorOutputSocket,
+    UtilityCaptureFloatVectorNode,
+    
     # reactions
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
+    ImpactEventOutputSocket,
+    ImpactLocationOutputSocket, 
     ReactionCustomActionNode,
     ReactionCharActionNode,
     ReactionSoundNode,
@@ -128,6 +150,7 @@ classes = [
     ReactionHitscanNode,
     ReactionActionKeysNode,
     ReactionParentingNode,
+
 
     # objective
     ObjectiveNode,
@@ -200,29 +223,21 @@ def _sanitize_open_node_editors_before_unload():
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-
-    # Append the scoped Shift+A entry (only shows in our editor)
+    register_utility_store_properties()                      # ← add
     from bpy.types import NODE_MT_add
     NODE_MT_add.append(_append_exploratory_entry)
 
-
 def unregister():
-    # 0) Detach any UI that’s still looking at our tree to prevent enum -1 spam
     _sanitize_open_node_editors_before_unload()
-
-    # 1) Remove the scoped Shift+A entry first
     from bpy.types import NODE_MT_add
-    try:
-        NODE_MT_add.remove(_append_exploratory_entry)
-    except Exception:
-        pass
-
-    # 2) Unregister classes (reverse order)
+    try: NODE_MT_add.remove(_append_exploratory_entry)
+    except Exception: pass
     for cls in reversed(classes):
-        try:
-            bpy.utils.unregister_class(cls)
-        except Exception:
-            pass
+        try: bpy.utils.unregister_class(cls)
+        except Exception: pass
+    unregister_utility_store_properties()                    # ← add
+
+
 
 
 if __name__ == "__main__":

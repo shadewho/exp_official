@@ -89,7 +89,7 @@ def _action_keys_exist(scn):
 # ─────────────────────────────────────────────────────────
 
 class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
-    bl_label = "Interactions"
+    bl_label = "Interactions(Legacy)"
     bl_idname = "VIEW3D_PT_exploratory_studio"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -103,6 +103,9 @@ class VIEW3D_PT_Exploratory_Studio(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scn = context.scene
+        row = layout.row()
+        row.alert = True
+        row.label(text="Warning: Legacy system. Use Nodes.", icon='ERROR')
 
         # List + add/remove/duplicate
         row = layout.row()
@@ -235,7 +238,7 @@ class EXPLORATORY_OT_RemoveGlobalReaction(bpy.types.Operator):
 
 
 class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
-    bl_label = "Reactions"
+    bl_label = "Reactions(Legacy)"
     bl_idname = "VIEW3D_PT_exploratory_reactions"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -249,6 +252,9 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scn = context.scene
+        row = layout.row()
+        row.alert = True
+        row.label(text="Warning: Legacy system. Use Nodes.", icon='ERROR')
 
         # Library list controls
         row = layout.row()
@@ -515,7 +521,7 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
 # ─────────────────────────────────────────────────────────
 
 class VIEW3D_PT_Objectives(bpy.types.Panel):
-    bl_label = "Objectives & Timers"
+    bl_label = "Objectives & Timers(Legacy)"
     bl_idname = "VIEW3D_PT_objectives"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -525,10 +531,12 @@ class VIEW3D_PT_Objectives(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         return _in_exploratory_editor(context)
-
     def draw(self, context):
         layout = self.layout
         scn = context.scene
+        row = layout.row()
+        row.alert = True
+        row.label(text="Warning: Legacy system. Use Nodes.", icon='ERROR')
 
         # List
         row = layout.row()

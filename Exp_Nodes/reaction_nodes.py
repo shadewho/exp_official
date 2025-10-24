@@ -367,7 +367,11 @@ class ReactionTriggerInputSocket(bpy.types.NodeSocket):
 
     _RICH_RED = (0.92, 0.18, 0.18, 1.0)
     _BLUE     = (0.15, 0.55, 1.0, 1.0)
-    _MULTI_FROM_TYPES = {"TriggerOutputSocketType", "ReactionOutputSocketType"}
+    _MULTI_FROM_TYPES = {
+        "TriggerOutputSocketType",
+        "ReactionOutputSocketType",
+        "ImpactEventOutputSocketType",
+    }
 
     def draw(self, context, layout, node, text):
         layout.label(text=text)
@@ -406,6 +410,30 @@ class ReactionOutputSocket(bpy.types.NodeSocket):
             pass
         return self._BLUE
 
+class ImpactEventOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "ImpactEventOutputSocketType"
+    bl_label  = "Impact (Bool)"
+
+    _IMPACT = (0.85, 0.6, 0.8, 1.0)
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._IMPACT
+
+
+class ImpactLocationOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "ImpactLocationOutputSocketType"
+    bl_label  = "Impact Location (Vector)"
+
+    _PURPLE = (0.65, 0.40, 0.95, 1.0)
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._PURPLE
 
 # ───────────────────────── base class ─────────────────────────
 
@@ -473,6 +501,12 @@ class ReactionHitscanNode(_ReactionNodeKind):
     bl_label  = "Hitscan"
     KIND = "HITSCAN"
 
+    def init(self, context):
+        # Keep base sockets (Reaction Input/Output) + our impact outputs
+        super().init(context)
+        self.outputs.new("ImpactEventOutputSocketType",    "Impact")
+        self.outputs.new("ImpactLocationOutputSocketType", "Impact Location")
+
     def draw_buttons(self, context, layout):
         scn = _scene()
         idx = self.reaction_index
@@ -505,11 +539,24 @@ class ReactionHitscanNode(_ReactionNodeKind):
         hs.prop(r, "proj_max_range", text="Max Range")
         hs.prop(r, "proj_place_hitscan_object", text="Place Object at Impact")
 
+        #Lifetime & Max Active for hitscan visuals
+        if getattr(r, "proj_object", None) and getattr(r, "proj_place_hitscan_object", True):
+            hs.prop(r, "proj_lifetime", text="Lifetime (sec)")     # reused field
+            hs.prop(r, "proj_pool_limit", text="Max Active")       # reused field
+            info = hs.box()
+            info.label(text="Lifetime/Max Active apply when a visual is set. Lifetime=0 uses legacy behavior (no clone).", icon='INFO')
+
 
 class ReactionProjectileNode(_ReactionNodeKind):
     bl_idname = "ReactionProjectileNodeType"
     bl_label  = "Projectile"
     KIND = "PROJECTILE"
+
+    def init(self, context):
+        # Keep base sockets (Reaction Input/Output) + our impact outputs
+        super().init(context)
+        self.outputs.new("ImpactEventOutputSocketType",    "Impact")
+        self.outputs.new("ImpactLocationOutputSocketType", "Impact Location")
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -545,6 +592,7 @@ class ReactionProjectileNode(_ReactionNodeKind):
         pj.prop(r, "proj_lifetime", text="Lifetime")
         pj.prop(r, "proj_on_contact_stop", text="Stop on Contact")
         pj.prop(r, "proj_pool_limit", text="Max Active")
+
 
 
 
@@ -704,27 +752,42 @@ class ReactionParentingNode(_ReactionNodeKind):
         if getattr(r, "parenting_follow_mode", "PARENT") == "CHILD_OF":
             fo = layout.box()
             fo.label(text="Child-Of (Selective Follow)")
+
+            # cleaner, left-aligned controls
+            try:
+                fo.use_property_split = False
+                fo.use_property_decorate = False
+            except Exception:
+                pass
+
             row = fo.row(align=True)
             row.prop(r, "parenting_follow_influence", text="Influence")
 
-            col = fo.column(align=True)
-            col.prop(r, "parenting_follow_loc", text="Follow Location")
-            if r.parenting_follow_loc:
-                sub = col.row(align=True)
-                sub.prop(r, "parenting_follow_loc_x"); sub.prop(r, "parenting_follow_loc_y"); sub.prop(r, "parenting_follow_loc_z")
+            # helper: toggle on left, XYZ on right (single row)
+            def _axes_line(master_prop: str, label: str, px: str, py: str, pz: str):
+                block = fo.box()
+                split = block.split(factor=0.55, align=True)
 
-            col.prop(r, "parenting_follow_rot", text="Follow Rotation")
-            if r.parenting_follow_rot:
-                sub = col.row(align=True)
-                sub.prop(r, "parenting_follow_rot_x"); sub.prop(r, "parenting_follow_rot_y"); sub.prop(r, "parenting_follow_rot_z")
+                left = split.row(align=True)
+                left.prop(r, master_prop, text=label)
 
-            col.prop(r, "parenting_follow_scl", text="Follow Scale")
-            if r.parenting_follow_scl:
-                sub = col.row(align=True)
-                sub.prop(r, "parenting_follow_scl_x"); sub.prop(r, "parenting_follow_scl_y"); sub.prop(r, "parenting_follow_scl_z")
+                right = split.row(align=True)
+                right.enabled = getattr(r, master_prop)
+                right.alignment = 'LEFT'
+                right.label(text="Axes:")
+                right.prop(r, px, text="X")
+                right.prop(r, py, text="Y")
+                right.prop(r, pz, text="Z")
 
-        info = layout.box()
-        info.label(text="Unparent restores original parent (captured at game start) and removes runtime Child-Of.", icon='INFO')
+            _axes_line("parenting_follow_loc", "Follow Location",
+                       "parenting_follow_loc_x", "parenting_follow_loc_y", "parenting_follow_loc_z")
+
+            _axes_line("parenting_follow_rot", "Follow Rotation",
+                       "parenting_follow_rot_x", "parenting_follow_rot_y", "parenting_follow_rot_z")
+
+            _axes_line("parenting_follow_scl", "Follow Scale",
+                       "parenting_follow_scl_x", "parenting_follow_scl_y", "parenting_follow_scl_z")
+
 
 
 # ───────────────────────── concrete nodes ─────────────────────────
@@ -753,6 +816,25 @@ class ReactionTransformNode(_ReactionNodeKind):
     bl_idname = "ReactionTransformNodeType"
     bl_label  = "Transform"
     KIND = "TRANSFORM"
+
+    def init(self, context):
+        # Keep base Reaction Input/Output
+        super().init(context)
+
+        # NEW: optional Float Vector inputs.
+        # These do nothing unless linked. Each socket carries a metadata key
+        # that tells the generic sync pass which ReactionDefinition field to set.
+        s_loc = self.inputs.new("FloatVectorInputSocketType", "Location Vec")
+        try: s_loc["exp_vec_target"] = "transform_location"
+        except Exception: pass
+
+        s_rot = self.inputs.new("FloatVectorInputSocketType", "Rotation Vec")
+        try: s_rot["exp_vec_target"] = "transform_rotation"
+        except Exception: pass
+
+        s_scl = self.inputs.new("FloatVectorInputSocketType", "Scale Vec")
+        try: s_scl["exp_vec_target"] = "transform_scale"
+        except Exception: pass
 
 class ReactionCustomTextNode(_ReactionNodeKind):
     bl_idname = "ReactionCustomTextNodeType"

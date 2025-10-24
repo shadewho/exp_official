@@ -65,9 +65,6 @@ from .interactions.exp_interactions import (
 )
 from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties, EXPLORATORY_OT_DuplicateGlobalReaction
 from .systems.exp_objectives import (
-    ObjectiveDefinition,
-    EXPLORATORY_OT_AddObjective,
-    EXPLORATORY_OT_RemoveObjective,
     register_objective_properties,
     unregister_objective_properties
 )

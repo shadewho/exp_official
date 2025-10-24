@@ -7,7 +7,7 @@ from ..props_and_utils.exp_time import update_real_time, tick_sim_time
 from ..animations.exp_custom_animations import update_all_custom_managers
 from ..animations.exp_animations import nla_is_locked
 from ..reactions.exp_reactions import update_property_tasks
-from ..reactions.exp_projectiles import update_projectile_tasks
+from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_tasks
 from ..reactions.exp_transforms import update_transform_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_thread_result
 from ..physics.exp_dynamic import update_dynamic_meshes
@@ -67,6 +67,7 @@ class GameLoop:
                 update_transform_tasks()
                 update_property_tasks()
                 update_projectile_tasks(dt_sim)
+                update_hitscan_tasks()  
             perf_mark(op, 'custom_tasks', t0)
 
             # B2) Dynamic proxies + platform v/ω (heavy): once per frame
