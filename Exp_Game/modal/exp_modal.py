@@ -30,11 +30,9 @@ from ..mouse_and_movement.exp_cursor import (
     ensure_cursor_hidden_if_mac,
 )
 from ..physics.exp_kcc import KinematicCharacterController
-from ..systems.exp_live_performance import init_live_performance
 from ..startup_and_reset.exp_fullscreen import exit_fullscreen_once
-from ..systems.exp_threads import ThreadEngine
 from .exp_loop import GameLoop
-
+from ..physics.exp_view_fpv import reset_fpv_rot_scale
 
 
 class ExpModal(bpy.types.Operator):
@@ -168,10 +166,10 @@ class ExpModal(bpy.types.Operator):
 
 
 
-    #Threading intialization#
-    _thread_eng = None
+    # XR  worker
     _frame_seq: int = 0
-    _cam_allowed_last: float = 3.0 
+    _cam_allowed_last: float = 3.0
+
 
     #loop initialization
     _loop = None
@@ -369,6 +367,7 @@ class ExpModal(bpy.types.Operator):
         else:
             self.bvh_tree = None
 
+
         #define dynamic platforms (vertical movement)
         self.platform_prev_positions = {}
         for dyn_obj in self.moving_meshes:
@@ -394,12 +393,6 @@ class ExpModal(bpy.types.Operator):
         self._axis_last = {'x': None, 'y': None}
         self._axis_candidates = {'x': {}, 'y': {}}
 
-        
-        # Live performance overlay helper
-        init_live_performance(self)
-
-        # Threading engine 
-        self._thread_eng = ThreadEngine(max_workers=2)
 
         #game loop initialization
         self._loop = GameLoop(self)
@@ -433,6 +426,7 @@ class ExpModal(bpy.types.Operator):
 
         # Mouse -> camera rotation
         elif event.type == 'MOUSEMOVE':
+            # Update yaw/pitch only — keep camera/FPV on the TIMER clock.
             handle_mouse_move(self, context, event)
             ensure_cursor_hidden_if_mac(context)
 
@@ -483,14 +477,14 @@ class ExpModal(bpy.types.Operator):
         #reset --------------------reset --------#
         if not self.launched_from_ui:
             restore_scene_state(self, context)
+            reset_fpv_rot_scale(context.scene)
 
         if not self.launched_from_ui:
             bpy.ops.exploratory.reset_game(
                 'INVOKE_DEFAULT',
                 skip_restore=True
             )
-        if not self.launched_from_ui:
-            restore_performance_state(self, context)
+
 
 
         #reset --------------------reset --------#
@@ -530,20 +524,13 @@ class ExpModal(bpy.types.Operator):
             bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)
     
         #----------------------------
-        #loop and threading shutdown
+        # XR / loop shutdown
         #----------------------------
         if self._loop:
             try:
-                self._loop.shutdown()
+                self._loop.shutdown()  # shuts down XR inside
             except Exception:
                 pass
-        if self._thread_eng:
-            try: self._thread_eng.shutdown()
-            except Exception: pass
-            self._thread_eng = None
-
-        return {'CANCELLED'}
-
 
     # ---------------------------
     # Update / Logic Methods
@@ -570,9 +557,15 @@ class ExpModal(bpy.types.Operator):
         Execute 'steps' physics iterations at a fixed 30 Hz dt.
         Scheduling (deciding how many to run) is done by _physics_steps_due().
         """
+        scene = context.scene
         if not self.target_object or steps <= 0:
             return
 
+        if getattr(scene, "view_mode", 'THIRD') == 'LOCKED':
+            from ..physics.exp_locked_view import run_locked_view
+            run_locked_view(self, context, steps)
+            return
+        
         # Cache addon prefs once (lazy init), then reuse every call
         prefs = getattr(self, "_prefs", None)
         if prefs is None:
@@ -611,8 +604,14 @@ class ExpModal(bpy.types.Operator):
             self.is_grounded       = pc.on_ground
             self.grounded_platform = pc.ground_obj
 
-        # Rotate character toward camera ONCE per frame if actually moving
-        if pc and (pc.vel.x * pc.vel.x + pc.vel.y * pc.vel.y) > 1e-6:
+        # THIRD-PERSON ONLY:
+        # Rotate character toward camera once per frame *only* in third person.
+        # In FIRST person this fights the FPV path and causes sway/jitter.
+        if (
+            getattr(scene, "view_mode", 'THIRD') != 'FIRST'
+            and pc
+            and (pc.vel.x * pc.vel.x + pc.vel.y * pc.vel.y) > 1e-4
+        ):
             smooth_rotate_towards_camera(self)
 
     # ---------------------------

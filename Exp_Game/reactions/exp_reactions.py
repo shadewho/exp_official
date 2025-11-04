@@ -9,6 +9,7 @@ from . import exp_custom_ui
 from ..audio.exp_audio import extract_packed_sound
 from ...exp_preferences import get_addon_path
 from .exp_transforms import _active_transform_tasks
+from .exp_tracking import clear as clear_tracking_tasks
 # ------------------------------
 # Property Tasks
 # ------------------------------
@@ -263,6 +264,10 @@ def reset_all_tasks():
     try:
         from . import exp_projectiles as _proj
         _proj.clear()
+    except Exception:
+        pass
+    try:
+        clear_tracking_tasks()
     except Exception:
         pass
 

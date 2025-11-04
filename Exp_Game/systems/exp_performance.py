@@ -1,6 +1,7 @@
 # File: Exp_Game/exp_performance.py
 
 import bpy
+import time
 import mathutils
 from bpy.types import PropertyGroup, UIList, Operator
 from bpy.props import (
@@ -15,7 +16,7 @@ from bpy.props import (
 
 # Use the real-time game clock you already run each TIMER tick
 from ..props_and_utils.exp_time import get_game_time
-from .exp_threads import compute_cull_batch
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tunables
 # ──────────────────────────────────────────────────────────────────────────────
@@ -377,16 +378,40 @@ class EXPLORATORY_OT_RemovePerformanceEntry(Operator):
 
 
 # ─── 5) Per-Frame Culling (Throttled + Cached + Hysteresis) ───
+def _xr_stats_bucket(operator) -> dict:
+    """
+    Ensure operator._xr_stats is a dict with all counters seeded.
+    Safe to call every frame; idempotent.
+    """
+    xr = getattr(operator, "_xr_stats", None)
+    if not isinstance(xr, dict):
+        xr = {}
+        operator._xr_stats = xr
+
+    # Integers
+    xr.setdefault("req", 0)
+    xr.setdefault("ok", 0)
+    xr.setdefault("fail", 0)
+    xr.setdefault("scan_total", 0)
+    xr.setdefault("writes_total", 0)
+    xr.setdefault("last_batch", 0)
+    xr.setdefault("last_total", 0)
+
+    # Floats / timestamps
+    xr.setdefault("last_lat_ms", 0.0)
+    xr.setdefault("lat_ema_ms", 0.0)
+    xr.setdefault("last_ok_wall", 0.0)
+
+    return xr
 
 def update_performance_culling(operator, context):
     """
-    Called each frame in ExpModal.modal().
-
-    Threaded per-object RADIAL culling only (no synchronous fallback):
+    XR-backed per-object RADIAL culling (no thread engine, no fallback):
       - Throttled per-entry via get_game_time()
       - Entry-level decisions (collection-exclude, BOX triggers) on main thread
-      - Per-object distance checks batched to ThreadEngine (pure math)
+      - Per-object distance checks are queued to XR via the culling port
       - All bpy writes (objects/collections/placeholders) remain on main thread
+      - XR metrics are accumulated on operator._xr_stats for the live HUD
     """
     scene = context.scene
     ref = scene.target_armature
@@ -397,6 +422,18 @@ def update_performance_culling(operator, context):
     # Ensure caches exist
     if not hasattr(operator, "_perf_runtime"):
         _build_perf_runtime_cache(operator, context)
+
+    # Ensure XR stats bucket exists
+    xr_stats = getattr(operator, "_xr_stats", None)
+    if not isinstance(xr_stats, dict):
+        xr_stats = {
+            "req": 0, "ok": 0, "fail": 0,
+            "last_lat_ms": 0.0, "lat_ema_ms": 0.0,
+            "last_ok_wall": 0.0,
+            "scan_total": 0, "writes_total": 0,
+            "last_batch": 0, "last_total": 0,
+        }
+        operator._xr_stats = xr_stats
 
     game_t = get_game_time()
 
@@ -431,9 +468,9 @@ def update_performance_culling(operator, context):
                 if rec["last_in"] is None:
                     threshold = base
                 elif rec["last_in"]:
-                    threshold = base + margin   # need to be clearly outside to flip false
+                    threshold = base + margin
                 else:
-                    threshold = max(0.0, base - margin)  # clearly inside to flip true
+                    threshold = max(0.0, base - margin)
                 thr2 = threshold * threshold
                 in_range = any(
                     (o.matrix_world.translation - ref_loc).length_squared <= thr2
@@ -455,10 +492,7 @@ def update_performance_culling(operator, context):
             else:
                 in_range = False
 
-        # ─────────────────────────────────────────────────────────
-        # A) COLLECTION-EXCLUDE / BOX / SINGLE-OBJECT modes
-        #    -> only act when entry-level state changes (main-thread writes)
-        # ─────────────────────────────────────────────────────────
+        # A) COLLECTION-EXCLUDE / BOX / SINGLE-OBJECT modes: main thread only
         if not per_object_mode:
             if rec["last_in"] is None or in_range != rec["last_in"]:
                 if entry.use_collection and entry.target_collection:
@@ -479,48 +513,38 @@ def update_performance_culling(operator, context):
                     if entry.target_object.hide_viewport != desired_hidden:
                         entry.target_object.hide_viewport = desired_hidden
 
-        # ─────────────────────────────────────────────────────────
-        # B) PER-OBJECT mode (RADIAL + not exclude_collection)
-        #    -> THREAD ONLY (no synchronous fallback)
-        # ─────────────────────────────────────────────────────────
+        # B) PER-OBJECT mode: queue the XR job via the port
         else:
             objs = rec["obj_list"]
-            if objs and hasattr(operator, "_thread_eng") and operator._thread_eng:
+            if objs:
+                if getattr(operator, "_xr", None) is None:
+                    # No fallback: this mode requires XR
+                    raise RuntimeError("XR not initialized but per-object culling requested")
+
                 # Snapshot names & positions on the main thread (read-only)
                 names = [o.name for o in objs]
                 poss  = [tuple(o.matrix_world.translation) for o in objs]
 
                 # Round-robin cursor and batch size (respect your write budget)
-                start_idx = rec.get("scan_idx", 0)
+                start_idx = int(rec.get("scan_idx", 0))
                 max_batch = min(MAX_PROP_WRITES_PER_TICK, len(names))
 
-                # Threshold and identity for this entry
-                threshold = float(entry.cull_distance)
-                entry_ptr = entry.as_pointer()
-                job_key   = f"cull:{entry_ptr}"
-
-                # Per-entry version to coalesce newer work
-                ver = rec.get("cull_ver", 0) + 1
-                rec["cull_ver"] = ver
-
-                # Submit/replace latest work for this entry.
-                operator._thread_eng.submit_latest(
-                    key=job_key,
-                    version=ver,
-                    fn=compute_cull_batch,             # runs in worker (no bpy)
-                    entry_ptr=entry_ptr,
-                    obj_names=names,
-                    obj_positions=poss,
-                    ref_loc=tuple(ref_loc),            # (x,y,z)
-                    thresh=threshold,
-                    start=start_idx,
-                    max_count=max_batch,
+                from ..xr_systems.xr_ports.culling import queue_cull_batch
+                queue_cull_batch(
+                    operator,
+                    entry.as_pointer(),
+                    names,
+                    poss,
+                    (float(ref_loc.x), float(ref_loc.y), float(ref_loc.z)),
+                    float(entry.cull_distance),
+                    start_idx,
+                    int(max_batch),
+                    game_t,
+                    apply_fn=lambda res: apply_cull_thread_result(operator, res),
+                    set_next_idx_fn=lambda idx: rec.__setitem__("scan_idx", int(idx)),
                 )
-                # Note: rec["scan_idx"] is advanced when results are applied via apply_cull_thread_result()
 
-        # ─────────────────────────────────────────────────────────
         # C) Placeholder toggling follows entry-level in_range
-        # ─────────────────────────────────────────────────────────
         if entry.has_placeholder:
             if rec["pl_layer_coll"]:
                 desired_excl = in_range  # exclude placeholder when real visible
@@ -531,8 +555,9 @@ def update_performance_culling(operator, context):
                 if rec["pl_obj"].hide_viewport != desired_hidden:
                     rec["pl_obj"].hide_viewport = desired_hidden
 
-        # Save new state
+        # Save state
         rec["last_in"] = in_range
+
 
 
 def apply_cull_thread_result(operator, payload) -> int:

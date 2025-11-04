@@ -68,20 +68,6 @@ _SMOOTHERS = {}
 _LATCHES   = {}
 _VIEWS     = {}  # id(op) -> dict with inputs/outputs and rv3d & debounce caches
 
-def _smooth_for(op_key):
-    s = _SMOOTHERS.get(op_key)
-    if s is None:
-        s = _CamSmoother()
-        _SMOOTHERS[op_key] = s
-    return s
-
-def _latch_for(op_key):
-    l = _LATCHES.get(op_key)
-    if l is None:
-        l = _CamLatch()
-        _LATCHES[op_key] = l
-    return l
-
 def _view_state_for(op_key):
     v = _VIEWS.get(op_key)
     if v is None:
@@ -109,91 +95,52 @@ def _view_state_for(op_key):
 _STATIC_TOKEN = "__STATIC__"
 
 def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist, r_cam):
-    """
-    Center ray only: treat camera like a point (then subtract r_cam).
-    Returns (nearest_hit_distance, hit_obj_token) or (None, None).
-    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
-    """
     if direction.length <= 1e-9 or max_dist <= 1e-9:
         return (None, None)
     dnorm = direction.normalized()
-
     best = (None, None)
-
-    # Static first
     if static_bvh:
         hit = static_bvh.ray_cast(origin, dnorm, max_dist)
         if hit and hit[0] is not None:
             best = (hit[3], _STATIC_TOKEN)
-
-    # Dynamic movers
     if dynamic_bvh_map:
-        # small prefilter radius for movers
         pf_pad = 0.05 + r_cam
         for obj, (bvh_like, approx_rad) in dynamic_bvh_map.items():
-            try:
-                # quick sphere segment test (center ray)
-                center = obj.matrix_world.translation
-                oc = center - origin
-                t = oc.dot(dnorm)
-                if t < -approx_rad or t > max_dist + approx_rad:
-                    pass
-                else:
-                    # distance from segment to center
-                    if t < 0.0:
-                        closest = oc
-                    elif t > max_dist:
-                        closest = oc - dnorm * max_dist
-                    else:
-                        closest = oc - dnorm * t
-                    if closest.length_squared <= (approx_rad + pf_pad) * (approx_rad + pf_pad):
-                        h = bvh_like.ray_cast(origin, dnorm, max_dist)
-                        if h and h[0] is not None:
-                            d = h[3]
-                            if best[0] is None or d < best[0]:
-                                best = (d, obj)
-            except Exception:
-                # any bad obj/bvh should not tank the frame
+            center = obj.matrix_world.translation
+            oc = center - origin
+            t = oc.dot(dnorm)
+            if t < -approx_rad or t > max_dist + approx_rad:
                 continue
-
+            closest = (oc if t < 0.0 else (oc - dnorm * (max_dist if t > max_dist else t)))
+            if closest.length_squared <= (approx_rad + pf_pad) * (approx_rad + pf_pad):
+                h = bvh_like.ray_cast(origin, dnorm, max_dist)
+                if h and h[0] is not None:
+                    d = h[3]
+                    if best[0] is None or d < best[0]:
+                        best = (d, obj)
     return best if best[0] is not None else (None, None)
 
 
 def _los_blocked(static_bvh, dynamic_bvh_map, a: Vector, b: Vector):
-    """
-    True if anything blocks the line segment a→b.
-    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
-    """
     d = b - a
     dist = d.length
     if dist <= 1e-9:
         return False
     dnorm = d / dist
-
-    # Static
     if static_bvh:
         h = static_bvh.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
         if h and h[0] is not None:
             return True
-
-    # Dynamic
     if dynamic_bvh_map:
         for _obj, (bvh_like, _r) in dynamic_bvh_map.items():
-            try:
-                h = bvh_like.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
-                if h and h[0] is not None:
-                    return True
-            except Exception:
-                continue
-
+            h = bvh_like.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
+            if h and h[0] is not None:
+                return True
     return False
 
 
+
 def _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction, low, high, steps):
-    """
-    Find the nearest distance along 'direction' from 'anchor' that has clear LoS.
-    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
-    """
     lo, hi = low, high
     for _ in range(max(1, int(steps))):
         mid = 0.5 * (lo + hi)
@@ -206,25 +153,17 @@ def _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction, low
 
 
 def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_iters=_PUSHOUT_ITERS):
-    """Tiny nearest-point pushout vs static + all active dynamic BVHs."""
     if radius <= 1.0e-6:
         return pos
-
     def push_once_bvh(bvh_like, p):
-        try:
-            res = bvh_like.find_nearest(p)
-        except Exception:
-            return p, False
+        res = bvh_like.find_nearest(p)
         if not res or res[0] is None or res[1] is None:
             return p, False
         hit_co, hit_n, _idx, dist = res
-        n = hit_n
-        if (p - hit_co).dot(n) < 0.0:
-            n = -n
+        n = hit_n if (p - hit_co).dot(hit_n) >= 0.0 else -hit_n
         if dist < radius:
             return p + n * ((radius - dist) + 1.0e-4), True
         return p, False
-
     p = pos
     moved = True
     it = 0
@@ -241,9 +180,89 @@ def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_ite
 # -------------------------
 # Public, single entrypoint
 # -------------------------
-def update_camera_for_operator(context, op):
+def view_queue_third_job(context, op):
     """
-    The ONE function exp_loop should call each frame (no dynamic-map copying).
+    THIRD-person obstruction solve moved to XR with exact BVHs for BOTH static and dynamic.
+    No local rays, no proxies, no static/dynamic split. XR computes candidate+allowed.
+    """
+    if not op or not getattr(op, "target_object", None):
+        return
+    mode = getattr(context.scene, "view_mode", "THIRD")
+    if mode in ("FIRST", "LOCKED"):
+        return
+    if not getattr(context.scene, "view_obstruction_enabled", True):
+        return
+
+    # Lazily sync exact static + dynamic meshes (triangles) to XR
+    try:
+        if getattr(op, "_xr", None):
+            if not getattr(op, "_view_static_synced_exact", False):
+                from ..xr_systems.xr_ports.view import sync_view_static_meshes_exact
+                sync_view_static_meshes_exact(context, op)
+                op._view_static_synced_exact = True
+            from ..xr_systems.xr_ports.view import sync_view_dynamic_meshes_exact
+            sync_view_dynamic_meshes_exact(op)
+    except Exception:
+        pass
+
+    # Direction & anchor (unchanged)
+    pitch = float(op.pitch); yaw = float(op.yaw)
+    cx = math.cos(pitch); sx = math.sin(pitch)
+    sy = math.sin(yaw);   cy = math.cos(yaw)
+    direction = Vector((cx * sy, -cx * cy, sx))
+    if direction.length > 1.0e-9:
+        direction.normalize()
+
+    cp     = context.scene.char_physics
+    cap_h  = float(getattr(cp, "height", 2.0))
+    cap_r  = float(getattr(cp, "radius", 0.30))
+    anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
+
+    clip_start = float(getattr(op, "_clip_start_cached", 0.1) or 0.1)
+    if clip_start <= 0.0: clip_start = 0.1
+    r_cam      = max(_R_CAM_FLOOR, clip_start * _NEARCLIP_TO_RADIUS_K)
+    desired_max= max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
+    min_cam    = max(_MIN_CAM_ABS, cap_r * _MIN_CAM_RADIUS_FACTOR)
+
+    # Per-frame dynamic transforms (in tandem with statics)
+    dyn_objects = []
+    dyn_map = getattr(op, "dynamic_bvh_map", {}) or {}
+    if dyn_map:
+        for obj in dyn_map.keys():
+            try:
+                M = obj.matrix_world
+                # row-major 4x4 flatten
+                Mm = [M[0][0],M[0][1],M[0][2],M[0][3],
+                      M[1][0],M[1][1],M[1][2],M[1][3],
+                      M[2][0],M[2][1],M[2][2],M[2][3],
+                      0.0,     0.0,     0.0,     1.0]
+                dyn_objects.append({"id": obj.name, "M": Mm})
+            except Exception:
+                continue
+
+    # Enqueue ONE XR job that computes candidate + allowed using exact BVHs for both static+dynamic
+    try:
+        from ..xr_systems.xr_ports.view import queue_view_third_full_exact
+        queue_view_third_full_exact(
+            op=op,
+            op_key=id(op),
+            anchor_xyz=(anchor.x, anchor.y, anchor.z),
+            dir_xyz=(direction.x, direction.y, direction.z),
+            min_cam=float(min_cam),
+            desired_max=float(desired_max),
+            r_cam=float(r_cam),
+            dyn_objects=dyn_objects,
+        )
+    except Exception:
+        # We do not compute locally if XR errors; no fallback geometry.
+        pass
+
+
+def apply_view_from_xr(context, op):
+    """
+    Apply camera using the latest XR answer (if any).
+    FIRST/LOCKED are applied locally exactly as before.
+    THIRD uses XR ONLY; if XR hasn't replied yet, clamp to min_cam (safe).
     """
     if not op or not getattr(op, "target_object", None):
         return
@@ -251,7 +270,94 @@ def update_camera_for_operator(context, op):
     op_key = id(op)
     view   = _view_state_for(op_key)
 
-    # --- 1) Direction from operator pitch/yaw
+    mode = getattr(context.scene, "view_mode", "THIRD")
+
+    # Direction & anchor
+    if mode == 'LOCKED':
+        lp = float(getattr(context.scene, "view_locked_pitch", math.radians(60.0)))
+        ly = float(getattr(context.scene, "view_locked_yaw", 0.0))
+        cx = math.cos(lp); sx = math.sin(lp)
+        sy = math.sin(ly); cy = math.cos(ly)
+        direction = Vector((cx * sy, -cx * cy, sx))
+        if direction.length > 1.0e-9:
+            direction.normalize()
+        cap_h  = float(getattr(context.scene.char_physics, "height", 2.0))
+        anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
+        final_allowed = max(_MIN_CAM_ABS, float(getattr(context.scene, "view_locked_distance", 6.0)))
+        view["anchor"] = anchor; view["direction"] = direction; view["allowed"] = float(final_allowed)
+        op._cam_allowed_last = float(final_allowed)
+        _apply_to_viewport(context, op, view)
+        return
+
+    # FIRST-person
+    if mode == 'FIRST':
+        cap_h  = float(getattr(context.scene.char_physics, "height", 2.0))
+        anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
+        pitch = float(op.pitch); yaw = float(op.yaw)
+        cx = math.cos(pitch); sx = math.sin(pitch)
+        sy = math.sin(yaw);   cy = math.cos(yaw)
+        direction = Vector((cx * sy, -cx * cy, sx))
+        if direction.length > 1.0e-9:
+            direction.normalize()
+        view["anchor"] = anchor; view["direction"] = direction; view["allowed"] = 0.0
+        op._cam_allowed_last = 0.0
+        try:
+            from .exp_view_fpv import update_first_person_for_operator as _fpv_update
+            _fpv_update(context, op, anchor, direction)
+        except Exception:
+            pass
+        _apply_to_viewport(context, op, view)
+        return
+
+    # THIRD-person
+    # Compute anchor/dir; final distance comes ONLY from XR.
+    pitch = float(op.pitch); yaw = float(op.yaw)
+    cx = math.cos(pitch); sx = math.sin(pitch)
+    sy = math.sin(yaw);   cy = math.cos(yaw)
+    direction = Vector((cx * sy, -cx * cy, sx))
+    if direction.length > 1.0e-9:
+        direction.normalize()
+
+    cp     = context.scene.char_physics
+    cap_h  = float(getattr(cp, "height", 2.0))
+    cap_r  = float(getattr(cp, "radius", 0.30))
+    anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
+
+    clip_start = float(getattr(op, "_clip_start_cached", 0.1) or 0.1)
+    if clip_start <= 0.0:
+        clip_start = 0.1
+    r_cam = max(_R_CAM_FLOOR, clip_start * _NEARCLIP_TO_RADIUS_K)
+    min_cam = max(_MIN_CAM_ABS, cap_r * _MIN_CAM_RADIUS_FACTOR)
+
+    xr_allowed = getattr(op, "_xr_view_allowed", None)
+    final_allowed = float(xr_allowed) if isinstance(xr_allowed, (int, float)) else float(min_cam)
+
+    view["anchor"]    = anchor
+    view["direction"] = direction
+    view["allowed"]   = final_allowed
+    op._cam_allowed_last = final_allowed
+
+    _apply_to_viewport(context, op, view)
+
+    
+
+def update_camera_for_operator(context, op):
+    """
+    The ONE function exp_loop should call each frame (no dynamic-map copying).
+
+    Change: final camera distance is decided by XR ONLY (no fallback).
+    Blender still computes raw geometry candidate (identical to your original logic),
+    then we enqueue an XR job for latch/smoothing and consume ONLY XR output.
+    """
+    if not op or not getattr(op, "target_object", None):
+        return
+
+    from ..xr_systems.xr_ports.view import queue_view_third
+
+    op_key = id(op)
+    view   = _view_state_for(op_key)
+
+    # --- 1) Direction from operator pitch/yaw (unchanged) ---
     pitch = float(op.pitch)
     yaw   = float(op.yaw)
     cx = math.cos(pitch); sx = math.sin(pitch)
@@ -260,23 +366,58 @@ def update_camera_for_operator(context, op):
     if direction.length > 1e-9:
         direction.normalize()
 
-    # --- 2) Anchor at capsule top
+    # --- 2) Anchor at capsule top (unchanged) ---
     cp     = context.scene.char_physics
     cap_h  = float(getattr(cp, "height", 2.0))
     cap_r  = float(getattr(cp, "radius", 0.30))
     anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
 
-    # --- 3) Camera “thickness” from near clip
+    # --- 3) Camera “thickness” from near clip (unchanged) ---
     clip_start = float(getattr(op, "_clip_start_cached", 0.1) or 0.1)
     if clip_start <= 0.0:
         clip_start = 0.1
     r_cam = max(_R_CAM_FLOOR, clip_start * _NEARCLIP_TO_RADIUS_K)
 
-    # --- 4) Desired boom + minimum
+    # --- 4) Desired boom + minimum (unchanged) ---
     desired_max = max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
     min_cam     = max(_MIN_CAM_ABS, cap_r * _MIN_CAM_RADIUS_FACTOR)
 
-    # --- 5) Early-out (pose unchanged) to skip the heavy solve
+    # === LOCKED mode (unchanged, stays local) ===
+    if getattr(context.scene, "view_mode", "THIRD") == 'LOCKED':
+        lp = float(getattr(context.scene, "view_locked_pitch", math.radians(60.0)))
+        ly = float(getattr(context.scene, "view_locked_yaw", 0.0))
+        cx = math.cos(lp); sx = math.sin(lp)
+        sy = math.sin(ly); cy = math.cos(ly)
+        direction = Vector((cx * sy, -cx * cy, sx))
+        if direction.length > 1.0e-9:
+            direction.normalize()
+        final_allowed = max(_MIN_CAM_ABS, float(getattr(context.scene, "view_locked_distance", 6.0)))
+        view["anchor"] = anchor; view["direction"] = direction; view["allowed"] = float(final_allowed)
+        op._cam_allowed_last = float(final_allowed)
+        _apply_to_viewport(context, op, view)
+        return
+
+    # === FIRST PERSON (unchanged behavior) ===
+    if getattr(context.scene, "view_mode", "THIRD") == 'FIRST':
+        view["anchor"] = anchor; view["direction"] = direction; view["allowed"] = 0.0
+        op._cam_allowed_last = 0.0
+        try:
+            from .exp_view_fpv import update_first_person_for_operator as _fpv_update
+            _fpv_update(context, op, anchor, direction)
+        except Exception:
+            pass
+        _apply_to_viewport(context, op, view)
+        return
+
+    # === HARD SWITCH: obstruction OFF (unchanged fast path) ===
+    if not getattr(context.scene, "view_obstruction_enabled", True):
+        final_allowed = max(min_cam, desired_max)
+        view["anchor"] = anchor; view["direction"] = direction; view["allowed"] = float(final_allowed)
+        op._cam_allowed_last = float(final_allowed)
+        _apply_to_viewport(context, op, view)
+        return
+
+    # --- 5) Early-out reuse (unchanged) ---
     params = (pitch, yaw, anchor.x, anchor.y, anchor.z, desired_max, r_cam)
     now = time.perf_counter()
     lp = view["last_params"]
@@ -290,18 +431,20 @@ def update_camera_for_operator(context, op):
             abs(r_cam - lrc) < 1e-6
         )
         if same_pose and (now - view["last_time"]) < view["heartbeat"]:
-            # reuse last allowed; only refresh anchor/dir for apply
-            view["anchor"]    = anchor
-            view["direction"] = direction
-            _apply_to_viewport(context, op, view)
-            return
+            # even on heartbeat reuse we still APPLY XR's last answer
+            xr_allowed = getattr(op, "_xr_view_allowed", None)
+            if isinstance(xr_allowed, (int, float)):
+                view["anchor"] = anchor; view["direction"] = direction; view["allowed"] = float(xr_allowed)
+                op._cam_allowed_last = float(xr_allowed)
+                _apply_to_viewport(context, op, view)
+                return
 
     view["last_params"] = params
     view["last_time"]   = now
 
-    # --- 6) Obstruction solve (static + dynamic) — use dynamic map directly
-    static_bvh = getattr(op, "bvh_tree", None)
-    dynamic_bvh_map = getattr(op, "dynamic_bvh_map", None)
+    # --- 6) Obstruction solve (IDENTICAL geometry, local) ---
+    static_bvh       = getattr(op, "bvh_tree", None)
+    dynamic_bvh_map  = getattr(op, "dynamic_bvh_map", None)
 
     hit_dist, hit_token = _multi_ray_min_hit(static_bvh, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
     if hit_dist is not None:
@@ -310,29 +453,69 @@ def update_camera_for_operator(context, op):
     else:
         allowed = desired_max
 
-    # --- 7) Ensure clear LoS (binary search inward if needed)
+    # 7) Ensure clear LoS (binary search inward if needed)
     candidate = anchor + direction * allowed
     if _los_blocked(static_bvh, dynamic_bvh_map, anchor, candidate):
         allowed = _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction,
                                            low=min_cam, high=allowed, steps=_LOS_STEPS)
         candidate = anchor + direction * allowed
 
-    # --- 8) Tiny nearest-point pushout
+    # 8) Tiny nearest-point pushout (unchanged)
     candidate = _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, candidate, r_cam, max_iters=_PUSHOUT_ITERS)
     allowed_after_push = (candidate - anchor).length
 
-    # --- 9) Latch + smoothing
-    latched = _latch_for(op_key).filter(hit_token, max(min_cam, min(allowed_after_push, desired_max)), r_cam)
-    final_allowed = _smooth_for(op_key).filter(latched)
+    # --- XR ENQUEUE: from here on, XR is authoritative ---
+    token_str = None
+    if hit_token == _STATIC_TOKEN:
+        token_str = "__STATIC__"
+    elif hit_token is not None:
+        try:
+            token_str = getattr(hit_token, "name", "DYNAMIC")
+        except Exception:
+            token_str = "DYNAMIC"
 
-    # Cache for apply and for external readbacks if needed
+    # HUD: show the local candidate (for comparison) without applying it
+    try:
+        from ..Developers.exp_dev_interface import devhud_set, devhud_series_push
+        devhud_set("VIEW.candidate", f"{allowed_after_push:.3f} m", volatile=True)
+        devhud_series_push("view_candidate", float(allowed_after_push))
+    except Exception:
+        pass
+
+    # Optional debug assert channel: compare XR last vs candidate
+    if bool(getattr(context.scene, "view_debug_assert_dyn", False)):
+        xr_last = getattr(op, "_xr_view_allowed", None)
+        if isinstance(xr_last, (int, float)):
+            try:
+                from ..Developers.exp_dev_interface import devhud_set
+                devhud_set("VIEW.assert_delta", f"{abs(xr_last - allowed_after_push):.3f} m", volatile=True)
+            except Exception:
+                pass
+
+    # Queue XR job (no stall). XR will return the ONLY value we apply.
+    queue_view_third(
+        op=op,
+        op_key=op_key,
+        anchor_xyz=(anchor.x, anchor.y, anchor.z),
+        dir_xyz=(direction.x, direction.y, direction.z),
+        min_cam=min_cam,
+        desired_max=desired_max,
+        r_cam=r_cam,
+        candidate_allowed=allowed_after_push,
+        hit_token=token_str
+    )
+
+    # Apply using XR's last known answer; ABSOLUTELY NO local fallback
+    xr_allowed = getattr(op, "_xr_view_allowed", None)
+    final_allowed = float(xr_allowed) if isinstance(xr_allowed, (int, float)) else float(min_cam)
+
     view["anchor"]    = anchor
     view["direction"] = direction
-    view["allowed"]   = float(final_allowed)
-    op._cam_allowed_last = float(final_allowed)
+    view["allowed"]   = final_allowed
+    op._cam_allowed_last = final_allowed
 
-    # --- 10) Apply to ONE cached rv3d, skipping redundant writes
     _apply_to_viewport(context, op, view)
+
 
 
 def _apply_to_viewport(context, op, view):
@@ -340,6 +523,17 @@ def _apply_to_viewport(context, op, view):
     desired_d = view.get("allowed", 3.0)
     if anchor is None or direction is None:
         return
+
+    # --- sanitize inputs (avoid 0/NaN distance & zero-length dir) ---
+    try:
+        desired_d = float(desired_d)
+    except Exception:
+        desired_d = _MIN_CAM_ABS
+    if desired_d != desired_d:  # NaN check
+        desired_d = _MIN_CAM_ABS
+    desired_d = max(desired_d, _MIN_CAM_ABS)
+
+    dir_vec = direction if direction.length > 1.0e-12 else Vector((0.0, -1.0, 0.0))
 
     # ensure a bound rv3d exists on the operator
     rv3d = getattr(op, "_view3d_rv3d", None)
@@ -362,7 +556,7 @@ def _apply_to_viewport(context, op, view):
     last_rot = view["rv3d_rot"]
     last_dst = view["rv3d_dst"]
 
-    target_rot = direction.to_track_quat('Z', 'Y')
+    target_rot = dir_vec.to_track_quat('Z', 'Y')
 
     need_loc = (last_loc is None) or ((anchor - last_loc).length > POS_EPS)
     if last_rot is None:
@@ -398,6 +592,7 @@ def _apply_to_viewport(context, op, view):
                     view["rv3d_dst"] = float(desired_d)
             except Exception:
                 pass
+
 
 # Convenience util (kept for any callers)
 def shortest_angle_diff(current, target):

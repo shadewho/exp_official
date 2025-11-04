@@ -1,46 +1,37 @@
-# Exploratory/Exp_Game/systems/xr_runtime.py
-import json, socket, threading, sys, time, math, traceback
-from typing import Optional, Tuple, List, Dict
+# Generic XR runtime: socket server + tiny job router with plugin loading.
+import json, socket, threading, sys, time, os, importlib, traceback
+from typing import Callable, Dict
 
 HOST = "127.0.0.1"
 
-# --------------------------
-# Small math helpers (no bpy)
-# --------------------------
-def _v_len(v):      return math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
-def _v_norm(v):
-    L = _v_len(v)
-    if L <= 1.0e-12: return (0.0, 0.0, 0.0)
-    inv = 1.0 / L
-    return (v[0]*inv, v[1]*inv, v[2]*inv)
-def _v_add(a,b):    return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
-def _v_sub(a,b):    return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
-def _v_mul(v,s):    return (v[0]*s, v[1]*s, v[2]*s)
-def _dot(a,b):      return (a[0]*b[0] + a[1]*b[1] + a[2]*b[2])
+# ---------------- Registry ----------------
+_JOB_REGISTRY: Dict[str, Callable[[dict], dict]] = {}
 
-def _segment_sphere_first_hit(origin, dnorm, max_dist, center, radius) -> Optional[float]:
-    """
-    Ray/segment vs sphere, return distance to first hit within [0, max_dist] or None.
-    dnorm must be normalized.
-    """
-    oc = _v_sub(origin, center)
-    b = 2.0 * _dot(dnorm, oc)
-    c = _dot(oc, oc) - radius*radius
-    disc = b*b - 4.0*c
-    if disc < 0.0:
-        return None
-    sq = math.sqrt(disc)
-    t1 = (-b - sq) * 0.5
-    t2 = (-b + sq) * 0.5
-    # take the smallest non-negative within the segment
-    hit = None
-    if 0.0 <= t1 <= max_dist: hit = t1
-    if 0.0 <= t2 <= max_dist: hit = min(hit, t2) if hit is not None else t2
-    return hit
+def register_job(name: str, fn: Callable[[dict], dict]):
+    _JOB_REGISTRY[name] = fn
 
-# --------------------------
-# Socket helpers
-# --------------------------
+def _load_plugins():
+    """
+    Load modules from ./xr_jobs/*.py that expose:  def register(registry_fn): ...
+    This keeps xr_runtime.py tiny while allowing small, focused job files.
+    """
+    here = os.path.dirname(__file__)
+    jobs_dir = os.path.join(here, "xr_jobs")
+    if not os.path.isdir(jobs_dir):
+        return
+    for fname in os.listdir(jobs_dir):
+        if not fname.endswith(".py") or fname == "__init__.py":
+            continue
+        mod_name = f"{__package__}.xr_jobs.{fname[:-3]}" if __package__ else f"xr_jobs.{fname[:-3]}"
+        try:
+            mod = importlib.import_module(mod_name)
+            reg_fn = getattr(mod, "register", None)
+            if callable(reg_fn):
+                reg_fn(register_job)
+        except Exception:
+            traceback.print_exc()
+
+# ---------------- Socket helpers ----------------
 def _recv_lines(sock):
     buf = b""
     while True:
@@ -67,10 +58,9 @@ def _send(sock, obj):
     data = (json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8")
     sock.sendall(data)
 
-# --------------------------
-# Server
-# --------------------------
+# ---------------- Server ----------------
 def run_server(port: int):
+    _load_plugins()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, port))
@@ -82,7 +72,7 @@ def run_server(port: int):
             conn, addr = srv.accept()
             conn.settimeout(1.0)
 
-            # simple authoritative tick at 30 Hz
+            # Authoritative tick at 30 Hz (for debugging)
             tick = 0
             alive = True
 
@@ -124,27 +114,49 @@ def run_server(port: int):
                         except Exception: pass
                         try: conn.close()
                         except Exception: pass
-                        return  # clean exit
+                        return
 
                     elif t == "frame_input":
-                        # Keep your existing demo HUD / transform echo to prove the pipe.
-                        now_t = msg.get("t", 0.0)
-                        cmds = {
+                        sim_t    = msg.get("t", 0.0)
+                        frame_seq= msg.get("frame_seq", -1)
+                        jobs_req = msg.get("jobs", []) or []
+
+                        jobs_out = []
+                        for j in jobs_req:
+                            jid = j.get("id")
+                            name = j.get("name")
+                            payload = j.get("payload", {})
+                            try:
+                                fn = _JOB_REGISTRY.get(name)
+                                if fn is None:
+                                    jobs_out.append({"id": jid, "ok": False, "error": f"unknown_job:{name}"})
+                                else:
+                                    res = fn(payload)
+                                    jobs_out.append({"id": jid, "ok": True, "result": res})
+                            except Exception:
+                                jobs_out.append({"id": jid, "ok": False, "error": "exception"})
+
+                        reply = {
                             "type": "frame_cmds",
-                            "t": now_t,
+                            "t": sim_t,
+                            "frame_seq": frame_seq,
+                            "tick": int(tick),
+                            "period": 1.0 / 30.0,
                             "set": [
                                 {"kind": "text", "id": "hud_tip", "value": "XR alive — commands flowing"},
-                            ]
+                            ],
+                            "jobs": jobs_out,
                         }
-                        _send(conn, cmds)
+                        _send(conn, reply)
+
 
                     else:
                         _send(conn, {"ok": True, "type": "ack", "seen": t, "tick": tick})
-
             finally:
                 alive = False
                 try: conn.close()
-                except Exception: pass
+                except Exception:
+                    pass
 
         except Exception:
             traceback.print_exc()

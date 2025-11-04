@@ -11,7 +11,6 @@ from ..reactions.exp_custom_ui import clear_all_text
 from ..systems.exp_performance import rearm_performance_after_reset
 from ..reactions.exp_crosshairs import disable_crosshairs
 
-
 def capture_scene_state(self, context):
     """
     Fills self._initial_game_state with enough data

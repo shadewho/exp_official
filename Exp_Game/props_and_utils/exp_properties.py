@@ -1,7 +1,7 @@
 # File: exp_properties.py
 
 import bpy
-import os
+import math
 
 bpy.types.Action.action_speed = bpy.props.FloatProperty(
     name="Action Speed",
@@ -203,11 +203,10 @@ def add_scene_properties():
             ("CHAR",   "Character / Actions / Audio", "Character, actions, and audio panel"),
             ("PROXY",  "Proxy Mesh & Spawn",          "Proxy mesh list and spawn settings"),
             ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
-            ("PERF",   "Performance",                 "Live performance + culling tools"),
             ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PHYS'}
     )
 
     #---proxy mesh --#
@@ -251,7 +250,69 @@ def add_scene_properties():
         default=False,
         description="If on, building or changing the character’s audio is disabled"
     )
+    bpy.types.Scene.pitch_angle = bpy.props.FloatProperty(
+        name="Pitch Angle",
+        default=15.0,
+        min=-180.0,
+        max=180.0
+    )
 
+    bpy.types.Scene.view_obstruction_enabled = bpy.props.BoolProperty(
+        name="View Obstruction",
+        description="If OFF, camera obstruction checks are completely disabled (no raycasts or dynamic map used).",
+        default=True
+    )
+    bpy.types.Scene.view_mode = bpy.props.EnumProperty(
+        name="View Mode",
+        description="Third-person orbit, first-person, or locked camera",
+        items=[
+            ('THIRD',  "Third Person", "Orbit behind character"),
+            ('FIRST',  "First Person", "Camera at head height (no orbit)"),
+            ('LOCKED', "Locked",       "Fixed yaw/pitch + distance; no obstruction logic"),
+        ],
+        default='THIRD'
+    )
+    bpy.types.Scene.view_locked_move_axis = bpy.props.EnumProperty(
+        name="Locked Move Axis",
+        description=(
+            "In LOCKED view, constrain character movement to a global axis. "
+            "When set, W/S are ignored and only A/D move along the selected global axis."
+        ),
+        items=[
+            ('OFF', "Off", "No axis constraint"),
+            ('X',   "Global X (A⇄D)", "Left/Right move strictly along ±X"),
+            ('Y',   "Global Y (A⇄D)", "Left/Right move strictly along ±Y"),
+        ],
+        default='OFF'
+    )
+    # LOCKED + Axis: optional 180° facing flip
+    bpy.types.Scene.view_locked_flip_axis = bpy.props.BoolProperty(
+        name="Flip Axis Direction (180°)",
+        description="In LOCKED view with Axis Lock, reverse the facing along the selected world axis.",
+        default=False,
+    )
+    bpy.types.Scene.view_locked_pitch = bpy.props.FloatProperty(
+        name="Pitch (°)", subtype='ANGLE', unit='ROTATION',
+        default=math.radians(60.0), soft_min=math.radians(-89.9), soft_max=math.radians(89.9),
+        description="Positive = look up, negative = look down"
+    )
+    bpy.types.Scene.view_locked_yaw = bpy.props.FloatProperty(
+        name="Yaw (°)", subtype='ANGLE', unit='ROTATION',
+        default=0.0, soft_min=-math.pi, soft_max= math.pi,
+        description="0° = -Y, 90° = +X, 180° = +Y, -90° = -X (Blender view coords)"
+    )
+    bpy.types.Scene.view_locked_distance = bpy.props.FloatProperty(
+        name="Distance",
+        default=6.0, min=0.0, soft_max=50.0,
+        description="Boom length along the locked direction from the head anchor"
+    )
+
+    bpy.types.Scene.view_projection = bpy.props.EnumProperty(
+        name="Projection",
+        description="Viewport projection mode",
+        items=[('PERSP', "Perspective", ""), ('ORTHO', "Orthographic", "")],
+        default='PERSP'
+    )
     bpy.types.Scene.orbit_distance = bpy.props.FloatProperty(
         name="Orbit Distance",
         default=2.0,
@@ -264,25 +325,24 @@ def add_scene_properties():
         min=0.1,
         max=15.0
     )
-    bpy.types.Scene.pitch_angle = bpy.props.FloatProperty(
-        name="Pitch Angle",
-        default=15.0,
-        min=-180.0,
-        max=180.0
+    bpy.types.Scene.viewport_lens_mm = bpy.props.FloatProperty(
+        name="Viewport Lens (mm)",
+        description="3D View lens in millimeters for all VIEW_3D areas while playing",
+        default=55.0, min=1.0, max=300.0
     )
 
-    # Toggle: Live Performance Overlay (drawn in the 3D Viewport)
-    bpy.types.Scene.show_live_performance_overlay = bpy.props.BoolProperty(
-        name="Live Performance Overlay",
-        description="Show a live performance meter in the viewport while playing",
+    # First-person view: which pose bone to aim with camera pitch
+    bpy.types.Scene.fpv_view_bone = bpy.props.StringProperty(
+        name="FPV Target Bone",
+        description="Pose bone on the Target Armature that receives camera pitch in FIRST view",
+        default=""
+    )
+    bpy.types.Scene.fpv_invert_pitch = bpy.props.BoolProperty(
+        name="Invert FPV Pitch",
+        description="Invert mapping of mouse Y to FPV bone pitch",
         default=False
     )
-    # Live Performance HUD tuning
-    bpy.types.Scene.live_perf_scale = bpy.props.IntProperty(
-        name="HUD Scale",
-        description="Smaller values make the single-row HUD less intrusive",
-        default=2, min=1, max=4
-    )
+
 
 class CharacterActionsPG(bpy.types.PropertyGroup):
     """
@@ -329,5 +389,10 @@ def remove_scene_properties():
 
     del bpy.types.Scene.proxy_meshes
     del bpy.types.Scene.proxy_meshes_index
-    del bpy.types.Scene.show_live_performance_overlay
     del bpy.types.Scene.create_panels_filter
+    del bpy.types.Scene.view_mode
+    del bpy.types.Scene.view_locked_pitch
+    del bpy.types.Scene.view_locked_yaw
+    del bpy.types.Scene.view_locked_distance
+    del bpy.types.Scene.view_projection
+    del bpy.types.Scene.view_locked_move_axis

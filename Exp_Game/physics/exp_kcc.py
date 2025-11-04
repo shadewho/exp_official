@@ -88,55 +88,70 @@ class KinematicCharacterController:
     # --------------------
     # Input & helpers
     # --------------------
-
-    def _input_vector(self, keys_pressed, prefs, camera_yaw):
-        fwd_key  = prefs.key_forward
-        back_key = prefs.key_backward
-        left_key = prefs.key_left
-        right_key= prefs.key_right
-        run_key  = prefs.key_run
-
-        x = 0.0; y = 0.0
-        if fwd_key in keys_pressed:   y += 1.0
-        if back_key in keys_pressed:  y -= 1.0
-        if right_key in keys_pressed: x += 1.0
-        if left_key in keys_pressed:  x -= 1.0
-
-        # Camera-plane intent (no terrain-induced yaw)
-        v_len2 = x*x + y*y
-        if v_len2 > 1.0e-12:
-            inv_len = 1.0 / math.sqrt(v_len2)
-            vx = x * inv_len
-            vy = y * inv_len
-        else:
-            vx = vy = 0.0
-
-        # Rotate by camera yaw about Z
-        Rz = mathutils.Matrix.Rotation(camera_yaw, 4, 'Z')
-        world3 = Rz @ Vector((vx, vy, 0.0))
-        xy_len2 = world3.x * world3.x + world3.y * world3.y
-        if xy_len2 > 1.0e-12:
-            inv_xy = 1.0 / math.sqrt(xy_len2)
-            xy = Vector((world3.x * inv_xy, world3.y * inv_xy))
-        else:
-            xy = Vector((0.0, 0.0))
-
-        # Steep-slope uphill removal when standing on non-walkable
-        if self.on_ground and self.ground_norm is not None and not self._slope_ok(self.ground_norm):
-            v3 = Vector((xy.x, xy.y, 0.0))
-            v3 = remove_steep_slope_component(v3, self.ground_norm, max_slope_dot=self._floor_cos)
-            xy = Vector((v3.x, v3.y))
-
-        return xy, (run_key in keys_pressed)
-
     def _accelerate(self, cur_xy: Vector, wish_dir_xy: Vector, target_speed: float, accel: float, dt: float) -> Vector:
+        """
+        Blend horizontal velocity toward the desired direction/speed.
+        Exact behavior from your original KCC; kept precise (no eps hacks).
+        """
         desired = Vector((wish_dir_xy.x * target_speed, wish_dir_xy.y * target_speed))
-        t = clamp(accel * dt, 0.0, 1.0)
+        t = max(0.0, min(1.0, accel * dt))
         return cur_xy.lerp(desired, t)
 
-    def _slope_ok(self, n: Vector) -> bool:
-        # Exact comparison to your configured limit (no eps tweaks)
-        return math.degrees(_UP.angle(n)) <= self.cfg.slope_limit_deg
+    def _input_vector(self, keys_pressed, prefs, camera_yaw):
+        """
+        XR-driven input:
+          • Enqueue XR job to compute wish XY (intent + yaw + steep-slope clamp).
+          • Return ONLY the last XR-provided XY (no local compute / no fallback).
+            If XR hasn't replied yet, returns (0,0).
+        """
+        # Intent from keys (edge cases: both pressed => cancel on that axis)
+        dx = 0.0; dy = 0.0
+        if prefs.key_forward  in keys_pressed: dy += 1.0
+        if prefs.key_backward in keys_pressed: dy -= 1.0
+        if prefs.key_right    in keys_pressed: dx += 1.0
+        if prefs.key_left     in keys_pressed: dx -= 1.0
+
+        # Enqueue XR compute for NEXT frame (non-blocking)
+        try:
+            from ..xr_systems.xr_ports.kcc import queue_move_xy
+            g = self.ground_norm if self.ground_norm is not None else self._up
+            queue_move_xy(
+                self,
+                float(dx), float(dy), float(camera_yaw),
+                bool(self.on_ground),
+                (float(g.x), float(g.y), float(g.z)),
+                float(self._floor_cos),
+            )
+        except Exception:
+            # We DO NOT compute locally if XR errors; we simply have no update.
+            pass
+
+        # Use ONLY the XR result (no legacy path). If not yet available, zero.
+        try:
+            from mathutils import Vector
+        except Exception:
+            # Should never happen inside Blender; defensive.
+            class _V(tuple):
+                @property
+                def x(self): return self[0]
+                @property
+                def y(self): return self[1]
+            Vector = lambda xy: _V((float(xy[0]), float(xy[1])))
+
+        xy_tup = getattr(self, "_xr_wish_xy", None)
+        if not (isinstance(xy_tup, (tuple, list)) and len(xy_tup) == 2):
+            xy_vec = Vector((0.0, 0.0))
+        else:
+            xy_vec = Vector((float(xy_tup[0]), float(xy_tup[1])))
+            # Keep normalized-ish
+            l2 = xy_vec.x * xy_vec.x + xy_vec.y * xy_vec.y
+            if l2 > 1.0 + 1.0e-6:
+                try:
+                    xy_vec.normalize()
+                except Exception:
+                    pass
+
+        return xy_vec, (prefs.key_run in keys_pressed)
 
     # ---- Fast geometric prefilters / rays ----------------------------------
 

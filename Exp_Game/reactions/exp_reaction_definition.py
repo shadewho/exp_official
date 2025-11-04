@@ -223,6 +223,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("ACTION_KEYS",      "Action Keys",        "Enable/Disable/Toggle a named Action Key"),
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
+            ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
 
         ],
         default="CUSTOM_ACTION"
@@ -911,6 +912,68 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         description="Influence for Child-Of follow"
     )
 
+    # --------------------------------------------------
+    # TRACK TO (chase / move toward) REACTION FIELDS
+    # --------------------------------------------------
+    track_from_use_character: bpy.props.BoolProperty(
+        name="From: Use Character",
+        default=True,
+        description="If True, the mover is scene.target_armature; else use 'From Object'"
+    )
+    track_from_object: bpy.props.PointerProperty(
+        name="From Object",
+        type=bpy.types.Object,
+        description="Mover when 'From: Use Character' is False"
+    )
+
+    track_to_use_character: bpy.props.BoolProperty(
+        name="To: Use Character",
+        default=False,
+        description="If True, target is scene.target_armature; else use 'To Object'"
+    )
+    track_to_object: bpy.props.PointerProperty(
+        name="To Object",
+        type=bpy.types.Object,
+        description="Target to move toward when 'To: Use Character' is False"
+    )
+
+    track_speed: bpy.props.FloatProperty(
+        name="Speed (m/s)",
+        default=3.5, min=0.0, soft_max=15.0,
+        description="Desired chase speed. Character mover maps this to walk/run; object mover uses exact m/s"
+    )
+    track_arrive_radius: bpy.props.FloatProperty(
+        name="Arrive Radius (m)",
+        default=0.30, min=0.0, soft_max=2.0,
+        description="Stop when within this horizontal distance"
+    )
+    track_respect_proxy_meshes: bpy.props.BoolProperty(
+        name="Respect Proxy Meshes",
+        default=True,
+        description="Collide/slide/step using scene proxy meshes; if off, mover goes in a straight line"
+    )
+    track_use_gravity: bpy.props.BoolProperty(
+        name="Gravity / Ground Snap",
+        default=True,
+        description="Snap to ground while moving (object mover). Character mover already uses gravity via KCC"
+    )
+    track_exclusive_control: bpy.props.BoolProperty(
+        name="Exclusive Control (Character)",
+        default=True,
+        description="If mover is the character: temporarily override user WASD/Run during the chase"
+    )
+    track_allow_run: bpy.props.BoolProperty(
+        name="Allow Run (Character)",
+        default=True,
+        description="If speed >= scene.max_run, hold Run during the chase"
+    )
+    track_max_runtime: bpy.props.FloatProperty(
+        name="Max Runtime (sec)",
+        default=0.0, min=0.0, soft_max=120.0,
+        description="0 = unlimited. Stops automatically after this many seconds"
+    )
+
+
 
 
 def register_reaction_library_properties():
@@ -918,7 +981,7 @@ def register_reaction_library_properties():
     Attach a top-level Reaction library to the Scene.
     Reactions are *independent* from Interactions now.
     """
-    from .exp_reaction_definition import ReactionDefinition  # self-import safe
+    from .exp_reaction_definition import ReactionDefinition
 
     if not hasattr(bpy.types.Scene, "reactions"):
         bpy.types.Scene.reactions = bpy.props.CollectionProperty(type=ReactionDefinition)

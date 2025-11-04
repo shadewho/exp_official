@@ -26,7 +26,7 @@ from ..reactions.exp_action_keys import (
     seed_defaults_from_scene,
 )
 from ..reactions.exp_parenting import execute_parenting_reaction
-
+from ..reactions.exp_tracking import execute_tracking_reaction
 # Global list to hold pending trigger tasks.
 _pending_reaction_batches = []
 _pending_trigger_tasks = []
@@ -73,6 +73,8 @@ def _execute_reaction_now(r):
         execute_action_key_reaction(r)
     elif r.reaction_type == "PARENTING":
         execute_parenting_reaction(r)
+    elif t == "TRACK_TO":
+        execute_tracking_reaction(r)
 
 
 def _execute_reaction_list_now(reactions):

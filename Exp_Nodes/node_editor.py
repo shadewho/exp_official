@@ -116,6 +116,8 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Reset Game",        "ReactionResetGameNodeType")
         add("Action Keys",           "ReactionActionKeysNodeType")
         add("Parent / Unparent", "ReactionParentingNodeType")
+        add("Track To",           "ReactionTrackingNodeType")
+
 
 class NODE_MT_exploratory_add_objectives(Menu):
     bl_idname = "NODE_MT_exploratory_add_objectives"

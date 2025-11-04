@@ -7,7 +7,6 @@ from ...exp_preferences import get_addon_path
 from ..props_and_utils.exp_utilities import get_game_world
 from .exp_fullscreen import enter_fullscreen_once
 from ..animations.exp_custom_animations import purge_all_game_custom_nla
-
 # ────────────────────────────────────
 # Global for restoring scene
 # ────────────────────────────────────
@@ -199,12 +198,13 @@ def apply_performance_settings(scene, performance_level):
         print(f"[WARN] Failed to set preview_pixel_size: {e}")
 
     # Set the viewport lens for each VIEW_3D area to 55mm.
+    lens_mm = float(getattr(scene, "viewport_lens_mm", 55.0))
     for area in bpy.context.window.screen.areas:
         if area.type == 'VIEW_3D':
             space = area.spaces.active
-            space.lens = 55
-            # Set the viewport to perspective mode.
+            space.lens = lens_mm
             space.region_3d.view_perspective = 'PERSP'
+
 
     print("Performance settings applied:", {
         "render_engine": scene.render.engine,
@@ -307,18 +307,28 @@ def move_armature_and_children_to_scene(target_armature, destination_scene):
 
 def disable_live_perf_overlay_next_tick():
     """
-    Turn off the scene live performance overlay on the next tick.
-    Safe to call right after appending/switching scenes
+    Keep the name for backward compat.
+    On next tick: disable the Developer HUD (dev_hud_enable) on all scenes.
     """
+
     def _do_disable():
-        sc = bpy.context.window.scene if bpy.context and bpy.context.window else None
         try:
-            if sc and hasattr(sc, "show_live_performance_overlay"):
-                sc.show_live_performance_overlay = False
+            # Current scene first
+            sc = getattr(bpy.context, "scene", None)
+            if sc and hasattr(sc, "dev_hud_enable"):
+                sc.dev_hud_enable = False
+
+            # Ensure it’s off everywhere (in case of scene switches)
+            for s in bpy.data.scenes:
+                if hasattr(s, "dev_hud_enable"):
+                    s.dev_hud_enable = False
         except Exception as e:
             print(f"[WARN] disable_live_perf_overlay_next_tick failed: {e}")
         return None  # run once
+
     bpy.app.timers.register(_do_disable, first_interval=0.0)
+
+
 
 #---------clear custom actions in NLA --- updated or changed actions replace action strips
 def clear_all_exp_custom_strips():

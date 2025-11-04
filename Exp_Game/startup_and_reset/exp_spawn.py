@@ -40,7 +40,7 @@ def _raycast_obj_along_world_z(obj: bpy.types.Object, origin_xy: Vector, world_d
 
 
 def spawn_user():
-    """Spawn the user character in the scene based on the current settings."""
+    """Spawn the user character and APPLY the current View/Camera UI settings."""
     scene = bpy.context.scene
     arm = scene.target_armature
 
@@ -52,6 +52,9 @@ def spawn_user():
     char_cfg = getattr(scene, "char_physics", None)
     capsule_clear = max(getattr(char_cfg, "radius", 0.25), 0.25)
 
+    # --------------------------------------------
+    # Position character at spawn (unchanged logic)
+    # --------------------------------------------
     spawn_obj = scene.spawn_object
     if spawn_obj:
         if scene.spawn_use_nearest_z_surface and spawn_obj.type == 'MESH':
@@ -80,29 +83,95 @@ def spawn_user():
         else:
             # direct placement (non-surface mode)
             arm.location = spawn_obj.location.copy()
-            arm.location.z += capsule_clear  # still keep the capsule out of minor overlaps
+            arm.location.z += capsule_clear
             arm.rotation_euler = Euler((0.0, 0.0, spawn_obj.rotation_euler.z), 'XYZ')
     else:
         print("No spawn_object set!")
 
-    # --- camera setup (unchanged) ---
-    obj_loc = arm.location
-    obj_rot = arm.matrix_world.to_quaternion()
-    yaw = obj_rot.to_euler('XYZ').z
-    pitch_rad = math.radians(scene.pitch_angle)
-    cam_dir = Vector((
-        math.cos(pitch_rad) * math.sin(yaw),
-        -math.cos(pitch_rad) * math.cos(yaw),
-        math.sin(pitch_rad)
-    ))
-    view_pos = obj_loc + cam_dir * scene.orbit_distance
+    # --------------------------------------------
+    # APPLY VIEW / CAMERA UI SETTINGS AT SPAWN
+    # --------------------------------------------
 
-    for area in bpy.context.screen.areas:
-        if area.type == 'VIEW_3D':
-            r3d = area.spaces.active.region_3d
-            r3d.view_location = view_pos
-            r3d.view_rotation = cam_dir.to_track_quat('Z', 'Y')
-            r3d.view_distance = scene.orbit_distance + scene.zoom_factor
+    # Anchor is the character "head" (capsule top) used by the camera solver.
+    cap_h = float(getattr(scene.char_physics, "height", 2.0)) if getattr(scene, "char_physics", None) else 2.0
+    anchor = arm.location.copy()
+    anchor.z += cap_h
+
+    # Get character yaw for THIRD/FIRST default orientation
+    arm_yaw = arm.matrix_world.to_euler('XYZ').z
+
+    # Helper: build direction from pitch/yaw (radians)
+    def dir_from_pitch_yaw(pitch_rad: float, yaw_rad: float) -> Vector:
+        cx = math.cos(pitch_rad); sx = math.sin(pitch_rad)
+        sy = math.sin(yaw_rad);   cy = math.cos(yaw_rad)
+        d = Vector((cx * sy, -cx * cy, sx))
+        if d.length > 1.0e-9:
+            d.normalize()
+        return d
+
+    # Resolve the desired camera direction + distance per View Mode
+    vm = getattr(scene, "view_mode", 'THIRD')
+    proj = getattr(scene, "view_projection", 'PERSP')
+
+    if vm == 'LOCKED':
+        pitch = float(getattr(scene, "view_locked_pitch", math.radians(60.0)))
+        yaw   = float(getattr(scene, "view_locked_yaw", 0.0))
+        dist  = float(getattr(scene, "view_locked_distance", 6.0))
+        cam_dir = dir_from_pitch_yaw(pitch, yaw)
+
+    elif vm == 'FIRST':
+        # FIRST: head-height, tiny distance, oriented by current character yaw + UI pitch
+        pitch = math.radians(float(getattr(scene, "pitch_angle", 15.0)))
+        yaw   = arm_yaw
+        # Very small non-zero distance to keep Blender happy
+        dist  = 0.0006
+        cam_dir = dir_from_pitch_yaw(pitch, yaw)
+
+    else:  # 'THIRD'
+        pitch = math.radians(float(getattr(scene, "pitch_angle", 15.0)))
+        yaw   = arm_yaw
+        # Match your UI distance logic
+        dist  = float(getattr(scene, "orbit_distance", 2.0)) + float(getattr(scene, "zoom_factor", 4.0))
+        cam_dir = dir_from_pitch_yaw(pitch, yaw)
+
+    cam_quat = cam_dir.to_track_quat('Z', 'Y')
+
+    # Stamp to ALL VIEW_3D regions in all open windows
+    try:
+        for win in bpy.context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type != 'VIEW_3D':
+                    continue
+                space = area.spaces.active
+                r3d = space.region_3d
+
+                # Projection (Perspective / Orthographic)
+                try:
+                    r3d.view_perspective = proj  # 'PERSP' or 'ORTHO'
+                except Exception:
+                    pass
+                
+                # Lens (mm) from scene
+                try:
+                    space.lens = float(getattr(scene, "viewport_lens_mm", 55.0))
+                except Exception:
+                    pass
+
+                # Location, rotation, distance
+                try:
+                    r3d.view_location = anchor
+                except Exception:
+                    pass
+                try:
+                    r3d.view_rotation = cam_quat
+                except Exception:
+                    pass
+                try:
+                    r3d.view_distance = max(0.0006, float(dist))
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[WARN] stamping view settings failed: {e}")
 
 #-----------------------------------------------------------
 #remove character to maintain a clean scene character state

@@ -704,6 +704,46 @@ class UtilityDelayNode(_ReactionNodeKind):
         info = layout.box()
         info.label(text="Delays all reactions AFTER this node by the amount above.", icon='TIME')
 
+class ReactionTrackingNode(_ReactionNodeKind):
+    bl_idname = "ReactionTrackingNodeType"
+    bl_label  = "Track To"
+    KIND = "TRACK_TO"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        src = layout.box()
+        src.label(text="From (Mover)")
+        src.prop(r, "track_from_use_character", text="Use Character")
+        if not r.track_from_use_character:
+            src.prop_search(r, "track_from_object", bpy.context.scene, "objects", text="From Object")
+
+        dst = layout.box()
+        dst.label(text="To (Target)")
+        dst.prop(r, "track_to_use_character", text="Use Character")
+        if not r.track_to_use_character:
+            dst.prop_search(r, "track_to_object", bpy.context.scene, "objects", text="To Object")
+
+        opts = layout.box()
+        opts.label(text="Options")
+        opts.prop(r, "track_speed", text="Speed (m/s)")
+        opts.prop(r, "track_arrive_radius", text="Arrive Radius (m)")
+        opts.prop(r, "track_respect_proxy_meshes", text="Respect Proxy Meshes")
+        opts.prop(r, "track_use_gravity", text="Gravity / Ground Snap")
+        opts.prop(r, "track_max_runtime", text="Max Runtime (sec)")
+
+        char = layout.box()
+        char.label(text="Character Mover")
+        char.prop(r, "track_exclusive_control", text="Exclusive Control (override WASD)")
+        char.prop(r, "track_allow_run", text="Allow Run")
 
 
 class ReactionParentingNode(_ReactionNodeKind):
@@ -870,33 +910,3 @@ class ReactionCrosshairsNode(_ReactionNodeKind):
     bl_idname = "ReactionCrosshairsNodeType"
     bl_label  = "Enable Crosshairs"
     KIND = "ENABLE_CROSSHAIRS"
-
-# ───────────────────────── registration ─────────────────────────
-
-_CLASSES = [
-    ReactionTriggerInputSocket,
-    ReactionOutputSocket,
-    ReactionCustomActionNode,
-    ReactionCharActionNode,
-    ReactionSoundNode,
-    ReactionPropertyNode,
-    ReactionTransformNode,
-    ReactionCustomTextNode,
-    ReactionObjectiveCounterNode,
-    ReactionObjectiveTimerNode,
-    ReactionMobilityNode,
-    ReactionMeshVisibilityNode,
-    ReactionResetGameNode,
-]
-
-
-def register():
-    for c in _CLASSES:
-        bpy.utils.register_class(c)
-
-def unregister():
-    for c in reversed(_CLASSES):
-        bpy.utils.unregister_class(c)
-
-if __name__ == "__main__":
-    register()
