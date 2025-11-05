@@ -2,6 +2,13 @@ from __future__ import annotations
 import time
 from collections import deque
 from typing import Dict
+
+# NOTE: We import bpy lazily/defensively so these helpers are safe in unit tests.
+try:
+    import bpy  # type: ignore
+except Exception:
+    bpy = None  # noqa: N816
+
 from .dev_state import STATE, Series
 
 class _Bus:
@@ -14,15 +21,32 @@ class _Bus:
 
 BUS = _Bus()
 
+def _hud_enabled() -> bool:
+    """Fast, defensive check: when HUD is OFF, all helpers become NO-OPs."""
+    if bpy is None:
+        return False
+    try:
+        scn = bpy.context.scene
+        return bool(scn and getattr(scn, "dev_hud_enable", False))
+    except Exception:
+        return False
+
 def devhud_set(key: str, value, volatile: bool=False):
+    if not _hud_enabled():
+        return
     if volatile: BUS.temp[key] = value
     else:        BUS.scalars[key] = value
 
 def devhud_post(msg: str):
+    if not _hud_enabled():
+        return
     ts = time.strftime("%H:%M:%S")
     BUS.logs.append(f"[{ts}] {msg}")
 
 def devhud_series_push(name: str, value: float, maxlen: int = 300):
+    if not _hud_enabled():
+        return
+
     # Always keep a Bus series (for custom renderers / external readers)
     s = BUS.series.get(name)
     if s is None:

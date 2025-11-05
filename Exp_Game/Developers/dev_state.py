@@ -53,6 +53,9 @@ class _State:
             "view_candidate": Series("view_candidate", 300, deque(maxlen=300)),
             "view_delta":     Series("view_delta",     300, deque(maxlen=300)),
             "view_lag_ms":    Series("view_lag_ms",    300, deque(maxlen=300)),
+            "phys_down_dist": Series("phys_down_dist", 300, deque(maxlen=300)),
+            "phys_n_up":      Series("phys_n_up",      300, deque(maxlen=300)),
+            "phys_vel_z":     Series("phys_vel_z",     300, deque(maxlen=300)),
         }
         # Frame timing
         self.enabled = False
@@ -87,6 +90,9 @@ class _State:
         self.last_console_emit = 0.0
         self.last_view_emit    = 0.0
         self.last_xr_emit      = 0.0
+
+        #phys
+        self.last_phys_emit = 0.0
 
 STATE = _State()
 
@@ -168,15 +174,13 @@ def frame_end(modal, context, BUS):
     STATE.last_end_t = now
 
     # XR counters (delta → meters)
-    xs = pyget(modal, "_xr_stats", None)
+    xs = pyget(modal, "_xr_stats", None) if modal else None
     if isinstance(xs, dict):
         rtt = float(xs.get("last_lat_ms", 0.0))
         ph  = float(xs.get("phase_ms", 0.0))
         STATE.series["rtt_ms"].push(rtt)
         STATE.series["phase_ms"].push(ph)
-        req = int(xs.get("req", 0) or 0)
-        ok  = int(xs.get("ok", 0)  or 0)
-        fail= int(xs.get("fail", 0)or 0)
+        req = int(xs.get("req", 0) or 0); ok = int(xs.get("ok", 0) or 0); fail= int(xs.get("fail", 0) or 0)
         if req > STATE.xr_req_last:
             for _ in range(req - STATE.xr_req_last): STATE.meter_xr_req.record(now)
         if ok > STATE.xr_ok_last:
@@ -185,7 +189,7 @@ def frame_end(modal, context, BUS):
             for _ in range(fail - STATE.xr_fail_last): STATE.meter_xr_fail.record(now)
         STATE.xr_req_last, STATE.xr_ok_last, STATE.xr_fail_last = req, ok, fail
 
-    # View series mirroring (if caller didn't push series explicitly this frame)
+    # View series mirroring
     cand_v = None
     if "view_candidate" in BUS.series and BUS.series["view_candidate"].values:
         cand_v = float(BUS.series["view_candidate"].values[-1])
@@ -219,18 +223,44 @@ def frame_end(modal, context, BUS):
     if (va is not None) and (vc is not None):
         STATE.series["view_delta"].push(float(vc) - float(va))
 
+    # ---- NEW: physics series mirroring ----
+    # Down ray distance (string in BUS -> float)
+    ddist_txt = BUS.temp.get("PHYS.down.dist", BUS.scalars.get("PHYS.down.dist", None))
+    ddist = _parse_first_float(ddist_txt)
+    if ddist is not None and "phys_down_dist" in STATE.series:
+        STATE.series["phys_down_dist"].push(float(ddist))
+
+    # n·up if KCC provided (else try BUS)
+    nup_txt = BUS.temp.get("PHYS.nup", BUS.scalars.get("PHYS.nup", None))
+    nup = _parse_first_float(nup_txt)
+    if nup is None:
+        pc = pyget(modal, "physics_controller", None) if modal else None
+        if pc and getattr(pc, "ground_norm", None) is not None:
+            gn = pc.ground_norm
+            try:
+                nup = float(gn.z)
+            except Exception:
+                nup = None
+    if (nup is not None) and ("phys_n_up" in STATE.series):
+        STATE.series["phys_n_up"].push(float(nup))
+
+    # vel.z from modal
+    zvel = float(pyget(modal, "z_velocity", 0.0) or 0.0) if modal else 0.0
+    if "phys_vel_z" in STATE.series:
+        STATE.series["phys_vel_z"].push(zvel)
+
     # resize buffers
     maxlen = int(getattr(scene, "dev_hud_max_samples", 300))
     for s in STATE.series.values(): s.set_maxlen(maxlen)
     for s in BUS.series.values():   s.set_maxlen(maxlen)
 
-    # Channelled console logs
+    # -------- Console logging (existing) --------
     if scene.dev_hud_log_console and (now - STATE.last_console_emit) >= 1.0:
         STATE.last_console_emit = now
         fps_txt = f"{STATE.fps_ema:.1f}" if STATE.fps_ema > 0 else "—"
         ms_txt  = f"{STATE.ms_ema:.2f}" if STATE.ms_ema > 0 else "—"
-        rtt = STATE.series["rtt_ms"].last;  rtt_txt = f"{rtt:.2f}" if rtt is not None else "—"
-        ph  = STATE.series["phase_ms"].last; ph_txt  = f"{ph:+.2f}" if ph  is not None else "—"
+        rtt = STATE.series["rtt_ms"].last;  rtt_txt = f"{(rtt or 0):.2f}"
+        ph  = STATE.series["phase_ms"].last; ph_txt  = f"{(ph or 0):+.2f}"
         print(f"[DEVHUD] frame {ms_txt} ms  ~{fps_txt} FPS  XR rtt {rtt_txt} ms  phase {ph_txt} ms")
 
     if getattr(scene, "dev_log_xr_console", False):
@@ -257,3 +287,24 @@ def frame_end(modal, context, BUS):
             src = BUS.temp.get("VIEW.src", BUS.scalars.get("VIEW.src", None))
             lag = STATE.series["view_lag_ms"].last
             print(f"[VIEW] qHz {qhz:.1f}  aHz {ahz:.1f}  lag {(lag or 0):.1f} ms  dist {(va or 0):.3f} m  cand {(vc or 0):.3f} m  Δ {(dd if dd==dd else 0):+.3f} m  src {src or '—'}  hit {hit or '—'}")
+
+    # ---- NEW: Physics console logging ----
+    if getattr(scene, "dev_log_physics_console", False):
+        period = 1.0 / max(0.1, float(getattr(scene, "dev_log_physics_hz", 3.0)))
+        if (now - STATE.last_phys_emit) >= period:
+            STATE.last_phys_emit = now
+            steps = int(pyget(modal, "_perf_last_physics_steps", 0) or 0) if modal else 0
+            hz    = int(pyget(modal, "physics_hz", 30) or 30)
+            pc    = pyget(modal, "physics_controller", None) if modal else None
+            on_g  = bool(pyget(modal, "is_grounded", False))
+            walk  = bool(getattr(pc, "on_walkable", False)) if pc else False
+            zvel  = float(pyget(modal, "z_velocity", 0.0) or 0.0) if modal else 0.0
+            coy   = float(getattr(pc, "_coyote", 0.0) if pc else 0.0)
+            snap  = float(getattr(scene, "char_physics", None).snap_down) if getattr(scene, "char_physics", None) else float('nan')
+            nup   = STATE.series["phys_n_up"].last
+            ddist = STATE.series["phys_down_dist"].last
+            dhit  = BUS.temp.get("PHYS.down.hit", BUS.scalars.get("PHYS.down.hit", "—"))
+            dobj  = BUS.temp.get("PHYS.down.obj", BUS.scalars.get("PHYS.down.obj", "—"))
+            print(f"[PHYS] {steps}@{hz}Hz on={on_g} walk={walk} n·up={(nup if nup is not None else float('nan')):0.3f} z={zvel:+0.3f} "
+                  f"down={dhit} dist={(ddist if ddist is not None else float('nan')):0.3f} obj={dobj} coyote={coy:0.3f}s snap={snap:0.3f}m")
+

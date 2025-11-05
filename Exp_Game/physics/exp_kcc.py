@@ -90,12 +90,29 @@ class KinematicCharacterController:
     # --------------------
     def _accelerate(self, cur_xy: Vector, wish_dir_xy: Vector, target_speed: float, accel: float, dt: float) -> Vector:
         """
-        Blend horizontal velocity toward the desired direction/speed.
-        Exact behavior from your original KCC; kept precise (no eps hacks).
+        XR-only horizontal acceleration blend (no local fallback).
+        Queues kcc.accel_xy.v1 and uses only the last XR result.
+        If XR hasn't replied yet this step, we keep cur_xy unchanged.
         """
-        desired = Vector((wish_dir_xy.x * target_speed, wish_dir_xy.y * target_speed))
-        t = max(0.0, min(1.0, accel * dt))
-        return cur_xy.lerp(desired, t)
+        try:
+            from ..xr_systems.xr_ports.kcc import queue_accel_xy
+            queue_accel_xy(
+                self,
+                float(cur_xy.x), float(cur_xy.y),
+                float(wish_dir_xy.x), float(wish_dir_xy.y),
+                float(target_speed), float(accel), float(dt)
+            )
+        except Exception:
+            # No fallback by design.
+            pass
+
+        xy = getattr(self, "_xr_accel_xy", None)
+        if isinstance(xy, (tuple, list)) and len(xy) == 2:
+            return Vector((float(xy[0]), float(xy[1])))
+
+        # No XR answer yet → keep current velocity (no local compute).
+        return Vector((cur_xy.x, cur_xy.y))
+
 
     def _input_vector(self, keys_pressed, prefs, camera_yaw):
         """
@@ -619,11 +636,19 @@ class KinematicCharacterController:
         # 7) Horizontal move (minimal 3-ray sweep + step-up + slide)
         hvel = Vector((self.vel.x + carry.x, self.vel.y + carry.y, 0.0))
 
-        # Clamp uphill component on too-steep when grounded (exact compare kept)
+        # Clamp uphill component on too-steep when grounded — XR ONLY (no local compute)
         if self.on_ground and self.ground_norm is not None and not self.on_walkable:
-            hv3 = remove_steep_slope_component(Vector((hvel.x, hvel.y, 0.0)),
-                                               self.ground_norm, max_slope_dot=floor_cos)
-            hvel = Vector((hv3.x, hv3.y, 0.0))
+            try:
+                from ..xr_systems.xr_ports.kcc import queue_clamp_xy
+                g = self.ground_norm
+                queue_clamp_xy(self, float(hvel.x), float(hvel.y),
+                               (float(g.x), float(g.y), float(g.z)),
+                               float(floor_cos))
+            except Exception:
+                pass
+            xy = getattr(self, "_xr_clamp_xy", None)
+            if isinstance(xy, (tuple, list)) and len(xy) == 2:
+                hvel = Vector((float(xy[0]), float(xy[1]), 0.0))
 
         dz = self.vel.z * dt
         hvel_len2 = hvel.x*hvel.x + hvel.y*hvel.y

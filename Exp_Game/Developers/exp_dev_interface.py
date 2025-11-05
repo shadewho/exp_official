@@ -11,6 +11,10 @@ from .dev_state import frame_begin, frame_end
 from .dev_draw import draw_2d
 from .dev_panel import register as _register_panel, unregister as _unregister_panel
 
+# NEW: bring in prop class registration and section imports explicitly
+from .dev_props import register as _register_props, unregister as _unregister_props
+from .dev_registry import REGISTRY
+
 __all__ = [
     "devhud_set", "devhud_post", "devhud_series_push",
     "devhud_frame_begin", "devhud_frame_end",
@@ -42,6 +46,28 @@ def _disable_draw_handler():
         _HANDLER = None
     _ENABLED = False
 
+def _import_sections():
+    """
+    Force-load all section modules so they can self-register into REGISTRY.
+    Safe to call multiple times.
+    """
+    # Prevent duplicate instances on reload by clearing the registry first.
+    try:
+        REGISTRY.clear()
+    except Exception:
+        pass
+    # Import modules for side-effect registration
+    try:
+        from .dev_sections import section_core as _s0  # noqa: F401
+        from .dev_sections import sections_xr as _s1   # noqa: F401
+        from .dev_sections import section_world as _s2 # noqa: F401
+        from .dev_sections import section_physics as _s3 # noqa: F401
+        from .dev_sections import section_camera_view as _s4 # noqa: F401
+        from .dev_sections import section_graphs as _s5 # noqa: F401
+        from .dev_sections import section_custom as _s6 # noqa: F401
+    except Exception as e:
+        print(f"[DEVHUD] section import error: {e}")
+
 # -------- public frame hooks (unchanged names) --------
 
 def devhud_frame_begin(modal):
@@ -66,9 +92,15 @@ def devhud_frame_end(modal, context):
 # -------- Blender registration --------
 
 def register():
+    # 1) Types/props (DevHudChannel, Scene props)
+    _register_props()
     ensure_scene_props()
+    # 2) Sections (side-effect registration into REGISTRY)
+    _import_sections()
+    # 3) Panel/UI
     _register_panel()
 
 def unregister():
     _disable_draw_handler()
     _unregister_panel()
+    _unregister_props()

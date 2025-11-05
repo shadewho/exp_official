@@ -77,6 +77,21 @@ class GameLoop:
                 xr_poll(op, max_loops=64)
             except Exception:
                 pass
+        # --- XR Geom static upload (streamed, non-blocking) ---
+        try:
+            meshes = getattr(op, "_static_meshes", None)
+            if meshes and not getattr(op, "_xr_geom_upload_started", False):
+                from ..xr_systems.xr_ports.geom import start_static_upload_from_meshes
+                start_static_upload_from_meshes(op, meshes, chunk_tris=2048)  # ~2k tris per chunk
+                op._xr_geom_upload_started = True
+
+            # Push a few chunks per frame until done; harmless if already finished.
+            if getattr(op, "_xr_geom_upload_started", False) and not getattr(op, "_xr_geom_static_done", False):
+                from ..xr_systems.xr_ports.geom import step_static_upload
+                step_static_upload(op, chunks_per_frame=3)
+        except Exception as e:
+            print(f"[GEOM.XR] static upload error: {e}")
+
 
         if steps:
             # Shared SIM dt per 30 Hz step; aggregated dt for bulk systems

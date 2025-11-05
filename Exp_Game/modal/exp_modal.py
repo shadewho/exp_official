@@ -367,6 +367,9 @@ class ExpModal(bpy.types.Operator):
         else:
             self.bvh_tree = None
 
+        # Keep the exact static mesh list for XR one-time static snapshot
+        self._static_meshes = list(all_static_meshes) if all_static_meshes else []
+
 
         #define dynamic platforms (vertical movement)
         self.platform_prev_positions = {}

@@ -1,4 +1,15 @@
 # Exploratory/Exp_Game/systems/xr_client.py
+
+"""Developers manifesto: develop a strong output of the character, actions, 
+environment, utilties etc so that we can eliminate guess work from XR development.
+Visualize and output statistics and save time debugging and confusion in the 
+future. Gate everything by ON/OFF toggles so that we can quickly enable/disable 
+and don't bloat the system when not needed. It's critical every new component 
+and is backed by data and visualization to help us understand the system and develop it.
+Use /Developers module and the framwork within to build these systems out.
+Use DevHud to output text and graphs as needed. 
+"""
+
 import json, os, socket, subprocess, sys, time, threading
 from typing import Optional, Tuple, Any, Dict
 

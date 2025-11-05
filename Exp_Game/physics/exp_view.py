@@ -177,13 +177,15 @@ def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_ite
         it += 1
     return p
 
+
 # -------------------------
 # Public, single entrypoint
 # -------------------------
+
 def view_queue_third_job(context, op):
     """
-    THIRD-person obstruction solve moved to XR with exact BVHs for BOTH static and dynamic.
-    No local rays, no proxies, no static/dynamic split. XR computes candidate+allowed.
+    Compute candidate locally (BVH rays + LoS + pushout), then let XR smooth/latch.
+    Also: push DevHUD series for candidate and bump the view_queue meter so HUD qHz is non-zero.
     """
     if not op or not getattr(op, "target_object", None):
         return
@@ -193,22 +195,11 @@ def view_queue_third_job(context, op):
     if not getattr(context.scene, "view_obstruction_enabled", True):
         return
 
-    # Lazily sync exact static + dynamic meshes (triangles) to XR
-    try:
-        if getattr(op, "_xr", None):
-            if not getattr(op, "_view_static_synced_exact", False):
-                from ..xr_systems.xr_ports.view import sync_view_static_meshes_exact
-                sync_view_static_meshes_exact(context, op)
-                op._view_static_synced_exact = True
-            from ..xr_systems.xr_ports.view import sync_view_dynamic_meshes_exact
-            sync_view_dynamic_meshes_exact(op)
-    except Exception:
-        pass
-
-    # Direction & anchor (unchanged)
+    # Direction & anchor
     pitch = float(op.pitch); yaw = float(op.yaw)
     cx = math.cos(pitch); sx = math.sin(pitch)
     sy = math.sin(yaw);   cy = math.cos(yaw)
+    from mathutils import Vector
     direction = Vector((cx * sy, -cx * cy, sx))
     if direction.length > 1.0e-9:
         direction.normalize()
@@ -224,55 +215,86 @@ def view_queue_third_job(context, op):
     desired_max= max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
     min_cam    = max(_MIN_CAM_ABS, cap_r * _MIN_CAM_RADIUS_FACTOR)
 
-    # Per-frame dynamic transforms (in tandem with statics)
-    dyn_objects = []
-    dyn_map = getattr(op, "dynamic_bvh_map", {}) or {}
-    if dyn_map:
-        for obj in dyn_map.keys():
-            try:
-                M = obj.matrix_world
-                # row-major 4x4 flatten
-                Mm = [M[0][0],M[0][1],M[0][2],M[0][3],
-                      M[1][0],M[1][1],M[1][2],M[1][3],
-                      M[2][0],M[2][1],M[2][2],M[2][3],
-                      0.0,     0.0,     0.0,     1.0]
-                dyn_objects.append({"id": obj.name, "M": Mm})
-            except Exception:
-                continue
+    static_bvh      = getattr(op, "bvh_tree", None)
+    dynamic_bvh_map = getattr(op, "dynamic_bvh_map", None)
 
-    # Enqueue ONE XR job that computes candidate + allowed using exact BVHs for both static+dynamic
+    hit_dist, hit_token = _multi_ray_min_hit(static_bvh, dynamic_bvh_map, anchor, direction, desired_max, r_cam)
+    if hit_dist is not None:
+        base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
+        allowed      = max(min_cam, base_allowed - (_EXTRA_PULL_METERS + _EXTRA_PULL_R_K * r_cam))
+    else:
+        allowed = desired_max
+
+    candidate = anchor + direction * allowed
+    if _los_blocked(static_bvh, dynamic_bvh_map, anchor, candidate):
+        allowed = _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction,
+                                           low=min_cam, high=allowed, steps=_LOS_STEPS)
+        candidate = anchor + direction * allowed
+
+    candidate = _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, candidate, r_cam, max_iters=_PUSHOUT_ITERS)
+    allowed_after_push = (candidate - anchor).length
+
+    token_str = None
+    if hit_token == _STATIC_TOKEN:
+        token_str = "__STATIC__"
+    elif hit_token is not None:
+        try:
+            token_str = getattr(hit_token, "name", "DYNAMIC")
+        except Exception:
+            token_str = "DYNAMIC"
+
+    # DevHUD: candidate + queue meter
     try:
-        from ..xr_systems.xr_ports.view import queue_view_third_full_exact
-        queue_view_third_full_exact(
+        from ..Developers.exp_dev_interface import devhud_set, devhud_series_push
+        devhud_series_push("view_candidate", float(allowed_after_push))
+        devhud_set("VIEW.candidate", f"{allowed_after_push:.3f} m", volatile=True)
+        devhud_set("VIEW.hit", token_str or "—", volatile=True)
+    except Exception:
+        pass
+    try:
+        from ..Developers.dev_state import STATE
+        m = getattr(STATE, "meter_view_queue", None)
+        if m and hasattr(m, "hit"):
+            m.hit()
+    except Exception:
+        pass
+
+    # XR enqueue (XR will be authoritative)
+    try:
+        from ..xr_systems.xr_ports.view import queue_view_third
+        queue_view_third(
             op=op,
             op_key=id(op),
             anchor_xyz=(anchor.x, anchor.y, anchor.z),
             dir_xyz=(direction.x, direction.y, direction.z),
-            min_cam=float(min_cam),
-            desired_max=float(desired_max),
-            r_cam=float(r_cam),
-            dyn_objects=dyn_objects,
+            min_cam=min_cam,
+            desired_max=desired_max,
+            r_cam=r_cam,
+            candidate_allowed=allowed_after_push,
+            hit_token=token_str
         )
     except Exception:
-        # We do not compute locally if XR errors; no fallback geometry.
-        pass
+        try:
+            from ..Developers.exp_dev_interface import devhud_set
+            devhud_set("VIEW.src", "MISS", volatile=True)
+        except Exception:
+            pass
 
 
 def apply_view_from_xr(context, op):
     """
     Apply camera using the latest XR answer (if any).
-    FIRST/LOCKED are applied locally exactly as before.
-    THIRD uses XR ONLY; if XR hasn't replied yet, clamp to min_cam (safe).
+    FIRST/LOCKED remain local.
+    THIRD is XR-ONLY: if XR hasn't replied yet, we DO NOT mutate distance this frame.
     """
     if not op or not getattr(op, "target_object", None):
         return
 
     op_key = id(op)
     view   = _view_state_for(op_key)
+    mode   = getattr(context.scene, "view_mode", "THIRD")
 
-    mode = getattr(context.scene, "view_mode", "THIRD")
-
-    # Direction & anchor
+    # LOCKED: unchanged, local
     if mode == 'LOCKED':
         lp = float(getattr(context.scene, "view_locked_pitch", math.radians(60.0)))
         ly = float(getattr(context.scene, "view_locked_yaw", 0.0))
@@ -289,7 +311,7 @@ def apply_view_from_xr(context, op):
         _apply_to_viewport(context, op, view)
         return
 
-    # FIRST-person
+    # FIRST: unchanged, local
     if mode == 'FIRST':
         cap_h  = float(getattr(context.scene.char_physics, "height", 2.0))
         anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
@@ -309,8 +331,8 @@ def apply_view_from_xr(context, op):
         _apply_to_viewport(context, op, view)
         return
 
-    # THIRD-person
-    # Compute anchor/dir; final distance comes ONLY from XR.
+    # THIRD-person — XR ONLY
+    # Compute anchor/dir as usual
     pitch = float(op.pitch); yaw = float(op.yaw)
     cx = math.cos(pitch); sx = math.sin(pitch)
     sy = math.sin(yaw);   cy = math.cos(yaw)
@@ -320,18 +342,22 @@ def apply_view_from_xr(context, op):
 
     cp     = context.scene.char_physics
     cap_h  = float(getattr(cp, "height", 2.0))
-    cap_r  = float(getattr(cp, "radius", 0.30))
     anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
 
-    clip_start = float(getattr(op, "_clip_start_cached", 0.1) or 0.1)
-    if clip_start <= 0.0:
-        clip_start = 0.1
-    r_cam = max(_R_CAM_FLOOR, clip_start * _NEARCLIP_TO_RADIUS_K)
-    min_cam = max(_MIN_CAM_ABS, cap_r * _MIN_CAM_RADIUS_FACTOR)
-
+    # XR value must exist or we do NOTHING to distance this frame
     xr_allowed = getattr(op, "_xr_view_allowed", None)
-    final_allowed = float(xr_allowed) if isinstance(xr_allowed, (int, float)) else float(min_cam)
+    if not isinstance(xr_allowed, (int, float)):
+        # tripwire: mark MISS so you can see it in the HUD/console
+        try:
+            from ..Developers.exp_dev_interface import devhud_set
+            devhud_set("VIEW.src", "MISS", volatile=True)
+        except Exception:
+            pass
+        return  # hard no-fallback: do not set view_distance
 
+    final_allowed = float(xr_allowed)
+
+    # Apply with XR-authoritative distance
     view["anchor"]    = anchor
     view["direction"] = direction
     view["allowed"]   = final_allowed
