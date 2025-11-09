@@ -56,15 +56,17 @@ def _import_sections():
         REGISTRY.clear()
     except Exception:
         pass
-    # Import modules for side-effect registration
+
+    # Import modules for side-effect registration (order matters only for defaults)
     try:
-        from .dev_sections import section_core as _s0  # noqa: F401
-        from .dev_sections import sections_xr as _s1   # noqa: F401
-        from .dev_sections import section_world as _s2 # noqa: F401
-        from .dev_sections import section_physics as _s3 # noqa: F401
-        from .dev_sections import section_camera_view as _s4 # noqa: F401
-        from .dev_sections import section_graphs as _s5 # noqa: F401
-        from .dev_sections import section_custom as _s6 # noqa: F401
+        from .dev_sections import section_core as _s0           # noqa: F401
+        from .dev_sections import sections_xr as _s1            # XR core (status/flow)
+        from .dev_sections import section_xr_geom as _s1g       # XR.Geom (the sub-sections you toggle)   # noqa: F401
+        from .dev_sections import section_world as _s2           # noqa: F401
+        from .dev_sections import section_physics as _s3         # noqa: F401
+        from .dev_sections import section_camera_view as _s4     # noqa: F401
+        from .dev_sections import section_graphs as _s5          # noqa: F401
+        # Removed section_custom import by design (no “Show Custom” path anymore)
     except Exception as e:
         print(f"[DEVHUD] section import error: {e}")
 

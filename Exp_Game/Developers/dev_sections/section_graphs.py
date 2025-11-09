@@ -1,3 +1,4 @@
+# Exp_Game/Developers/dev_sections/section_graphs.py
 from __future__ import annotations
 from ..dev_registry import register_section
 from ..dev_draw_prims import draw_text, draw_rect, draw_line_strip, samples_to_poly
@@ -6,14 +7,16 @@ from ..dev_state import STATE
 class GraphsSection:
     key = "graphs"
     column = "LEFT"
-    order = 50
+    order = 90                    # later than most; still pinned left
     prop_toggle = "dev_hud_graphs"
+    sticky_left = True            # <<< pin to the leftmost column
 
     def __init__(self):
         self._gh_factor = 2.0  # graph height = 2*lh
 
     def measure(self, scene, STATE, BUS, scale, lh, width):
-        if not getattr(scene, "dev_hud_graphs", False): return 0
+        if not getattr(scene, "dev_hud_graphs", False): 
+            return 0
         per = int(0.6*lh) + int(self._gh_factor*lh) + int(0.5*lh)
         return 3 * per
 
@@ -38,10 +41,16 @@ class GraphsSection:
         return y
 
     def draw(self, x, y, scene, STATE, BUS, scale, lh, width):
-        y = self._graph(x, y, width, lh, "Frame ms", "frame_ms", ymin=0.0, ymax=max(40.0, STATE.ms_ema*1.5), color=(0.50,1.0,0.60,1.0), scale=scale)
+        y = self._graph(x, y, width, lh, "Frame ms", "frame_ms",
+                        ymin=0.0, ymax=max(40.0, (STATE.ms_ema or 0.0) * 1.5),
+                        color=(0.50,1.0,0.60,1.0), scale=scale)
         last = STATE.series['rtt_ms'].last or 0.0
-        y = self._graph(x, y, width, lh, "XR RTT (ms)", "rtt_ms", ymin=0.0, ymax=max(12.0, last*2.0), color=(0.95,0.80,0.40,1.0), scale=scale)
-        y = self._graph(x, y, width, lh, "View Allowed (m)", "view_allowed", ymin=0.0, ymax=None, color=(0.65,0.75,1.0,1.0), scale=scale)
+        y = self._graph(x, y, width, lh, "XR RTT (ms)", "rtt_ms",
+                        ymin=0.0, ymax=max(12.0, last * 2.0),
+                        color=(0.95,0.80,0.40,1.0), scale=scale)
+        y = self._graph(x, y, width, lh, "View Allowed (m)", "view_allowed",
+                        ymin=0.0, ymax=None,
+                        color=(0.65,0.75,1.0,1.0), scale=scale)
         return y
 
 register_section(GraphsSection())

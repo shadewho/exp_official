@@ -169,6 +169,40 @@ class KinematicCharacterController:
                     pass
 
         return xy_vec, (prefs.key_run in keys_pressed)
+    
+
+    def _emit_phys_line(self):
+        """Physics summary line. Obeys master console toggle + Physics channel Hz."""
+        import time as _t, math, bpy
+        scn = getattr(getattr(bpy, "context", None), "scene", None)
+
+        # Master gate + per-channel gate
+        if not (scn and getattr(scn, "dev_hud_log_console", True)):
+            return
+        if not getattr(scn, "dev_log_physics_console", False):
+            return
+
+        hz = float(getattr(scn, "dev_log_physics_hz", 2.0) or 2.0)
+        hz = max(0.1, hz)
+
+        last = float(getattr(self, "_last_phys_emit", 0.0) or 0.0)
+        now  = _t.perf_counter()
+        if (now - last) < (1.0 / hz):
+            return
+        self._last_phys_emit = now
+
+        da = getattr(self, "_down_auth_last", {}) or {}
+        src    = str(da.get("src", "—"))
+        dist   = da.get("dist", float("nan"))
+        lat_ms = da.get("lat_ms", None)
+        obj    = getattr(self.ground_obj, "name", "—") if getattr(self, "ground_obj", None) else "—"
+        n_up   = float(self.ground_norm.dot(self._up)) if getattr(self, "ground_norm", None) is not None else 1.0
+        dist_txt = f"{float(dist):0.3f}" if isinstance(dist, (int, float)) and math.isfinite(dist) else "nan"
+        lat_txt  = f"{float(lat_ms):0.2f} ms" if isinstance(lat_ms, (int, float)) else "—"
+
+        print(f"[PHYS.XR] down={src} dist={dist_txt} m obj={obj} n·up={n_up:0.3f} lat={lat_txt}")
+
+
 
     # ---- Fast geometric prefilters / rays ----------------------------------
 
@@ -218,40 +252,120 @@ class KinematicCharacterController:
         return best if best[0] is not None else (None, None, None, None)
 
     def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float):
-        """Single downward probe used for both penetration resolve and snap."""
-        best = (None, None, None, 1e9)
-        d = Vector((0.0, 0.0, -1.0))
-        start = origin + Vector((0.0, 0.0, 1.0))  # guard above head
+        """
+        XR-ONLY DOWNWARD ray — consume XR 'both' result (STATIC+DYNAMIC+UNION).
+        No Blender BVH rays. No fallback.
 
-        if static_bvh:
-            hit = static_bvh.ray_cast(start, d, max_dist + 1.0)
-            if hit and hit[0] is not None:
-                dist = (origin - hit[0]).length
-                best = (hit[0], hit[1], None, dist)
+        Returns: (loc, normal, obj_or_None, dist)
+        """
+        from mathutils import Vector
+        import time as _ti
 
-        if dynamic_map:
-            pf_pad = float(self.cfg.radius) + 0.05
-            ring2_extra = (pf_pad * pf_pad)
-            seg_top = start.z
-            seg_bot = start.z - (max_dist + 1.0)
+        d      = Vector((0.0, 0.0, -1.0))
+        guard  = 1.0
+        start  = origin + Vector((0.0, 0.0, guard))
+        now    = _ti.perf_counter()
 
-            for obj, (bvh_like, rad) in dynamic_map.items():
-                c = obj.matrix_world.translation
-                dx = c.x - start.x
-                dy = c.y - start.y
-                ring = float(rad) + pf_pad
-                if (dx*dx + dy*dy) > (ring * ring + ring2_extra):
-                    continue
-                if (c.z + float(rad) + pf_pad) < seg_bot or (c.z - float(rad) - pf_pad) > seg_top:
-                    continue
+        # snapshot for PHYS/HUD
+        self._down_auth_last = {"src": "—", "dist": float("nan"), "reason": "—",
+                                "lat_ms": None, "stat": None, "dyn": None}
 
-                hit = bvh_like.ray_cast(start, d, max_dist + 1.0)
-                if hit and hit[0] is not None:
-                    dist = (origin - hit[0]).length
-                    if dist < best[3]:
-                        best = (hit[0], hit[1], obj, dist)
+        xrb = getattr(self, "_xr_down_both", None)
+        pick = None
+        reason = "no_reply"
+        lat_ms = None
+        src_label = "—"
+        stat_mm = dyn_mm = delta_mm = None
+        dyn_obj = None
+        did = None
 
-        return best if best[0] is not None else (None, None, None, None)
+        if isinstance(xrb, dict) and float(xrb.get("t", 0.0)) > 0.0:
+            age_ms = (now - float(xrb["t"])) * 1000.0
+            if age_ms <= 120.0 and bool(xrb.get("hit", False)):
+                raw   = float(xrb.get("raw", 0.0))          # from 'start'
+                g     = float(xrb.get("guard", guard))
+                sx,sy,sz = xrb.get("start", (float(start.x), float(start.y), float(start.z)))
+                loc   = Vector((float(sx), float(sy), float(sz))) + d * raw
+                nx,ny,nz = xrb.get("normal", (0.0,0.0,1.0))
+                try:  nvec = Vector((float(nx), float(ny), float(nz))).normalized()
+                except Exception: nvec = Vector((0.0,0.0,1.0))
+                dist  = max(0.0, raw - g)
+
+                src_label = "XR-STATIC" if str(xrb.get("src","")).upper()=="STATIC" else "XR-DYN"
+
+                if src_label == "XR-DYN":
+                    did = xrb.get("id", None)
+                    try:
+                        from ..xr_systems.xr_ports.geom import dyn_obj_from_id, _hud_set as _hud
+                        dyn_obj = dyn_obj_from_id(did) if did is not None else None
+                        _hud("XR.auth.down.did", int(did) if did is not None else -1, volatile=True)
+                        _hud("XR.auth.down.obj", getattr(dyn_obj, "name", "—") if dyn_obj else "—", volatile=True)
+                    except Exception:
+                        dyn_obj = None
+
+                # XR-side reference numbers (both branches), cosmetic only
+                try:
+                    st = xrb.get("stat", {"hit": False})
+                    dy = xrb.get("dyn",  {"hit": False})
+                    if st.get("hit", False):
+                        stat_mm = max(0.0, float(st.get("raw", 0.0)) - g) * 1000.0
+                    if dy.get("hit", False):
+                        dyn_mm  = max(0.0, float(dy.get("raw", 0.0)) - g) * 1000.0
+                    if stat_mm is not None and dyn_mm is not None:
+                        delta_mm = abs(stat_mm - dyn_mm)
+                except Exception:
+                    pass
+
+                pick   = (loc, nvec, dyn_obj, float(dist))
+                lat_ms = float(xrb.get("lat_ms", 0.0))
+                reason = "OK"
+            else:
+                reason = "stale" if age_ms > 120.0 else "miss"
+
+        # HUD + compact proof
+        try:
+            from ..xr_systems.xr_ports.geom import _hud_set as _hud, _ok_to_print as _okprint
+            if pick is not None:
+                _hud("XR.auth.down.src", src_label, volatile=True)
+                _hud("XR.auth.down.pick", f"{pick[3]:0.3f} m", volatile=True)
+                if delta_mm is not None:
+                    _hud("XR.auth.down.delta_mm", float(round(delta_mm, 2)), volatile=True)
+                if lat_ms is not None:
+                    _hud("XR.auth.down.lat_ms", float(round(lat_ms, 2)), volatile=True)
+
+                if _okprint("_last_down_auth", "dev_log_geom_hz", "dev_log_geom_console"):
+                    sm = "—" if stat_mm is None else f"{stat_mm:0.2f}"
+                    dm = "—" if dyn_mm  is None else f"{dyn_mm:0.2f}"
+                    de = "—" if delta_mm is None else f"{delta_mm:0.2f}"
+                    lm = "—" if lat_ms is None else f"{lat_ms:0.2f}"
+                    did_txt = f" did={did}" if (src_label=="XR-DYN") else ""
+                    obj_txt = f" obj={getattr(dyn_obj,'name','—')}" if (src_label=="XR-DYN") else ""
+                    print(f"[DOWN.AUTH] src={src_label} pick={pick[3]:0.3f} m  Δxr={de} mm  stat={sm} mm  dyn={dm} mm  net={lm} ms  reason={reason}{did_txt}{obj_txt}")
+
+                self._down_auth_last = {
+                    "src": src_label, "dist": float(pick[3]), "reason": reason,
+                    "lat_ms": (float(lat_ms) if lat_ms is not None else None),
+                    "stat": (float(stat_mm) / 1000.0 if stat_mm is not None else None),
+                    "dyn":  (float(dyn_mm)  / 1000.0 if dyn_mm  is not None else None),
+                }
+            else:
+                _hud("XR.auth.down.src", "—", volatile=True)
+                _hud("XR.auth.down.pick", "—", volatile=True)
+                _hud("XR.auth.down.lat_ms", None, volatile=True)
+        except Exception:
+            pass
+
+        # enqueue NEXT XR BOTH job (non-blocking)
+        try:
+            from ..xr_systems.xr_ports.geom import queue_down_both
+            queue_down_both(self, (float(start.x), float(start.y), float(start.z)),
+                            float(max_dist + guard), float(guard))
+        except Exception:
+            pass
+
+        return pick if (pick and pick[0] is not None) else (None, None, None, None)
+
+
 
     def _forward_sweep_min3(self, static_bvh, dynamic_map, pos: Vector,
                             fwd_norm: Vector, step_len: float):
@@ -264,6 +378,8 @@ class KinematicCharacterController:
             (not near-parallel to the wall and not head-on), and then advance
             once along the tangent at half speed.
         Returns: (new_pos, hit_normal or None)
+
+        DEV: parity emit for FWD (union) – gated by dev flags/rate limit. No gameplay changes.
         """
         r = float(self.cfg.radius)
         h = float(self.cfg.height)
@@ -273,6 +389,8 @@ class KinematicCharacterController:
         # ---- primary forward rays (feet, mid, head) ----
         best_d = None
         best_n = None
+        best_origin = None  # DEV only
+
         for z in (r, clamp(h * 0.5, r, h - r), h - r):
             o = pos + Vector((0.0, 0.0, z))
             hit_loc, hit_n, _obj, d = self._raycast_any_norm(static_bvh, dynamic_map, o, fwd_norm, ray_len)
@@ -281,6 +399,30 @@ class KinematicCharacterController:
             if best_d is None or d < best_d:
                 best_d = d
                 best_n = hit_n.normalized()
+                best_origin = o  # DEV only
+
+        # ---- DEV parity (does not affect physics) ----
+        try:
+            import bpy
+            from ..xr_systems.xr_ports.geom import parity_forward_both, _hud_set, _ok_to_print
+            if getattr(bpy.context.scene, "dev_geom_parity_enable", False):
+                if best_d is not None and best_n is not None and best_origin is not None:
+                    if _ok_to_print("_last_fwd_par", "dev_log_geom_hz", "dev_log_geom_console"):
+                        _hud_set("XR.parity.status", "SAMPLING", volatile=True)
+                        parity_forward_both(
+                            origin_world=(float(best_origin.x), float(best_origin.y), float(best_origin.z)),
+                            dir_world=(float(fwd_norm.x), float(fwd_norm.y), float(fwd_norm.z)),
+                            max_dist=float(ray_len),
+                            local_dist=float(best_d),
+                            local_normal=(float(best_n.x), float(best_n.y), float(best_n.z)),
+                        )
+                else:
+                    if _ok_to_print("_last_fwd_idle", "dev_log_geom_hz", "dev_log_geom_console"):
+                        print(f"[GEOM.XR][par] FWD(u) IDLE(no-fwd-hit) ray_len={ray_len:0.3f} m  step_len={step_len:0.3f} m  r={r:0.3f} m")
+                    _hud_set("XR.parity.status", "IDLE(no-fwd-hit)", volatile=True)
+        except Exception:
+            pass
+        # ---- END DEV parity ----
 
         # No block: full advance
         if best_d is None:
@@ -308,7 +450,6 @@ class KinematicCharacterController:
         # Approach angle (to wall normal) gate: slide only if 20°..70°
         #   θ = arccos(|fwd·n|) in degrees  (0° = head-on, 90° = parallel to wall)
         dot = abs(fwd_norm.dot(best_n))
-        # clamp for numeric stability
         dot = max(0.0, min(1.0, float(dot)))
         from math import acos, degrees
         theta = degrees(acos(dot))
@@ -349,6 +490,7 @@ class KinematicCharacterController:
             moved_pos = moved_pos + slide_dir * allow2
 
         return moved_pos, best_n
+
 
     # ---- Step-up ------------------------------------------------------------
 
@@ -734,6 +876,11 @@ class KinematicCharacterController:
         if abs(rot.z - self.obj.rotation_euler.z) > 0.0:
             self.obj.rotation_euler = rot
 
+        # DEV console summary (non-intrusive)
+        try:
+            self._emit_phys_line()
+        except Exception:
+            pass
     # ---- Jumping ------------------------------------------------------------
 
     def request_jump(self):

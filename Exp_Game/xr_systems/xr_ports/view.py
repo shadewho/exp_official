@@ -5,11 +5,10 @@ import bpy
 from ..xr_queue import xr_enqueue
 
 def _ok_to_print(op, tag_attr: str, hz_prop: str, enable_prop: str) -> bool:
-    """
-    Per-operator rate limiter driven by Scene toggles.
-    """
     try:
         sc = bpy.context.scene
+        if not getattr(sc, "dev_hud_log_console", True):  # MASTER GATE
+            return False
         if not getattr(sc, enable_prop, False):
             return False
         hz = float(getattr(sc, hz_prop, 4.0) or 4.0)
@@ -21,6 +20,7 @@ def _ok_to_print(op, tag_attr: str, hz_prop: str, enable_prop: str) -> bool:
     except Exception:
         pass
     return False
+
 
 def queue_view_third(op,
                      op_key,

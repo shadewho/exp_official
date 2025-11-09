@@ -5,13 +5,10 @@ import bpy
 from ..xr_queue import xr_enqueue
 
 def _ok_to_print_kcc(kcc_sink, tag_attr: str, hz_prop: str, enable_prop: str) -> bool:
-    """
-    Rate limiter for console prints.
-    Stores the 'last print' timestamp on the KCC instance (kcc_sink), NOT the Scene.
-    Reads enable + Hz from the ACTIVE scene (bpy.context.scene).
-    """
     try:
         sc = bpy.context.scene
+        if not getattr(sc, "dev_hud_log_console", True):  # MASTER GATE
+            return False
         if not getattr(sc, enable_prop, False):
             return False
         hz = float(getattr(sc, hz_prop, 4.0) or 4.0)
