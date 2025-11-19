@@ -161,6 +161,24 @@ class GameLoop:
                 xr_poll(op, max_loops=64)  # drain buffered replies this frame
             except Exception:
                 pass
+        # DEV-only SoftSync: tiny micro-poll to catch same-frame replies without blocking
+        if self._xr_started:
+            try:
+                sc = context.scene
+                if getattr(sc, "dev_xr_softsync_enable", False):
+                    budget_ms = float(getattr(sc, "dev_xr_softsync_budget_ms", 0.8) or 0.0)
+                    if budget_ms > 0.0:
+                        t0 = time.perf_counter()
+                        applied = 0
+                        while (time.perf_counter() - t0) * 1000.0 < budget_ms:
+                            a = xr_poll(op, max_loops=8)
+                            applied += a
+                            if a == 0:
+                                break  # nothing buffered; stop early
+                        # (Optionally stash applied for HUD if you want)
+            except Exception:
+                pass
+
 
         # E2) VIEW — Phase 2: APPLY using the latest XR answer (same-frame when available)
         apply_view_from_xr(context, op)

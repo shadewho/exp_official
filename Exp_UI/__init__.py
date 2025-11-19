@@ -27,11 +27,10 @@ from .internet.helpers import is_internet_available, clear_token
 from .auth.helpers import token_expiry_check
 
 from .panel import (
-    VIEW3D_PT_PackageDisplay_Login,
-    VIEW3D_PT_PackageDisplay_FilterAndScene,
-    VIEW3D_PT_PackageDisplay_CurrentItem,
     VIEW3D_PT_ProfileAccount,
-    VIEW3D_PT_SettingsAndUpdate,)
+    VIEW3D_PT_SettingsAndUpdate,
+    VIEW3D_PT_ExploreByCode
+    )
 
 
 from .packages.social_operators import (
@@ -39,27 +38,14 @@ from .packages.social_operators import (
     OPEN_URL_OT_WebApp, EXPLORATORY_UL_Comments,
     POPUP_SOCIAL_DETAILS_OT, COMMENT_PACKAGE_INLINE_OT_WebApp
 )
-from .packages.operators import DOWNLOAD_CODE_OT_File
 
-from .cache_system.operators.clear import (CLEAR_ALL_DATA_OT_WebApp, CLEAR_THUMBNAILS_ONLY_OT_WebApp)
-from .cache_system.operators.refresh import REFRESH_FILTERS_OT_WebApp
-from .cache_system.manager import CacheManager
-
-# Import functions from our cache module.
-from .cache_system.persistence import clear_image_datablocks
-from .cache_system.preload import start_cache_worker, stop_cache_worker
-from .auth.helpers import auto_refresh_usage
 from .download_and_explore.cleanup import cleanup_world_downloads
 #Auth operators
 from .auth.operators import (
-    LOGIN_OT_WebApp, LOGOUT_OT_WebApp, REFRESH_USAGE_OT_WebApp, OPEN_DOCS_OT)
+    LOGIN_OT_WebApp, LOGOUT_OT_WebApp,  OPEN_DOCS_OT)
 
 #interface operators
-from .interface.operators.apply_filters import APPLY_FILTERS_SHOWUI_OT
-from .interface.operators.display import PACKAGE_OT_Display
-from .interface.operators.fetch import FETCH_PAGE_THREADED_OT_WebApp
-from .interface.operators.remove import REMOVE_PACKAGE_OT_Display
-
+from .interface.operators.display import PACKAGE_OT_Display, WEBAPP_OT_ShowDetailByCode, REMOVE_PACKAGE_OT_Display, WEBAPP_OT_PasteAndSearch
 
 #evemts operators
 from .events.operators import VOTE_MAP_OT_WebApp
@@ -77,41 +63,28 @@ from .open_addon_prefs import OPEN_ADDON_PREFS_OT
 classes = (
     LOGIN_OT_WebApp,
     LOGOUT_OT_WebApp,
-    DOWNLOAD_CODE_OT_File,
     LIKE_PACKAGE_OT_WebApp,
     COMMENT_PACKAGE_OT_WebApp,
     COMMENT_PACKAGE_INLINE_OT_WebApp,
     OPEN_URL_OT_WebApp,
-    VIEW3D_PT_PackageDisplay_Login,
-    VIEW3D_PT_PackageDisplay_FilterAndScene,
-    VIEW3D_PT_PackageDisplay_CurrentItem,
     VIEW3D_PT_ProfileAccount,
     EXPLORATORY_UL_Comments,
-    REFRESH_USAGE_OT_WebApp,
-    FETCH_PAGE_THREADED_OT_WebApp,
-    REMOVE_PACKAGE_OT_Display,
-    PACKAGE_OT_Display,
-    APPLY_FILTERS_SHOWUI_OT,
-    CLEAR_THUMBNAILS_ONLY_OT_WebApp,
-    CLEAR_ALL_DATA_OT_WebApp,
-    REFRESH_FILTERS_OT_WebApp,
     POPUP_SOCIAL_DETAILS_OT,
     VOTE_MAP_OT_WebApp,
     VIEW3D_PT_SettingsAndUpdate,
     OPEN_DOCS_OT,
     OPEN_ADDON_PREFS_OT,
-
-    # #test db
-    # DB_INSPECT_OT_ShowCacheDB,
-    # VIEW3D_PT_CacheDB
+    PACKAGE_OT_Display,
+    VIEW3D_PT_ExploreByCode,
+    WEBAPP_OT_ShowDetailByCode,
+    WEBAPP_OT_PasteAndSearch,
+    REMOVE_PACKAGE_OT_Display
 )
+
 from .packages.properties import MyAddonComment, PackageProps
-from .cache_system.db import init_db
 from .events.properties import register as register_event_props, unregister as unregister_event_props
 from .events.utilities import on_package_item_type_update
 from .interface.drawing.fonts import reset_font 
-from .interface.operators.fetch import fetch_page_queue
-
 @persistent
 def on_blend_load(dummy):
     """
@@ -121,26 +94,10 @@ def on_blend_load(dummy):
     • Clears stale background‑fetch tasks
     • Flags the modal draw‑loop to rebuild its data list
     """
-    # Force Browse mode on every file-open
-    try:
-        bpy.context.scene.ui_current_mode = 'BROWSE'
-    except Exception as e:
-        print(f"[WARN] Could not set UI mode to Browse on load: {e}")
-
-    # 1. image/texture cleanup – wrapped so an error can’t abort the rest
-    try:
-        clear_image_datablocks()
-    except Exception as e:
-        print(f"[WARN] clear_image_datablocks failed: {e!s}")
 
     # 2. make sure font‑ID is re‑loaded in the new file
     reset_font()
 
-    # 3. drop any queued fetch tasks that still point to the old RNA
-    try:
-        fetch_page_queue.queue.clear()
-    except Exception:
-        pass
 
     # 4. empty the old draw data & request a fresh build
     if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
@@ -156,7 +113,6 @@ def connectivity_check_timer():
         if bpy.context.scene.get("my_addon_data"):
             bpy.context.scene.my_addon_data.is_from_webapp = False
         bpy.context.scene.ui_current_mode = "GAME"
-        print ("GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME GAME ")
         print("[INFO] No internet connection detected. User logged out and UI disabled.")
     return 10.0  # Check every 10 seconds
 
@@ -181,7 +137,6 @@ def register():
     except Exception as e:
         print(f"[INFO] Failed to clear downloads folder at register: {e}")
 
-    init_db()
 
     register_event_props()
 
@@ -192,7 +147,6 @@ def register():
     # Register the token expiry check timer.
     bpy.app.timers.register(token_expiry_check, first_interval=60.0)
 
-    bpy.app.timers.register(auto_refresh_usage, first_interval=1.0)
 
     # Register the comment and main property group classes.
     bpy.utils.register_class(MyAddonComment)
@@ -270,8 +224,6 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    # ── finally start the background cache thread ───────────────────
-    start_cache_worker()
 
 
 def unregister():
@@ -299,7 +251,6 @@ def unregister():
         bpy.app.handlers.load_post.remove(on_blend_load)
     unregister_ui_props()
     unregister_event_props()
-    stop_cache_worker()
 
 if __name__ == "__main__":
     register()

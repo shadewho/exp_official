@@ -165,3 +165,103 @@ def queue_clamp_xy(kcc_sink, hx: float, hy: float, normal_xyz, floor_cos: float)
             pass
 
     xr_enqueue("kcc.clamp_xy.v1", payload, _apply)
+
+
+def queue_forward_sweep_min3_probe(kcc_sink,
+                                   base_xyz,           # (x,y,z) BEFORE local sweep
+                                   final_local_xyz,    # (x,y,z) AFTER local sweep (baseline for pos Δ)
+                                   dir_xyz,            # (x,y,z) world forward (same you used locally)
+                                   step_len: float,
+                                   r: float,
+                                   h: float,
+                                   floor_cos: float,
+                                   vel_xy_before,      # (vx,vy) BEFORE local sweep
+                                   vel_xy_after_local  # (vx,vy) AFTER local sweep (to compare with XR)
+                                   ):
+    """
+    Non-blocking XR mirror of _forward_sweep_min3 for parity only.
+    Sampling is gated by dev_geom_parity_enable + dev_log_geom_hz (0.25..2 Hz),
+    and further gated to only run after we've seen at least one dynamic xform batch.
+    Writes stable HUD keys: XR.auth.fwd.sweep.*
+    """
+    import time as _t, math, bpy
+    from .geom import _hud_set as _hud, _ok_to_print as _okprint, get_last_xf_seq
+    from ..xr_queue import xr_enqueue
+
+    sc = getattr(getattr(bpy, "context", None), "scene", None)
+    if not (sc and getattr(sc, "dev_geom_parity_enable", False)):
+        return
+
+    # Low, controllable sampling from existing knob (no new prefs)
+    hz = float(getattr(sc, "dev_log_geom_hz", 1.0) or 1.0)
+    hz = max(0.25, min(2.0, hz))
+    now = _t.perf_counter()
+    last = float(getattr(queue_forward_sweep_min3_probe, "_last_enq", 0.0) or 0.0)
+    if (now - last) < (1.0 / hz):
+        return
+
+    # Startup/xforms guard: only sample when we've applied a recent xforms batch
+    seq = int(get_last_xf_seq())
+    prev_seq = int(getattr(queue_forward_sweep_min3_probe, "_last_seq", -1))
+    if seq <= 0 or seq == prev_seq:
+        return
+    queue_forward_sweep_min3_probe._last_seq = seq
+    queue_forward_sweep_min3_probe._last_enq = now
+
+    try:
+        bx, by, bz = float(base_xyz[0]), float(base_xyz[1]), float(base_xyz[2])
+        fx, fy, fz = float(final_local_xyz[0]), float(final_local_xyz[1]), float(final_local_xyz[2])
+        dx, dy, dz = float(dir_xyz[0]), float(dir_xyz[1]), float(dir_xyz[2])
+        vbx, vby   = float(vel_xy_before[0]),     float(vel_xy_before[1])
+        vlx, vly   = float(vel_xy_after_local[0]), float(vel_xy_after_local[1])
+    except Exception:
+        return
+
+    payload = {
+        "pos": (bx, by, bz),
+        "dir": (dx, dy, dz),
+        "r": float(r), "h": float(h),
+        "step_len": float(step_len),
+        "floor_cos": float(floor_cos),
+        "vel_xy": (vbx, vby),
+    }
+    t0 = _t.perf_counter()
+
+    def _apply(res: dict):
+        lat_ms = (_t.perf_counter() - t0) * 1000.0
+
+        # Position Δ (mm)
+        rx, ry, rz = res.get("pos", (bx, by, bz))
+        ddx = fx - float(rx); ddy = fy - float(ry); ddz = fz - float(rz)
+        pos_mm = (ddx*ddx + ddy*ddy + ddz*ddz) ** 0.5 * 1000.0
+
+        # Velocity Δ (m/s) — XR post-sweep vs local post-sweep
+        vdelta = None
+        vxy = res.get("vel_xy_after", None)
+        if isinstance(vxy, (list, tuple)) and len(vxy) == 2:
+            dvx = vlx - float(vxy[0])
+            dvy = vly - float(vxy[1])
+            vdelta = math.sqrt(dvx*dvx + dvy*dvy)
+
+        src  = str(res.get("src", "—")) if res.get("hit", False) else "—"
+        band = str(res.get("band", "—")) if res.get("hit", False) else "—"
+        slid = bool(res.get("slid", False))
+        allow  = float(res.get("allow", 0.0))
+        allow2 = res.get("allow2", None)
+
+        # Stable HUD keys (no flicker)
+        _hud("XR.auth.fwd.sweep.src",    src,                           volatile=True)
+        _hud("XR.auth.fwd.sweep.band",   band,                          volatile=True)
+        _hud("XR.auth.fwd.sweep.pos_mm", float(round(pos_mm, 2)),       volatile=True)
+        _hud("XR.auth.fwd.sweep.vΔ",     (None if vdelta is None else float(round(vdelta, 4))), volatile=True)
+        _hud("XR.auth.fwd.sweep.slid",   ("Y" if slid else "N"),        volatile=True)
+        _hud("XR.auth.fwd.sweep.allow",  float(round(allow, 4)),        volatile=True)
+        _hud("XR.auth.fwd.sweep.allow2", (None if allow2 is None else float(round(allow2, 4))), volatile=True)
+        _hud("XR.auth.fwd.sweep.lat_ms", float(round(lat_ms, 2)),       volatile=True)
+
+        # Console one-liner (quiet, useful)
+        if _okprint("_last_fwd_sweep", "dev_log_geom_hz", "dev_log_geom_console"):
+            a2txt = "—" if allow2 is None else f"{allow2:0.3f}"
+            vdtxt = "—" if vdelta is None else f"{vdelta:0.4f}"
+            print(f"[FWD.SWEEP] src={src} band={band} posΔ={pos_mm:0.2f} mm  vΔ={vdtxt} m/s  slid={'Y' if slid else 'N'}  allow={allow:0.3f}  allow2={a2txt}  lat={lat_ms:0.2f} ms")
+    xr_enqueue("kcc.forward_sweep_min3.v1", payload, _apply)

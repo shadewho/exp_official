@@ -18,7 +18,7 @@
 
 bl_info = {
     "name": "Exploratory",
-    "blender": (4, 5, 0),
+    "blender": (5, 0, 0),
     "author": "Spencer Shade",
     "doc_url": "https://exploratory.online/",
     "tracker_url": "https://discord.gg/GJpGAAvMBe",

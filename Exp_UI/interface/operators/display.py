@@ -1,323 +1,220 @@
-#Exploratory/Exp_UI/interface/operators/display.py
+# Exploratory/Exp_UI/interface/operators/display.py
+# Detail-only overlay (no browse). Safe teardown from anywhere.
 
+import os
+import tempfile
+import requests
 import bpy
-import urllib.parse
+from bpy.props import BoolProperty
+
 from ...auth.helpers import load_token
 from ...internet.helpers import is_internet_available
-from ...main_config import EVENTS_URL, SHOP_URL
-from .utilities import fetch_detail_for_file
+from ...main_config import PACKAGES_ENDPOINT, PACKAGE_DETAILS_ENDPOINT
 from ..drawing.draw_master import load_image_buttons
 from ..drawing.utilities import draw_image_buttons_callback
 from ...download_and_explore.explore_main import explore_icon_handler, reset_download_progress
 
+# ---------------------------------------------------------------------------
+# Global overlay registry + hard kill
+# ---------------------------------------------------------------------------
 
-# ------------------------------------------------------------------------
-# PACKAGE_OT_Display
-#    - Displays images found in `bpy.types.Scene.fetched_packages_data`
-#      (assuming their thumbnails are in `CACHED_IMAGE_FOLDER`)
-#    - Minimal 2:1 template, 4x2 grid for images
-# -----------------------------------------------------------------------
+_OVERLAY = {"handler": None, "timer": None, "area": None, "window": None}
+
+def force_hide_overlay():
+    """
+    Hard-stop the overlay regardless of which window/scene launched it.
+    Idempotent: safe to call anytime.
+    """
+    # 1) draw handler
+    h = _OVERLAY.get("handler")
+    if h is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(h, 'WINDOW')
+        except Exception:
+            pass
+        _OVERLAY["handler"] = None
+
+    # 2) timer
+    t = _OVERLAY.get("timer")
+    if t is not None:
+        try:
+            bpy.context.window_manager.event_timer_remove(t)
+        except Exception:
+            pass
+        _OVERLAY["timer"] = None
+
+    # 3) clear draw data so nothing renders even if a handler slipped through
+    try:
+        if getattr(bpy.types, "Scene", None) is not None:
+            if getattr(bpy.types.Scene, "gpu_image_buttons_data", None) is None:
+                bpy.types.Scene.gpu_image_buttons_data = []
+            try:
+                bpy.types.Scene.gpu_image_buttons_data.clear()
+            except Exception:
+                bpy.types.Scene.gpu_image_buttons_data = []
+    except Exception:
+        pass
+
+    # 4) UI state and cursor
+    try:
+        bpy.context.scene.ui_current_mode = "GAME"
+    except Exception:
+        pass
+    try:
+        bpy.context.window.cursor_modal_restore()
+    except Exception:
+        pass
+
+    # 5) flush one redraw
+    try:
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+    except Exception:
+        pass
+
+
+# Derive /api/download from PACKAGES_ENDPOINT once
+DOWNLOAD_ENDPOINT = PACKAGES_ENDPOINT.rsplit('/', 1)[0] + "/download"
+
+# ---------------------------------------------------------------------------
+# Overlay operator
+# ---------------------------------------------------------------------------
 
 class PACKAGE_OT_Display(bpy.types.Operator):
-    """
-    Displays the UI in the 3D Viewport using load_image_buttons() from drawing.py.
-    This modal operator continuously monitors filter properties and updates its data
-    when they change, while keeping the UI visible.
-    """
+    """Detail-only overlay (no browse, no pagination, no cache)."""
     bl_idname = "view3d.add_package_display"
-    bl_label = "Show Package Thumbnails"
+    bl_label  = "Show Exploratory Detail"
     bl_options = {'REGISTER'}
 
-    keep_mode: bpy.props.BoolProperty(
+    keep_mode: BoolProperty(
         name="Keep Mode",
-        default=False,
-        description="Do not override the current UI mode"
+        default=True,
+        description="Keep current UI mode"
     )
 
-    # Internal modal state
     _handler = None
-    _timer = None
-    _dirty   = True  # start dirty so first draw builds
-
-    # Saved filter values (for monitoring changes)
-    last_item_type: str = ""
-    last_sort_by: str = ""
-    last_search: str = ""
-    last_event_stage: str = ""  # New: store the last event stage
-    last_selected_event: str = ""  # New: store the last selected event
-
-    # Loading state (for when a page/detail refresh is in progress)
-    _do_loading = False
-    loading_step = 0
-    _active_task = ""           # "page" or "detail"
-    _target_page = 0            # target page number when refreshing page data
-    _detail_file_id = 0         # file_id to fetch when loading detail view
-
-    _original_area_type = None  # to ensure we remain in the same area type
+    _timer   = None
+    _dirty   = True
+    _last_progress = -1.0
+    _original_area_type = None
 
     def invoke(self, context, event):
-        scene = context.scene
-        self._original_area_type = context.area.type
-        self._dirty = True  # force initial build
-
-        # If not keeping mode, force the UI mode to BROWSE.
+        self._original_area_type = getattr(context.area, "type", None)
         if not self.keep_mode:
-            scene.ui_current_mode = "BROWSE"
+            context.scene.ui_current_mode = "DETAIL"
 
-        # Save initial filter property values.
-        self.last_item_type = scene.package_item_type
-        self.last_sort_by = scene.package_sort_by
-        self.last_search = scene.package_search_query
-        self.last_event_stage = scene.event_stage  # Save the initial event stage
-        self.last_selected_event = scene.selected_event  # Save the initial selected event
-        self._last_progress = -1.0
-
-        # Initialize UI draw data.
+        # ensure draw data list exists
         bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
 
-        # Set up the draw handler and a timer for the modal operator.
+        # draw handler
         self._handler = bpy.types.SpaceView3D.draw_handler_add(
             draw_image_buttons_callback, (), 'WINDOW', 'POST_PIXEL'
         )
+
+        # keep a sentinel item (optional – harmless)
+        try:
+            data = bpy.types.Scene.gpu_image_buttons_data
+            if data is None:
+                bpy.types.Scene.gpu_image_buttons_data = []
+                data = bpy.types.Scene.gpu_image_buttons_data
+            if isinstance(data, list):
+                data.append({"name": "handler", "handler": self._handler})
+        except Exception:
+            pass
+
+        # timer + modal loop
         self._timer = context.window_manager.event_timer_add(0.1, window=context.window)
         context.window_manager.modal_handler_add(self)
         if context.area:
             context.area.tag_redraw()
+
+        # publish to global registry so others can kill us
+        global _OVERLAY
+        _OVERLAY["handler"] = self._handler
+        _OVERLAY["timer"]   = self._timer
+        _OVERLAY["area"]    = context.area
+        _OVERLAY["window"]  = context.window
+
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
         if not is_internet_available():
-            bpy.ops.webapp.logout()
-            self.report({'ERROR'}, "No internet connection. Logging out and closing UI.")
+            self.report({'ERROR'}, "No internet. Closing UI.")
             return self.cancel(context)
-        scene = context.scene
+
+        # programmatic shutdown: mode flipped to GAME
+        if getattr(context.scene, "ui_current_mode", "GAME") == "GAME":
+            return self.cancel(context)
 
         if event.type == 'TIMER':
-            # If the 3D View area has changed type, cancel the modal.
-            if (not context.area) or (context.area.type != self._original_area_type):
-                self.cancel(context)
-                return {'CANCELLED'}
-            
+            # if area type changed under us (fullscreen, layout switch), bail
+            if (not context.area) or (getattr(context.area, "type", None) != self._original_area_type):
+                return self.cancel(context)
+
             if self._dirty:
                 bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
                 if context.area:
                     context.area.tag_redraw()
                 self._dirty = False
-            # -------- NEW: rebuild when progress OR flag changes --------
-            cur = scene.download_progress
-            if abs(cur - self._last_progress) > 1e-4:   # progress moved?
+
+            # refresh when download progress changes
+            cur = float(getattr(context.scene, "download_progress", 0.0))
+            if abs(cur - self._last_progress) > 1e-6:
                 self._last_progress = cur
-                self._dirty = True                      # force UI rebuild
-
-            if getattr(bpy.types.Scene, "package_ui_dirty", False):
-                bpy.types.Scene.package_ui_dirty = False
                 self._dirty = True
-            # -----------------------------------------------------------------
 
-            # Check for filter changes by comparing current scene properties with stored ones.
-            current_item = scene.package_item_type
-            current_sort = scene.package_sort_by
-            current_search = scene.package_search_query
-            current_event_stage = scene.event_stage  # current event stage
-            current_selected_event = scene.selected_event  # current selected event
-
-            # If the current type is "event", also monitor event_stage and selected_event.
-            if (current_item != self.last_item_type or
-                current_sort != self.last_sort_by or
-                current_search != self.last_search or
-                (current_item == 'event' and (current_event_stage != self.last_event_stage or current_selected_event != self.last_selected_event))):
-
-
-                # ALWAYS reset to the Browse tab on any filter change:
-                scene.ui_current_mode    = "BROWSE"
-                scene.selected_thumbnail = ""
-                # 2) rebuild the UI right now
-                self._dirty = True
-                bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-                if context.area:
-                    context.area.tag_redraw()
-
-
-                # Update the saved values.
-                self.last_item_type = current_item
-                self.last_sort_by = current_sort
-                self.last_search = current_search
-                self.last_event_stage = current_event_stage
-                self.last_selected_event = current_selected_event
-
-                # --- wipe the old grid immediately ---
-                bpy.types.Scene.fetched_packages_data = []     # no thumbnails to draw
-                scene.total_thumbnail_pages = 1
-                scene.selected_thumbnail = ""
-                self._dirty = True                             # force UI rebuild right now
-                # --------------------------------------
-
-                # Reset to page one and show a loading indicator
-                scene.current_thumbnail_page = 1
-                scene.show_loading_image = True
-                bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=1)
-
-            # Handle any ongoing loading sequence.
-            if self._do_loading:
-                if self.loading_step == 0:
-                    self.loading_step = 1
-                    return {'RUNNING_MODAL'}
-                elif self.loading_step == 1:
-                    if self._active_task == "page":
-                        result = bpy.ops.webapp.fetch_page('EXEC_DEFAULT', page_number=self._target_page)
-                        if result not in ({'FINISHED'}, {'RUNNING_MODAL'}):
-                            self.report({'ERROR'}, "Page load failed or cancelled.")
-                    elif self._active_task == "detail":
-                        detail_data = fetch_detail_for_file(file_id=self._detail_file_id)
-                        if detail_data and detail_data.get("success"):
-                            addon_data = scene.my_addon_data
-                            addon_data.init_from_package(detail_data)
-                            addon_data.comments.clear()
-                            for cdict in detail_data.get("comments", []):
-                                c_item = addon_data.comments.add()
-                                c_item.author = cdict.get("author", "")
-                                c_item.text = cdict.get("content", "")
-                                c_item.timestamp = cdict.get("timestamp", "")
-                            scene.ui_current_mode = "DETAIL"
-                        else:
-                            self.report({'ERROR'}, "Failed to fetch detail data.")
-                    self.loading_step = 2
-                    return {'RUNNING_MODAL'}
-                elif self.loading_step == 2:
-                    scene.show_loading_image = False
-                    bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-                    if context.area:
-                        context.area.tag_redraw()
-                    self._do_loading = False
-                    self.loading_step = 0
-                    self._active_task = ""
-                    self._target_page = 0
-                    self._detail_file_id = 0
-                    return {'RUNNING_MODAL'}
-
-        # Handle mouse movement for hover effects.
+        # hover hand
         if event.type == 'MOUSEMOVE':
-            mouse_x = event.mouse_region_x
-            mouse_y = event.mouse_region_y
-            hover_found = False
-            gpu_data = bpy.types.Scene.gpu_image_buttons_data
-            if gpu_data:
-                # Only show hand cursor for truly clickable items
-                CLICKABLE = {
-                    "Close_Icon", "Right_Arrow", "Left_Arrow",
-                    "Back_Icon", "Explore_Icon", "Visit_Shop_Icon", "Submit_World_Icon"
-                }
-                ui_mode = context.scene.ui_current_mode
-                for button in gpu_data:
-                    name = button.get("name")
-                    # Skip nameless items (rects, text, spinner frames, etc.)
-                    if not name:
-                        continue
-                    # In BROWSE, thumbnails (named by package) are clickable too.
-                    is_clickable = (name in CLICKABLE) or (ui_mode == "BROWSE" and name not in {"Template"})
-                    if not is_clickable:
-                        continue
-                    x1, y1, x2, y2 = button.get("pos", (0, 0, 0, 0))
-                    if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
-                        hover_found = True
-                        break
-            context.window.cursor_modal_set('HAND' if hover_found else 'DEFAULT')
-
-        # Process left-mouse clicks.
-        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            mouse_x = event.mouse_region_x
-            mouse_y = event.mouse_region_y
-            gpu_data = bpy.types.Scene.gpu_image_buttons_data
-            packages_list = getattr(bpy.types.Scene, 'fetched_packages_data', [])
-            for button in gpu_data:
-                # Ignore special handler sentinels or nameless items
+            mx, my = event.mouse_region_x, event.mouse_region_y
+            hover = False
+            for button in (bpy.types.Scene.gpu_image_buttons_data or []):
                 name = button.get("name")
-                if name == "handler" or name is None:
+                if name not in {"Close_Icon", "Back_Icon", "Explore_Icon"}:
                     continue
                 x1, y1, x2, y2 = button.get("pos", (0, 0, 0, 0))
-                if (x1 <= mouse_x <= x2) and (y1 <= mouse_y <= y2):
-                    # Handle specific button actions.
-                    if button["name"] == "Close_Icon":
+                if x1 <= mx <= x2 and y1 <= my <= y2:
+                    hover = True
+                    break
+            context.window.cursor_modal_set('HAND' if hover else 'DEFAULT')
+
+        # clicks
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            mx, my = event.mouse_region_x, event.mouse_region_y
+            for button in (bpy.types.Scene.gpu_image_buttons_data or []):
+                name = button.get("name")
+                if not name:
+                    continue
+                x1, y1, x2, y2 = button.get("pos", (0, 0, 0, 0))
+                if not (x1 <= mx <= x2 and y1 <= my <= y2):
+                    continue
+
+                if name == "Close_Icon":
+                    # cancel current download if any, then close
+                    try:
                         from ...download_and_explore.explore_main import current_download_task
                         if current_download_task is not None:
                             current_download_task.cancel()
-                        return self.cancel(context)
+                    except Exception:
+                        pass
+                    return self.cancel(context)
 
-                    elif button["name"] == "Template":
-                        continue
-                    elif button["name"] == "Right_Arrow":
-                        page = scene.current_thumbnail_page
-                        total_pages = scene.total_thumbnail_pages
-                        if page < total_pages:
-                            self.begin_loading_for_page(context, page + 1)
-                            self._dirty = True 
+                if name == "Back_Icon":
+                    return self.cancel(context)
+
+                if name == "Explore_Icon":
+                    code = (context.scene.download_code or "").strip()
+                    if not code or int(getattr(context.scene.my_addon_data, "file_id", 0) or 0) <= 0:
+                        self.report({'ERROR'}, "Enter a download code and load details first.")
                         return {'RUNNING_MODAL'}
-                    elif button["name"] == "Left_Arrow":
-                        page = scene.current_thumbnail_page
-                        if page > 1:
-                            self.begin_loading_for_page(context, page - 1)
-                            self._dirty = True 
+                    token = load_token()
+                    if not token:
+                        self.report({'ERROR'}, "Not logged in.")
                         return {'RUNNING_MODAL'}
-                    elif button["name"] == "Back_Icon":
-                        if scene.ui_current_mode == "DETAIL":
-                            scene.ui_current_mode = "BROWSE"
-                            scene.selected_thumbnail = ""
-                            bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-                            if context.area:
-                                context.area.tag_redraw()
-                        return {'RUNNING_MODAL'}
-                    elif button["name"] == "Explore_Icon":
-                        download_code = scene.download_code
-                        if scene.my_addon_data.file_id > 0 and download_code:
-                            token = load_token()
-                            if not token:
-                                self.report({'ERROR'}, "You must be logged in to explore a package.")
-                                return {'CANCELLED'}
-                            
-                            reset_download_progress()
-                            # Set a loading flag and reset progress (for the UI drawing)
-                            scene.download_progress = 0.0
-                            scene.ui_current_mode = "LOADING"  # This is only for drawing, not for process control.
-                            self._dirty = True
-                            # Immediately start the download process regardless of UI mode.
-                            explore_icon_handler(context, download_code)
-                        else:
-                            self.report({'ERROR'}, "No package selected or missing download code.")
-                        return {'RUNNING_MODAL'}
-                    elif button["name"] == "Submit_World_Icon":
-                        # jump out to your website’s events page
-                        bpy.ops.webapp.open_url(
-                            'INVOKE_DEFAULT',
-                            url=EVENTS_URL
-                        )
-                        return {'RUNNING_MODAL'}
-                    
-                    elif button["name"] == "Visit_Shop_Icon":
-                        # Build a shop URL that searches for the current package_name
-                        pkg_name = context.scene.my_addon_data.package_name or ""
-                        # URL‐encode the title so spaces & punctuation are handled
-                        encoded = urllib.parse.quote_plus(pkg_name)
-                        # Append the search params; note submit_search left empty as per your example
-                        shop_url = f"{SHOP_URL}?search_query={encoded}&submit_search=&category=shop_item"
-                        bpy.ops.webapp.open_url('INVOKE_DEFAULT', url=shop_url)
-                        return {'RUNNING_MODAL'}
-                    
-                    else:
-                        # Handle clicking a thumbnail in BROWSE mode.
-                        if scene.ui_current_mode == "BROWSE":
-                            selected_pkg = next((p for p in packages_list if p.get("package_name") == button["name"]), None)
-                            if selected_pkg:
-                                file_id = selected_pkg.get("file_id", 0)
-                                if file_id > 0:
-                                    scene.download_code = selected_pkg.get("download_code", "")
-                                    scene.my_addon_data.file_id = file_id
-                                    scene.selected_thumbnail = selected_pkg.get("local_thumb_path", "")
-                                    self.begin_loading_for_detail(context, file_id)
-                                else:
-                                    self.report({'ERROR'}, "Selected package has invalid file_id.")
-                            else:
-                                self.report({'ERROR'}, "Package not found in data.")
-                            return {'RUNNING_MODAL'}
+                    reset_download_progress()
+                    context.scene.download_progress = 0.0
+                    context.scene.ui_current_mode = "LOADING"
+                    self._dirty = True
+                    explore_icon_handler(context, code)
+                    return {'RUNNING_MODAL'}
 
         if event.type == 'ESC':
             return self.cancel(context)
@@ -325,38 +222,171 @@ class PACKAGE_OT_Display(bpy.types.Operator):
         return {'PASS_THROUGH'}
 
     def cancel(self, context):
-        if self._handler:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handler, 'WINDOW')
-            self._handler = None
-        if self._timer:
-            context.window_manager.event_timer_remove(self._timer)
-            self._timer = None
-        if hasattr(bpy.types.Scene, "gpu_image_buttons_data"):
-            bpy.types.Scene.gpu_image_buttons_data.clear()
-        # Set mode to GAME to prevent any further UI drawing.
-        context.scene.ui_current_mode = "GAME"
-        context.window.cursor_modal_restore()
-        if context.area:
-            context.area.tag_redraw()
-            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        # hard kill + clear registry
+        force_hide_overlay()
+        global _OVERLAY
+        _OVERLAY.update({"handler": None, "timer": None, "area": None, "window": None})
         return {'CANCELLED'}
 
-    def begin_loading_for_page(self, context, new_page):
-        self._do_loading = True
-        self.loading_step = 0
-        self._active_task = "page"
-        self._target_page = new_page
-        context.scene.show_loading_image = True
-        bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-        if context.area:
-            context.area.tag_redraw()
 
-    def begin_loading_for_detail(self, context, file_id):
-        self._do_loading = True
-        self.loading_step = 0
-        self._active_task = "detail"
-        self._detail_file_id = file_id
-        context.scene.show_loading_image = True
-        bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
-        if context.area:
-            context.area.tag_redraw()
+# ---------------------------------------------------------------------------
+# Fetch detail by code (no browse)
+# ---------------------------------------------------------------------------
+
+class WEBAPP_OT_ShowDetailByCode(bpy.types.Operator):
+    """Open Exploratory UI, retreive item details (Download Code)"""
+    bl_idname = "webapp.show_detail_by_code"
+    bl_label  = "Display world details (download code)"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        if not is_internet_available():
+            self.report({'ERROR'}, "No internet.")
+            return {'CANCELLED'}
+
+        token = load_token()
+        if not token:
+            self.report({'ERROR'}, "Not logged in.")
+            return {'CANCELLED'}
+
+        code = (context.scene.download_code or "").strip()
+        if not code:
+            self.report({'ERROR'}, "Enter a download code.")
+            return {'CANCELLED'}
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1) Resolve code -> file info
+        try:
+            r = requests.post(DOWNLOAD_ENDPOINT, json={"download_code": code}, headers=headers, timeout=20)
+            r.raise_for_status()
+            d = r.json()
+        except Exception as e:
+            self.report({'ERROR'}, f"Download code lookup failed: {e}")
+            return {'CANCELLED'}
+
+        if not d.get("success"):
+            self.report({'ERROR'}, d.get("message", "Invalid code"))
+            return {'CANCELLED'}
+
+        pkg = d.get("package") or {}
+        file_id  = int(pkg.get("file_id", 0) or 0)
+        thumb_url = pkg.get("thumbnail_url")
+
+        if file_id <= 0:
+            self.report({'ERROR'}, "Bad server response.")
+            return {'CANCELLED'}
+
+        # 2) Fetch detail JSON for UI fields
+        try:
+            r2 = requests.get(f"{PACKAGE_DETAILS_ENDPOINT}/{file_id}", headers=headers, timeout=15)
+            r2.raise_for_status()
+            detail = r2.json()
+        except Exception as e:
+            self.report({'ERROR'}, f"Detail fetch failed: {e}")
+            return {'CANCELLED'}
+
+        if not detail.get("success"):
+            self.report({'ERROR'}, detail.get("message", "Detail not available"))
+            return {'CANCELLED'}
+
+        # 3) Download thumbnail to a temp file (no disk DB)
+        local_thumb = ""
+        if thumb_url:
+            try:
+                rt = requests.get(thumb_url, timeout=20)
+                rt.raise_for_status()
+                folder = tempfile.gettempdir()
+                local_thumb = os.path.join(folder, f"exploratory_thumb_{file_id}.png")
+                with open(local_thumb, "wb") as f:
+                    f.write(rt.content)
+            except Exception:
+                local_thumb = ""
+
+        # 4) Pump into your PG
+        ad = context.scene.my_addon_data
+        if hasattr(ad, "init_from_package"):
+            ad.init_from_package(detail)
+            ad.comments.clear()
+            for c in (detail.get("comments") or []):
+                c_item = ad.comments.add()
+                c_item.author    = c.get("author", "")
+                c_item.text      = c.get("content", "")
+                c_item.timestamp = c.get("timestamp", "")
+        else:
+            ad.file_id        = file_id
+            ad.package_name   = detail.get("package_name", "")
+            ad.author         = detail.get("uploader", "")
+            ad.description    = detail.get("description", "")
+            ad.likes          = int(detail.get("likes", 0) or 0)
+            ad.download_count = int(detail.get("download_count", 0) or 0)
+            ad.file_type      = detail.get("file_type", "world")
+            ad.vote_count     = int(detail.get("vote_count", 0) or 0)
+            ad.upload_date    = detail.get("upload_date", "")
+
+        context.scene.selected_thumbnail = local_thumb if local_thumb else ""
+        context.scene.ui_current_mode = "DETAIL"
+
+        # Ensure overlay is visible or refresh it
+        if _OVERLAY.get("handler") is None:
+            bpy.ops.view3d.add_package_display('INVOKE_DEFAULT', keep_mode=True)
+        else:
+            bpy.types.Scene.gpu_image_buttons_data = load_image_buttons()
+            if context.area:
+                context.area.tag_redraw()
+
+        self.report({'INFO'}, "Details loaded.")
+        return {'FINISHED'}
+
+
+
+class WEBAPP_OT_PasteAndSearch(bpy.types.Operator):
+    """Paste & Search. Uses your clipboard data to find world"""
+    bl_idname = "webapp.paste_and_search"
+    bl_label  = "Paste & Search. Uses your clipboard data to find world"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    def execute(self, context):
+        # 1) Read clipboard
+        try:
+            clip = (context.window_manager.clipboard or "").strip()
+        except Exception:
+            clip = ""
+        if not clip:
+            self.report({'ERROR'}, "Clipboard is empty.")
+            return {'CANCELLED'}
+
+        # 2) Put into the download_code field
+        try:
+            context.scene.download_code = clip
+        except Exception:
+            self.report({'ERROR'}, "Scene.download_code is missing.")
+            return {'CANCELLED'}
+
+        # 3) Reuse the existing flow
+        try:
+            res = bpy.ops.webapp.show_detail_by_code('EXEC_DEFAULT')
+        except Exception as e:
+            self.report({'ERROR'}, f"Search failed: {e}")
+            return {'CANCELLED'}
+
+        # If the underlying op handled things, we’re done
+        if {'FINISHED', 'RUNNING_MODAL'} & set(res):
+            return {'FINISHED'}
+        return {'CANCELLED'}
+
+
+
+# ---------------------------------------------------------------------------
+# Remove overlay (compat for existing calls)
+# ---------------------------------------------------------------------------
+
+class REMOVE_PACKAGE_OT_Display(bpy.types.Operator):
+    """Hide the overlay; safe if not running."""
+    bl_idname = "view3d.remove_package_display"
+    bl_label  = "Hide Exploratory Overlay"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        force_hide_overlay()
+        return {'FINISHED'}

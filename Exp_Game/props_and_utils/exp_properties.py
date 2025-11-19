@@ -204,9 +204,10 @@ def add_scene_properties():
             ("PROXY",  "Proxy Mesh & Spawn",          "Proxy mesh list and spawn settings"),
             ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
             ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
+            ("DEV",    "Developer HUD ",             "Developer Tools"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PHYS'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PHYS', 'DEV'}
     )
 
     #---proxy mesh --#

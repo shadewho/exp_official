@@ -47,28 +47,20 @@ def _disable_draw_handler():
     _ENABLED = False
 
 def _import_sections():
-    """
-    Force-load all section modules so they can self-register into REGISTRY.
-    Safe to call multiple times.
-    """
-    # Prevent duplicate instances on reload by clearing the registry first.
+    """Load HUD sections (clear first)."""
+    try: REGISTRY.clear()
+    except Exception: pass
     try:
-        REGISTRY.clear()
-    except Exception:
-        pass
-
-    # Import modules for side-effect registration (order matters only for defaults)
-    try:
-        from .dev_sections import section_core as _s0           # noqa: F401
-        from .dev_sections import sections_xr as _s1            # XR core (status/flow)
-        from .dev_sections import section_xr_geom as _s1g       # XR.Geom (the sub-sections you toggle)   # noqa: F401
-        from .dev_sections import section_world as _s2           # noqa: F401
-        from .dev_sections import section_physics as _s3         # noqa: F401
-        from .dev_sections import section_camera_view as _s4     # noqa: F401
-        from .dev_sections import section_graphs as _s5          # noqa: F401
-        # Removed section_custom import by design (no “Show Custom” path anymore)
+        from .dev_sections import section_core as _s0            # noqa: F401
+        from .dev_sections import section_xr_modal_general as _sx # unified XR+Modal (LEFT)  # noqa: F401
+        from .dev_sections import section_xr_geom as _sgeom       # XR.Geom                  # noqa: F401
+        from .dev_sections import section_world as _sw            # noqa: F401
+        from .dev_sections import section_physics as _sp          # noqa: F401
+        from .dev_sections import section_camera_view as _sv      # noqa: F401
+        from .dev_sections import section_graphs as _sg           # optional graphs          # noqa: F401
     except Exception as e:
         print(f"[DEVHUD] section import error: {e}")
+
 
 # -------- public frame hooks (unchanged names) --------
 

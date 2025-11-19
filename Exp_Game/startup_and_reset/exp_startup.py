@@ -14,27 +14,61 @@ ORIGINAL_SCENE_NAME     = None
 
 def center_cursor_in_3d_view(context, margin=50):
     """
-    Centers the cursor in the 3D View region with a specified margin to prevent it
-    from being too close to the edges.
-    
-    Args:
-        context (bpy.types.Context): The current Blender context.
-        margin (int): The margin in pixels to keep the cursor away from the edges.
+    Warp the mouse cursor to the center of a VIEW_3D/WINDOW region.
+    Robust against contexts that don't carry a region (fullscreen swaps, timers, UI overlays).
+    If no suitable region exists, do nothing (no exception).
     """
-    region = context.region
-    if region.type != 'WINDOW':  # Ensure we're working within the 3D View region
+    import bpy
+
+    # Prefer the window in the incoming context; fall back to any window.
+    win = getattr(context, "window", None)
+    region = getattr(context, "region", None)
+    region_is_ok = (region is not None) and (getattr(region, "type", None) == 'WINDOW')
+
+    def _find_view3d_window_region():
+        nonlocal win
+        wm = bpy.context.window_manager
+        windows = []
+        if win is not None:
+            windows.append(win)
+        if wm:
+            for w in wm.windows:
+                if w not in windows:
+                    windows.append(w)
+        for w in windows:
+            screen = getattr(w, "screen", None)
+            if not screen:
+                continue
+            for area in screen.areas:
+                if area.type != 'VIEW_3D':
+                    continue
+                reg = next((r for r in area.regions if r.type == 'WINDOW'), None)
+                if reg:
+                    return w, reg
+        return None, None
+
+    if not region_is_ok:
+        win, region = _find_view3d_window_region()
+
+    # Nothing valid? Bail silently.
+    if not win or not region:
+        print("[center_cursor_in_3d_view] No VIEW_3D/WINDOW region; skipping cursor warp.")
+        return
+    if getattr(region, "width", 0) <= 0 or getattr(region, "height", 0) <= 0:
+        print("[center_cursor_in_3d_view] Region has zero size; skipping cursor warp.")
         return
 
-    # Calculate the center of the 3D View region
-    center_x = region.x + region.width // 2
-    center_y = region.y + region.height // 2
+    # Compute safe center inside region margins
+    cx = region.x + region.width // 2
+    cy = region.y + region.height // 2
+    x = max(region.x + margin, min(cx, region.x + region.width  - margin))
+    y = max(region.y + margin, min(cy, region.y + region.height - margin))
 
-    # Adjust cursor to stay within the margins
-    adjusted_x = max(region.x + margin, min(center_x, region.x + region.width - margin))
-    adjusted_y = max(region.y + margin, min(center_y, region.y + region.height - margin))
+    try:
+        win.cursor_warp(x, y)
+    except Exception as e:
+        print(f"[center_cursor_in_3d_view] Cursor warp failed: {e}")
 
-    # Warp the cursor to the adjusted position
-    context.window.cursor_warp(adjusted_x, adjusted_y)
 
 
 def clear_old_dynamic_references(self):
@@ -157,7 +191,7 @@ def apply_performance_settings(scene, performance_level):
         performance_level = "LOW"
 
     # Force the render engine to Eevee Next.
-    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    scene.render.engine = "BLENDER_EEVEE"
 
     prefs = bpy.context.preferences.addons["Exploratory"].preferences
 
@@ -414,14 +448,15 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
             except Exception:
                 pass
 
+
         enter_fullscreen_once()
 
         def _start_modal_after_fs():
             invoke_modal_in_current_view3d(from_ui)  # no self here
             return None
-        
+        print ("start")
         delay = 0.4 if from_ui else 0.2  # ← give the UI/area/handlers a beat to settle
         bpy.app.timers.register(_start_modal_after_fs, first_interval=delay)
-
+        print ("start 2")
         return {'FINISHED'}
 

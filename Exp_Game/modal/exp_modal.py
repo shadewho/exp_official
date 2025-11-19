@@ -34,6 +34,27 @@ from ..startup_and_reset.exp_fullscreen import exit_fullscreen_once
 from .exp_loop import GameLoop
 from ..physics.exp_view_fpv import reset_fpv_rot_scale
 
+def _first_view3d_r3d():
+    """
+    Return a valid SpaceView3D.region_3d from any open VIEW_3D/WINDOW,
+    or None if none exists yet (e.g., during fullscreen swaps).
+    """
+    import bpy
+    wm = bpy.context.window_manager
+    if not wm:
+        return None
+    for win in wm.windows:
+        scr = getattr(win, "screen", None)
+        if not scr:
+            continue
+        for area in scr.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            space = area.spaces.active
+            r3d = getattr(space, "region_3d", None)
+            if r3d:
+                return r3d
+    return None
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -181,7 +202,6 @@ class ExpModal(bpy.types.Operator):
     def invoke(self, context, event):
         scene = context.scene
 
-
         # --- proxy records for hidden meshes - to avoid performance culling conflicts ---
         if not hasattr(self, "_proxy_mesh_original_states"):
             self._proxy_mesh_original_states = {}
@@ -197,9 +217,6 @@ class ExpModal(bpy.types.Operator):
 
         # Capture both camera/character state
         capture_initial_cam_state(self, context)
-
-        #set UI mode to disable background caching
-        context.scene.ui_current_mode = 'GAME'
 
         #clear UI if any
         try:
@@ -233,7 +250,7 @@ class ExpModal(bpy.types.Operator):
         if not context.scene.target_armature:
             self.report({'ERROR'}, "No armature assigned to scene.target_armature! Cancelling game.")
             return {'CANCELLED'}
-        
+
         #--clear custom action strips--#
         if not self.launched_from_ui:
             try:
@@ -310,15 +327,30 @@ class ExpModal(bpy.types.Operator):
         # 6) Grab target object from scene property
         self.target_object = context.scene.target_armature
         if self.target_object:
-            # Initialize camera pitch & yaw from the current view
-            self.pitch = math.radians(context.scene.pitch_angle)
-            view_rotation = context.space_data.region_3d.view_rotation.to_euler()
-            self.yaw = view_rotation.z
+            # --- Initialize camera pitch & yaw robustly ---
+            self.pitch = math.radians(float(getattr(context.scene, "pitch_angle", 15.0)))
 
-            # Set up the animation manager
-            self.animation_manager = AnimationStateManager()
-            set_global_animation_manager(self.animation_manager)
-            move_armature_and_children_to_scene(self.target_object, context.scene)
+            # Try, in order: region_data → space_data.region_3d → any VIEW_3D r3d → armature yaw
+            r3d = getattr(context, "region_data", None)
+            if r3d is None:
+                try:
+                    r3d = context.space_data.region_3d
+                except Exception:
+                    r3d = None
+            if r3d is None:
+                r3d = _first_view3d_r3d()
+
+            if r3d is not None:
+                try:
+                    self.yaw = r3d.view_rotation.to_euler().z
+                except Exception:
+                    self.yaw = self.target_object.matrix_world.to_euler('XYZ').z if self.target_object else 0.0
+            else:
+                self.yaw = self.target_object.matrix_world.to_euler('XYZ').z if self.target_object else 0.0
+        # Set up the animation manager
+        self.animation_manager = AnimationStateManager()
+        set_global_animation_manager(self.animation_manager)
+        move_armature_and_children_to_scene(self.target_object, context.scene)
 
         # --- Physics controller + HARD-LOCKED 30 Hz scheduler ---
         self.physics_controller = KinematicCharacterController(self.target_object, context.scene.char_physics)
@@ -446,7 +478,7 @@ class ExpModal(bpy.types.Operator):
         exit_fullscreen_once()
 
         #restore UI mode
-        context.scene.ui_current_mode = 'BROWSE'
+        context.scene.ui_current_mode = 'GAME'
         
         # Remove the modal timer if it exists
         if self._timer:
@@ -517,11 +549,10 @@ class ExpModal(bpy.types.Operator):
                 override_ctx = get_valid_view3d_override()
                 if override_ctx is not None:
                     with bpy.context.temp_override(**override_ctx):
-                        bpy.ops.view3d.add_package_display('INVOKE_REGION_WIN')
                         bpy.ops.view3d.popup_social_details('INVOKE_REGION_WIN')
                 else:
                     print("No valid VIEW3D context found for UI popups.")
-                return None  # Stop the timer
+                return None
 
             # Register the timer to delay UI calls.
             bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)

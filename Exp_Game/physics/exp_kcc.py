@@ -374,12 +374,12 @@ class KinematicCharacterController:
         • Cast 3 rays: feet (z=r), mid (z=h*0.5), head (z=h-r)
         • Move up to (nearest_hit - r)
         • Project XY velocity off blocking normal
-        • Slide only if approach angle to the wall normal is in [20°, 70°]
-            (not near-parallel to the wall and not head-on), and then advance
-            once along the tangent at half speed.
+        • Slide only if approach angle to the wall normal is in [20°, 85°]
         Returns: (new_pos, hit_normal or None)
 
-        DEV: parity emit for FWD (union) – gated by dev flags/rate limit. No gameplay changes.
+        NOTE: All DEV/XR parity sampling was removed from this hot path.
+            Use the external probe (queue_forward_sweep_min3_probe) AFTER
+            this function returns if you want XR parity at a low rate.
         """
         r = float(self.cfg.radius)
         h = float(self.cfg.height)
@@ -389,9 +389,9 @@ class KinematicCharacterController:
         # ---- primary forward rays (feet, mid, head) ----
         best_d = None
         best_n = None
-        best_origin = None  # DEV only
 
-        for z in (r, clamp(h * 0.5, r, h - r), h - r):
+        mid_z = clamp(h * 0.5, r, h - r)
+        for z in (r, mid_z, h - r):
             o = pos + Vector((0.0, 0.0, z))
             hit_loc, hit_n, _obj, d = self._raycast_any_norm(static_bvh, dynamic_map, o, fwd_norm, ray_len)
             if hit_loc is None:
@@ -399,30 +399,6 @@ class KinematicCharacterController:
             if best_d is None or d < best_d:
                 best_d = d
                 best_n = hit_n.normalized()
-                best_origin = o  # DEV only
-
-        # ---- DEV parity (does not affect physics) ----
-        try:
-            import bpy
-            from ..xr_systems.xr_ports.geom import parity_forward_both, _hud_set, _ok_to_print
-            if getattr(bpy.context.scene, "dev_geom_parity_enable", False):
-                if best_d is not None and best_n is not None and best_origin is not None:
-                    if _ok_to_print("_last_fwd_par", "dev_log_geom_hz", "dev_log_geom_console"):
-                        _hud_set("XR.parity.status", "SAMPLING", volatile=True)
-                        parity_forward_both(
-                            origin_world=(float(best_origin.x), float(best_origin.y), float(best_origin.z)),
-                            dir_world=(float(fwd_norm.x), float(fwd_norm.y), float(fwd_norm.z)),
-                            max_dist=float(ray_len),
-                            local_dist=float(best_d),
-                            local_normal=(float(best_n.x), float(best_n.y), float(best_n.z)),
-                        )
-                else:
-                    if _ok_to_print("_last_fwd_idle", "dev_log_geom_hz", "dev_log_geom_console"):
-                        print(f"[GEOM.XR][par] FWD(u) IDLE(no-fwd-hit) ray_len={ray_len:0.3f} m  step_len={step_len:0.3f} m  r={r:0.3f} m")
-                    _hud_set("XR.parity.status", "IDLE(no-fwd-hit)", volatile=True)
-        except Exception:
-            pass
-        # ---- END DEV parity ----
 
         # No block: full advance
         if best_d is None:
@@ -447,26 +423,23 @@ class KinematicCharacterController:
         if remaining <= (0.15 * r):
             return moved_pos, best_n
 
-        # Approach angle (to wall normal) gate: slide only if 20°..70°
-        #   θ = arccos(|fwd·n|) in degrees  (0° = head-on, 90° = parallel to wall)
+        # Approach angle (to wall normal)
         dot = abs(fwd_norm.dot(best_n))
         dot = max(0.0, min(1.0, float(dot)))
         from math import acos, degrees
         theta = degrees(acos(dot))
         if not (20.0 <= theta <= 85.0):
-            # too head-on (<20°) or too parallel (>70°): don't slide
             return moved_pos, best_n
 
         # Tangent direction to the blocking normal
         slide_dir = fwd_norm - best_n * fwd_norm.dot(best_n)
-        # On too-steep surfaces, slide only in XY
         if best_n.dot(_UP) < floor_cos:
             slide_dir = Vector((slide_dir.x, slide_dir.y, 0.0))
         if slide_dir.length <= 1.0e-12:
             return moved_pos, best_n
         slide_dir.normalize()
 
-        # Slow down while sliding (half advance and halve horizontal velocity)
+        # Slow down while sliding
         remaining *= 0.65
         self.vel.x *= 0.65
         self.vel.y *= 0.65
@@ -474,7 +447,7 @@ class KinematicCharacterController:
         # One slide attempt using the same 3-ray scheme
         ray_len2 = remaining + r
         best_d2 = None
-        for z in (r, clamp(h * 0.5, r, h - r), h - r):
+        for z in (r, mid_z, h - r):
             o2 = moved_pos + Vector((0.0, 0.0, z))
             h2, n2, _o, d2 = self._raycast_any_norm(static_bvh, dynamic_map, o2, slide_dir, ray_len2)
             if h2 is None:
@@ -490,6 +463,7 @@ class KinematicCharacterController:
             moved_pos = moved_pos + slide_dir * allow2
 
         return moved_pos, best_n
+
 
 
     # ---- Step-up ------------------------------------------------------------
@@ -832,7 +806,30 @@ class KinematicCharacterController:
                         continue  # go next sub-step
 
                 # (C) Minimal 3-ray forward sweep (feet/mid/head)
+                pos_before_probe = pos.copy()
+                vx_before, vy_before = float(self.vel.x), float(self.vel.y)
+
                 pos, _block_n = self._forward_sweep_min3(static_bvh, dynamic_map, pos, fwd_norm, step_len)
+
+                # Non-blocking XR mirror (hard-gated; parity only)
+                try:
+                    from ..xr_systems.xr_ports.kcc import queue_forward_sweep_min3_probe as _queue_fwd_sweep_probe
+                    _queue_fwd_sweep_probe(
+                        self,
+                        (float(pos_before_probe.x), float(pos_before_probe.y), float(pos_before_probe.z)),
+                        (float(pos.x),              float(pos.y),              float(pos.z)),
+                        (float(fwd_norm.x), float(fwd_norm.y), float(fwd_norm.z)),
+                        float(step_len),
+                        float(self.cfg.radius),
+                        float(self.cfg.height),
+                        float(self._floor_cos),
+                        (vx_before, vy_before),
+                        (float(self.vel.x), float(self.vel.y)),   # NEW: local post-sweep vel
+                    )
+                except Exception:
+                    pass
+
+
 
 
         # 8) Single DOWNWARD ray shared by both vertical penetration and snap

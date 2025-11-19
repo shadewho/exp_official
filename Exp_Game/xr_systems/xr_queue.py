@@ -39,6 +39,14 @@ def xr_enqueue(name: str, payload: dict, apply_cb=None) -> str:
     stats = getattr(_current["op"], "_xr_stats", None)
     if isinstance(stats, dict):
         stats["req"] = int(stats.get("req", 0)) + 1
+
+    try:
+        jobs = stats.setdefault("jobs", {})
+        rec  = jobs.setdefault(name, {"req": 0, "ok": 0, "fail": 0})
+        rec["req"] += 1
+    except Exception:
+        pass
+
     return job_id
 
 def xr_flush_frame(op) -> int:
@@ -82,6 +90,16 @@ def xr_flush_frame(op) -> int:
     _jobs.clear()
     _callbacks.clear()
     _current = None
+
+    # backlog metrics
+    try:
+        stats = getattr(op, "_xr_stats", None)
+        if isinstance(stats, dict):
+            pend_now = len(_pending_batches)
+            stats["pend_now"] = int(pend_now)
+            stats["pend_max"] = int(max(int(stats.get("pend_max", 0) or 0), pend_now))
+    except Exception:
+        pass
     return 0
 
 def xr_poll(op, max_loops: int = 64) -> int:
@@ -89,13 +107,26 @@ def xr_poll(op, max_loops: int = 64) -> int:
     Drain as many XR replies as are available right now (non-blocking),
     applying their callbacks. Hard-cap to avoid starvation.
     Returns number of callbacks run.
+
+    IMPORTANT:
+      • Updates stats['pend_now'] AFTER popping replies.
+      • Pushes a trace record for each reply so Δframes p95 is real.
     """
     xr = getattr(op, "_xr", None)
     if xr is None:
+        # keep backlog sane when XR is off
+        try:
+            stats = getattr(op, "_xr_stats", None)
+            if isinstance(stats, dict):
+                pn = len(_pending_batches)
+                stats["pend_now"] = int(pn)
+                stats["pend_max"] = int(max(int(stats.get("pend_max", 0) or 0), pn))
+        except Exception:
+            pass
         return 0
 
     applied = 0
-    loops = 0
+    loops   = 0
     HARD_CAP = max(8, int(max_loops or 64))
 
     while loops < HARD_CAP:
@@ -105,10 +136,8 @@ def xr_poll(op, max_loops: int = 64) -> int:
         except Exception:
             break
 
-        # Nothing more buffered right now → stop
         if not isinstance(resp, dict):
             break
-
         if resp.get("type") != "frame_cmds":
             continue
 
@@ -116,26 +145,66 @@ def xr_poll(op, max_loops: int = 64) -> int:
         pend = _pending_batches.pop(seq, None)
         now  = time.perf_counter()
 
-        # Update RTT/phase stats
         stats = getattr(op, "_xr_stats", None)
+        lat_ms = None
+        bl = xr_tick = None
+        phase_ms_val = None
+
         if isinstance(stats, dict):
+            # RTT / EMA / last_ok
             if pend is not None:
                 lat_ms = (now - float(pend.get("t_send", now))) * 1000.0
                 stats["last_lat_ms"] = float(lat_ms)
                 prev = float(stats.get("lat_ema_ms", 0.0))
                 stats["lat_ema_ms"] = lat_ms if prev == 0.0 else (prev * 0.85 + lat_ms * 0.15)
                 stats["last_ok_wall"] = now
+                if lat_ms <= 12.0:
+                    stats["sameframe_ok"] = int(stats.get("sameframe_ok", 0)) + 1
+                else:
+                    stats["nextframe_ok"]  = int(stats.get("nextframe_ok", 0)) + 1
+
+            # Phase (Blender step vs XR tick)
             try:
                 xr_tick = int(resp.get("tick", -1))
                 period  = float(resp.get("period", 1.0/30.0))
                 bl      = int(getattr(op, "_xr_bl_step", 0))
                 if xr_tick >= 0:
                     phase_frames = bl - xr_tick
-                    stats["phase_ms"] = float(phase_frames * period * 1000.0)
+                    phase_ms_val = float(phase_frames * period * 1000.0)
+                    stats["phase_frames"] = int(phase_frames)
+                    stats["phase_ms"]     = phase_ms_val
             except Exception:
                 pass
 
-        # Dispatch per-job callbacks with _frame_seq injected
+            # Runtime diagnostics bubble through
+            try:
+                diag = resp.get("diag", {})
+                if isinstance(diag, dict):
+                    if "proc_ms"    in diag: stats["proc_ms"]    = float(diag.get("proc_ms", 0.0) or 0.0)
+                    if "jobs_n"     in diag: stats["jobs_n"]     = int(diag.get("jobs_n", 0) or 0)
+                    if "jobs_ms"    in diag: stats["jobs_ms"]    = float(diag.get("jobs_ms", 0.0) or 0.0)
+                    if "job_max_ms" in diag: stats["job_max_ms"] = float(diag.get("job_max_ms", 0.0) or 0.0)
+            except Exception:
+                pass
+
+            # Refresh backlog AFTER popping
+            try:
+                pn = len(_pending_batches)
+                stats["pend_now"] = int(pn)
+                stats["pend_max"] = int(max(int(stats.get("pend_max", 0) or 0), pn))
+            except Exception:
+                pass
+
+        # >>> Push trace so HUD/health can compute Δframes p95 truthfully
+        try:
+            if (bl is not None) and (xr_tick is not None) and (xr_tick >= 0):
+                if lat_ms is None:
+                    lat_ms = float(stats.get("last_lat_ms", 0.0)) if isinstance(stats, dict) else 0.0
+                _push_trace(op, bl, xr_tick, float(lat_ms or 0.0), float(phase_ms_val or 0.0))
+        except Exception:
+            pass
+
+        # Dispatch per-job callbacks
         cbs = pend["callbacks"] if (pend and isinstance(pend.get("callbacks"), dict)) else {}
         for jr in resp.get("jobs", []):
             jid = jr.get("id")
@@ -150,7 +219,53 @@ def xr_poll(op, max_loops: int = 64) -> int:
                 except Exception:
                     pass
                 applied += 1
+
                 if isinstance(stats, dict):
                     stats["ok"] = int(stats.get("ok", 0)) + 1
+                    try:
+                        jname = jr.get("name", None) or jr.get("id", "")
+                        if not jname and isinstance(jid, str) and ":" in jid:
+                            jname = jid.split(":", 1)[0]
+                        if jname:
+                            jobs = stats.setdefault("jobs", {})
+                            rec  = jobs.setdefault(jname, {"req": 0, "ok": 0, "fail": 0})
+                            rec["ok"] += 1
+                    except Exception:
+                        pass
+
+    # Final backlog snapshot after draining
+    try:
+        stats = getattr(op, "_xr_stats", None)
+        if isinstance(stats, dict):
+            pn = len(_pending_batches)
+            stats["pend_now"] = int(pn)
+            stats["pend_max"] = int(max(int(stats.get("pend_max", 0) or 0), pn))
+    except Exception:
+        pass
 
     return applied
+
+
+
+def _push_trace(op, bl_step: int, xr_tick: int, lat_ms: float, phase_ms: float):
+    """Append one record to op._frame_trace so HUD/health can compute Δframes p95 truthfully."""
+    try:
+        rec = {
+            "wall": time.perf_counter(),
+            "step": int(bl_step),
+            "tick": int(xr_tick),
+            "status": "OK",
+            "rtt_ms": float(lat_ms),
+            "phase_ms": float(phase_ms),
+            "gate_ms": 0.0,
+        }
+        buf = getattr(op, "_frame_trace", None)
+        if not isinstance(buf, list):
+            buf = []
+            setattr(op, "_frame_trace", buf)
+        buf.append(rec)
+        if len(buf) > 200:
+            del buf[:len(buf) - 200]
+    except Exception:
+        pass
+

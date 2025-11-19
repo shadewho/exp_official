@@ -1,12 +1,62 @@
-#Exploratory/Exp_UI/panel.py
-
 import bpy
 from .auth.helpers import load_token
-from .interface.drawing.utilities import format_relative_time
-from .version_info import CURRENT_VERSION
-from .version_info import get_cached_latest_version
+from .version_info import CURRENT_VERSION, get_cached_latest_version
 from .main_config import PROFILE_URL
+# ─────────────────────────────────────────────────────────────
+# Explore / Log in/ Logout
+# ─────────────────────────────────────────────────────────────
+class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
+    bl_label = "Explore / Log In"
+    bl_idname = "VIEW3D_PT_explore_by_code"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
 
+    @classmethod
+    def poll(cls, context):
+        # Only show when the EXPLORE tab is active
+        return getattr(context.scene, "main_category", 'EXPLORE') == 'EXPLORE'
+
+    def draw(self, context):
+        layout = self.layout
+        token = load_token()
+
+        # — Top button (normal full-width, no box) —
+        if not token:
+            layout.operator("webapp.login", text="Log In", icon='URL')
+            layout.separator()
+            layout.label(text="Log in to explore user creations!", icon='INFO')
+            return
+        else:
+            layout.operator("webapp.logout", text="Log Out", icon='URL')
+            layout.separator()
+
+        layout.separator()
+
+        # Download Code (boxed) — REPLACE THIS WHOLE BLOCK
+        code_box = layout.box()
+        code_box.label(icon="INFO", text="Explore user creations below!")
+        code_box.label(icon="INFO", text="Download code required.")
+        code_box.separator()
+        code_box.label(text="Download Code:")
+
+        # Row 1: code field + Search (icon button)
+        row = code_box.split(factor=0.9, align=True)  # tweak factor to give the button more space
+        row.prop(context.scene, "download_code", text="")
+        btns = row.row(align=True)
+        btns.operator("webapp.show_detail_by_code", text="", icon='VIEWZOOM')  # Search
+
+        code_box.label(text="Or:")
+        # Row 2: full-width Paste & Search button (separate line, same box)
+        paste = code_box.column(align=True)
+        paste.operator("webapp.paste_and_search", text="Paste & Search", icon='PASTEDOWN')
+
+        code_box.separator()
+
+
+# ─────────────────────────────────────────────────────────────
+# Profile / Account — link only (no usage)
+# ─────────────────────────────────────────────────────────────
 class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
     bl_label = "Profile / Account"
     bl_idname = "VIEW3D_PT_profile_account"
@@ -15,222 +65,28 @@ class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
     bl_category = "Exploratory"
     bl_options = {'DEFAULT_CLOSED'}
 
-
     @classmethod
     def poll(cls, context):
-        return context.scene.main_category == 'EXPLORE'
+        # Keep this category gate if you use it elsewhere
+        return getattr(context.scene, "main_category", 'EXPLORE') == 'EXPLORE'
 
     def draw(self, context):
         layout = self.layout
-        scene  = context.scene
-
-        # 1) must be logged in
         token = load_token()
         if not token:
             layout.label(text="Please log in to access your account", icon='ERROR')
             return
 
-        # 2) safe to show profile link + usage
-        addon_data = scene.my_addon_data
-        username = getattr(addon_data, "username", "User")
-
-        # ——— Profile link ———
+        username = getattr(context.scene.my_addon_data, "username", "") or "Profile"
         row = layout.row(align=True)
         op = row.operator("webapp.open_url", text=username, icon='URL')
         op.url = PROFILE_URL
 
-        layout.separator()
-
-        # ——— Subscription Usage ———
-        tier = getattr(addon_data, "subscription_tier", "Tier 1")
-        used = int(getattr(addon_data, "downloads_used", 0))
-        limit = int(getattr(addon_data, "downloads_limit", 0))
-        scope = getattr(addon_data, "downloads_scope", "daily")  # "lifetime" or "daily"
-        uploads_used = int(getattr(addon_data, "uploads_used", 0))
-
-        layout.label(text=f"Plan: {tier}")
-
-        # Label text depends on scope
-        if scope == "lifetime":
-            layout.label(text=f"Lifetime Downloads: {used} / {limit}")
-        else:
-            layout.label(text=f"Daily Downloads: {used} / {limit}")
-
-        layout.label(text=f"Uploads: {uploads_used}")
-
-        remaining = max(0, limit - used)
-        if scope == "lifetime":
-            layout.label(text=f"Remaining Lifetime Downloads: {remaining}")
-        else:
-            layout.label(text=f"Remaining Daily Downloads: {remaining}")
-
-        # optional “refresh” button
-        layout.operator("webapp.refresh_usage", text="Refresh Usage", icon='FILE_REFRESH')
-
-class VIEW3D_PT_PackageDisplay_Login(bpy.types.Panel):
-    bl_label = "Login / Logout"
-    bl_idname = "VIEW3D_PT_package_display_login"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Exploratory"
-
-    @classmethod
-    def poll(cls, context):
-        return context.scene.main_category == 'EXPLORE'
-    def draw(self, context):
-        layout = self.layout
-        scene = context.scene
-        token = load_token()
-
-        if not token:
-            layout.label(text="Please log in:")
-            layout.operator("webapp.login", text="Login", icon='URL')
-        else:
-            layout.label(text="You are logged in!")
-            layout.operator("webapp.logout", text="Logout")
 
 
-class VIEW3D_PT_PackageDisplay_FilterAndScene(bpy.types.Panel):
-    bl_label = "Explore and Search"
-    bl_idname = "VIEW3D_PT_package_display_filter_scene"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Exploratory"
-
-    @classmethod
-    def poll(cls, context):
-        return context.scene.main_category == 'EXPLORE'
-
-    def draw(self, context):
-        layout = self.layout
-        scene = context.scene
-        token = load_token()
-
-        if not token:
-            layout.label(text="(Log in to access filters and scenes.)", icon='ERROR')
-            return
-
-        # Master buttons
-        row = layout.row()
-        op = row.operator("webapp.apply_filters_showui", text="Exploratory Interface", icon='RESTRICT_VIEW_OFF')
-        op.page_number = 1
-
-        row = layout.row()
-        row.operator("webapp.refresh_filters", text="Refresh Interface", icon='FILE_REFRESH')
-
-        layout.separator()
-        layout.separator()
-
-        # Filter UI header
-        row = layout.row()
-        row.alignment = 'CENTER'
-        row.label(text="-Filters-")
-
-        # 1) Item Type toggle buttons
-        row = layout.row(align=True)
-        row.prop(scene, "package_item_type", text="Item Type", expand=True)
-
-        # If the package type is 'event', display event-specific filters.
-        if scene.package_item_type == 'event':
-            layout.separator()
-            layout.prop(scene, "event_stage", text="Event Stage", expand=True)
-            layout.prop(scene, "selected_event", text="Event")
-        else:
-            # For non-event types, show sort and search controls.
-            layout.prop(scene, "package_sort_by", text="Sort By")
-            layout.prop(scene, "package_search_query", text="Search")
-
-        layout.separator()
-
-        # Scene "Find Item" UI
-        layout.label(text="Download Code:")
-        split = layout.split(factor=0.85)
-        split.prop(scene, "download_code", text="")  # Text field with no label.
-        split.operator("webapp.download_code", text="", icon='VIEWZOOM')
-
-
-
-
-
-class VIEW3D_PT_PackageDisplay_CurrentItem(bpy.types.Panel):
-    bl_label = "Current Item"
-    bl_idname = "VIEW3D_PT_package_display_current_item"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Exploratory"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.scene.main_category == 'EXPLORE'
-
-    def draw(self, context):
-        layout = self.layout
-        scene = context.scene
-        token = load_token()
-
-        if not token:
-            layout.label(text="(Log in to see item details.)", icon='ERROR')
-            return
-
-        addon_data = scene.my_addon_data
-
-        # Only show details if in DETAIL mode and we have a valid file_id
-        if scene.ui_current_mode == "DETAIL" and addon_data.file_id > 0:
-            # — Main Info Box (same order/feel as popup) —
-            box = layout.box()
-
-            # Title (more “title-like” icon)
-            box.label(text=f"Title: {addon_data.package_name}")
-            box.label(text=f"Description: {addon_data.description}")
-            box.label(text=f"Uploaded: {format_relative_time(addon_data.upload_date)} ago")
-            box.label(text=f"Downloads: {addon_data.download_count}", icon='IMPORT')
-
-            # Author (no "Author:" label; clickable with web icon if URL exists)
-            author_row = box.row(align=True)
-            if addon_data.profile_url:
-                op = author_row.operator("webapp.open_url", text=addon_data.author, icon='URL')
-                op.url = addon_data.profile_url
-            else:
-                author_row.label(text=addon_data.author)
-
-            # Action buttons — inside the box, left-aligned, widened
-            btn_row = box.row(align=True)
-            btn_row.alignment = 'LEFT'
-
-            like_group = btn_row.row(align=True)
-            like_group.scale_x = 1.8  # widen but not full-width
-            like_op = like_group.operator("webapp.like_package", text=f"♥ {addon_data.likes}")
-            like_op.skip_popup = True
-            # panel is persistent, so keep counts in sync just like popup
-            like_op.launched_from_persistent = True
-
-            if scene.package_item_type == 'event' and scene.event_stage == 'voting':
-                vote_group = btn_row.row(align=True)
-                vote_group.scale_x = 1.8
-                vote_op = vote_group.operator("webapp.vote_map", text="★ Vote")
-                vote_op.skip_popup = True
-
-            # Comments
-            box.separator()
-            box.label(text="Comments:", icon='COMMUNITY')
-
-            list_row = box.row()
-            list_row.template_list(
-                "EXPLORATORY_UL_Comments", "",
-                addon_data, "comments",
-                addon_data, "active_comment_index",
-                rows=5
-            )
-
-            entry = box.row(align=True)
-            entry.prop(scene, "comment_text", text="", emboss=True)
-            entry.operator("webapp.comment_package_inline", text="", icon='ADD')
-
-        else:
-            layout.label(text="No active item to display.", icon='INFO')
-
-
+# ─────────────────────────────────────────────────────────────
+# Settings & Update (unchanged except for imports)
+# ─────────────────────────────────────────────────────────────
 class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     bl_label = "Settings and Update"
     bl_idname = "VIEW3D_PT_settings_update"
@@ -238,10 +94,10 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Exploratory"
     bl_options = {'DEFAULT_CLOSED'}
-    
+
     @classmethod
     def poll(cls, context):
-        return context.scene.main_category == 'EXPLORE'
+        return getattr(context.scene, "main_category", 'EXPLORE') == 'EXPLORE'
 
     def draw(self, context):
         layout = self.layout
@@ -250,7 +106,7 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
         layout.operator("webapp.open_docs", text="Documentation", icon='HELP')
         layout.separator()
 
-        # Version info in its own box
+        # Version info
         ver_box = layout.box()
         ver_box.label(text="Add-on Version", icon='FILE_BLEND')
         ver_box.label(text=f"Current Exploratory Version: {CURRENT_VERSION}")
@@ -269,7 +125,7 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
 
         layout.separator()
 
-        # Audio controls (unchanged)…
+        # Audio controls (unchanged)
         box = layout.box()
         box.label(text="Audio", icon='SOUND')
         prefs = context.preferences.addons["Exploratory"].preferences
@@ -281,12 +137,10 @@ class VIEW3D_PT_SettingsAndUpdate(bpy.types.Panel):
 
         layout.separator()
 
-        # Adjust Persistent Settings box
+        # Persistent Settings
         prefs_box = layout.box()
         prefs_box.label(text="Adjust Persistent Settings", icon='PREFERENCES')
         prefs_box.operator("wm.open_addon_prefs", text="Open Add-on Preferences")
-
-        # Bullet list (using label with indentation for a bullet-like effect)
         prefs_box.label(text="• Change skins and audio")
         prefs_box.label(text="• Change performance settings")
         prefs_box.label(text="• Change key binds and sensitivity")

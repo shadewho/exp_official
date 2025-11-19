@@ -29,6 +29,7 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
         ("PROXY",  "Proxy Mesh & Spawn"),
         ("UPLOAD", "Upload Helper"),
         ("PHYS",   "Character Physics & View"),
+        ("DEV",    "Developer Tools"),
     ]
 
     def invoke(self, context, event):

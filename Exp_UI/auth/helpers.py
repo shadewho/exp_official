@@ -79,7 +79,7 @@ def token_expiry_check():
     return 60.0  # Check every 60 seconds
 
 
-
+###not used. left just in case i want to implement current usage or something
 def get_usage_data():
     token = load_token()
     if not token:
@@ -91,11 +91,3 @@ def get_usage_data():
     if not data.get("success"):
         raise Exception(data.get("message", "Failed to fetch usage data"))
     return data
-
-def auto_refresh_usage():
-    try:
-        bpy.ops.webapp.refresh_usage('INVOKE_DEFAULT')
-        print("Auto refresh usage operator called.")
-    except Exception as e:
-        print("Error auto refreshing usage:", e)
-    return None  # Returning None stops the timer

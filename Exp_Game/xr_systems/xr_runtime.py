@@ -110,15 +110,21 @@ def run_server(port: int):
                         _send(conn, {"ok": False, "error": "bad_json"})
                         continue
 
+                    t_in = time.perf_counter()
+                    t_proc_jobs = 0.0
+                    job_max_ms = 0.0
+
                     t = msg.get("type")
 
                     if t == "hello":
                         _send(conn, {"ok": True, "type": "hello_ack", "runtime": "XR", "version": 2})
+                        continue
 
-                    elif t == "ping":
+                    if t == "ping":
                         _send(conn, {"ok": True, "type": "pong", "tick": tick})
+                        continue
 
-                    elif t == "shutdown":
+                    if t == "shutdown":
                         _send(conn, {"ok": True, "type": "bye"})
                         alive = False
                         try: conn.shutdown(socket.SHUT_RDWR)
@@ -127,10 +133,10 @@ def run_server(port: int):
                         except Exception: pass
                         return
 
-                    elif t == "frame_input":
-                        sim_t    = msg.get("t", 0.0)
-                        frame_seq= msg.get("frame_seq", -1)
-                        jobs_req = msg.get("jobs", []) or []
+                    if t == "frame_input":
+                        sim_t     = msg.get("t", 0.0)
+                        frame_seq = msg.get("frame_seq", -1)
+                        jobs_req  = msg.get("jobs", []) or []
 
                         jobs_out = []
                         for j in jobs_req:
@@ -142,10 +148,21 @@ def run_server(port: int):
                                 if fn is None:
                                     jobs_out.append({"id": jid, "ok": False, "error": f"unknown_job:{name}"})
                                 else:
+                                    jt0 = time.perf_counter()
                                     res = fn(payload)
+                                    j_ms = (time.perf_counter() - jt0) * 1000.0
+                                    t_proc_jobs += j_ms
+                                    job_max_ms = j_ms if j_ms > job_max_ms else job_max_ms
                                     jobs_out.append({"id": jid, "ok": True, "result": res})
                             except Exception:
                                 jobs_out.append({"id": jid, "ok": False, "error": "exception"})
+
+                        diag = {
+                            "proc_ms": (time.perf_counter() - t_in) * 1000.0,
+                            "jobs_n": len(jobs_req),
+                            "jobs_ms": t_proc_jobs,
+                            "job_max_ms": job_max_ms,
+                        }
 
                         reply = {
                             "type": "frame_cmds",
@@ -156,13 +173,14 @@ def run_server(port: int):
                             "set": [
                                 {"kind": "text", "id": "hud_tip", "value": "XR alive — commands flowing"},
                             ],
+                            "diag": diag,
                             "jobs": jobs_out,
                         }
                         _send(conn, reply)
+                        continue
 
-
-                    else:
-                        _send(conn, {"ok": True, "type": "ack", "seen": t, "tick": tick})
+                    # default ACK
+                    _send(conn, {"ok": True, "type": "ack", "seen": t, "tick": tick})
             finally:
                 alive = False
                 try: conn.close()
@@ -172,6 +190,7 @@ def run_server(port: int):
         except Exception:
             traceback.print_exc()
             time.sleep(0.1)
+
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765

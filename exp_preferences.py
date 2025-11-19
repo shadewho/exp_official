@@ -13,6 +13,69 @@ def get_addon_path():
     return os.path.dirname(inspect.getfile(get_addon_path))
 
 # ------------------------------------------------------------------------
+# Utility: ----- Enum sentinel to avoid empty enums -----
+# ------------------------------------------------------------------------
+_ENUM_SENTINEL = "__NONE__"      # stable identifier
+_ENUM_SENTINEL_LABEL = "— Using Default —"
+
+def _ensure_enum_valid(self, prop_name: str, items_fn):
+    try:
+        cur = getattr(self, prop_name)
+    except Exception:
+        cur = None
+    try:
+        items = items_fn(self, bpy.context)  # <-- pass self
+    except Exception:
+        items = []
+    valid_ids = {i[0] for i in items} if items else {_ENUM_SENTINEL}
+    if cur not in valid_ids:
+        try:
+            setattr(self, prop_name, _ENUM_SENTINEL)
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------------------
+# Utility: ===== 5.0-safe enum helpers (no IDProperties on AddonPreferences) =====
+# ------------------------------------------------------------------------
+_ENUM_CACHE = {}
+
+def _enum_from_blend(path: str, list_fn):
+    """Return [(identifier, name, desc), ...] from a .blend, mtime-cached."""
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        mtime = 0.0
+    key = (path, list_fn.__name__, mtime)
+    cached = _ENUM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        raw = list_fn(path) or []   # your list_* already returns [(id,name,desc)]
+        items = [(t[0], t[1], (t[2] if len(t) > 2 else t[0])) for t in raw]
+    except Exception:
+        items = []
+    _ENUM_CACHE.clear()             # keep tiny; mtime invalidates anyway
+    _ENUM_CACHE[key] = items
+    return items
+
+def _tag_prefs_redraw(context):
+    """Ping UI to refresh enum lists after a path toggle."""
+    try:
+        for win in context.window_manager.windows:
+            scr = getattr(win, "screen", None)
+            if not scr:
+                continue
+            for area in scr.areas:
+                if area.type in {'PREFERENCES', 'VIEW_3D'}:
+                    area.tag_redraw()
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------------
 # Utility: List actions from a .blend
 # ------------------------------------------------------------------------
 def list_actions_in_blend(blend_path):
@@ -145,107 +208,40 @@ class EXPLORATORY_OT_SetKeybind(bpy.types.Operator):
 # ------------------------------------------------------------------------
 # 2) Update Callbacks (Actions)
 # ------------------------------------------------------------------------
-def update_idle_action_settings(self, context):
-    if self.idle_use_default_action:
-        self["idle_actions"] = []
-    else:
-        path = self.idle_custom_blend_action
-        act_list = list_actions_in_blend(path)
-        names_only = [a[0] for a in act_list]
-        self["idle_actions"] = names_only
+def update_idle_action_settings(self, context): _tag_prefs_redraw(context)
 
-def update_walk_action_settings(self, context):
-    if self.walk_use_default_action:
-        self["walk_actions"] = []
-    else:
-        path = self.walk_custom_blend_action
-        act_list = list_actions_in_blend(path)
-        names_only = [a[0] for a in act_list]
-        self["walk_actions"] = names_only
+def update_walk_action_settings(self, context): _tag_prefs_redraw(context)
 
-def update_run_action_settings(self, context):
-    if self.run_use_default_action:
-        self["run_actions"] = []
-    else:
-        path = self.run_custom_blend_action
-        act_list = list_actions_in_blend(path)
-        names_only = [a[0] for a in act_list]
-        self["run_actions"] = names_only
+def update_run_action_settings(self, context):  _tag_prefs_redraw(context)
 
-def update_jump_action_settings(self, context):
-    if self.jump_use_default_action:
-        self["jump_actions"] = []
-    else:
-        path = self.jump_custom_blend_action
-        act_list = list_actions_in_blend(path)
-        names_only = [a[0] for a in act_list]
-        self["jump_actions"] = names_only
+def update_jump_action_settings(self, context): _tag_prefs_redraw(context)
 
-def update_fall_action_settings(self, context):
-    if self.fall_use_default_action:
-        self["fall_actions"] = []
-    else:
-        path = self.fall_custom_blend_action
-        act_list = list_actions_in_blend(path)
-        names_only = [a[0] for a in act_list]
-        self["fall_actions"] = names_only
+def update_fall_action_settings(self, context): _tag_prefs_redraw(context)
 
-def update_land_action_settings(self, context):
-    if self.land_use_default_action:
-        self["land_actions"] = []
-    else:
-        path = self.land_custom_blend_action
-        act_list = list_actions_in_blend(path)
-        names_only = [a[0] for a in act_list]
-        self["land_actions"] = names_only
+def update_land_action_settings(self, context): _tag_prefs_redraw(context)
 
 # ------------------------------------------------------------------------
 # 2b) Update Callbacks (Sounds)
 # ------------------------------------------------------------------------
 def update_walk_sound_settings(self, context):
-    if self.walk_use_default_sound:
-        self["walk_sounds"] = []
-    else:
-        path = self.walk_custom_blend_sound
-        snd_list = list_sounds_in_blend(path)
-        names_only = [s[0] for s in snd_list]
-        self["walk_sounds"] = names_only
+    _tag_prefs_redraw(context)
+    _ensure_enum_valid(self, "walk_sound_enum_prop", self.walk_sound_items)
 
 def update_run_sound_settings(self, context):
-    if self.run_use_default_sound:
-        self["run_sounds"] = []
-    else:
-        path = self.run_custom_blend_sound
-        snd_list = list_sounds_in_blend(path)
-        names_only = [s[0] for s in snd_list]
-        self["run_sounds"] = names_only
+    _tag_prefs_redraw(context)
+    _ensure_enum_valid(self, "run_sound_enum_prop", self.run_sound_items)
 
 def update_jump_sound_settings(self, context):
-    if self.jump_use_default_sound:
-        self["jump_sounds"] = []
-    else:
-        path = self.jump_custom_blend_sound
-        snd_list = list_sounds_in_blend(path)
-        names_only = [s[0] for s in snd_list]
-        self["jump_sounds"] = names_only
+    _tag_prefs_redraw(context)
+    _ensure_enum_valid(self, "jump_sound_enum_prop", self.jump_sound_items)
 
 def update_fall_sound_settings(self, context):
-    if self.fall_use_default_sound:
-        self["fall_sounds"] = []
-    else:
-        path = self.fall_custom_blend_sound
-        snd_list = list_sounds_in_blend(path)
-        names_only = [s[0] for s in snd_list]
-        self["fall_sounds"] = names_only
+    _tag_prefs_redraw(context)
+    _ensure_enum_valid(self, "fall_sound_enum_prop", self.fall_sound_items)
 
 def update_land_sound_settings(self, context):
-    if self.land_use_default_sound:
-        self["land_sounds"] = []
-    else:
-        path = self.land_custom_blend_sound
-        snd_list = list_sounds_in_blend(path)
-        names_only = [s[0] for s in snd_list]
-        self["land_sounds"] = names_only
+    _tag_prefs_redraw(context)
+    _ensure_enum_valid(self, "land_sound_enum_prop", self.land_sound_items)
 
 # ------------------------------------------------------------------------
 # 3) The actual Addon Preferences
@@ -297,8 +293,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_idle_action_settings
     )
     def idle_action_items(self, context):
-        arr = self.get("idle_actions", [])
-        return [(n, n, f"Action: {n}") for n in arr]
+        return [] if self.idle_use_default_action else _enum_from_blend(self.idle_custom_blend_action, list_actions_in_blend)
     idle_action_enum_prop: bpy.props.EnumProperty(
         name="Idle Action",
         items=idle_action_items
@@ -335,8 +330,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_walk_action_settings
     )
     def walk_action_items(self, context):
-        arr = self.get("walk_actions", [])
-        return [(n, n, f"Action: {n}") for n in arr]
+        return [] if self.walk_use_default_action else _enum_from_blend(self.walk_custom_blend_action, list_actions_in_blend)
     walk_action_enum_prop: bpy.props.EnumProperty(
         name="Walk Action",
         items=walk_action_items
@@ -355,11 +349,17 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_walk_sound_settings
     )
     def walk_sound_items(self, context):
-        arr = self.get("walk_sounds", [])
-        return [(n, n, f"Sound: {n}") for n in arr]
+        if self.walk_use_default_sound:
+            # Only sentinel when using default
+            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
+        # Prepend sentinel to actual items
+        items = _enum_from_blend(self.walk_custom_blend_sound, list_sounds_in_blend)
+        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
+
     walk_sound_enum_prop: bpy.props.EnumProperty(
         name="Walk Sound",
-        items=walk_sound_items
+        items=walk_sound_items,
+        default=0
     )
 
     # ----------------------------------------------------------------
@@ -377,8 +377,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_run_action_settings
     )
     def run_action_items(self, context):
-        arr = self.get("run_actions", [])
-        return [(n, n, f"Action: {n}") for n in arr]
+        return [] if self.run_use_default_action else _enum_from_blend(self.run_custom_blend_action, list_actions_in_blend)
     run_action_enum_prop: bpy.props.EnumProperty(
         name="Run Action",
         items=run_action_items
@@ -396,11 +395,15 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_run_sound_settings
     )
     def run_sound_items(self, context):
-        arr = self.get("run_sounds", [])
-        return [(n, n, f"Sound: {n}") for n in arr]
+        if self.run_use_default_sound:
+            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
+        items = _enum_from_blend(self.run_custom_blend_sound, list_sounds_in_blend)
+        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
+
     run_sound_enum_prop: bpy.props.EnumProperty(
         name="Run Sound",
-        items=run_sound_items
+        items=run_sound_items,
+        default=0
     )
 
     # ----------------------------------------------------------------
@@ -418,8 +421,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_jump_action_settings
     )
     def jump_action_items(self, context):
-        arr = self.get("jump_actions", [])
-        return [(n, n, f"Action: {n}") for n in arr]
+        return [] if self.jump_use_default_action else _enum_from_blend(self.jump_custom_blend_action, list_actions_in_blend)
     jump_action_enum_prop: bpy.props.EnumProperty(
         name="Jump Action",
         items=jump_action_items
@@ -437,11 +439,15 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_jump_sound_settings
     )
     def jump_sound_items(self, context):
-        arr = self.get("jump_sounds", [])
-        return [(n, n, f"Sound: {n}") for n in arr]
+        if self.jump_use_default_sound:
+            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
+        items = _enum_from_blend(self.jump_custom_blend_sound, list_sounds_in_blend)
+        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
+
     jump_sound_enum_prop: bpy.props.EnumProperty(
         name="Jump Sound",
-        items=jump_sound_items
+        items=jump_sound_items,
+        default=0
     )
 
     # ----------------------------------------------------------------
@@ -459,8 +465,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_fall_action_settings
     )
     def fall_action_items(self, context):
-        arr = self.get("fall_actions", [])
-        return [(n, n, f"Action: {n}") for n in arr]
+        return [] if self.fall_use_default_action else _enum_from_blend(self.fall_custom_blend_action, list_actions_in_blend)
     fall_action_enum_prop: bpy.props.EnumProperty(
         name="Fall Action",
         items=fall_action_items
@@ -478,12 +483,17 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_fall_sound_settings
     )
     def fall_sound_items(self, context):
-        arr = self.get("fall_sounds", [])
-        return [(n, n, f"Sound: {n}") for n in arr]
+        if self.fall_use_default_sound:
+            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
+        items = _enum_from_blend(self.fall_custom_blend_sound, list_sounds_in_blend)
+        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
+
     fall_sound_enum_prop: bpy.props.EnumProperty(
         name="Fall Sound",
-        items=fall_sound_items
+        items=fall_sound_items,
+        default=0
     )
+
 
     # ----------------------------------------------------------------
     # (H) Land => separate booleans for Action vs Sound
@@ -500,8 +510,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_land_action_settings
     )
     def land_action_items(self, context):
-        arr = self.get("land_actions", [])
-        return [(n, n, f"Action: {n}") for n in arr]
+        return [] if self.land_use_default_action else _enum_from_blend(self.land_custom_blend_action, list_actions_in_blend)
     land_action_enum_prop: bpy.props.EnumProperty(
         name="Land Action",
         items=land_action_items
@@ -519,11 +528,15 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         update=update_land_sound_settings
     )
     def land_sound_items(self, context):
-        arr = self.get("land_sounds", [])
-        return [(n, n, f"Sound: {n}") for n in arr]
+        if self.land_use_default_sound:
+            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
+        items = _enum_from_blend(self.land_custom_blend_sound, list_sounds_in_blend)
+        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
+
     land_sound_enum_prop: bpy.props.EnumProperty(
         name="Land Sound",
-        items=land_sound_items
+        items=land_sound_items,
+        default=0
     )
     # ----------------------------------------------------------------
     # (I) Performance
