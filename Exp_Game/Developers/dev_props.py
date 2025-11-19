@@ -15,6 +15,7 @@ _PROP_NAMES = [
     "dev_log_physics_console","dev_log_physics_hz",
     "dev_log_geom_console","dev_log_geom_hz",
     "dev_log_xr_health_console","dev_log_xr_health_hz","dev_log_xr_health_oneline",
+    "dev_log_forward_sweep_min3_console",
     # XR consolidated + legacy sub-sections
     "dev_xr_modal_general",
     # XR.Geom sub-sections
@@ -64,12 +65,15 @@ def ensure_scene_props():
     add("dev_log_geom_console",   bpy.props.BoolProperty(name="Log XR.Geom", default=False))
     add("dev_log_geom_hz",        bpy.props.FloatProperty(name="XR.Geom Log Hz", default=1.0, min=0.1, max=60.0))
 
+    add("dev_log_forward_sweep_min3_console", bpy.props.BoolProperty(name="Log forward_sweep_min3", default=False))
+    add("dev_log_forward_sweep_min3_hz", bpy.props.FloatProperty(name="forward_sweep_min3 Log Hz", default=1.0, min=0.1, max=60.0))
+
     "dev_xr_sync_kmax_frames","dev_xr_overwhelm_backlog_max","dev_xr_overwhelm_rttp95_ms",
     "dev_xr_softsync_enable","dev_xr_softsync_budget_ms",
 
 
 
-    # >>> NEW: XR Health dedicated channel
+    # XR Health dedicated channel
     add("dev_log_xr_health_console", bpy.props.BoolProperty(name="Log XR Health", default=True))
     add("dev_log_xr_health_hz",      bpy.props.FloatProperty(name="XR Health Log Hz", default=2.0, min=0.1, max=60.0))
     add("dev_log_xr_health_oneline", bpy.props.BoolProperty(name="XR Health One-line", default=True))
@@ -87,11 +91,6 @@ def ensure_scene_props():
     add("dev_xr_geom_parity",    bpy.props.BoolProperty(name="Parity", default=True))
     add("dev_xr_geom_rates",     bpy.props.BoolProperty(name="Query rates", default=False))
     add("dev_xr_geom_dump",      bpy.props.BoolProperty(name="Raw XR.* dump", default=False))
-
-    # DEV
-    add("dev_geom_parity_enable",  bpy.props.BoolProperty(name="XR.Geom Parity (DEV)", default=False))
-    add("dev_geom_parity_samples", bpy.props.IntProperty(name="Parity Rays / step", default=4, min=1, max=16))
-    add("dev_geom_down_dyn_auth",  bpy.props.BoolProperty(name="XR DOWN dynamic authority", default=False))
     
 
 

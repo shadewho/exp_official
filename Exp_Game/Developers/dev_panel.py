@@ -2,6 +2,8 @@ from __future__ import annotations
 import bpy
 from bpy.types import Panel
 from .dev_props import ensure_scene_props
+
+
 def _is_create_panel_enabled(scene, key: str) -> bool:
     flags = getattr(scene, "create_panels_filter", None)
     # If the property doesn't exist yet, default to visible.
@@ -22,23 +24,43 @@ class EXP_DEV_PT_HUD(Panel):
 
     @classmethod
     def poll(cls, context):
-        return (context.scene.main_category == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'DEV'))
-    
+        return (
+            context.scene.main_category == 'CREATE'
+            and _is_create_panel_enabled(context.scene, 'DEV')
+        )
+
     def draw(self, context):
         ensure_scene_props()
         s = context.scene
-        col = self.layout.column(align=True)
+        layout = self.layout
 
-        # Core
-        col.prop(s, "dev_hud_enable")
-        r = col.row(align=True); r.prop(s, "dev_hud_position"); r.prop(s, "dev_hud_scale")
-        col.prop(s, "dev_hud_graphs")
-        col.prop(s, "dev_hud_max_samples")
+        # --------------------------------------------------
+        # HUD CORE
+        # --------------------------------------------------
+        col = layout.column(align=True)
+        col.label(text="HUD:")
+        col.prop(s, "dev_hud_enable", text="Enable HUD")
 
-        # Categories
-        col.separator(); col.label(text="Categories:")
-        g = col.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=True)
+        row = col.row(align=True)
+        row.prop(s, "dev_hud_position", text="Position")
+        row.prop(s, "dev_hud_scale", text="Scale")
+
+        col.prop(s, "dev_hud_graphs", text="Show Graphs")
+        col.prop(s, "dev_hud_max_samples", text="Samples")
+
+        # --------------------------------------------------
+        # CATEGORIES (TOP-LEVEL ON/OFF)
+        # --------------------------------------------------
+        col.separator()
+        col.label(text="Categories:")
+
+        g = col.grid_flow(
+            row_major=True,
+            columns=3,
+            even_columns=True,
+            even_rows=True,
+            align=True,
+        )
         g.prop(s, "dev_hud_show_xr",      text="XR (core)")
         g.prop(s, "dev_hud_show_world",   text="World")
         g.prop(s, "dev_hud_show_physics", text="Physics")
@@ -46,13 +68,22 @@ class EXP_DEV_PT_HUD(Panel):
         g.prop(s, "dev_hud_show_view",    text="View")
         g.prop(s, "dev_hud_show_geom",    text="XR.Geom")
 
-        # XR consolidated
-        box = col.box(); box.label(text="General XR and Modal (LEFT):")
+        # --------------------------------------------------
+        # XR SECTIONS
+        # --------------------------------------------------
+        box = col.box()
+        box.label(text="General XR and Modal (LEFT):")
         box.prop(s, "dev_xr_modal_general", text="Enable")
 
-        # XR.Geom
-        box = col.box(); box.label(text="XR.Geom (sub-sections):")
-        gg = box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=True)
+        box = col.box()
+        box.label(text="XR.Geom (sub-sections):")
+        gg = box.grid_flow(
+            row_major=True,
+            columns=3,
+            even_columns=True,
+            even_rows=True,
+            align=True,
+        )
         gg.prop(s, "dev_xr_geom_mode_auth", text="(1) Mode/Auth")
         gg.prop(s, "dev_xr_geom_static",    text="(2) Static")
         gg.prop(s, "dev_xr_geom_dynamic",   text="(3) Dynamic")
@@ -63,24 +94,48 @@ class EXP_DEV_PT_HUD(Panel):
         gg.prop(s, "dev_xr_geom_rates",     text="(8) Rates")
         gg.prop(s, "dev_xr_geom_dump",      text="(9) Raw dump")
 
-        # Console logging
-        col.separator(); col.label(text="Console logging (master + channels):")
-        r = col.row(align=True); r.prop(s, "dev_hud_log_console", text="Master Console On/Off")
-        r = col.row(align=True); r.prop(s, "dev_log_xr_console");   r.prop(s, "dev_log_xr_hz")
-        r = col.row(align=True); r.prop(s, "dev_log_view_console"); r.prop(s, "dev_log_view_hz")
-        r = col.row(align=True); r.prop(s, "dev_log_kcc_console");  r.prop(s, "dev_log_kcc_hz")
-        r = col.row(align=True); r.prop(s, "dev_log_physics_console"); r.prop(s, "dev_log_physics_hz")
-        r = col.row(align=True); r.prop(s, "dev_log_geom_console"); r.prop(s, "dev_log_geom_hz")
-
-        # DEV parity / authority
+        # --------------------------------------------------
+        # CONSOLE LOGGING
+        # --------------------------------------------------
         col.separator()
-        b = col.box(); b.label(text="Parity (DEV):")
-        r = b.row(align=True); r.prop(s, "dev_geom_parity_enable", text="Enable XR.Geom Parity"); r.prop(s, "dev_geom_parity_samples", text="Rays / step")
-        b = col.box(); b.label(text="Authority (DEV):"); b.prop(s, "dev_geom_down_dyn_auth", text="DOWN: XR dynamic authority")
+        col.label(text="Console logging:")
 
+        row = col.row(align=True)
+        row.prop(s, "dev_hud_log_console", text="Master Console On/Off")
+
+        row = col.row(align=True)
+        row.prop(s, "dev_log_xr_console", text="XR Core")
+        row.prop(s, "dev_log_xr_hz", text="Hz")
+
+        row = col.row(align=True)
+        row.prop(s, "dev_log_view_console", text="View")
+        row.prop(s, "dev_log_view_hz", text="Hz")
+
+        row = col.row(align=True)
+        row.prop(s, "dev_log_kcc_console", text="KCC")
+        row.prop(s, "dev_log_kcc_hz", text="Hz")
+
+        row = col.row(align=True)
+        row.prop(s, "dev_log_physics_console", text="Physics")
+        row.prop(s, "dev_log_physics_hz", text="Hz")
+
+        row = col.row(align=True)
+        row.prop(s, "dev_log_geom_console", text="XR.Geom")
+        row.prop(s, "dev_log_geom_hz", text="Hz")
+
+        row = col.row(align=True)
+        row.prop(s, "dev_log_forward_sweep_min3_console", text="forward_sweep_min3")
+        row.prop(s, "dev_log_forward_sweep_min3_hz", text="Hz")
+
+        # XR health channel (kept, because it's already wired to console)
+        row = col.row(align=True)
+        row.prop(s, "dev_log_xr_health_console", text="XR Health")
+        row.prop(s, "dev_log_xr_health_hz", text="Hz")
+        col.prop(s, "dev_log_xr_health_oneline", text="XR Health One-line")
 
 
 _CLASSES = (EXP_DEV_PT_HUD,)
+
 
 def register():
     ensure_scene_props()
@@ -89,6 +144,7 @@ def register():
             bpy.utils.register_class(C)
         except Exception:
             pass
+
 
 def unregister():
     for C in reversed(_CLASSES):

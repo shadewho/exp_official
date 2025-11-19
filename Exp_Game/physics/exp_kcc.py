@@ -374,12 +374,10 @@ class KinematicCharacterController:
         • Cast 3 rays: feet (z=r), mid (z=h*0.5), head (z=h-r)
         • Move up to (nearest_hit - r)
         • Project XY velocity off blocking normal
-        • Slide only if approach angle to the wall normal is in [20°, 85°]
+        • Slide only if approach angle to the wall normal is in [20°, 70°]
+            (not near-parallel to the wall and not head-on), and then advance
+            once along the tangent at half speed.
         Returns: (new_pos, hit_normal or None)
-
-        NOTE: All DEV/XR parity sampling was removed from this hot path.
-            Use the external probe (queue_forward_sweep_min3_probe) AFTER
-            this function returns if you want XR parity at a low rate.
         """
         r = float(self.cfg.radius)
         h = float(self.cfg.height)
@@ -389,9 +387,7 @@ class KinematicCharacterController:
         # ---- primary forward rays (feet, mid, head) ----
         best_d = None
         best_n = None
-
-        mid_z = clamp(h * 0.5, r, h - r)
-        for z in (r, mid_z, h - r):
+        for z in (r, clamp(h * 0.5, r, h - r), h - r):
             o = pos + Vector((0.0, 0.0, z))
             hit_loc, hit_n, _obj, d = self._raycast_any_norm(static_bvh, dynamic_map, o, fwd_norm, ray_len)
             if hit_loc is None:
@@ -423,23 +419,27 @@ class KinematicCharacterController:
         if remaining <= (0.15 * r):
             return moved_pos, best_n
 
-        # Approach angle (to wall normal)
+        # Approach angle (to wall normal) gate: slide only if 20°..70°
+        #   θ = arccos(|fwd·n|) in degrees  (0° = head-on, 90° = parallel to wall)
         dot = abs(fwd_norm.dot(best_n))
+        # clamp for numeric stability
         dot = max(0.0, min(1.0, float(dot)))
         from math import acos, degrees
         theta = degrees(acos(dot))
         if not (20.0 <= theta <= 85.0):
+            # too head-on (<20°) or too parallel (>70°): don't slide
             return moved_pos, best_n
 
         # Tangent direction to the blocking normal
         slide_dir = fwd_norm - best_n * fwd_norm.dot(best_n)
+        # On too-steep surfaces, slide only in XY
         if best_n.dot(_UP) < floor_cos:
             slide_dir = Vector((slide_dir.x, slide_dir.y, 0.0))
         if slide_dir.length <= 1.0e-12:
             return moved_pos, best_n
         slide_dir.normalize()
 
-        # Slow down while sliding
+        # Slow down while sliding (half advance and halve horizontal velocity)
         remaining *= 0.65
         self.vel.x *= 0.65
         self.vel.y *= 0.65
@@ -447,7 +447,7 @@ class KinematicCharacterController:
         # One slide attempt using the same 3-ray scheme
         ray_len2 = remaining + r
         best_d2 = None
-        for z in (r, mid_z, h - r):
+        for z in (r, clamp(h * 0.5, r, h - r), h - r):
             o2 = moved_pos + Vector((0.0, 0.0, z))
             h2, n2, _o, d2 = self._raycast_any_norm(static_bvh, dynamic_map, o2, slide_dir, ray_len2)
             if h2 is None:
@@ -806,29 +806,7 @@ class KinematicCharacterController:
                         continue  # go next sub-step
 
                 # (C) Minimal 3-ray forward sweep (feet/mid/head)
-                pos_before_probe = pos.copy()
-                vx_before, vy_before = float(self.vel.x), float(self.vel.y)
-
                 pos, _block_n = self._forward_sweep_min3(static_bvh, dynamic_map, pos, fwd_norm, step_len)
-
-                # Non-blocking XR mirror (hard-gated; parity only)
-                try:
-                    from ..xr_systems.xr_ports.kcc import queue_forward_sweep_min3_probe as _queue_fwd_sweep_probe
-                    _queue_fwd_sweep_probe(
-                        self,
-                        (float(pos_before_probe.x), float(pos_before_probe.y), float(pos_before_probe.z)),
-                        (float(pos.x),              float(pos.y),              float(pos.z)),
-                        (float(fwd_norm.x), float(fwd_norm.y), float(fwd_norm.z)),
-                        float(step_len),
-                        float(self.cfg.radius),
-                        float(self.cfg.height),
-                        float(self._floor_cos),
-                        (vx_before, vy_before),
-                        (float(self.vel.x), float(self.vel.y)),   # NEW: local post-sweep vel
-                    )
-                except Exception:
-                    pass
-
 
 
 

@@ -1,8 +1,6 @@
 # Exp_Game/xr_systems/xr_jobs/geom_dynamic.py
 # Stores LOCAL triangles per mover and caches transforms + inverses for parity/query jobs.
 
-import time
-
 # Per-mover local-space triangles and latest transform.
 # id:int -> {"tris":[float], "n_tris":int,
 #            "M":[16], "M3":[9], "Minv":[16], "Minv3":[9], "MinvT3":[9]}
