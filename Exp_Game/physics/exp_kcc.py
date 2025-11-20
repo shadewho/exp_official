@@ -88,121 +88,55 @@ class KinematicCharacterController:
     # --------------------
     # Input & helpers
     # --------------------
-    def _accelerate(self, cur_xy: Vector, wish_dir_xy: Vector, target_speed: float, accel: float, dt: float) -> Vector:
-        """
-        XR-only horizontal acceleration blend (no local fallback).
-        Queues kcc.accel_xy.v1 and uses only the last XR result.
-        If XR hasn't replied yet this step, we keep cur_xy unchanged.
-        """
-        try:
-            from ..xr_systems.xr_ports.kcc import queue_accel_xy
-            queue_accel_xy(
-                self,
-                float(cur_xy.x), float(cur_xy.y),
-                float(wish_dir_xy.x), float(wish_dir_xy.y),
-                float(target_speed), float(accel), float(dt)
-            )
-        except Exception:
-            # No fallback by design.
-            pass
-
-        xy = getattr(self, "_xr_accel_xy", None)
-        if isinstance(xy, (tuple, list)) and len(xy) == 2:
-            return Vector((float(xy[0]), float(xy[1])))
-
-        # No XR answer yet → keep current velocity (no local compute).
-        return Vector((cur_xy.x, cur_xy.y))
-
 
     def _input_vector(self, keys_pressed, prefs, camera_yaw):
-        """
-        XR-driven input:
-          • Enqueue XR job to compute wish XY (intent + yaw + steep-slope clamp).
-          • Return ONLY the last XR-provided XY (no local compute / no fallback).
-            If XR hasn't replied yet, returns (0,0).
-        """
-        # Intent from keys (edge cases: both pressed => cancel on that axis)
-        dx = 0.0; dy = 0.0
-        if prefs.key_forward  in keys_pressed: dy += 1.0
-        if prefs.key_backward in keys_pressed: dy -= 1.0
-        if prefs.key_right    in keys_pressed: dx += 1.0
-        if prefs.key_left     in keys_pressed: dx -= 1.0
+        fwd_key  = prefs.key_forward
+        back_key = prefs.key_backward
+        left_key = prefs.key_left
+        right_key= prefs.key_right
+        run_key  = prefs.key_run
 
-        # Enqueue XR compute for NEXT frame (non-blocking)
-        try:
-            from ..xr_systems.xr_ports.kcc import queue_move_xy
-            g = self.ground_norm if self.ground_norm is not None else self._up
-            queue_move_xy(
-                self,
-                float(dx), float(dy), float(camera_yaw),
-                bool(self.on_ground),
-                (float(g.x), float(g.y), float(g.z)),
-                float(self._floor_cos),
-            )
-        except Exception:
-            # We DO NOT compute locally if XR errors; we simply have no update.
-            pass
+        x = 0.0; y = 0.0
+        if fwd_key in keys_pressed:   y += 1.0
+        if back_key in keys_pressed:  y -= 1.0
+        if right_key in keys_pressed: x += 1.0
+        if left_key in keys_pressed:  x -= 1.0
 
-        # Use ONLY the XR result (no legacy path). If not yet available, zero.
-        try:
-            from mathutils import Vector
-        except Exception:
-            # Should never happen inside Blender; defensive.
-            class _V(tuple):
-                @property
-                def x(self): return self[0]
-                @property
-                def y(self): return self[1]
-            Vector = lambda xy: _V((float(xy[0]), float(xy[1])))
-
-        xy_tup = getattr(self, "_xr_wish_xy", None)
-        if not (isinstance(xy_tup, (tuple, list)) and len(xy_tup) == 2):
-            xy_vec = Vector((0.0, 0.0))
+        # Camera-plane intent (no terrain-induced yaw)
+        v_len2 = x*x + y*y
+        if v_len2 > 1.0e-12:
+            inv_len = 1.0 / math.sqrt(v_len2)
+            vx = x * inv_len
+            vy = y * inv_len
         else:
-            xy_vec = Vector((float(xy_tup[0]), float(xy_tup[1])))
-            # Keep normalized-ish
-            l2 = xy_vec.x * xy_vec.x + xy_vec.y * xy_vec.y
-            if l2 > 1.0 + 1.0e-6:
-                try:
-                    xy_vec.normalize()
-                except Exception:
-                    pass
+            vx = vy = 0.0
 
-        return xy_vec, (prefs.key_run in keys_pressed)
-    
+        # Rotate by camera yaw about Z
+        Rz = mathutils.Matrix.Rotation(camera_yaw, 4, 'Z')
+        world3 = Rz @ Vector((vx, vy, 0.0))
+        xy_len2 = world3.x * world3.x + world3.y * world3.y
+        if xy_len2 > 1.0e-12:
+            inv_xy = 1.0 / math.sqrt(xy_len2)
+            xy = Vector((world3.x * inv_xy, world3.y * inv_xy))
+        else:
+            xy = Vector((0.0, 0.0))
 
-    def _emit_phys_line(self):
-        """Physics summary line. Obeys master console toggle + Physics channel Hz."""
-        import time as _t, math, bpy
-        scn = getattr(getattr(bpy, "context", None), "scene", None)
+        # Steep-slope uphill removal when standing on non-walkable
+        if self.on_ground and self.ground_norm is not None and not self._slope_ok(self.ground_norm):
+            v3 = Vector((xy.x, xy.y, 0.0))
+            v3 = remove_steep_slope_component(v3, self.ground_norm, max_slope_dot=self._floor_cos)
+            xy = Vector((v3.x, v3.y))
 
-        # Master gate + per-channel gate
-        if not (scn and getattr(scn, "dev_hud_log_console", True)):
-            return
-        if not getattr(scn, "dev_log_physics_console", False):
-            return
+        return xy, (run_key in keys_pressed)
 
-        hz = float(getattr(scn, "dev_log_physics_hz", 2.0) or 2.0)
-        hz = max(0.1, hz)
+    def _accelerate(self, cur_xy: Vector, wish_dir_xy: Vector, target_speed: float, accel: float, dt: float) -> Vector:
+        desired = Vector((wish_dir_xy.x * target_speed, wish_dir_xy.y * target_speed))
+        t = clamp(accel * dt, 0.0, 1.0)
+        return cur_xy.lerp(desired, t)
 
-        last = float(getattr(self, "_last_phys_emit", 0.0) or 0.0)
-        now  = _t.perf_counter()
-        if (now - last) < (1.0 / hz):
-            return
-        self._last_phys_emit = now
-
-        da = getattr(self, "_down_auth_last", {}) or {}
-        src    = str(da.get("src", "—"))
-        dist   = da.get("dist", float("nan"))
-        lat_ms = da.get("lat_ms", None)
-        obj    = getattr(self.ground_obj, "name", "—") if getattr(self, "ground_obj", None) else "—"
-        n_up   = float(self.ground_norm.dot(self._up)) if getattr(self, "ground_norm", None) is not None else 1.0
-        dist_txt = f"{float(dist):0.3f}" if isinstance(dist, (int, float)) and math.isfinite(dist) else "nan"
-        lat_txt  = f"{float(lat_ms):0.2f} ms" if isinstance(lat_ms, (int, float)) else "—"
-
-        print(f"[PHYS.XR] down={src} dist={dist_txt} m obj={obj} n·up={n_up:0.3f} lat={lat_txt}")
-
-
+    def _slope_ok(self, n: Vector) -> bool:
+        # Exact comparison to your configured limit (no eps tweaks)
+        return math.degrees(_UP.angle(n)) <= self.cfg.slope_limit_deg
 
     # ---- Fast geometric prefilters / rays ----------------------------------
 
@@ -252,120 +186,40 @@ class KinematicCharacterController:
         return best if best[0] is not None else (None, None, None, None)
 
     def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float):
-        """
-        XR-ONLY DOWNWARD ray — consume XR 'both' result (STATIC+DYNAMIC+UNION).
-        No Blender BVH rays. No fallback.
+        """Single downward probe used for both penetration resolve and snap."""
+        best = (None, None, None, 1e9)
+        d = Vector((0.0, 0.0, -1.0))
+        start = origin + Vector((0.0, 0.0, 1.0))  # guard above head
 
-        Returns: (loc, normal, obj_or_None, dist)
-        """
-        from mathutils import Vector
-        import time as _ti
+        if static_bvh:
+            hit = static_bvh.ray_cast(start, d, max_dist + 1.0)
+            if hit and hit[0] is not None:
+                dist = (origin - hit[0]).length
+                best = (hit[0], hit[1], None, dist)
 
-        d      = Vector((0.0, 0.0, -1.0))
-        guard  = 1.0
-        start  = origin + Vector((0.0, 0.0, guard))
-        now    = _ti.perf_counter()
+        if dynamic_map:
+            pf_pad = float(self.cfg.radius) + 0.05
+            ring2_extra = (pf_pad * pf_pad)
+            seg_top = start.z
+            seg_bot = start.z - (max_dist + 1.0)
 
-        # snapshot for PHYS/HUD
-        self._down_auth_last = {"src": "—", "dist": float("nan"), "reason": "—",
-                                "lat_ms": None, "stat": None, "dyn": None}
+            for obj, (bvh_like, rad) in dynamic_map.items():
+                c = obj.matrix_world.translation
+                dx = c.x - start.x
+                dy = c.y - start.y
+                ring = float(rad) + pf_pad
+                if (dx*dx + dy*dy) > (ring * ring + ring2_extra):
+                    continue
+                if (c.z + float(rad) + pf_pad) < seg_bot or (c.z - float(rad) - pf_pad) > seg_top:
+                    continue
 
-        xrb = getattr(self, "_xr_down_both", None)
-        pick = None
-        reason = "no_reply"
-        lat_ms = None
-        src_label = "—"
-        stat_mm = dyn_mm = delta_mm = None
-        dyn_obj = None
-        did = None
+                hit = bvh_like.ray_cast(start, d, max_dist + 1.0)
+                if hit and hit[0] is not None:
+                    dist = (origin - hit[0]).length
+                    if dist < best[3]:
+                        best = (hit[0], hit[1], obj, dist)
 
-        if isinstance(xrb, dict) and float(xrb.get("t", 0.0)) > 0.0:
-            age_ms = (now - float(xrb["t"])) * 1000.0
-            if age_ms <= 120.0 and bool(xrb.get("hit", False)):
-                raw   = float(xrb.get("raw", 0.0))          # from 'start'
-                g     = float(xrb.get("guard", guard))
-                sx,sy,sz = xrb.get("start", (float(start.x), float(start.y), float(start.z)))
-                loc   = Vector((float(sx), float(sy), float(sz))) + d * raw
-                nx,ny,nz = xrb.get("normal", (0.0,0.0,1.0))
-                try:  nvec = Vector((float(nx), float(ny), float(nz))).normalized()
-                except Exception: nvec = Vector((0.0,0.0,1.0))
-                dist  = max(0.0, raw - g)
-
-                src_label = "XR-STATIC" if str(xrb.get("src","")).upper()=="STATIC" else "XR-DYN"
-
-                if src_label == "XR-DYN":
-                    did = xrb.get("id", None)
-                    try:
-                        from ..xr_systems.xr_ports.geom import dyn_obj_from_id, _hud_set as _hud
-                        dyn_obj = dyn_obj_from_id(did) if did is not None else None
-                        _hud("XR.auth.down.did", int(did) if did is not None else -1, volatile=True)
-                        _hud("XR.auth.down.obj", getattr(dyn_obj, "name", "—") if dyn_obj else "—", volatile=True)
-                    except Exception:
-                        dyn_obj = None
-
-                # XR-side reference numbers (both branches), cosmetic only
-                try:
-                    st = xrb.get("stat", {"hit": False})
-                    dy = xrb.get("dyn",  {"hit": False})
-                    if st.get("hit", False):
-                        stat_mm = max(0.0, float(st.get("raw", 0.0)) - g) * 1000.0
-                    if dy.get("hit", False):
-                        dyn_mm  = max(0.0, float(dy.get("raw", 0.0)) - g) * 1000.0
-                    if stat_mm is not None and dyn_mm is not None:
-                        delta_mm = abs(stat_mm - dyn_mm)
-                except Exception:
-                    pass
-
-                pick   = (loc, nvec, dyn_obj, float(dist))
-                lat_ms = float(xrb.get("lat_ms", 0.0))
-                reason = "OK"
-            else:
-                reason = "stale" if age_ms > 120.0 else "miss"
-
-        # HUD + compact proof
-        try:
-            from ..xr_systems.xr_ports.geom import _hud_set as _hud, _ok_to_print as _okprint
-            if pick is not None:
-                _hud("XR.auth.down.src", src_label, volatile=True)
-                _hud("XR.auth.down.pick", f"{pick[3]:0.3f} m", volatile=True)
-                if delta_mm is not None:
-                    _hud("XR.auth.down.delta_mm", float(round(delta_mm, 2)), volatile=True)
-                if lat_ms is not None:
-                    _hud("XR.auth.down.lat_ms", float(round(lat_ms, 2)), volatile=True)
-
-                if _okprint("_last_down_auth", "dev_log_geom_hz", "dev_log_geom_console"):
-                    sm = "—" if stat_mm is None else f"{stat_mm:0.2f}"
-                    dm = "—" if dyn_mm  is None else f"{dyn_mm:0.2f}"
-                    de = "—" if delta_mm is None else f"{delta_mm:0.2f}"
-                    lm = "—" if lat_ms is None else f"{lat_ms:0.2f}"
-                    did_txt = f" did={did}" if (src_label=="XR-DYN") else ""
-                    obj_txt = f" obj={getattr(dyn_obj,'name','—')}" if (src_label=="XR-DYN") else ""
-                    print(f"[DOWN.AUTH] src={src_label} pick={pick[3]:0.3f} m  Δxr={de} mm  stat={sm} mm  dyn={dm} mm  net={lm} ms  reason={reason}{did_txt}{obj_txt}")
-
-                self._down_auth_last = {
-                    "src": src_label, "dist": float(pick[3]), "reason": reason,
-                    "lat_ms": (float(lat_ms) if lat_ms is not None else None),
-                    "stat": (float(stat_mm) / 1000.0 if stat_mm is not None else None),
-                    "dyn":  (float(dyn_mm)  / 1000.0 if dyn_mm  is not None else None),
-                }
-            else:
-                _hud("XR.auth.down.src", "—", volatile=True)
-                _hud("XR.auth.down.pick", "—", volatile=True)
-                _hud("XR.auth.down.lat_ms", None, volatile=True)
-        except Exception:
-            pass
-
-        # enqueue NEXT XR BOTH job (non-blocking)
-        try:
-            from ..xr_systems.xr_ports.geom import queue_down_both
-            queue_down_both(self, (float(start.x), float(start.y), float(start.z)),
-                            float(max_dist + guard), float(guard))
-        except Exception:
-            pass
-
-        return pick if (pick and pick[0] is not None) else (None, None, None, None)
-
-
+        return best if best[0] is not None else (None, None, None, None)
 
     def _forward_sweep_min3(self, static_bvh, dynamic_map, pos: Vector,
                             fwd_norm: Vector, step_len: float):
@@ -463,8 +317,6 @@ class KinematicCharacterController:
             moved_pos = moved_pos + slide_dir * allow2
 
         return moved_pos, best_n
-
-
 
     # ---- Step-up ------------------------------------------------------------
 
@@ -752,19 +604,11 @@ class KinematicCharacterController:
         # 7) Horizontal move (minimal 3-ray sweep + step-up + slide)
         hvel = Vector((self.vel.x + carry.x, self.vel.y + carry.y, 0.0))
 
-        # Clamp uphill component on too-steep when grounded — XR ONLY (no local compute)
+        # Clamp uphill component on too-steep when grounded (exact compare kept)
         if self.on_ground and self.ground_norm is not None and not self.on_walkable:
-            try:
-                from ..xr_systems.xr_ports.kcc import queue_clamp_xy
-                g = self.ground_norm
-                queue_clamp_xy(self, float(hvel.x), float(hvel.y),
-                               (float(g.x), float(g.y), float(g.z)),
-                               float(floor_cos))
-            except Exception:
-                pass
-            xy = getattr(self, "_xr_clamp_xy", None)
-            if isinstance(xy, (tuple, list)) and len(xy) == 2:
-                hvel = Vector((float(xy[0]), float(xy[1]), 0.0))
+            hv3 = remove_steep_slope_component(Vector((hvel.x, hvel.y, 0.0)),
+                                               self.ground_norm, max_slope_dot=floor_cos)
+            hvel = Vector((hv3.x, hv3.y, 0.0))
 
         dz = self.vel.z * dt
         hvel_len2 = hvel.x*hvel.x + hvel.y*hvel.y
@@ -809,7 +653,6 @@ class KinematicCharacterController:
                 pos, _block_n = self._forward_sweep_min3(static_bvh, dynamic_map, pos, fwd_norm, step_len)
 
 
-
         # 8) Single DOWNWARD ray shared by both vertical penetration and snap
         #    (We intentionally reuse the same probe result for grounding.)
         down_max = cfg.snap_down if dz >= 0.0 else max(cfg.snap_down, -dz)
@@ -851,11 +694,6 @@ class KinematicCharacterController:
         if abs(rot.z - self.obj.rotation_euler.z) > 0.0:
             self.obj.rotation_euler = rot
 
-        # DEV console summary (non-intrusive)
-        try:
-            self._emit_phys_line()
-        except Exception:
-            pass
     # ---- Jumping ------------------------------------------------------------
 
     def request_jump(self):

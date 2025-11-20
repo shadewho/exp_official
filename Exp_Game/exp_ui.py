@@ -28,8 +28,8 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
         ("CHAR",   "Character / Actions / Audio"),
         ("PROXY",  "Proxy Mesh & Spawn"),
         ("UPLOAD", "Upload Helper"),
+        ("PERF",   "Performance"),
         ("PHYS",   "Character Physics & View"),
-        ("DEV",    "Developer Tools"),
     ]
 
     def invoke(self, context, event):
@@ -483,6 +483,18 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene  = context.scene
+        # ─── Live Performance ─────────────────────────
+        top = layout.column(align=True)
+        row = top.row(align=True)
+        row.prop(
+            scene,
+            "show_live_performance_overlay",
+            text="Show Live Performance",
+            icon='HIDE_OFF'
+        )
+        if scene.show_live_performance_overlay:
+            top.prop(scene, "live_perf_scale", text="Scale")
+        layout.separator()
 
         # ─── Culling ─────────────────────────
         layout.label(text="Cull Distance Entries")
@@ -625,43 +637,3 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "jump_speed")
         row.prop(p, "coyote_time")
         col.prop(p, "jump_buffer")
-
-        # View / Camera
-        box = layout.box()
-        col = box.column(align=True)
-        col.label(text="View / Camera", icon='HIDE_OFF')
-        col.prop(scene, "view_projection", text="Projection")
-        col.prop(scene, "view_mode", text="View Mode")
-
-        # NEW: always-visible view controls
-        col.prop(scene, "viewport_lens_mm", text="Viewport Lens (mm)")
-        col.prop(scene, "orbit_distance", text="Orbit Distance")
-        col.prop(scene, "zoom_factor", text="Zoom Factor")
-
-        if scene.view_mode == 'LOCKED':
-            col.prop(scene, "view_locked_yaw")
-            col.prop(scene, "view_locked_pitch")
-            col.prop(scene, "view_locked_distance")
-
-            # Axis lock + flip
-            if hasattr(scene, "view_locked_move_axis"):
-                col.prop(scene, "view_locked_move_axis", text="Axis Lock (Movement)")
-                row = col.row(align=True)
-                row.enabled = (getattr(scene, "view_locked_move_axis", 'OFF') != 'OFF')
-                row.prop(scene, "view_locked_flip_axis", text="Flip Axis Direction (180°)")
-
-
-        row = col.row(align=True)
-        row.enabled = (scene.view_mode == 'THIRD')
-        row.prop(scene, "view_obstruction_enabled", text="Enable View Obstruction")
-
-        # --- FIRST PERSON: choose the FPV bone & invert option ---
-        if scene.view_mode == 'FIRST':
-            arm = getattr(scene, "target_armature", None)
-            row = col.row(align=True)
-            if arm and arm.type == 'ARMATURE':
-                row.prop_search(scene, "fpv_view_bone", arm.data, "bones", text="FPV Target Bone")
-            else:
-                row.enabled = False
-                row.label(text="FPV Target Bone: — (set Target Armature)")
-            col.prop(scene, "fpv_invert_pitch", text="Invert FPV Pitch")

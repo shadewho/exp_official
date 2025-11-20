@@ -2,6 +2,7 @@
 import bpy
 import math
 import time
+
 from ..physics.exp_raycastutils import create_bvh_tree
 from ..startup_and_reset.exp_spawn import spawn_user
 from .exp_view_helpers import (_update_axis_resolution_on_release, _resolved_move_keys, _axis_of_key,
@@ -184,12 +185,6 @@ class ExpModal(bpy.types.Operator):
             self.grounded_platform = None
 
     _initial_game_state = {}
-
-
-
-    # XR  worker
-    _frame_seq: int = 0
-    _cam_allowed_last: float = 3.0
 
 
     #loop initialization
@@ -399,9 +394,6 @@ class ExpModal(bpy.types.Operator):
         else:
             self.bvh_tree = None
 
-        # Keep the exact static mesh list for XR one-time static snapshot
-        self._static_meshes = list(all_static_meshes) if all_static_meshes else []
-
 
         #define dynamic platforms (vertical movement)
         self.platform_prev_positions = {}
@@ -557,15 +549,6 @@ class ExpModal(bpy.types.Operator):
             # Register the timer to delay UI calls.
             bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)
     
-        #----------------------------
-        # XR / loop shutdown
-        #----------------------------
-        if self._loop:
-            try:
-                self._loop.shutdown()  # shuts down XR inside
-            except Exception:
-                pass
-
     # ---------------------------
     # Update / Logic Methods
     # ---------------------------

@@ -203,11 +203,11 @@ def add_scene_properties():
             ("CHAR",   "Character / Actions / Audio", "Character, actions, and audio panel"),
             ("PROXY",  "Proxy Mesh & Spawn",          "Proxy mesh list and spawn settings"),
             ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
+            ("PERF",   "Performance",                 "Live performance + culling tools"),
             ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
-            ("DEV",    "Developer HUD ",             "Developer Tools"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PHYS', 'DEV'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS'}
     )
 
     #---proxy mesh --#
@@ -286,6 +286,20 @@ def add_scene_properties():
         ],
         default='OFF'
     )
+
+    # Toggle: Live Performance Overlay (drawn in the 3D Viewport)
+    bpy.types.Scene.show_live_performance_overlay = bpy.props.BoolProperty(
+        name="Live Performance Overlay",
+        description="Show a live performance meter in the viewport while playing",
+        default=False
+    )
+    # Live Performance HUD tuning
+    bpy.types.Scene.live_perf_scale = bpy.props.IntProperty(
+        name="HUD Scale",
+        description="Smaller values make the single-row HUD less intrusive",
+        default=2, min=1, max=4
+    )
+
     # LOCKED + Axis: optional 180° facing flip
     bpy.types.Scene.view_locked_flip_axis = bpy.props.BoolProperty(
         name="Flip Axis Direction (180°)",

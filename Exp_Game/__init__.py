@@ -2,6 +2,7 @@
 
 # ##### BEGIN GPL LICENSE BLOCK #####
 #
+
 #  This program is free software; you can redistribute it and/or
 #  modify it under the terms of the GNU General Public License
 #  as published by the Free Software Foundation; either version 2
@@ -63,6 +64,7 @@ from .interactions.exp_interactions import (
     EXPLORATORY_OT_CreateReactionAndLink,
     EXPLORATORY_OT_DuplicateInteraction, 
 )
+
 from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties, EXPLORATORY_OT_DuplicateGlobalReaction
 from .systems.exp_objectives import (
     register_objective_properties,
@@ -81,7 +83,6 @@ from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
 from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
 
 from .reactions.exp_action_keys import ActionKeyItemPG, register_action_key_properties, unregister_action_key_properties
-from .Developers.exp_dev_interface import register as register_dev_interface, unregister as unregister_dev_interface
 
 def register():
     # --- Mobility / Mesh Visibility PGs (must be registered before ReactionDefinition) ---
@@ -172,11 +173,8 @@ def register():
 
     register_upload_helper()
 
-    register_dev_interface()
-
     
 def unregister():
-    unregister_dev_interface()
     remove_scene_properties()
     unregister_interaction_properties()
     unregister_objective_properties()

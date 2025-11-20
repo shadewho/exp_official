@@ -23,7 +23,6 @@ def run_locked_view(modal_op, context, steps: int) -> None:
     dyn_map    = getattr(modal_op, "dynamic_bvh_map", None)
     v_lin_map  = getattr(modal_op, "platform_linear_velocity_map", {}) or {}
     v_ang_map  = getattr(modal_op, "platform_ang_velocity_map", {}) or {}
-    xr_client  = getattr(modal_op, "_xr", None)
 
     # 1) Keep only A/D; drop W/S
     keys = set(_resolved_move_keys(modal_op))
@@ -45,7 +44,6 @@ def run_locked_view(modal_op, context, steps: int) -> None:
             dynamic_map=dyn_map,
             platform_linear_velocity_map=v_lin_map,
             platform_ang_velocity_map=v_ang_map,
-            xr_client=xr_client,
         )
         modal_op.z_velocity        = pc.vel.z
         modal_op.is_grounded       = pc.on_ground

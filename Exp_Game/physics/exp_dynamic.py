@@ -5,12 +5,12 @@ from .exp_bvh_local import LocalBVH
 def update_dynamic_meshes(modal_op):
     """
     Distance-gated dynamic proxies with minimal depsgraph traffic:
-      • Distance gate BEFORE evaluated_get().
-      • ACTIVE movers: LocalBVH cache (Blender) + XR dynamic init (once) + XR xforms each frame.
-      • Outputs include dynamic_bvh_map and per-mover velocities as before.
-      • NEW (M2.verify): counts active movers + gate toggles; updates DevHUD.
+      • Distance gate runs BEFORE any evaluated_get().
+      • Active movers only: contribute LocalBVH + velocities/ω.
+      • Caches: LocalBVH per object and a bounding-sphere radius.
+      • Adds small hysteresis around register_distance to avoid flapping.
+      • Reuses dicts (no per-tick reallocation).
     """
-
     scene = bpy.context.scene
 
     # --- Caches / state (create once) ---
@@ -24,15 +24,6 @@ def update_dynamic_meshes(modal_op):
         modal_op.platform_prev_matrices = {}
     if not hasattr(modal_op, "_cached_dyn_radius"):
         modal_op._cached_dyn_radius = {}
-
-    if not hasattr(modal_op, "_xr_geom_gate_switches"):
-        modal_op._xr_geom_gate_switches = 0
-
-    try:
-        from ..xr_systems.xr_ports import geom as _geom_port
-        _geom_port._ensure_dyn_maps(modal_op)
-    except Exception:
-        _geom_port = None
 
     # --- Outputs (reuse dicts to avoid churn) ---
     if not hasattr(modal_op, "dynamic_bvh_map"):
@@ -77,10 +68,6 @@ def update_dynamic_meshes(modal_op):
     if getattr(modal_op, "target_object", None):
         player_loc = modal_op.target_object.matrix_world.translation
 
-    xr_batch = []
-    active_count = 0
-    gate_toggles_this_frame = 0
-
     for pm in scene.proxy_meshes:
         dyn_obj = pm.mesh_object
         if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
@@ -95,57 +82,39 @@ def update_dynamic_meshes(modal_op):
         if pm.register_distance > 0.0 and player_loc is not None:
             base = float(pm.register_distance)
             margin = base * 0.10
-            threshold = (base + margin) if (prev_active is True) else max(0.0, base - margin)
+            if prev_active is True:
+                threshold = base + margin
+            elif prev_active is False:
+                threshold = max(0.0, base - margin)
+            else:
+                threshold = base
+            # squared compare (avoid sqrt)
             d2 = (cur_pos_quick - player_loc).length_squared
             active = (d2 <= (threshold * threshold))
 
+        # Remember state transitions (no console prints in production path)
         if prev_active is None or prev_active != active:
             modal_op._dyn_active_state[dyn_obj] = active
-            gate_toggles_this_frame += 1
 
         if not active:
-            # Maintain previous pose cheaply
+            # Keep “previous” pose updated cheaply, then skip heavy work
             modal_op.platform_prev_positions[dyn_obj] = cur_pos_quick.copy()
             modal_op.platform_prev_matrices[dyn_obj] = cur_M_quick.copy()
             continue
 
-        active_count += 1
-
         # -------- 2) ACTIVE path ----------
         cur_M = cur_M_quick.copy()
 
-        # Blender LocalBVH cache for gameplay (unchanged authority)
+        # Build or fetch LocalBVH once (rigid motion => no rebuilds)
         lbvh = modal_op.cached_local_bvhs.get(dyn_obj)
         if lbvh is None:
             lbvh = LocalBVH(dyn_obj)
             modal_op.cached_local_bvhs[dyn_obj] = lbvh
+
+        # NEW: cache inverse transforms once this frame
         lbvh.update_xform(cur_M)
 
-        # XR dynamic init (LOCAL triangles once)
-        if _geom_port and (dyn_obj not in modal_op._xr_dyn_inited):
-            try:
-                did = _geom_port.ensure_dyn_id(modal_op, dyn_obj)
-                _geom_port.init_dynamic_single(modal_op, dyn_obj, did)
-            except Exception:
-                pass
-
-        # Accumulate xform (row-major 4x4)
-        if _geom_port:
-            M = cur_M
-            M16 = [float(M[0][0]), float(M[0][1]), float(M[0][2]), float(M[0][3]),
-                   float(M[1][0]), float(M[1][1]), float(M[1][2]), float(M[1][3]),
-                   float(M[2][0]), float(M[2][1]), float(M[2][2]), float(M[2][3]),
-                   float(M[3][0]), float(M[3][1]), float(M[3][2]), float(M[3][3])]
-            try:
-                did = modal_op._xr_dyn_id_map[dyn_obj]
-                xr_batch.append((did, M16))
-            except Exception:
-                try:
-                    _geom_port.ensure_dyn_id(modal_op, dyn_obj)
-                except Exception:
-                    pass
-
-        # --- your existing velocity & delta calc (unchanged) ---
+        # Compute & cache a conservative world-space radius referenced at the OBJECT ORIGIN.
         if dyn_obj not in modal_op._cached_dyn_radius:
             bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
             center_world = sum(bbox_world, mathutils.Vector()) / 8.0
@@ -157,6 +126,7 @@ def update_dynamic_meshes(modal_op):
         rad = modal_op._cached_dyn_radius.get(dyn_obj, 0.0)
         modal_op.dynamic_bvh_map[dyn_obj] = (lbvh, rad)
 
+        # Linear motion / velocity
         prev_pos = modal_op.platform_prev_positions.get(dyn_obj)
         cur_pos  = cur_M.translation.copy()
         if prev_pos is not None:
@@ -165,6 +135,7 @@ def update_dynamic_meshes(modal_op):
             modal_op.platform_linear_velocity_map[dyn_obj] = disp / frame_dt
         modal_op.platform_prev_positions[dyn_obj] = cur_pos
 
+        # Angular motion / ω (rad/s)
         prev_M = modal_op.platform_prev_matrices.get(dyn_obj, cur_M.copy())
         delta_M = cur_M @ prev_M.inverted()
         R = delta_M.to_3x3(); R.normalize()
@@ -179,22 +150,3 @@ def update_dynamic_meshes(modal_op):
             axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
         omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
         modal_op.platform_ang_velocity_map[dyn_obj] = omega
-
-    # --- Send XR xforms batch (non-blocking) ---
-    if xr_batch and _geom_port:
-        try:
-            _geom_port.update_xforms_batch(modal_op, xr_batch)
-        except Exception:
-            pass
-
-    # --- NEW: push per-frame counters to HUD ---
-    try:
-        from ..Developers.exp_dev_interface import devhud_set
-        devhud_set("XR.geom.active", int(active_count), volatile=True)
-        if gate_toggles_this_frame > 0:
-            modal_op._xr_geom_gate_switches += int(gate_toggles_this_frame)
-        devhud_set("XR.geom.gate_switches", int(getattr(modal_op, "_xr_geom_gate_switches", 0) or 0), volatile=True)
-    except Exception:
-        pass
-
-
