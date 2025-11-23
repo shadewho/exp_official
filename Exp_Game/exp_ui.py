@@ -30,6 +30,7 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
         ("UPLOAD", "Upload Helper"),
         ("PERF",   "Performance"),
         ("PHYS",   "Character Physics & View"),
+        ("DEV",    "Developer Tools"),
     ]
 
     def invoke(self, context, event):
@@ -483,19 +484,6 @@ class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene  = context.scene
-        # ─── Live Performance ─────────────────────────
-        top = layout.column(align=True)
-        row = top.row(align=True)
-        row.prop(
-            scene,
-            "show_live_performance_overlay",
-            text="Show Live Performance",
-            icon='HIDE_OFF'
-        )
-        if scene.show_live_performance_overlay:
-            top.prop(scene, "live_perf_scale", text="Scale")
-        layout.separator()
-
         # ─── Culling ─────────────────────────
         layout.label(text="Cull Distance Entries")
         self._draw_entry_list(layout, scene)

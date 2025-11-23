@@ -162,8 +162,10 @@ def register_objective_properties():
     bpy.types.Scene.objectives_index = bpy.props.IntProperty(default=0)
 
 def unregister_objective_properties():
-    del bpy.types.Scene.objectives
-    del bpy.types.Scene.objectives_index
+    if hasattr(bpy.types.Scene, 'objectives'):
+        del bpy.types.Scene.objectives
+    if hasattr(bpy.types.Scene, 'objectives_index'):
+        del bpy.types.Scene.objectives_index
     bpy.utils.unregister_class(ObjectiveDefinition)
     bpy.utils.unregister_class(EXPLORATORY_OT_AddObjective)
     bpy.utils.unregister_class(EXPLORATORY_OT_RemoveObjective)

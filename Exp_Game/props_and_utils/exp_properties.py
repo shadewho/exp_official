@@ -205,9 +205,10 @@ def add_scene_properties():
             ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
             ("PERF",   "Performance",                 "Live performance + culling tools"),
             ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
+            ("DEV",    "Developer Tools",             "Debug toggles and diagnostic tools"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'DEV'}
     )
 
     #---proxy mesh --#
@@ -285,19 +286,6 @@ def add_scene_properties():
             ('Y',   "Global Y (A⇄D)", "Left/Right move strictly along ±Y"),
         ],
         default='OFF'
-    )
-
-    # Toggle: Live Performance Overlay (drawn in the 3D Viewport)
-    bpy.types.Scene.show_live_performance_overlay = bpy.props.BoolProperty(
-        name="Live Performance Overlay",
-        description="Show a live performance meter in the viewport while playing",
-        default=False
-    )
-    # Live Performance HUD tuning
-    bpy.types.Scene.live_perf_scale = bpy.props.IntProperty(
-        name="HUD Scale",
-        description="Smaller values make the single-row HUD less intrusive",
-        default=2, min=1, max=4
     )
 
     # LOCKED + Axis: optional 180° facing flip
@@ -396,18 +384,33 @@ class CharacterActionsPG(bpy.types.PropertyGroup):
     )
 
 def remove_scene_properties():
-    del bpy.types.Scene.target_armature
-    del bpy.types.Scene.spawn_object
-    del bpy.types.Scene.orbit_distance
-    del bpy.types.Scene.zoom_factor
-    del bpy.types.Scene.pitch_angle
+    # Safe property deletion with hasattr checks
+    if hasattr(bpy.types.Scene, 'target_armature'):
+        del bpy.types.Scene.target_armature
+    if hasattr(bpy.types.Scene, 'spawn_object'):
+        del bpy.types.Scene.spawn_object
+    if hasattr(bpy.types.Scene, 'orbit_distance'):
+        del bpy.types.Scene.orbit_distance
+    if hasattr(bpy.types.Scene, 'zoom_factor'):
+        del bpy.types.Scene.zoom_factor
+    if hasattr(bpy.types.Scene, 'pitch_angle'):
+        del bpy.types.Scene.pitch_angle
 
-    del bpy.types.Scene.proxy_meshes
-    del bpy.types.Scene.proxy_meshes_index
-    del bpy.types.Scene.create_panels_filter
-    del bpy.types.Scene.view_mode
-    del bpy.types.Scene.view_locked_pitch
-    del bpy.types.Scene.view_locked_yaw
-    del bpy.types.Scene.view_locked_distance
-    del bpy.types.Scene.view_projection
-    del bpy.types.Scene.view_locked_move_axis
+    if hasattr(bpy.types.Scene, 'proxy_meshes'):
+        del bpy.types.Scene.proxy_meshes
+    if hasattr(bpy.types.Scene, 'proxy_meshes_index'):
+        del bpy.types.Scene.proxy_meshes_index
+    if hasattr(bpy.types.Scene, 'create_panels_filter'):
+        del bpy.types.Scene.create_panels_filter
+    if hasattr(bpy.types.Scene, 'view_mode'):
+        del bpy.types.Scene.view_mode
+    if hasattr(bpy.types.Scene, 'view_locked_pitch'):
+        del bpy.types.Scene.view_locked_pitch
+    if hasattr(bpy.types.Scene, 'view_locked_yaw'):
+        del bpy.types.Scene.view_locked_yaw
+    if hasattr(bpy.types.Scene, 'view_locked_distance'):
+        del bpy.types.Scene.view_locked_distance
+    if hasattr(bpy.types.Scene, 'view_projection'):
+        del bpy.types.Scene.view_projection
+    if hasattr(bpy.types.Scene, 'view_locked_move_axis'):
+        del bpy.types.Scene.view_locked_move_axis

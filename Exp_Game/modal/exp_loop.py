@@ -1,18 +1,15 @@
 #Exp_Game/modal/exp_loop.py
 
-from ..systems.exp_live_performance import (
-    perf_frame_begin, perf_mark, perf_frame_end
-)
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time
 from ..animations.exp_custom_animations import update_all_custom_managers
 from ..animations.exp_animations import nla_is_locked
 from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_tasks
 from ..reactions.exp_transforms import update_transform_tasks
-from ..systems.exp_performance import update_performance_culling, apply_cull_thread_result
-from ..physics.exp_dynamic import update_dynamic_meshes
+from ..systems.exp_performance import update_performance_culling, apply_cull_result
+from ..physics.exp_dynamic import update_dynamic_meshes, apply_dynamic_activation_result
 from ..physics.exp_view import update_camera_for_operator
-from ..interactions.exp_interactions import check_interactions
+from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result
 from ..reactions.exp_custom_ui import update_text_reactions
 from ..audio.exp_globals import update_sound_tasks
 from ..audio.exp_audio import get_global_audio_state_manager
@@ -37,14 +34,9 @@ class GameLoop:
         """
         op = self.op
 
-        # ---- START FRAME (for live perf overlay) ----
-        perf_frame_begin(op)
-
         # A) Timebases (scaled + wall clock)
-        t0 = perf_mark(op, 'time')
         op.update_time()        # scaled per-frame dt (UI / interpolation)
         _ = update_real_time()  # wall-clock (kept for diagnostics/overlays)
-        perf_mark(op, 'time', t0)
 
         # B) Decide how many 30 Hz physics steps are due (bounded catch-up)
         steps = op._physics_steps_due()
@@ -55,11 +47,10 @@ class GameLoop:
             dt_sim = op.physics_dt * float(op.time_scale)
             agg_dt = dt_sim * steps
 
-            # Advance SIM time by the actual amount we’ll simulate this frame
+            # Advance SIM time by the actual amount we'll simulate this frame
             tick_sim_time(agg_dt)
 
             # B1) Custom/scripted tasks (SIM-timed): cheap → step-per-step
-            t0 = perf_mark(op, 'custom_tasks')
             for _ in range(steps):
                 # >>> guard: skip NLA custom managers while reset/start wipes <<<
                 if not nla_is_locked():
@@ -67,26 +58,18 @@ class GameLoop:
                 update_transform_tasks()
                 update_property_tasks()
                 update_projectile_tasks(dt_sim)
-                update_hitscan_tasks()  
-            perf_mark(op, 'custom_tasks', t0)
+                update_hitscan_tasks()
 
             # B2) Dynamic proxies + platform v/ω (heavy): once per frame
-            t0 = perf_mark(op, 'dynamic_meshes')
             update_dynamic_meshes(op)
-            perf_mark(op, 'dynamic_meshes', t0)
 
             # B3) Distance-based culling (has its own throttling): once
-            t0 = perf_mark(op, 'culling')
             update_performance_culling(op, context)
-            perf_mark(op, 'culling', t0)
 
-            # poll threaded results once per frame (apply cull batches)
-            t0 = perf_mark(op, 'threads_poll')
-            self._poll_and_apply_thread_results()
-            perf_mark(op, 'threads_poll', t0)
+            # B3.5) Poll multiprocessing engine results (includes culling + other jobs)
+            self._poll_and_apply_engine_results()
 
             # B4) Animations & audio: once with aggregated dt
-            t0 = perf_mark(op, 'anim_audio')
             # >>> guard: skip character animation update while reset/start wipes <<<
             if not nla_is_locked() and op.animation_manager:
                 op.animation_manager.update(
@@ -97,7 +80,6 @@ class GameLoop:
                     audio_state_mgr = get_global_audio_state_manager()
                     audio_state_mgr.update_audio_state(cur_state)
                     self._last_anim_state = cur_state
-            perf_mark(op, 'anim_audio', t0)
 
         # C) Input gating based on game mobility flags (unchanged)
         mg = context.scene.mobility_game
@@ -110,25 +92,16 @@ class GameLoop:
             op.keys_pressed.remove(op.pref_run_key)
 
         # D) Physics integration (execute exactly 'steps' iterations at 30 Hz)
-        t0 = perf_mark(op, 'physics')
         op.update_movement_and_gravity(context, steps)
-        perf_mark(op, 'physics', t0)
 
         # E) Camera update
-        t0 = perf_mark(op, 'camera')
         update_camera_for_operator(context, op)
-        perf_mark(op, 'camera', t0)
 
         # F) Interactions/UI/SFX (only if sim actually advanced)
         if steps:
-            t0 = perf_mark(op, 'interact_ui_audio')
             check_interactions(context)
             update_text_reactions()
             update_sound_tasks()
-            perf_mark(op, 'interact_ui_audio', t0)
-
-        # ---- END FRAME ----
-        perf_frame_end(op, context)
 
 
 
@@ -139,33 +112,64 @@ class GameLoop:
         """
         self.op.handle_key_input(event)
 
-    def shutdown(self):
-        """
-        Ensure the worker pool is closed (operator.cancel() also calls this).
-        """
-        eng = getattr(self.op, "_thread_eng", None)
-        if eng:
-            try:
-                eng.shutdown()
-            except Exception:
-                pass
-
     # ---------- Internals ----------
 
-    def _poll_and_apply_thread_results(self):
+    def _poll_and_apply_engine_results(self):
         """
-        Collect worker results for systems OTHER than camera.
+        Poll multiprocessing engine for completed jobs and apply results.
+        Tracks frame-level synchronization metrics.
         """
         op = self.op
-        eng = getattr(op, "_thread_eng", None)
-        if not eng:
+        engine = getattr(op, "engine", None)
+        if not engine:
             return
 
-        for res in eng.poll_results():
+        # Non-blocking poll (up to 100 results per frame)
+        results = engine.poll_results(max_results=100)
 
-            # Apply threaded culling batches, etc.
-            if res.key.startswith("cull:") and isinstance(res.payload, dict):
-                try:
-                    apply_cull_thread_result(op, res.payload)
-                except Exception:
+        for result in results:
+            # Process result and track latency metrics
+            if hasattr(op, 'process_engine_result'):
+                op.process_engine_result(result)
+
+            # Route result to appropriate handler based on job type
+            if result.success:
+                if result.job_type == "FRAME_SYNC_TEST":
+                    # Sync test - no action needed, metrics already tracked
                     pass
+                elif result.job_type == "ECHO":
+                    # Echo test - no action needed
+                    pass
+                elif result.job_type == "CULL_BATCH":
+                    # Apply performance culling result
+                    try:
+                        apply_cull_result(op, result.result)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying cull result: {e}")
+                elif result.job_type == "DYNAMIC_MESH_ACTIVATION":
+                    # Apply dynamic mesh activation result
+                    try:
+                        apply_dynamic_activation_result(op, result)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying dynamic mesh activation result: {e}")
+                elif result.job_type == "INTERACTION_CHECK_BATCH":
+                    # Apply interaction check result (diagnostic only in Sprint 1.2)
+                    try:
+                        apply_interaction_check_result(result)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying interaction check result: {e}")
+                elif result.job_type == "COMPUTE_HEAVY":
+                    # Stress test - no action needed
+                    pass
+                # TODO: Add handlers for other game logic job types
+                # elif result.job_type == "AI_PATHFIND":
+                #     self._apply_pathfinding_result(result)
+                # elif result.job_type == "PHYSICS_PREDICT":
+                #     self._apply_physics_prediction(result)
+            else:
+                # Job failed - already logged in process_engine_result
+                pass
+
+        # Periodic sync stats reporting (disabled when test manager is active)
+        # Test manager has its own comprehensive reporting
+        pass

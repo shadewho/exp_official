@@ -42,8 +42,14 @@ def register():
     )
 
 def unregister():
-    del bpy.types.Scene.download_code
-    del bpy.types.Scene.show_loading_image
-    del bpy.types.Scene.show_loading
-    del bpy.types.Scene.selected_thumbnail
-    del bpy.types.Scene.ui_current_mode
+    # Safe property deletion - check if exists before deleting
+    if hasattr(bpy.types.Scene, 'download_code'):
+        del bpy.types.Scene.download_code
+    if hasattr(bpy.types.Scene, 'show_loading_image'):
+        del bpy.types.Scene.show_loading_image
+    if hasattr(bpy.types.Scene, 'show_loading'):
+        del bpy.types.Scene.show_loading
+    if hasattr(bpy.types.Scene, 'selected_thumbnail'):
+        del bpy.types.Scene.selected_thumbnail
+    if hasattr(bpy.types.Scene, 'ui_current_mode'):
+        del bpy.types.Scene.ui_current_mode

@@ -1,6 +1,56 @@
 import bpy
 import mathutils
+import time
 from .exp_bvh_local import LocalBVH
+from ..developer.dev_debug_gate import should_print_debug
+
+
+def apply_dynamic_activation_result(modal_op, engine_result):
+    """
+    Apply worker result for dynamic mesh activation decisions.
+    Called from game loop when DYNAMIC_MESH_ACTIVATION job completes.
+
+    Args:
+        modal_op: The modal operator
+        engine_result: EngineResult object with result.result containing activation_decisions
+    """
+    scene = bpy.context.scene
+    debug_offload = should_print_debug("dynamic_offload")
+
+    result_data = engine_result.result
+    activation_decisions = result_data.get("activation_decisions", [])
+    if not activation_decisions:
+        return
+
+    apply_start = time.perf_counter() if debug_offload else 0.0
+
+    # Apply activation states
+    transitions = []
+    for obj_name, should_activate, prev_active in activation_decisions:
+        # Find the object by name
+        dyn_obj = scene.objects.get(obj_name)
+        if dyn_obj is None:
+            continue
+
+        # Update activation state
+        modal_op._dyn_active_state[dyn_obj] = should_activate
+
+        # Track transitions for debug output
+        if prev_active != should_activate:
+            transitions.append((obj_name, prev_active, should_activate))
+
+    apply_end = time.perf_counter() if debug_offload else 0.0
+
+    if debug_offload:
+        apply_time_ms = (apply_end - apply_start) * 1000.0
+        worker_time_ms = engine_result.processing_time * 1000.0
+        calc_time_us = result_data.get("calc_time_us", 0.0)
+        print(f"[DynamicOffload] Applied {len(activation_decisions)} activation decisions (apply: {apply_time_ms:.3f}ms, worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
+        if transitions:
+            for obj_name, prev_active, new_active in transitions:
+                state_change = "ACTIVATED" if new_active else "DEACTIVATED"
+                print(f"[DynamicOffload]   {obj_name}: {state_change}")
+
 
 def update_dynamic_meshes(modal_op):
     """
@@ -68,33 +118,71 @@ def update_dynamic_meshes(modal_op):
     if getattr(modal_op, "target_object", None):
         player_loc = modal_op.target_object.matrix_world.translation
 
+    # ========== WORKER OFFLOAD: Dynamic Mesh Proximity Checks ==========
+    # Submit worker job for distance calculations (1-frame latency acceptable)
+    # Worker results will update activation states for NEXT frame
+    engine = getattr(modal_op, "engine", None)
+    use_workers = engine is not None and engine.is_alive()
+    debug_offload = should_print_debug("dynamic_offload")
+
+    if use_workers and player_loc is not None:
+        # Snapshot mesh data for worker
+        mesh_positions = []
+        mesh_objects = []  # (obj_name, prev_active)
+        base_distances = []
+
+        submit_start = time.perf_counter() if debug_offload else 0.0
+
+        for pm in scene.proxy_meshes:
+            dyn_obj = pm.mesh_object
+            if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
+                continue
+
+            if pm.register_distance > 0.0:
+                cur_pos = dyn_obj.matrix_world.translation
+                mesh_positions.append((cur_pos.x, cur_pos.y, cur_pos.z))
+                prev_active = modal_op._dyn_active_state.get(dyn_obj)
+                mesh_objects.append((dyn_obj.name, prev_active if prev_active is not None else True))
+                base_distances.append(float(pm.register_distance))
+            else:
+                # No distance gating, always active
+                mesh_positions.append((0, 0, 0))  # Dummy position
+                mesh_objects.append((dyn_obj.name, True))
+                base_distances.append(0.0)  # Zero distance = always active
+
+        # Submit job to workers if we have meshes to check
+        if mesh_positions:
+            job_data = {
+                "mesh_positions": mesh_positions,
+                "mesh_objects": mesh_objects,
+                "player_position": (player_loc.x, player_loc.y, player_loc.z),
+                "base_distances": base_distances,
+            }
+
+            job_id = engine.submit_job("DYNAMIC_MESH_ACTIVATION", job_data)
+
+            submit_end = time.perf_counter() if debug_offload else 0.0
+
+            if debug_offload:
+                submit_time_ms = (submit_end - submit_start) * 1000.0
+                print(f"[DynamicOffload] Submitted job {job_id} with {len(mesh_positions)} meshes (submit time: {submit_time_ms:.3f}ms)")
+                print(f"[DynamicOffload] Continuing with main thread BVH/velocity calculations using current activation states")
+
+    # ========== Main Thread: BVH & Velocity Calculations ==========
+    # Use current activation states (updated by worker results from previous frame)
+    # This has 1-frame latency, which is acceptable for performance gating
+    # CRITICAL: Do NOT return early - BVH data is needed for collision!
     for pm in scene.proxy_meshes:
         dyn_obj = pm.mesh_object
         if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
             continue
 
-        # -------- 1) Distance gate BEFORE depsgraph/evaluated_get ----------
+        # -------- 1) Check activation state (updated by worker or fallback) ----------
         cur_M_quick = dyn_obj.matrix_world
         cur_pos_quick = cur_M_quick.translation
 
-        active = True
-        prev_active = modal_op._dyn_active_state.get(dyn_obj)
-        if pm.register_distance > 0.0 and player_loc is not None:
-            base = float(pm.register_distance)
-            margin = base * 0.10
-            if prev_active is True:
-                threshold = base + margin
-            elif prev_active is False:
-                threshold = max(0.0, base - margin)
-            else:
-                threshold = base
-            # squared compare (avoid sqrt)
-            d2 = (cur_pos_quick - player_loc).length_squared
-            active = (d2 <= (threshold * threshold))
-
-        # Remember state transitions (no console prints in production path)
-        if prev_active is None or prev_active != active:
-            modal_op._dyn_active_state[dyn_obj] = active
+        # Get activation state (set by worker results or defaults to True)
+        active = modal_op._dyn_active_state.get(dyn_obj, True)
 
         if not active:
             # Keep “previous” pose updated cheaply, then skip heavy work

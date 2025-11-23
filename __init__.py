@@ -26,97 +26,123 @@ bl_info = {
     "version": (1, 0, 0),
 }
 
-import bpy
-from .Exp_UI.internet.helpers import is_internet_available
-from .Exp_UI.version_info import update_latest_version_cache
-from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
+# ============================================================================
+# CRITICAL: BPY IMPORT GUARD FOR MULTIPROCESSING
+# Worker processes spawn and may try to import this module, but bpy is not
+# available in worker processes. This guard prevents the import in workers.
+# ============================================================================
+import sys
 
-# persistence handlers
-from .Exp_UI.prefs_persistence import (
-    apply_prefs,
-    register_prefs_handlers,
-    unregister_prefs_handlers,
+# Simple and robust worker detection:
+# Worker processes are spawned with __name__ != '__main__' and multiprocessing loaded
+# We just need to check if we're in a spawned process context
+_IS_WORKER_PROCESS = (
+    __name__ != '__main__' and
+    'multiprocessing' in sys.modules
 )
 
-# your prefs + operators
-from .exp_preferences import (
-    ExploratoryAddonPreferences,
-    EXPLORATORY_OT_SetKeybind,
-)
-from .build_character import EXPLORATORY_OT_BuildCharacter, EXPLORATORY_OT_BuildArmature
-
-# submodule APIs
-from . import Exp_Game, Exp_UI, Exp_Nodes
-
-def version_check_timer():
-    if is_internet_available():
-        update_latest_version_cache()
-    return 900.0  # run again in 15m
-
-def register():
-    # 1) register core classes
-    for cls in (
-        EXPLORATORY_OT_SetKeybind,
-        ExploratoryAddonPreferences,
-        EXPLORATORY_OT_BuildCharacter,
-        EXPLORATORY_OT_BuildArmature,
-        WEBAPP_OT_UpdateAddon,
-        WEBAPP_OT_RefreshVersion,
-    ):
-        bpy.utils.register_class(cls)
-
-    # 2) restore saved prefs right away + hot-reload persistence
-    apply_prefs()
-    register_prefs_handlers()
-
-    # 3) version check + background timer
-    if is_internet_available():
-        update_latest_version_cache()
-    bpy.app.timers.register(version_check_timer, first_interval=0.0)
-
-    # 4) register submodules
-    #    Order matters a bit: Game defines properties/types that node sockets may reference.
-    Exp_Game.register()
-    Exp_UI.register()
-    Exp_Nodes.register()   # <-- your Nodes system is now part of main init
-
-
-def unregister():
+if not _IS_WORKER_PROCESS:
+    # Safe to import bpy - we're in normal Blender context
     import bpy
+    from .Exp_UI.internet.helpers import is_internet_available
+    from .Exp_UI.version_info import update_latest_version_cache
+    from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
 
-    # 1) save & teardown prefs persistence
-    unregister_prefs_handlers()
+    # persistence handlers
+    from .Exp_UI.prefs_persistence import (
+        apply_prefs,
+        register_prefs_handlers,
+        unregister_prefs_handlers,
+    )
 
-    # 2) unregister submodules (reverse-ish order; remove Nodes before UI/Game to
-    #    avoid dangling menu/categories in the Node Editor)
-    try:
-        # Remove load_post helper if present
-        for h in list(bpy.app.handlers.load_post):
-            # We registered this as a local function; remove by name match if needed
-            if getattr(h, "__name__", "") == "_ensure_exploratory_nodes_tree":
-                bpy.app.handlers.load_post.remove(h)
-    except Exception:
+    # your prefs + operators
+    from .exp_preferences import (
+        ExploratoryAddonPreferences,
+        EXPLORATORY_OT_SetKeybind,
+    )
+    from .build_character import EXPLORATORY_OT_BuildCharacter, EXPLORATORY_OT_BuildArmature
+
+    # submodule APIs
+    from . import Exp_Game, Exp_UI, Exp_Nodes, dev_refresh
+
+    def version_check_timer():
+        if is_internet_available():
+            update_latest_version_cache()
+        return 900.0  # run again in 15m
+
+    def register():
+        # 1) register core classes
+        for cls in (
+            EXPLORATORY_OT_SetKeybind,
+            ExploratoryAddonPreferences,
+            EXPLORATORY_OT_BuildCharacter,
+            EXPLORATORY_OT_BuildArmature,
+            WEBAPP_OT_UpdateAddon,
+            WEBAPP_OT_RefreshVersion,
+        ):
+            bpy.utils.register_class(cls)
+
+        # 2) restore saved prefs right away + hot-reload persistence
+        apply_prefs()
+        register_prefs_handlers()
+
+        # 3) version check + background timer
+        if is_internet_available():
+            update_latest_version_cache()
+        bpy.app.timers.register(version_check_timer, first_interval=0.0)
+
+        # 4) register submodules
+        #    Order matters a bit: Game defines properties/types that node sockets may reference.
+        Exp_Game.register()
+        Exp_UI.register()
+        Exp_Nodes.register()   # <-- your Nodes system is now part of main init
+        dev_refresh.register()  # <-- development refresh panel (ENABLED flag controls visibility)
+
+
+    def unregister():
+        # 1) save & teardown prefs persistence
+        unregister_prefs_handlers()
+
+        # 2) unregister submodules (reverse-ish order; remove Nodes before UI/Game to
+        #    avoid dangling menu/categories in the Node Editor)
+        try:
+            # Remove load_post helper if present
+            for h in list(bpy.app.handlers.load_post):
+                # We registered this as a local function; remove by name match if needed
+                if getattr(h, "__name__", "") == "_ensure_exploratory_nodes_tree":
+                    bpy.app.handlers.load_post.remove(h)
+        except Exception:
+            pass
+
+        dev_refresh.unregister()
+        Exp_Nodes.unregister()
+        Exp_UI.unregister()
+        Exp_Game.unregister()
+
+        # 3) unregister core classes (reverse order)
+        for cls in reversed((
+            WEBAPP_OT_RefreshVersion,
+            WEBAPP_OT_UpdateAddon,
+            EXPLORATORY_OT_BuildArmature,
+            EXPLORATORY_OT_BuildCharacter,
+            EXPLORATORY_OT_SetKeybind,
+            ExploratoryAddonPreferences,
+        )):
+            bpy.utils.unregister_class(cls)
+
+        # 4) stop version timer
+        try:
+            bpy.app.timers.unregister(version_check_timer)
+        except Exception:
+            pass
+
+else:
+    # Worker process context - provide stub functions
+    # These won't be called, but need to exist for module consistency
+    def register():
         pass
 
-    Exp_Nodes.unregister()
-    Exp_UI.unregister()
-    Exp_Game.unregister()
-
-    # 3) unregister core classes (reverse order)
-    for cls in reversed((
-        WEBAPP_OT_RefreshVersion,
-        WEBAPP_OT_UpdateAddon,
-        EXPLORATORY_OT_BuildArmature,
-        EXPLORATORY_OT_BuildCharacter,
-        EXPLORATORY_OT_SetKeybind,
-        ExploratoryAddonPreferences,
-    )):
-        bpy.utils.unregister_class(cls)
-
-    # 4) stop version timer
-    try:
-        bpy.app.timers.unregister(version_check_timer)
-    except Exception:
+    def unregister():
         pass
 
 if __name__ == "__main__":

@@ -19,236 +19,281 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-import bpy
-from .modal.exp_modal import ExpModal
-from .exp_ui import (
-    ExploratoryPanel,
-    ExploratoryCharacterPanel,
-    ExploratoryProxyMeshPanel,
-    VIEW3D_PT_Exploratory_UploadHelper,
-    VIEW3D_PT_Exploratory_Performance,
-    VIEW3D_PT_Exploratory_PhysicsTuning,
-    EXP_OT_FilterCreatePanels,
-)
+# ============================================================================
+# CRITICAL: BPY IMPORT GUARD FOR MULTIPROCESSING
+# ============================================================================
+import sys
+_IS_WORKER_PROCESS = (__name__ != '__main__' and 'multiprocessing' in sys.modules)
+
+if not _IS_WORKER_PROCESS:
+    import bpy
+    from .modal.exp_modal import ExpModal
+    from .exp_ui import (
+        ExploratoryPanel,
+        ExploratoryCharacterPanel,
+        ExploratoryProxyMeshPanel,
+        VIEW3D_PT_Exploratory_UploadHelper,
+        VIEW3D_PT_Exploratory_Performance,
+        VIEW3D_PT_Exploratory_PhysicsTuning,
+        EXP_OT_FilterCreatePanels,
+    )
+
+    # Developer module
+    from .developer import (
+        register_properties as register_dev_properties,
+        unregister_properties as unregister_dev_properties,
+        DEV_PT_DeveloperTools,
+    )
 
 
-from .startup_and_reset.exp_spawn import EXPLORATORY_OT_RemoveCharacter
-from .props_and_utils.exp_properties import (
-    remove_scene_properties,
-    add_scene_properties,
-    CharacterActionsPG,
-    ProxyMeshEntry,
-    EXPLORATORY_OT_AddProxyMesh,
-    EXPLORATORY_OT_RemoveProxyMesh,
-    EXPLORATORY_UL_ProxyMeshList,
-    CharacterPhysicsConfigPG
-)
+    from .startup_and_reset.exp_spawn import EXPLORATORY_OT_RemoveCharacter
+    from .props_and_utils.exp_properties import (
+        remove_scene_properties,
+        add_scene_properties,
+        CharacterActionsPG,
+        ProxyMeshEntry,
+        EXPLORATORY_OT_AddProxyMesh,
+        EXPLORATORY_OT_RemoveProxyMesh,
+        EXPLORATORY_UL_ProxyMeshList,
+        CharacterPhysicsConfigPG
+    )
 
-from .reactions.exp_custom_ui import EXPLORE_OT_PreviewCustomText
-from .props_and_utils.exp_utilities import EXPLORATORY_OT_SetGameWorld
-from .props_and_utils import exp_demo_scene
-from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
-from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
-                        EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
-                        EXP_AUDIO_OT_LoadCharacterAudioFile
-)
+    from .reactions.exp_custom_ui import EXPLORE_OT_PreviewCustomText
+    from .props_and_utils.exp_utilities import EXPLORATORY_OT_SetGameWorld
+    from .props_and_utils import exp_demo_scene
+    from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
+    from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
+                            EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
+                            EXP_AUDIO_OT_LoadCharacterAudioFile
+    )
 
-from .interactions.exp_interaction_definition import (InteractionDefinition, register_interaction_properties,
-                                                       unregister_interaction_properties, ReactionLinkPG,)
+    from .interactions.exp_interaction_definition import (InteractionDefinition, register_interaction_properties,
+                                                           unregister_interaction_properties, ReactionLinkPG,)
 
-from .interactions.exp_interactions import (
-    EXPLORATORY_OT_AddInteraction,
-    EXPLORATORY_OT_RemoveInteraction,
-    EXPLORATORY_OT_AddReactionToInteraction,
-    EXPLORATORY_OT_RemoveReactionFromInteraction,
-    EXPLORATORY_OT_CreateReactionAndLink,
-    EXPLORATORY_OT_DuplicateInteraction, 
-)
+    from .interactions.exp_interactions import (
+        EXPLORATORY_OT_AddInteraction,
+        EXPLORATORY_OT_RemoveInteraction,
+        EXPLORATORY_OT_AddReactionToInteraction,
+        EXPLORATORY_OT_RemoveReactionFromInteraction,
+        EXPLORATORY_OT_CreateReactionAndLink,
+        EXPLORATORY_OT_DuplicateInteraction,
+    )
 
-from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties, EXPLORATORY_OT_DuplicateGlobalReaction
-from .systems.exp_objectives import (
-    register_objective_properties,
-    unregister_objective_properties
-)
+    from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties, EXPLORATORY_OT_DuplicateGlobalReaction
+    from .systems.exp_objectives import (
+        register_objective_properties,
+        unregister_objective_properties
+    )
 
-from .systems.exp_performance import (
-    register   as register_performance,
-    unregister as unregister_performance
-)
-from .reactions.exp_mobility_and_game_reactions import (
-    MobilityReactionsPG,
-    MeshVisibilityReactionsPG,
-)
-from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
-from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
+    from .systems.exp_performance import (
+        register   as register_performance,
+        unregister as unregister_performance
+    )
+    from .reactions.exp_mobility_and_game_reactions import (
+        MobilityReactionsPG,
+        MeshVisibilityReactionsPG,
+    )
+    from .startup_and_reset.exp_game_reset import EXPLORATORY_OT_ResetGame
+    from .props_and_utils.exp_upload_helper import register as register_upload_helper, unregister as unregister_upload_helper
 
-from .reactions.exp_action_keys import ActionKeyItemPG, register_action_key_properties, unregister_action_key_properties
+    from .reactions.exp_action_keys import ActionKeyItemPG, register_action_key_properties, unregister_action_key_properties
 
-def register():
-    # --- Mobility / Mesh Visibility PGs (must be registered before ReactionDefinition) ---
-    bpy.utils.register_class(MobilityReactionsPG)
-    bpy.utils.register_class(MeshVisibilityReactionsPG)
-    bpy.types.Scene.mobility_game = bpy.props.PointerProperty(type=MobilityReactionsPG)
-    # --- Reset Game ---
-    bpy.utils.register_class(EXPLORATORY_OT_ResetGame)
+    # --- Engine testing ---
+    from .engine.test_operator import EXP_ENGINE_OT_StressTest, EXP_ENGINE_OT_QuickTest
 
-    # --- action keys ---
-    bpy.utils.register_class(ActionKeyItemPG)
-    register_action_key_properties()
+    def register():
+        # --- Developer Properties (early registration) ---
+        register_dev_properties()
 
-    # --- Interactions & Reactions ---
-    bpy.utils.register_class(ReactionDefinition)   # must be before scene.reactions is attached
-    bpy.utils.register_class(ReactionLinkPG)       # link PG used inside InteractionDefinition
-    bpy.utils.register_class(InteractionDefinition)
-    bpy.utils.register_class(EXPLORATORY_OT_AddInteraction)
-    bpy.utils.register_class(EXPLORATORY_OT_RemoveInteraction)
-    bpy.utils.register_class(EXPLORATORY_OT_AddReactionToInteraction)
-    bpy.utils.register_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
-    bpy.utils.register_class(EXPLORATORY_OT_CreateReactionAndLink)
-    register_interaction_properties()
+        # --- Mobility / Mesh Visibility PGs (must be registered before ReactionDefinition) ---
+        bpy.utils.register_class(MobilityReactionsPG)
+        bpy.utils.register_class(MeshVisibilityReactionsPG)
+        bpy.types.Scene.mobility_game = bpy.props.PointerProperty(type=MobilityReactionsPG)
+        # --- Reset Game ---
+        bpy.utils.register_class(EXPLORATORY_OT_ResetGame)
 
+        # --- action keys ---
+        bpy.utils.register_class(ActionKeyItemPG)
+        register_action_key_properties()
 
-    # --- Panels & UILists (Ordered) ---
-    bpy.utils.register_class(ExploratoryPanel)
-
-    bpy.utils.register_class(ExploratoryCharacterPanel)
-
-    bpy.utils.register_class(ExploratoryProxyMeshPanel)
-
-    bpy.utils.register_class(VIEW3D_PT_Exploratory_UploadHelper)
-
-    bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
-
-    bpy.utils.register_class(VIEW3D_PT_Exploratory_PhysicsTuning)
-
-    bpy.utils.register_class(EXP_OT_FilterCreatePanels)
+        # --- Interactions & Reactions ---
+        bpy.utils.register_class(ReactionDefinition)   # must be before scene.reactions is attached
+        bpy.utils.register_class(ReactionLinkPG)       # link PG used inside InteractionDefinition
+        bpy.utils.register_class(InteractionDefinition)
+        bpy.utils.register_class(EXPLORATORY_OT_AddInteraction)
+        bpy.utils.register_class(EXPLORATORY_OT_RemoveInteraction)
+        bpy.utils.register_class(EXPLORATORY_OT_AddReactionToInteraction)
+        bpy.utils.register_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
+        bpy.utils.register_class(EXPLORATORY_OT_CreateReactionAndLink)
+        register_interaction_properties()
 
 
-    bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
+        # --- Panels & UILists (Ordered) ---
+        bpy.utils.register_class(ExploratoryPanel)
 
-    # Register the UILists used in panels
-    bpy.utils.register_class(EXPLORATORY_OT_DuplicateInteraction)
-    bpy.utils.register_class(EXPLORATORY_OT_DuplicateGlobalReaction)
+        bpy.utils.register_class(ExploratoryCharacterPanel)
 
-    # --- Modal & Game Start Operators ---
-    bpy.utils.register_class(ExpModal)
-    bpy.utils.register_class(EXP_GAME_OT_StartGame)
+        bpy.utils.register_class(ExploratoryProxyMeshPanel)
 
-    # --- Audio Operators & Properties ---
-    bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
-    bpy.utils.register_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
-    bpy.utils.register_class(CharacterAudioPG)
-    bpy.utils.register_class(EXPLORATORY_OT_BuildAudio)
-    bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
-    bpy.utils.register_class(EXP_AUDIO_OT_TestReactionSound)
-    bpy.utils.register_class(EXP_AUDIO_OT_PackAllSounds)
-    bpy.types.Scene.character_audio = bpy.props.PointerProperty(type=CharacterAudioPG)
+        bpy.utils.register_class(VIEW3D_PT_Exploratory_UploadHelper)
 
-    # --- Character Removal ---
-    bpy.utils.register_class(EXPLORATORY_OT_RemoveCharacter)
+        bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
 
-    # --- Objectives Properties & Operators ---
-    register_objective_properties()
+        bpy.utils.register_class(DEV_PT_DeveloperTools)
 
-    # --- Character Actions & Proxy Mesh Properties ---
-    bpy.utils.register_class(CharacterActionsPG)
-    bpy.utils.register_class(ProxyMeshEntry)
-    bpy.utils.register_class(EXPLORATORY_UL_ProxyMeshList)
-    bpy.utils.register_class(CharacterPhysicsConfigPG)
-    bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
-    bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
-    bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
-    
-    # --- Scene Properties ---
-    add_scene_properties()
-    
+        bpy.utils.register_class(VIEW3D_PT_Exploratory_PhysicsTuning)
 
-    bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
-
-    # ─── Demo scene ──────────────────────────────────
-    exp_demo_scene.register()
-
-    # ─── Performance Culling ──────────────────────────────────
-    register_performance()
-
-    register_upload_helper()
-
-    
-def unregister():
-    remove_scene_properties()
-    unregister_interaction_properties()
-    unregister_objective_properties()
-    unregister_reaction_library_properties()
-    unregister_action_key_properties()
-    # --- Mobility / Mesh Visibility PGs ---
-    del bpy.types.Scene.mobility_game
-    bpy.utils.unregister_class(MeshVisibilityReactionsPG)
-    bpy.utils.unregister_class(MobilityReactionsPG)
-
-    bpy.utils.unregister_class(EXPLORATORY_OT_ResetGame)
-    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveCharacter)
-
-    # --- Audio ---
-    del bpy.types.Scene.character_audio
-    bpy.utils.unregister_class(EXP_AUDIO_OT_PackAllSounds)
-    bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
-    bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)
-    bpy.utils.unregister_class(AUDIO_OT_TestSoundPointer)
-    bpy.utils.unregister_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
-    bpy.utils.unregister_class(CharacterAudioPG)
-    bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
-
-    # --- Modal & Game Start ---
-    bpy.utils.unregister_class(ExpModal)
-    bpy.utils.unregister_class(EXP_GAME_OT_StartGame)
-
-    # --- Panels & UILists ---
-    bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateGlobalReaction)
-    bpy.utils.unregister_class(ExploratoryPanel)
-    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_UploadHelper)
-    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Performance)
-    bpy.utils.unregister_class(ExploratoryCharacterPanel)
-    bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
-    bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
-    bpy.utils.unregister_class(EXP_OT_FilterCreatePanels)
-
-    # --- actions ---
-    bpy.utils.unregister_class(ActionKeyItemPG)
-
-    # --- Interactions & Reactions ---
-    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
-    bpy.utils.unregister_class(EXPLORATORY_OT_AddReactionToInteraction)
-    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveInteraction)
-    bpy.utils.unregister_class(EXPLORATORY_OT_AddInteraction)
-    bpy.utils.unregister_class(InteractionDefinition)
-    bpy.utils.unregister_class(ReactionLinkPG)
-    bpy.utils.unregister_class(ReactionDefinition)
-    bpy.utils.unregister_class(EXPLORATORY_OT_CreateReactionAndLink)
+        bpy.utils.register_class(EXP_OT_FilterCreatePanels)
 
 
-    bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateInteraction)
+        bpy.utils.register_class(EXPLORE_OT_PreviewCustomText)
 
-    bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
+        # Register the UILists used in panels
+        bpy.utils.register_class(EXPLORATORY_OT_DuplicateInteraction)
+        bpy.utils.register_class(EXPLORATORY_OT_DuplicateGlobalReaction)
+
+        # --- Modal & Game Start Operators ---
+        bpy.utils.register_class(ExpModal)
+        bpy.utils.register_class(EXP_GAME_OT_StartGame)
+
+        # --- Audio Operators & Properties ---
+        bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
+        bpy.utils.register_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
+        bpy.utils.register_class(CharacterAudioPG)
+        bpy.utils.register_class(EXPLORATORY_OT_BuildAudio)
+        bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
+        bpy.utils.register_class(EXP_AUDIO_OT_TestReactionSound)
+        bpy.utils.register_class(EXP_AUDIO_OT_PackAllSounds)
+        bpy.types.Scene.character_audio = bpy.props.PointerProperty(type=CharacterAudioPG)
+
+        # --- Character Removal ---
+        bpy.utils.register_class(EXPLORATORY_OT_RemoveCharacter)
+
+        # --- Objectives Properties & Operators ---
+        register_objective_properties()
+
+        # --- Character Actions & Proxy Mesh Properties ---
+        bpy.utils.register_class(CharacterActionsPG)
+        bpy.utils.register_class(ProxyMeshEntry)
+        bpy.utils.register_class(EXPLORATORY_UL_ProxyMeshList)
+        bpy.utils.register_class(CharacterPhysicsConfigPG)
+        bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
+        bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
+        bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
+
+        # --- Scene Properties ---
+        add_scene_properties()
 
 
-    # --- Character Actions & Proxy Mesh ---
-    del bpy.types.Scene.character_actions
-    bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
-    bpy.utils.unregister_class(CharacterActionsPG)
-    bpy.utils.unregister_class(CharacterPhysicsConfigPG)
-    bpy.utils.unregister_class(ProxyMeshEntry)
-    bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
-    bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
-    bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+        bpy.utils.register_class(EXPLORATORY_OT_SetGameWorld)
+
+        # ─── Demo scene ──────────────────────────────────
+        exp_demo_scene.register()
+
+        # ─── Performance Culling ──────────────────────────────────
+        register_performance()
+
+        register_upload_helper()
+
+        # ─── Engine Testing Operators ──────────────────────────────
+        bpy.utils.register_class(EXP_ENGINE_OT_QuickTest)
+        bpy.utils.register_class(EXP_ENGINE_OT_StressTest)
 
 
-     # ─── DEMO DEMO ──────────────────────────────────
-    exp_demo_scene.unregister()
+    def unregister():
+        remove_scene_properties()
+        unregister_interaction_properties()
+        unregister_objective_properties()
+        unregister_reaction_library_properties()
+        unregister_action_key_properties()
+        # --- Mobility / Mesh Visibility PGs ---
+        if hasattr(bpy.types.Scene, 'mobility_game'):
+            del bpy.types.Scene.mobility_game
+        bpy.utils.unregister_class(MeshVisibilityReactionsPG)
+        bpy.utils.unregister_class(MobilityReactionsPG)
 
-     # ─── Performance Culling ──────────────────────────────────
-    unregister_performance()
+        bpy.utils.unregister_class(EXPLORATORY_OT_ResetGame)
+        bpy.utils.unregister_class(EXPLORATORY_OT_RemoveCharacter)
 
-    unregister_upload_helper()
+        # --- Audio ---
+        if hasattr(bpy.types.Scene, 'character_audio'):
+            del bpy.types.Scene.character_audio
+        bpy.utils.unregister_class(EXP_AUDIO_OT_PackAllSounds)
+        bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
+        bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)
+        bpy.utils.unregister_class(AUDIO_OT_TestSoundPointer)
+        bpy.utils.unregister_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
+        bpy.utils.unregister_class(CharacterAudioPG)
+        bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
+
+        # --- Modal & Game Start ---
+        bpy.utils.unregister_class(ExpModal)
+        bpy.utils.unregister_class(EXP_GAME_OT_StartGame)
+
+        # --- Panels & UILists ---
+        bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateGlobalReaction)
+        bpy.utils.unregister_class(ExploratoryPanel)
+        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_UploadHelper)
+        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Performance)
+        bpy.utils.unregister_class(DEV_PT_DeveloperTools)
+        bpy.utils.unregister_class(ExploratoryCharacterPanel)
+        bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
+        bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
+        bpy.utils.unregister_class(EXP_OT_FilterCreatePanels)
+
+        # --- actions ---
+        bpy.utils.unregister_class(ActionKeyItemPG)
+
+        # --- Interactions & Reactions ---
+        bpy.utils.unregister_class(EXPLORATORY_OT_RemoveReactionFromInteraction)
+        bpy.utils.unregister_class(EXPLORATORY_OT_AddReactionToInteraction)
+        bpy.utils.unregister_class(EXPLORATORY_OT_RemoveInteraction)
+        bpy.utils.unregister_class(EXPLORATORY_OT_AddInteraction)
+        bpy.utils.unregister_class(InteractionDefinition)
+        bpy.utils.unregister_class(ReactionLinkPG)
+        bpy.utils.unregister_class(ReactionDefinition)
+        bpy.utils.unregister_class(EXPLORATORY_OT_CreateReactionAndLink)
+
+
+        bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateInteraction)
+
+        bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
+
+
+        # --- Character Actions & Proxy Mesh ---
+        if hasattr(bpy.types.Scene, 'character_actions'):
+            del bpy.types.Scene.character_actions
+        bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
+        bpy.utils.unregister_class(CharacterActionsPG)
+        bpy.utils.unregister_class(CharacterPhysicsConfigPG)
+        bpy.utils.unregister_class(ProxyMeshEntry)
+        bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
+        bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
+        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+
+
+        # ─── DEMO DEMO ──────────────────────────────────
+        exp_demo_scene.unregister()
+
+        # ─── Engine Testing Operators ──────────────────────────────
+        bpy.utils.unregister_class(EXP_ENGINE_OT_StressTest)
+        bpy.utils.unregister_class(EXP_ENGINE_OT_QuickTest)
+
+        # ─── Performance Culling ──────────────────────────────────
+        unregister_performance()
+
+        # ─── Developer Properties ──────────────────────────────────
+        unregister_dev_properties()
+
+        unregister_upload_helper()
+
+else:
+    # Worker process - provide stub functions
+    def register():
+        pass
+
+    def unregister():
+        pass
 
 if __name__ == "__main__":
     register()

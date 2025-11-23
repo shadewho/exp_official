@@ -15,7 +15,56 @@ from bpy.props import (
 
 # Use the real-time game clock you already run each TIMER tick
 from ..props_and_utils.exp_time import get_game_time
-from .exp_threads import compute_cull_batch
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Culling Computation (offloaded to engine workers)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compute_cull_batch(
+    entry_ptr: int,
+    obj_names: list,
+    obj_positions: list,
+    ref_loc: tuple,
+    thresh: float,
+    start: int,
+    max_count: int,
+) -> dict:
+    """
+    Worker-safe distance checks for per-object culling.
+    This function runs in the multiprocessing engine worker (NO bpy access).
+
+    Returns:
+      {
+        "entry_ptr": entry_ptr,
+        "next_idx": int,                   # round-robin cursor for caller
+        "changes": List[Tuple[str,bool]],  # (obj_name, desired_hidden)
+      }
+    """
+    rx, ry, rz = ref_loc
+    t2 = float(thresh) * float(thresh)
+
+    n = len(obj_names)
+    if n == 0:
+        return {"entry_ptr": entry_ptr, "next_idx": start, "changes": []}
+
+    i = 0
+    out = []
+    idx = start % n
+
+    while i < n and len(out) < max_count:
+        name = obj_names[idx]
+        px, py, pz = obj_positions[idx]
+        dx = px - rx
+        dy = py - ry
+        dz = pz - rz
+        # distance^2 compare avoids sqrt; identical decision as true distance
+        far = (dx*dx + dy*dy + dz*dz) > t2
+        out.append((name, far))
+        i += 1
+        idx = (idx + 1) % n
+
+    return {"entry_ptr": entry_ptr, "next_idx": idx, "changes": out}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tunables
 # ──────────────────────────────────────────────────────────────────────────────
@@ -382,10 +431,10 @@ def update_performance_culling(operator, context):
     """
     Called each frame in ExpModal.modal().
 
-    Threaded per-object RADIAL culling only (no synchronous fallback):
+    Engine-offloaded per-object RADIAL culling:
       - Throttled per-entry via get_game_time()
       - Entry-level decisions (collection-exclude, BOX triggers) on main thread
-      - Per-object distance checks batched to ThreadEngine (pure math)
+      - Per-object distance checks batched to multiprocessing engine (pure math, true parallelism)
       - All bpy writes (objects/collections/placeholders) remain on main thread
     """
     scene = context.scene
@@ -422,6 +471,8 @@ def update_performance_culling(operator, context):
         )
 
         # Entry-level in_range (used for placeholders & collection-exclude)
+        # For per-object mode: Use cheap first-object check instead of iterating all objects
+        # (Engine will do the full per-object distance calculations)
         base = entry.cull_distance if entry.trigger_type == 'RADIAL' else 0.0
         margin = max(CULL_HYSTERESIS_MIN, base * CULL_HYSTERESIS_RATIO)
 
@@ -435,14 +486,23 @@ def update_performance_culling(operator, context):
                 else:
                     threshold = max(0.0, base - margin)  # clearly inside to flip true
                 thr2 = threshold * threshold
-                in_range = any(
-                    (o.matrix_world.translation - ref_loc).length_squared <= thr2
-                    for o in objs
-                )
+
+                # Optimization: For per-object mode, only check first object (cheap proxy check)
+                # Engine will do the full per-object calculations
+                if per_object_mode:
+                    # Fast single-object check for placeholder toggling
+                    first_obj = objs[0]
+                    in_range = (first_obj.matrix_world.translation - ref_loc).length_squared <= thr2
+                else:
+                    # Full iteration for collection-exclude mode (needed for accurate toggle)
+                    in_range = any(
+                        (o.matrix_world.translation - ref_loc).length_squared <= thr2
+                        for o in objs
+                    )
             else:
                 in_range = False
         else:
-            # BOX trigger: point-in-AABB check on main thread
+            # BOX trigger: point-in-AABB check on main thread (cheap, no optimization needed)
             mesh = entry.trigger_mesh
             if mesh and mesh.type == 'MESH':
                 world_verts = [mesh.matrix_world @ mathutils.Vector(c) for c in mesh.bound_box]
@@ -481,11 +541,11 @@ def update_performance_culling(operator, context):
 
         # ─────────────────────────────────────────────────────────
         # B) PER-OBJECT mode (RADIAL + not exclude_collection)
-        #    -> THREAD ONLY (no synchronous fallback)
+        #    -> ENGINE OFFLOADING (multiprocessing, true parallelism)
         # ─────────────────────────────────────────────────────────
         else:
             objs = rec["obj_list"]
-            if objs and hasattr(operator, "_thread_eng") and operator._thread_eng:
+            if objs and hasattr(operator, "engine") and operator.engine:
                 # Snapshot names & positions on the main thread (read-only)
                 names = [o.name for o in objs]
                 poss  = [tuple(o.matrix_world.translation) for o in objs]
@@ -497,26 +557,19 @@ def update_performance_culling(operator, context):
                 # Threshold and identity for this entry
                 threshold = float(entry.cull_distance)
                 entry_ptr = entry.as_pointer()
-                job_key   = f"cull:{entry_ptr}"
 
-                # Per-entry version to coalesce newer work
-                ver = rec.get("cull_ver", 0) + 1
-                rec["cull_ver"] = ver
-
-                # Submit/replace latest work for this entry.
-                operator._thread_eng.submit_latest(
-                    key=job_key,
-                    version=ver,
-                    fn=compute_cull_batch,             # runs in worker (no bpy)
-                    entry_ptr=entry_ptr,
-                    obj_names=names,
-                    obj_positions=poss,
-                    ref_loc=tuple(ref_loc),            # (x,y,z)
-                    thresh=threshold,
-                    start=start_idx,
-                    max_count=max_batch,
-                )
-                # Note: rec["scan_idx"] is advanced when results are applied via apply_cull_thread_result()
+                # Submit job to multiprocessing engine
+                # Results will be polled in exp_loop.py and applied via apply_cull_result()
+                operator.engine.submit_job("CULL_BATCH", {
+                    "entry_ptr": entry_ptr,
+                    "obj_names": names,
+                    "obj_positions": poss,
+                    "ref_loc": tuple(ref_loc),
+                    "thresh": threshold,
+                    "start": start_idx,
+                    "max_count": max_batch,
+                })
+                # Note: rec["scan_idx"] is advanced when results are applied via apply_cull_result()
 
         # ─────────────────────────────────────────────────────────
         # C) Placeholder toggling follows entry-level in_range
@@ -535,9 +588,9 @@ def update_performance_culling(operator, context):
         rec["last_in"] = in_range
 
 
-def apply_cull_thread_result(operator, payload) -> int:
+def apply_cull_result(operator, payload) -> int:
     """
-    Apply a batch of per-object culling writes produced by compute_cull_batch().
+    Apply a batch of per-object culling writes produced by the engine worker.
     payload = {"entry_ptr": int, "next_idx": int, "changes": List[(name, desired_hidden)]}
 
     Returns: number of viewport writes applied.
@@ -586,5 +639,7 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    del bpy.types.Scene.performance_entries
-    del bpy.types.Scene.performance_entries_index
+    if hasattr(bpy.types.Scene, 'performance_entries'):
+        del bpy.types.Scene.performance_entries
+    if hasattr(bpy.types.Scene, 'performance_entries_index'):
+        del bpy.types.Scene.performance_entries_index

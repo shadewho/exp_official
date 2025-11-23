@@ -46,4 +46,5 @@ def register():
 
 def unregister():
     bpy.utils.unregister_class(EXP_UPLOADHELPER_OT_RefreshSize)
-    del bpy.types.Scene.upload_helper_file_size
+    if hasattr(bpy.types.Scene, 'upload_helper_file_size'):
+        del bpy.types.Scene.upload_helper_file_size

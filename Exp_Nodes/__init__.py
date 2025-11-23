@@ -88,7 +88,6 @@ from .reaction_nodes import (
     ReactionActionKeysNode,
     UtilityDelayNode,
     ReactionParentingNode,
-    ReactionTrackingNode
 )
 
 from .trig_react_obj_lists import(
@@ -129,7 +128,7 @@ classes = [
     FloatVectorInputSocket,
     FloatVectorOutputSocket,
     UtilityCaptureFloatVectorNode,
-
+    
     # reactions
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
@@ -151,7 +150,6 @@ classes = [
     ReactionHitscanNode,
     ReactionActionKeysNode,
     ReactionParentingNode,
-    ReactionTrackingNode,
 
 
     # objective
@@ -244,4 +242,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-

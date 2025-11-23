@@ -33,7 +33,10 @@ def register():
     )
 
 def unregister():
-    # reverse order
-    del bpy.types.Scene.selected_event
-    del bpy.types.Scene.fetched_events
-    del bpy.types.Scene.event_stage
+    # reverse order - safe deletion
+    if hasattr(bpy.types.Scene, 'selected_event'):
+        del bpy.types.Scene.selected_event
+    if hasattr(bpy.types.Scene, 'fetched_events'):
+        del bpy.types.Scene.fetched_events
+    if hasattr(bpy.types.Scene, 'event_stage'):
+        del bpy.types.Scene.event_stage

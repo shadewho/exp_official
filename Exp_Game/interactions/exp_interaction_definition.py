@@ -224,5 +224,7 @@ def register_interaction_properties():
     register_reaction_library_properties()
     
 def unregister_interaction_properties():
-    del bpy.types.Scene.custom_interactions
-    del bpy.types.Scene.custom_interactions_index
+    if hasattr(bpy.types.Scene, 'custom_interactions'):
+        del bpy.types.Scene.custom_interactions
+    if hasattr(bpy.types.Scene, 'custom_interactions_index'):
+        del bpy.types.Scene.custom_interactions_index

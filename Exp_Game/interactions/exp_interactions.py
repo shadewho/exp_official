@@ -1,7 +1,9 @@
 # File: exp_interactions.py
 
 import bpy
+import time
 from mathutils import Vector
+from ..developer.dev_debug_gate import should_print_debug
 from ..reactions.exp_reactions import ( execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
                              execute_objective_counter_reaction,
@@ -27,9 +29,32 @@ from ..reactions.exp_action_keys import (
 )
 from ..reactions.exp_parenting import execute_parenting_reaction
 from ..reactions.exp_tracking import execute_tracking_reaction
+
 # Global list to hold pending trigger tasks.
 _pending_reaction_batches = []
 _pending_trigger_tasks = []
+
+
+def apply_interaction_check_result(engine_result):
+    """
+    Apply worker result for interaction checks (diagnostic only for Sprint 1.2).
+    Called from game loop when INTERACTION_CHECK_BATCH job completes.
+
+    For now, this just logs worker execution to prove offload works.
+    Future: Could optimize to skip trigger handlers for non-triggered interactions.
+    """
+    debug_offload = should_print_debug("interactions")
+
+    if not debug_offload:
+        return  # Silent if debug disabled
+
+    result_data = engine_result.result
+    triggered_indices = result_data.get("triggered_indices", [])
+    total_count = result_data.get("count", 0)
+    calc_time_us = result_data.get("calc_time_us", 0.0)
+    worker_time_ms = engine_result.processing_time * 1000.0
+
+    print(f"[InteractionOffload] Workers checked {total_count} interactions, {len(triggered_indices)} triggered (worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
 def _execute_reaction_now(r):
     """
     Execute a single reaction immediately (no scheduling).
@@ -392,6 +417,98 @@ class EXPLORATORY_OT_CreateReactionAndLink(bpy.types.Operator):
 ###############################################################################
 # 4) The Main check_interactions() Logic
 ###############################################################################
+def _submit_interaction_worker_jobs(context):
+    """
+    Submit PROXIMITY and COLLISION checks to workers.
+    Returns list of interaction data for result matching.
+    """
+    from ..modal.exp_modal import get_active_modal_operator
+
+    scene = context.scene
+    modal_op = get_active_modal_operator()
+    engine = getattr(modal_op, "engine", None) if modal_op else None
+
+    if not engine or not engine.is_alive():
+        return None  # No workers available
+
+    debug_offload = should_print_debug("interactions")
+
+    # Snapshot interactions that need worker checking
+    interactions_data = []
+    interaction_map = []  # Maps worker indices back to scene interactions
+
+    submit_start = time.perf_counter() if debug_offload else 0.0
+
+    for inter in scene.custom_interactions:
+        t = inter.trigger_type
+
+        if t == "PROXIMITY":
+            # pick A: either character or chosen object
+            if inter.use_character:
+                obj_a = scene.target_armature
+            else:
+                obj_a = inter.proximity_object_a
+            obj_b = inter.proximity_object_b
+
+            if obj_a and obj_b:
+                inter_data = {
+                    "type": "PROXIMITY",
+                    "obj_a_pos": (obj_a.location.x, obj_a.location.y, obj_a.location.z),
+                    "obj_b_pos": (obj_b.location.x, obj_b.location.y, obj_b.location.z),
+                    "threshold": float(inter.proximity_distance)
+                }
+                interactions_data.append(inter_data)
+                interaction_map.append(inter)
+
+        elif t == "COLLISION":
+            # pick A: either character or chosen object
+            if inter.use_character:
+                obj_a = scene.target_armature
+            else:
+                obj_a = inter.collision_object_a
+            obj_b = inter.collision_object_b
+
+            if obj_a and obj_b:
+                # Calculate AABBs (same as bounding_sphere_collision)
+                def get_aabb(obj):
+                    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+                    return (
+                        min(pt.x for pt in corners), max(pt.x for pt in corners),
+                        min(pt.y for pt in corners), max(pt.y for pt in corners),
+                        min(pt.z for pt in corners), max(pt.z for pt in corners)
+                    )
+
+                inter_data = {
+                    "type": "COLLISION",
+                    "aabb_a": get_aabb(obj_a),
+                    "aabb_b": get_aabb(obj_b),
+                    "margin": float(inter.collision_margin)
+                }
+                interactions_data.append(inter_data)
+                interaction_map.append(inter)
+
+    # Submit if we have interactions to check
+    if interactions_data:
+        player_loc = scene.target_armature.location if scene.target_armature else (0, 0, 0)
+
+        job_data = {
+            "interactions": interactions_data,
+            "player_position": (player_loc.x, player_loc.y, player_loc.z)
+        }
+
+        job_id = engine.submit_job("INTERACTION_CHECK_BATCH", job_data)
+
+        submit_end = time.perf_counter() if debug_offload else 0.0
+
+        if debug_offload:
+            submit_time_ms = (submit_end - submit_start) * 1000.0
+            print(f"[InteractionOffload] Submitted job {job_id} with {len(interactions_data)} interactions (submit: {submit_time_ms:.3f}ms)")
+
+        return interaction_map
+
+    return None
+
+
 def check_interactions(context):
     scene = context.scene
     current_time = get_game_time()
@@ -403,9 +520,15 @@ def check_interactions(context):
             inter.trigger_mode = allowed[0]
 
     pressed_this_frame = was_interact_pressed()
-    pressed_action   = was_action_pressed() 
+    pressed_action   = was_action_pressed()
 
     update_all_objective_timers(context.scene)
+
+    # ========== WORKER OFFLOAD: PROXIMITY & COLLISION CHECKS ==========
+    # Submit proximity/collision checks to workers
+    # Note: We still run handlers on main thread, just pre-filtered by worker results
+    interaction_map = _submit_interaction_worker_jobs(context)
+    # Worker results will be applied via apply_interaction_check_result() in game loop
 
     for inter in scene.custom_interactions:
         t = inter.trigger_type
