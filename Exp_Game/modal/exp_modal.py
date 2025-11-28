@@ -754,6 +754,18 @@ class ExpModal(bpy.types.Operator):
         else:
             self.bvh_tree = None
 
+        # Extract triangles for raycast offloading
+        from ..physics.exp_geometry import extract_static_triangles, print_geometry_report, build_uniform_grid
+        if all_static_meshes:
+            self.static_triangles = extract_static_triangles(all_static_meshes)
+            print_geometry_report(self.static_triangles, context)
+
+            # Phase 2: Build spatial acceleration grid
+            # Cell size 2.0m is a good balance for typical game scenes
+            self.spatial_grid = build_uniform_grid(self.static_triangles, cell_size=2.0, context=context)
+        else:
+            self.static_triangles = []
+            self.spatial_grid = None
 
         #define dynamic platforms (vertical movement)
         self.platform_prev_positions = {}
@@ -805,6 +817,83 @@ class ExpModal(bpy.types.Operator):
         # Initialize comprehensive test manager if debug flag enabled
         if context.scene.dev_run_sync_test:
             self._test_manager = EngineSyncTestManager()
+
+        # ========== RAYCAST OFFLOAD: CACHE GRID IN WORKERS ==========
+        # Send grid ONCE to all workers to avoid 3MB serialization per raycast
+        if self.spatial_grid and self.engine and self.engine.is_alive():
+            debug_raycast = context.scene.dev_debug_raycast_offload
+            import pickle
+            import time as time_module
+
+            if debug_raycast:
+                print(f"\n[Raycast Offload] ========== CACHING GRID IN WORKERS ==========")
+
+            # Measure grid serialization (one-time cost)
+            pickle_start = time_module.perf_counter()
+            pickled = pickle.dumps({"grid": self.spatial_grid})
+            pickle_time = (time_module.perf_counter() - pickle_start) * 1000
+            pickle_size_kb = len(pickled) / 1024
+
+            if debug_raycast:
+                print(f"[Raycast Offload] Grid size: {pickle_size_kb:.1f} KB, serialize time: {pickle_time:.1f}ms")
+
+            # Send CACHE_GRID to all 4 workers
+            # Each worker needs its own copy since they're separate processes
+            for i in range(4):
+                self.engine.submit_job("CACHE_GRID", {"grid": self.spatial_grid})
+
+            if debug_raycast:
+                print(f"[Raycast Offload] Sent CACHE_GRID to 4 workers")
+                print(f"[Raycast Offload] ================================================\n")
+
+        # ========== RAYCAST OFFLOAD TEST ==========
+        # Compare: brute force vs grid (with data) vs cached (no data)
+        if self.static_triangles and self.engine and self.engine.is_alive():
+            debug_raycast = context.scene.dev_debug_raycast_offload
+
+            # Test raycast: straight down from character position
+            char_pos = self.target_object.location
+            ray_origin = (char_pos.x, char_pos.y, char_pos.z + 2.0)
+            ray_direction = (0.0, 0.0, -1.0)
+            max_distance = 10.0
+
+            if debug_raycast:
+                print(f"[Raycast Offload] ========== STARTUP TEST ==========")
+                print(f"[Raycast Offload] Ray: origin=({char_pos.x:.2f}, {char_pos.y:.2f}, {char_pos.z + 2.0:.2f}), dir=(0,0,-1)")
+
+            # Test 1: Brute force (baseline - slowest)
+            job_id_brute = self.engine.submit_job("KCC_RAYCAST", {
+                "ray_origin": ray_origin,
+                "ray_direction": ray_direction,
+                "max_distance": max_distance,
+                "triangles": self.static_triangles
+            })
+            if debug_raycast:
+                print(f"[Raycast Offload] Test 1: BRUTE FORCE (job {job_id_brute})")
+
+            # Test 2: Grid with data (fast raycast, but 3MB serialization)
+            if self.spatial_grid:
+                job_id_grid = self.engine.submit_job("KCC_RAYCAST_GRID", {
+                    "ray_origin": ray_origin,
+                    "ray_direction": ray_direction,
+                    "max_distance": max_distance,
+                    "grid": self.spatial_grid
+                })
+                if debug_raycast:
+                    print(f"[Raycast Offload] Test 2: GRID_DDA with data (job {job_id_grid})")
+
+            # Test 3: Cached grid (fast raycast, ~100 byte payload!)
+            if self.spatial_grid:
+                job_id_cached = self.engine.submit_job("KCC_RAYCAST_CACHED", {
+                    "ray_origin": ray_origin,
+                    "ray_direction": ray_direction,
+                    "max_distance": max_distance
+                })
+                if debug_raycast:
+                    print(f"[Raycast Offload] Test 3: CACHED_DDA no data (job {job_id_cached})")
+
+            if debug_raycast:
+                print(f"[Raycast Offload] =====================================\n")
         # ===========================================
 
         #game loop initialization
@@ -864,8 +953,8 @@ class ExpModal(bpy.types.Operator):
             # Print comprehensive test report if test manager is active
             if hasattr(self, '_test_manager') and self._test_manager:
                 self._test_manager.print_final_report()
-            else:
-                # Fallback to simple sync report
+            elif context.scene.dev_debug_engine:
+                # Only print sync report if engine debug is enabled
                 self._print_sync_report()
 
             self.engine.shutdown()
@@ -1042,6 +1131,8 @@ class ExpModal(bpy.types.Operator):
                 dynamic_map=dyn_map,
                 platform_linear_velocity_map=v_lin_map,
                 platform_ang_velocity_map=v_ang_map,
+                engine=getattr(self, 'engine', None),  # Pass engine for offloading
+                context=context,  # Pass context for debug output
             )
 
             # Keep existing flags for animations/audio

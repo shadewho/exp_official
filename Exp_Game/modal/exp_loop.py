@@ -66,9 +66,6 @@ class GameLoop:
             # B3) Distance-based culling (has its own throttling): once
             update_performance_culling(op, context)
 
-            # B3.5) Poll multiprocessing engine results (includes culling + other jobs)
-            self._poll_and_apply_engine_results()
-
             # B4) Animations & audio: once with aggregated dt
             # >>> guard: skip character animation update while reset/start wipes <<<
             if not nla_is_locked() and op.animation_manager:
@@ -102,6 +99,10 @@ class GameLoop:
             check_interactions(context)
             update_text_reactions()
             update_sound_tasks()
+
+        # G) Poll multiprocessing engine results EVERY frame (not just physics frames)
+        # This ensures async results like raycast tests get processed promptly
+        self._poll_and_apply_engine_results()
 
 
 
@@ -161,6 +162,135 @@ class GameLoop:
                 elif result.job_type == "COMPUTE_HEAVY":
                     # Stress test - no action needed
                     pass
+                elif result.job_type == "KCC_INPUT_VECTOR":
+                    # Cache input vector result for next frame's use
+                    try:
+                        pc = getattr(op, 'physics_controller', None)
+                        if pc:
+                            wish_dir_xy = result.result.get("wish_dir_xy", (0.0, 0.0))
+                            is_running = result.result.get("is_running", False)
+                            pc.cache_input_result(wish_dir_xy, is_running)
+
+                            # Debug output (frequency-gated)
+                            from ..developer.dev_debug_gate import should_print_debug
+                            if should_print_debug("kcc_offload"):
+                                calc_time = result.result.get("calc_time_us", 0.0)
+                                print(f"[KCC Offload] Cached result: wish_dir={wish_dir_xy}, is_running={is_running}, calc_time={calc_time:.2f}µs")
+                    except Exception as e:
+                        print(f"[GameLoop] Error caching KCC input result: {e}")
+                elif result.job_type == "KCC_SLOPE_PLATFORM_MATH":
+                    # Cache slope/platform math result for next frame's use
+                    try:
+                        pc = getattr(op, 'physics_controller', None)
+                        if pc:
+                            delta_z = result.result.get("delta_z", 0.0)
+                            slide_xy = result.result.get("slide_xy", (0.0, 0.0))
+                            is_sliding = result.result.get("is_sliding", False)
+                            carry = result.result.get("carry", (0.0, 0.0, 0.0))
+                            rot_delta_z = result.result.get("rot_delta_z", 0.0)
+                            pc.cache_slope_platform_result(delta_z, slide_xy, is_sliding, carry, rot_delta_z)
+
+                            # Debug output (frequency-gated)
+                            from ..developer.dev_debug_gate import should_print_debug
+                            if should_print_debug("kcc_offload"):
+                                calc_time = result.result.get("calc_time_us", 0.0)
+                                if is_sliding:
+                                    print(f"[KCC Offload] Cached slope/platform: SLIDING slide_xy={slide_xy}, delta_z={delta_z:.4f}, carry={carry}, rot_delta={rot_delta_z:.4f}, calc_time={calc_time:.2f}µs")
+                                else:
+                                    print(f"[KCC Offload] Cached slope/platform: delta_z={delta_z:.4f}, carry={carry}, rot_delta={rot_delta_z:.4f}, calc_time={calc_time:.2f}µs")
+                    except Exception as e:
+                        print(f"[GameLoop] Error caching KCC slope/platform result: {e}")
+                elif result.job_type == "KCC_RAYCAST":
+                    # Cache raycast result for next frame's use (brute force method)
+                    try:
+                        pc = getattr(op, 'physics_controller', None)
+                        hit = result.result.get("hit", False)
+                        hit_location = result.result.get("hit_location", None)
+                        hit_normal = result.result.get("hit_normal", None)
+                        hit_distance = result.result.get("hit_distance", None)
+
+                        if pc:
+                            pc.cache_raycast_result(hit, hit_location, hit_normal, hit_distance)
+
+                        # Always print for startup test (this job type is only used for testing)
+                        calc_time = result.result.get("calc_time_us", 0.0)
+                        triangles_tested = result.result.get("triangles_tested", 0)
+                        method = result.result.get("method", "BRUTE_FORCE")
+                        if hit:
+                            print(f"[Raycast {method}] HIT dist={hit_distance:.4f}m, tested={triangles_tested:,} tris, time={calc_time:.2f}µs")
+                        else:
+                            print(f"[Raycast {method}] MISS, tested={triangles_tested:,} tris, time={calc_time:.2f}µs")
+                    except Exception as e:
+                        print(f"[GameLoop] Error caching KCC raycast result: {e}")
+
+                elif result.job_type == "KCC_RAYCAST_GRID":
+                    # Cache raycast result for next frame's use (grid-accelerated method)
+                    try:
+                        pc = getattr(op, 'physics_controller', None)
+                        hit = result.result.get("hit", False)
+                        hit_location = result.result.get("hit_location", None)
+                        hit_normal = result.result.get("hit_normal", None)
+                        hit_distance = result.result.get("hit_distance", None)
+
+                        if pc:
+                            pc.cache_raycast_result(hit, hit_location, hit_normal, hit_distance)
+
+                        # Always print for startup test (this job type is only used for testing)
+                        calc_time = result.result.get("calc_time_us", 0.0)
+                        triangles_tested = result.result.get("triangles_tested", 0)
+                        cells_traversed = result.result.get("cells_traversed", 0)
+                        method = result.result.get("method", "GRID_DDA")
+
+                        if hit:
+                            print(f"[Raycast {method}] HIT dist={hit_distance:.4f}m, tested={triangles_tested} tris, cells={cells_traversed}, time={calc_time:.2f}µs")
+                        else:
+                            print(f"[Raycast {method}] MISS, tested={triangles_tested} tris, cells={cells_traversed}, time={calc_time:.2f}µs")
+
+                        # Check for error
+                        if "error" in result.result:
+                            print(f"[Raycast {method}] ERROR: {result.result['error']}")
+                    except Exception as e:
+                        print(f"[GameLoop] Error caching KCC raycast grid result: {e}")
+
+                elif result.job_type == "CACHE_GRID":
+                    # Grid caching confirmation
+                    from ..developer.dev_debug_gate import should_print_debug
+                    if should_print_debug("raycast_offload"):
+                        if result.result.get("success"):
+                            tris = result.result.get("triangles", 0)
+                            cells = result.result.get("cells", 0)
+                            print(f"[Grid Cache] Worker confirmed: {tris:,} triangles, {cells:,} cells cached")
+                        else:
+                            print(f"[Grid Cache] ERROR: {result.result.get('error', 'Unknown error')}")
+
+                elif result.job_type == "KCC_RAYCAST_CACHED":
+                    # Cached raycast result (uses pre-cached grid, minimal serialization)
+                    try:
+                        pc = getattr(op, 'physics_controller', None)
+                        hit = result.result.get("hit", False)
+                        hit_location = result.result.get("hit_location", None)
+                        hit_normal = result.result.get("hit_normal", None)
+                        hit_distance = result.result.get("hit_distance", None)
+
+                        if pc:
+                            pc.cache_raycast_result(hit, hit_location, hit_normal, hit_distance)
+
+                        # Always print for startup test (this job type is only used for testing)
+                        calc_time = result.result.get("calc_time_us", 0.0)
+                        triangles_tested = result.result.get("triangles_tested", 0)
+                        cells_traversed = result.result.get("cells_traversed", 0)
+                        method = result.result.get("method", "CACHED_DDA")
+
+                        if hit:
+                            print(f"[Raycast {method}] HIT dist={hit_distance:.4f}m, tested={triangles_tested} tris, cells={cells_traversed}, time={calc_time:.2f}µs")
+                        else:
+                            print(f"[Raycast {method}] MISS, tested={triangles_tested} tris, cells={cells_traversed}, time={calc_time:.2f}µs")
+
+                        if "error" in result.result:
+                            print(f"[Raycast {method}] ERROR: {result.result['error']}")
+                    except Exception as e:
+                        print(f"[GameLoop] Error handling cached raycast result: {e}")
+
                 # TODO: Add handlers for other game logic job types
                 # elif result.job_type == "AI_PATHFIND":
                 #     self._apply_pathfinding_result(result)

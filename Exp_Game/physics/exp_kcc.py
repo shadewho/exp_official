@@ -85,6 +85,14 @@ class KinematicCharacterController:
         self._up = _UP
         self._floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
 
+        # Multiprocessing engine offload caching (for 1-frame latency pattern)
+        self._cached_input_result = None  # Result from previous frame's job
+        self._last_input_job_id = None    # Track submitted job ID
+        self._cached_slope_platform_result = None  # Slope/platform math result
+        self._last_slope_platform_job_id = None    # Track submitted job ID
+        self._cached_raycast_result = None  # Raycast result (hit, location, normal, distance)
+        self._last_raycast_job_id = None    # Track submitted job ID
+
     # --------------------
     # Input & helpers
     # --------------------
@@ -185,13 +193,33 @@ class KinematicCharacterController:
 
         return best if best[0] is not None else (None, None, None, None)
 
-    def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float):
-        """Single downward probe used for both penetration resolve and snap."""
+    def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float, use_cache=False):
+        """Single downward probe used for both penetration resolve and snap.
+
+        Args:
+            use_cache: If True and cached raycast result exists, use it for static geometry
+                       instead of calling static_bvh.ray_cast(). This enables 1-frame-latency
+                       offloading to worker processes while keeping dynamic platform checks
+                       on the main thread for frame-perfect accuracy.
+        """
         best = (None, None, None, 1e9)
         d = Vector((0.0, 0.0, -1.0))
         start = origin + Vector((0.0, 0.0, 1.0))  # guard above head
 
-        if static_bvh:
+        # Static geometry: use cached worker result (NO main thread fallback)
+        # Phase 4c: Full offload - trust worker results completely
+        if use_cache and self._cached_raycast_result is not None:
+            hit_bool, hit_loc, hit_norm, hit_dist = self._cached_raycast_result
+            if hit_bool and hit_loc is not None:
+                # Cache has a valid HIT - use it
+                loc = Vector(hit_loc)
+                norm = Vector(hit_norm) if hit_norm else Vector((0.0, 0.0, 1.0))
+                dist = (origin - loc).length
+                best = (loc, norm, None, dist)
+            # If cache is MISS, best stays as (None, None, None, 1e9)
+            # Dynamic platforms below may still provide a hit
+        elif not use_cache and static_bvh:
+            # Only use BVH when engine is NOT available (e.g., engine disabled)
             hit = static_bvh.ray_cast(start, d, max_dist + 1.0)
             if hit and hit[0] is not None:
                 dist = (origin - hit[0]).length
@@ -513,6 +541,8 @@ class KinematicCharacterController:
         dynamic_map,
         platform_linear_velocity_map=None,
         platform_ang_velocity_map=None,
+        engine=None,  # Optional engine for offloading
+        context=None,  # Optional context for debug output
     ):
         pos = self.obj.location.copy()
         rot = self.obj.rotation_euler.copy()
@@ -523,9 +553,45 @@ class KinematicCharacterController:
         r          = float(cfg.radius)
         h          = float(cfg.height)
 
-        # 1) Input / speed
-        wish_dir_xy, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
+        # 1) Input / speed (use cached result from previous frame if available)
+        if engine and self._cached_input_result:
+            # Use offloaded result from previous frame's job
+            cached_xy, is_running = self._cached_input_result
+            # Convert tuple to Vector for compatibility with _accelerate()
+            wish_dir_xy = Vector((cached_xy[0], cached_xy[1]))
+
+            # Debug output (frequency-gated)
+            if context:
+                from ..developer.dev_debug_gate import should_print_debug
+                if should_print_debug("kcc_offload"):
+                    print(f"[KCC Offload] Using cached input: wish_dir={wish_dir_xy}, is_running={is_running}")
+        else:
+            # Fallback to local calculation (no engine or first frame)
+            wish_dir_xy, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
+
         target_speed = cfg.max_run if is_running else cfg.max_walk
+
+        # Submit job for NEXT frame (at start so worker can process during physics)
+        if engine:
+            job_data = {
+                "keys_pressed": list(keys_pressed),
+                "camera_yaw": float(camera_yaw),
+                "on_ground": self.on_ground,
+                "ground_norm": (self.ground_norm.x, self.ground_norm.y, self.ground_norm.z) if self.ground_norm else (0.0, 0.0, 1.0),
+                "floor_cos": float(self._floor_cos),
+                "pref_forward": prefs.key_forward,
+                "pref_backward": prefs.key_backward,
+                "pref_left": prefs.key_left,
+                "pref_right": prefs.key_right,
+                "pref_run": prefs.key_run,
+            }
+            self._last_input_job_id = engine.submit_job("KCC_INPUT_VECTOR", job_data)
+
+            # Debug output (frequency-gated)
+            if context:
+                from ..developer.dev_debug_gate import should_print_debug
+                if should_print_debug("kcc_offload"):
+                    print(f"[KCC Offload] Submitted KCC_INPUT_VECTOR job (ID: {self._last_input_job_id})")
 
         # 2) Timers
         self._coyote   = max(0.0, self._coyote - dt)
@@ -553,44 +619,119 @@ class KinematicCharacterController:
                 self.vel.x += v_extra.x
                 self.vel.y += v_extra.y
 
+        # 4) Vertical + steep behavior + 5) Platform carry
+        # CRITICAL: Apply cached results AFTER horizontal acceleration (step 3)
+        # so we don't overwrite the XY velocity that was just calculated
+        if engine and self._cached_slope_platform_result:
+            # Use cached result from worker (XY SLOPE SLIDING ONLY)
+            # CRITICAL: Z velocity and platform carry MUST be calculated on main thread
+            # 1-frame latency on Z velocity causes jitter/bouncing (immediate feedback loop required)
+            _, cached_slide_xy, cached_is_sliding, _, _ = self._cached_slope_platform_result
 
-        # 4) Vertical + steep behavior
-        if not self.on_ground:
-            self.vel.z += cfg.gravity * dt
-        else:
-            if self.on_walkable:
-                self.vel.z = max(self.vel.z, 0.0)
+            # Apply XY slide velocity (replaces movement velocity on steep slopes)
+            if cached_is_sliding:
+                # Sliding overrides normal movement - use slide velocity
+                self.vel.x = cached_slide_xy[0]
+                self.vel.y = cached_slide_xy[1]
+
+            # CRITICAL: Calculate Z velocity on MAIN THREAD (not cached!)
+            # Ground state can change every frame - needs immediate response
+            if not self.on_ground:
+                self.vel.z += cfg.gravity * dt
             else:
-                n = self.ground_norm if self.ground_norm is not None else up
-                uphill   = up - n * up.dot(n)
-                downhill = Vector((-uphill.x, -uphill.y, -uphill.z))
-                if downhill.length > 0.0:
-                    downhill.normalize()
-                    slide_acc = downhill * (abs(cfg.gravity) * float(cfg.steep_slide_gain))
-                    self.vel.x += slide_acc.x * dt
-                    self.vel.y += slide_acc.y * dt
-                    self.vel.z  = min(0.0, self.vel.z + slide_acc.z * dt)
+                if self.on_walkable:
+                    self.vel.z = max(self.vel.z, 0.0)
+                else:
+                    # Steep slope - calculate Z sliding on main thread too
+                    n = self.ground_norm if self.ground_norm is not None else up
+                    uphill   = up - n * up.dot(n)
+                    downhill = Vector((-uphill.x, -uphill.y, -uphill.z))
+                    if downhill.length > 0.0:
+                        downhill.normalize()
+                        slide_acc_z = downhill.z * (abs(cfg.gravity) * float(cfg.steep_slide_gain))
+                        self.vel.z = min(0.0, self.vel.z + slide_acc_z * dt)
 
-                    d_xy = Vector((downhill.x, downhill.y, 0.0))
-                    if d_xy.length > 0.0:
-                        d_xy.normalize()
-                        v_xy  = Vector((self.vel.x, self.vel.y, 0.0))
-                        along = v_xy.dot(d_xy)
-                        if along < float(cfg.steep_min_speed):
-                            v_xy = v_xy - d_xy * along + d_xy * float(cfg.steep_min_speed)
-                            self.vel.x, self.vel.y = v_xy.x, v_xy.y
+            # CRITICAL: Calculate platform carry on MAIN THREAD (not cached!)
+            # 1-frame latency causes bouncy/sliding on moving platforms
+            carry = Vector((0.0, 0.0, 0.0))
+            if self.on_ground and self.ground_obj:
+                v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
+                v_rot = Vector((0.0, 0.0, 0.0))
+                if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
+                    omega = platform_ang_velocity_map[self.ground_obj]
+                    r_vec = (pos - self.ground_obj.matrix_world.translation)
+                    v_rot = omega.cross(r_vec)
+                    rot.z += omega.z * dt
+                carry = v_lin + v_rot
 
-        # 5) Moving platform carry + yaw follow
-        carry = Vector((0.0, 0.0, 0.0))
-        if self.on_ground and self.ground_obj:
-            v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
-            v_rot = Vector((0.0, 0.0, 0.0))
-            if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
-                omega = platform_ang_velocity_map[self.ground_obj]
-                r_vec = (pos - self.ground_obj.matrix_world.translation)
-                v_rot = omega.cross(r_vec)
-                rot.z += omega.z * dt
-            carry = v_lin + v_rot
+            # Debug output
+            if context:
+                from ..developer.dev_debug_gate import should_print_debug
+                if should_print_debug("kcc_offload"):
+                    if cached_is_sliding:
+                        print(f"[KCC Offload] Using cached XY slide: slide_xy={cached_slide_xy} (Z + carry on main thread)")
+                    else:
+                        print(f"[KCC Offload] Using main thread calcs only (Z + carry on main thread)")
+        else:
+            # Fallback to local calculation (no engine or first frame)
+            # 4) Vertical + steep behavior
+            if not self.on_ground:
+                self.vel.z += cfg.gravity * dt
+            else:
+                if self.on_walkable:
+                    self.vel.z = max(self.vel.z, 0.0)
+                else:
+                    n = self.ground_norm if self.ground_norm is not None else up
+                    uphill   = up - n * up.dot(n)
+                    downhill = Vector((-uphill.x, -uphill.y, -uphill.z))
+                    if downhill.length > 0.0:
+                        downhill.normalize()
+                        slide_acc = downhill * (abs(cfg.gravity) * float(cfg.steep_slide_gain))
+                        self.vel.x += slide_acc.x * dt
+                        self.vel.y += slide_acc.y * dt
+                        self.vel.z  = min(0.0, self.vel.z + slide_acc.z * dt)
+
+                        d_xy = Vector((downhill.x, downhill.y, 0.0))
+                        if d_xy.length > 0.0:
+                            d_xy.normalize()
+                            v_xy  = Vector((self.vel.x, self.vel.y, 0.0))
+                            along = v_xy.dot(d_xy)
+                            if along < float(cfg.steep_min_speed):
+                                v_xy = v_xy - d_xy * along + d_xy * float(cfg.steep_min_speed)
+                                self.vel.x, self.vel.y = v_xy.x, v_xy.y
+
+            # 5) Moving platform carry + yaw follow
+            carry = Vector((0.0, 0.0, 0.0))
+            if self.on_ground and self.ground_obj:
+                v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
+                v_rot = Vector((0.0, 0.0, 0.0))
+                if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
+                    omega = platform_ang_velocity_map[self.ground_obj]
+                    r_vec = (pos - self.ground_obj.matrix_world.translation)
+                    v_rot = omega.cross(r_vec)
+                    rot.z += omega.z * dt
+                carry = v_lin + v_rot
+
+        # Submit job for NEXT frame (after we've used cached result from previous frame)
+        # NOTE: Platform carry is NOT offloaded - it's calculated on main thread for frame-perfect sync
+        if engine:
+            job_data = {
+                "vel": (self.vel.x, self.vel.y, self.vel.z),
+                "on_ground": self.on_ground,
+                "on_walkable": self.on_walkable,
+                "ground_norm": (self.ground_norm.x, self.ground_norm.y, self.ground_norm.z) if self.ground_norm else (0.0, 0.0, 1.0),
+                "gravity": float(cfg.gravity),
+                "steep_slide_gain": float(cfg.steep_slide_gain),
+                "steep_min_speed": float(cfg.steep_min_speed),
+                "dt": dt,
+            }
+            self._last_slope_platform_job_id = engine.submit_job("KCC_SLOPE_PLATFORM_MATH", job_data)
+
+            # Debug output
+            if context:
+                from ..developer.dev_debug_gate import should_print_debug
+                if should_print_debug("kcc_offload"):
+                    print(f"[KCC Offload] Submitted KCC_SLOPE_PLATFORM_MATH job (ID: {self._last_slope_platform_job_id})")
 
         # 6) Ceiling (only if going up)
         if self.vel.z > 0.0:
@@ -655,8 +796,10 @@ class KinematicCharacterController:
 
         # 8) Single DOWNWARD ray shared by both vertical penetration and snap
         #    (We intentionally reuse the same probe result for grounding.)
+        #    Use cached worker result for static geometry when engine is available.
         down_max = cfg.snap_down if dz >= 0.0 else max(cfg.snap_down, -dz)
-        locD, nD, gobjD, _ = self._raycast_down_any(static_bvh, dynamic_map, pos, down_max)
+        use_raycast_cache = (engine is not None)
+        locD, nD, gobjD, _ = self._raycast_down_any(static_bvh, dynamic_map, pos, down_max, use_cache=use_raycast_cache)
 
         if dz < 0.0:
             if locD is not None and nD is not None and (pos.z + dz) <= locD.z:
@@ -689,6 +832,42 @@ class KinematicCharacterController:
             if was_grounded:
                 self._coyote = cfg.coyote_time
 
+        # 9) Submit raycast job for NEXT frame using PREDICTED position
+        #    Predict where character will be next frame based on current velocity
+        #    This compensates for 1-frame latency so cached result matches actual position
+        if engine:
+            # Predict next frame position: pos + vel * dt
+            # Use physics_dt (1/30 = 0.0333s) for prediction
+            physics_dt = 1.0 / 30.0
+            pred_x = pos.x + self.vel.x * physics_dt
+            pred_y = pos.y + self.vel.y * physics_dt
+            # For Z, predict based on gravity if airborne, else stay at ground level
+            if self.on_ground:
+                pred_z = pos.z  # Grounded - Z stays same
+            else:
+                # Airborne - predict Z with gravity (vel.z changes by gravity*dt)
+                gravity = float(cfg.gravity)
+                pred_z = pos.z + self.vel.z * physics_dt - 0.5 * gravity * physics_dt * physics_dt
+
+            # Ray starts 1m above predicted position (same as _raycast_down_any)
+            ray_start = (pred_x, pred_y, pred_z + 1.0)
+            ray_dir = (0.0, 0.0, -1.0)
+            # Max distance: snap_down + 1.0 for the guard offset + extra buffer for prediction error
+            max_dist = float(cfg.snap_down) + 2.0  # Extra 1m buffer for safety
+
+            job_data = {
+                "ray_origin": ray_start,
+                "ray_direction": ray_dir,
+                "max_distance": max_dist,
+            }
+            self._last_raycast_job_id = engine.submit_job("KCC_RAYCAST_CACHED", job_data)
+
+            # Debug output (frequency-gated)
+            if context:
+                from ..developer.dev_debug_gate import should_print_debug
+                if should_print_debug("raycast_offload"):
+                    print(f"[KCC Raycast] Submitted job (ID: {self._last_raycast_job_id}) pred=({pred_x:.2f}, {pred_y:.2f}, {pred_z:.2f})")
+
         # Write-back
         self.obj.location = pos
         if abs(rot.z - self.obj.rotation_euler.z) > 0.0:
@@ -713,3 +892,39 @@ class KinematicCharacterController:
             self.ground_obj = None
             return True
         return False
+
+    # ---- Engine offloading support ------------------------------------------
+
+    def cache_input_result(self, wish_dir_xy, is_running):
+        """
+        Cache input vector result from engine worker (for next frame's use).
+        Called by game loop when KCC_INPUT_VECTOR job completes.
+        """
+        self._cached_input_result = (wish_dir_xy, is_running)
+
+    def cache_slope_platform_result(self, delta_z, slide_xy, is_sliding, carry, rot_delta_z):
+        """
+        Cache slope/platform math result from engine worker (for next frame's use).
+        Called by game loop when KCC_SLOPE_PLATFORM_MATH job completes.
+
+        Args:
+            delta_z: Change to apply to vel.z (not final velocity!)
+            slide_xy: XY slide velocity (replaces movement on steep slopes)
+            is_sliding: Boolean flag indicating character is sliding
+            carry: IGNORED (platform carry calculated on main thread for frame-perfect sync)
+            rot_delta_z: IGNORED (rotation calculated on main thread)
+        """
+        self._cached_slope_platform_result = (delta_z, slide_xy, is_sliding, carry, rot_delta_z)
+
+    def cache_raycast_result(self, hit, hit_location, hit_normal, hit_distance):
+        """
+        Cache raycast result from engine worker (for next frame's use).
+        Called by game loop when KCC_RAYCAST job completes.
+
+        Args:
+            hit: Boolean - whether ray hit geometry
+            hit_location: (x, y, z) tuple of hit point (or None)
+            hit_normal: (nx, ny, nz) tuple of hit surface normal (or None)
+            hit_distance: Distance along ray to hit (or None)
+        """
+        self._cached_raycast_result = (hit, hit_location, hit_normal, hit_distance)

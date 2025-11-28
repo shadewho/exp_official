@@ -156,6 +156,47 @@ def register_properties():
         max=30
     )
 
+    bpy.types.Scene.dev_debug_kcc_offload = bpy.props.BoolProperty(
+        name="KCC Physics Offload",
+        description=(
+            "Print KCC (character controller) offload debug:\n"
+            "• Input vector job submissions\n"
+            "• Worker calculation timing\n"
+            "• Slope/platform math offloading\n"
+            "• Performance metrics (% offloaded)"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_kcc_offload_hz = bpy.props.IntProperty(
+        name="KCC Offload Debug Hz",
+        description="Debug output frequency (1-30 Hz). 30 = every frame, 1 = once per second",
+        default=5,
+        min=1,
+        max=30
+    )
+
+    bpy.types.Scene.dev_debug_raycast_offload = bpy.props.BoolProperty(
+        name="Raycast Offload",
+        description=(
+            "Print raycast offloading debug:\n"
+            "• Triangle extraction stats\n"
+            "• Raycast job submissions\n"
+            "• Worker raycast timing\n"
+            "• Hit/miss results\n"
+            "• Performance comparisons"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_raycast_offload_hz = bpy.props.IntProperty(
+        name="Raycast Offload Hz",
+        description="Debug output frequency (1-30 Hz). 30 = every frame, 1 = once per second",
+        default=5,
+        min=1,
+        max=30
+    )
+
     # ══════════════════════════════════════════════════════════════════════
     # Engine Stress Tests
     # ══════════════════════════════════════════════════════════════════════
@@ -201,6 +242,8 @@ def _update_all_debug_flags(context):
     scene.dev_debug_audio = enabled
     scene.dev_debug_animations = enabled
     scene.dev_debug_dynamic_offload = enabled
+    scene.dev_debug_kcc_offload = enabled
+    scene.dev_debug_raycast_offload = enabled
 
 
 def unregister_properties():
@@ -218,6 +261,12 @@ def unregister_properties():
 
     if hasattr(bpy.types.Scene, 'dev_debug_dynamic_offload'):
         del bpy.types.Scene.dev_debug_dynamic_offload
+
+    if hasattr(bpy.types.Scene, 'dev_debug_kcc_offload_hz'):
+        del bpy.types.Scene.dev_debug_kcc_offload_hz
+
+    if hasattr(bpy.types.Scene, 'dev_debug_kcc_offload'):
+        del bpy.types.Scene.dev_debug_kcc_offload
 
     if hasattr(bpy.types.Scene, 'dev_debug_animations_hz'):
         del bpy.types.Scene.dev_debug_animations_hz

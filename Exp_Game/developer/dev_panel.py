@@ -73,6 +73,18 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         if scene.dev_debug_dynamic_offload:
             row.prop(scene, "dev_debug_dynamic_offload_hz", text="Hz")
 
+        # KCC offload debug with Hz control
+        row = col.row(align=True)
+        row.prop(scene, "dev_debug_kcc_offload", text="KCC Physics Offload")
+        if scene.dev_debug_kcc_offload:
+            row.prop(scene, "dev_debug_kcc_offload_hz", text="Hz")
+
+        # Raycast offload debug with Hz control
+        row = col.row(align=True)
+        row.prop(scene, "dev_debug_raycast_offload", text="Raycast Offload")
+        if scene.dev_debug_raycast_offload:
+            row.prop(scene, "dev_debug_raycast_offload_hz", text="Hz")
+
         # Physics debug with Hz control
         row = col.row(align=True)
         row.prop(scene, "dev_debug_physics", text="Physics & Character")
