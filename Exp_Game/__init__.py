@@ -226,6 +226,7 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(CharacterAudioPG)
         bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
 
+
         # --- Modal & Game Start ---
         bpy.utils.unregister_class(ExpModal)
         bpy.utils.unregister_class(EXP_GAME_OT_StartGame)

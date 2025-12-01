@@ -801,9 +801,11 @@ class ExpModal(bpy.types.Operator):
 
         if not self.engine.is_alive():
             self.report({'WARNING'}, "Multiprocessing engine failed to start - continuing without engine")
-            print("[ExpModal] WARNING: Engine failed to start")
+            if context.scene.dev_debug_engine:
+                print("[ExpModal] WARNING: Engine failed to start")
         else:
-            print("[ExpModal] Multiprocessing engine started successfully")
+            if context.scene.dev_debug_engine:
+                print("[ExpModal] Multiprocessing engine started successfully")
 
         # Initialize engine sync tracking
         self._physics_frame = 0
@@ -818,15 +820,15 @@ class ExpModal(bpy.types.Operator):
         if context.scene.dev_run_sync_test:
             self._test_manager = EngineSyncTestManager()
 
-        # ========== RAYCAST OFFLOAD: CACHE GRID IN WORKERS ==========
-        # Send grid ONCE to all workers to avoid 3MB serialization per raycast
+        # ========== KCC PHYSICS: CACHE GRID IN WORKERS ==========
+        # Send grid ONCE to all workers for KCC_PHYSICS_STEP collision detection
         if self.spatial_grid and self.engine and self.engine.is_alive():
-            debug_raycast = context.scene.dev_debug_raycast_offload
+            debug_kcc = context.scene.dev_debug_kcc_offload
             import pickle
             import time as time_module
 
-            if debug_raycast:
-                print(f"\n[Raycast Offload] ========== CACHING GRID IN WORKERS ==========")
+            if debug_kcc:
+                print(f"\n[KCC] ========== CACHING GRID IN WORKERS ==========")
 
             # Measure grid serialization (one-time cost)
             pickle_start = time_module.perf_counter()
@@ -834,66 +836,17 @@ class ExpModal(bpy.types.Operator):
             pickle_time = (time_module.perf_counter() - pickle_start) * 1000
             pickle_size_kb = len(pickled) / 1024
 
-            if debug_raycast:
-                print(f"[Raycast Offload] Grid size: {pickle_size_kb:.1f} KB, serialize time: {pickle_time:.1f}ms")
+            if debug_kcc:
+                print(f"[KCC] Grid size: {pickle_size_kb:.1f} KB, serialize time: {pickle_time:.1f}ms")
 
             # Send CACHE_GRID to all 4 workers
             # Each worker needs its own copy since they're separate processes
             for i in range(4):
                 self.engine.submit_job("CACHE_GRID", {"grid": self.spatial_grid})
 
-            if debug_raycast:
-                print(f"[Raycast Offload] Sent CACHE_GRID to 4 workers")
-                print(f"[Raycast Offload] ================================================\n")
-
-        # ========== RAYCAST OFFLOAD TEST ==========
-        # Compare: brute force vs grid (with data) vs cached (no data)
-        if self.static_triangles and self.engine and self.engine.is_alive():
-            debug_raycast = context.scene.dev_debug_raycast_offload
-
-            # Test raycast: straight down from character position
-            char_pos = self.target_object.location
-            ray_origin = (char_pos.x, char_pos.y, char_pos.z + 2.0)
-            ray_direction = (0.0, 0.0, -1.0)
-            max_distance = 10.0
-
-            if debug_raycast:
-                print(f"[Raycast Offload] ========== STARTUP TEST ==========")
-                print(f"[Raycast Offload] Ray: origin=({char_pos.x:.2f}, {char_pos.y:.2f}, {char_pos.z + 2.0:.2f}), dir=(0,0,-1)")
-
-            # Test 1: Brute force (baseline - slowest)
-            job_id_brute = self.engine.submit_job("KCC_RAYCAST", {
-                "ray_origin": ray_origin,
-                "ray_direction": ray_direction,
-                "max_distance": max_distance,
-                "triangles": self.static_triangles
-            })
-            if debug_raycast:
-                print(f"[Raycast Offload] Test 1: BRUTE FORCE (job {job_id_brute})")
-
-            # Test 2: Grid with data (fast raycast, but 3MB serialization)
-            if self.spatial_grid:
-                job_id_grid = self.engine.submit_job("KCC_RAYCAST_GRID", {
-                    "ray_origin": ray_origin,
-                    "ray_direction": ray_direction,
-                    "max_distance": max_distance,
-                    "grid": self.spatial_grid
-                })
-                if debug_raycast:
-                    print(f"[Raycast Offload] Test 2: GRID_DDA with data (job {job_id_grid})")
-
-            # Test 3: Cached grid (fast raycast, ~100 byte payload!)
-            if self.spatial_grid:
-                job_id_cached = self.engine.submit_job("KCC_RAYCAST_CACHED", {
-                    "ray_origin": ray_origin,
-                    "ray_direction": ray_direction,
-                    "max_distance": max_distance
-                })
-                if debug_raycast:
-                    print(f"[Raycast Offload] Test 3: CACHED_DDA no data (job {job_id_cached})")
-
-            if debug_raycast:
-                print(f"[Raycast Offload] =====================================\n")
+            if debug_kcc:
+                print(f"[KCC] Sent CACHE_GRID to 4 workers")
+                print(f"[KCC] ================================================\n")
         # ===========================================
 
         #game loop initialization
@@ -948,7 +901,8 @@ class ExpModal(bpy.types.Operator):
         # ========== ENGINE SHUTDOWN ==========
         # Shutdown multiprocessing engine gracefully
         if hasattr(self, 'engine') and self.engine:
-            print("[ExpModal] Shutting down multiprocessing engine...")
+            if context.scene.dev_debug_engine:
+                print("[ExpModal] Shutting down multiprocessing engine...")
 
             # Print comprehensive test report if test manager is active
             if hasattr(self, '_test_manager') and self._test_manager:
@@ -959,7 +913,8 @@ class ExpModal(bpy.types.Operator):
 
             self.engine.shutdown()
             self.engine = None
-            print("[ExpModal] Engine shutdown complete")
+            if context.scene.dev_debug_engine:
+                print("[ExpModal] Engine shutdown complete")
         # ====================================
 
         # Restore the cursor modal state

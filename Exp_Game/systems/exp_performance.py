@@ -68,7 +68,7 @@ def compute_cull_batch(
 # ──────────────────────────────────────────────────────────────────────────────
 # Tunables
 # ──────────────────────────────────────────────────────────────────────────────
-CULL_UPDATE_HZ = 1.0                 # frequency for culling decisions (~5 Hz)
+CULL_UPDATE_HZ = 1.0                 # frequency for culling decisions (~1 Hz)
 CULL_HYSTERESIS_RATIO = 0.0         # 10% of cull_distance
 CULL_HYSTERESIS_MIN = 0.0            # at least 1 meter of margin
 MAX_PROP_WRITES_PER_TICK = 100       # safety budget for per-object hide writes
@@ -185,7 +185,7 @@ def _build_perf_runtime_cache(operator, context):
             # Flatten the objects once
             for coll in colls:
                 rec["obj_list"].extend(list(objects_in_collection(coll, recursive=False)))
-                
+
             rec["name_map"] = {o.name: o for o in rec["obj_list"]}
 
         elif entry.target_object:

@@ -454,9 +454,8 @@ class EXP_GAME_OT_StartGame(bpy.types.Operator):
         def _start_modal_after_fs():
             invoke_modal_in_current_view3d(from_ui)  # no self here
             return None
-        print ("start")
+        
         delay = 0.4 if from_ui else 0.2  # ← give the UI/area/handlers a beat to settle
         bpy.app.timers.register(_start_modal_after_fs, first_interval=delay)
-        print ("start 2")
         return {'FINISHED'}
 

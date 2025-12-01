@@ -7,178 +7,187 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **NEVER EDIT:** `C:\Users\spenc\AppData\Roaming\Blender Foundation\Blender\5.0\scripts\addons\Exploratory`
 
-The AppData location is where Blender loads the addon from, but it's NOT the development directory. The user has a custom install script that copies from Desktop → AppData:
-
-```python
-# User's install script
-SRC = r"C:\Users\spenc\Desktop\Exploratory\addons\Exploratory"
-DEST = r"%APPDATA%\Blender Foundation\Blender\5.0\scripts\addons\Exploratory"
-# Script removes old DEST and copies SRC → DEST
-```
+The AppData location is where Blender loads the addon from, but it's NOT the development directory. The user has a custom install script that copies from Desktop → AppData.
 
 **Workflow:**
 1. Make ALL code changes to Desktop version
-2. User runs their install script (copies Desktop → AppData)
-3. User reloads Blender or restarts to test
-
-**DO NOT write directly to AppData - changes will be lost when the install script runs!**
+2. User runs install script (copies Desktop → AppData)
+3. User reloads Blender to test
 
 ---
 
-## Project Overview
+## 🚨 ENGINE-FIRST MANDATE (CRITICAL)
 
-**Exploratory** is a Blender addon (v1.0.0) that transforms Blender into a game engine and interactive experience platform. Users can create first/third-person games, download community worlds from exploratory.online, and build interactive experiences using visual node-based programming.
+**We are in a TRANSITION PHASE developing a robust multiprocessing helper engine.**
 
-**Target Blender Version**: 5.0.0+
-**Author**: Spencer Shade
-**Website**: https://exploratory.online/
-**License**: GNU GPL v2
+### THE NEW WAY: Engine Offloading is REQUIRED
 
-## High-Level Architecture
+**When implementing ANY new feature or task:**
+1. ✅ **ALWAYS check if work can be offloaded to the engine FIRST**
+2. ✅ **Default to engine offload unless there's a specific reason not to**
+3. ✅ **The goal is to FREE the main thread for smooth modal operation**
+4. ✅ **Engine offload is NOT optional - it's the architecture standard**
 
-The addon consists of three major subsystems plus a multiprocessing engine:
+**Why this matters:**
+- Main thread must stay responsive for Blender's modal operator
+- Python GIL limits threading - multiprocessing bypasses it completely
+- Smooth gameplay requires main thread only doing bpy writes and coordination
+- Heavy computation (distance checks, raycasts, pathfinding, etc.) MUST be offloaded
 
-```
-Exploratory/
-├── __init__.py                 # Main registration orchestrator (HAS BPY IMPORT GUARD!)
-├── exp_preferences.py          # User settings (keybinds, character, performance)
-├── build_character.py          # Character/armature building
-├── update_addon.py             # Self-updating system
-│
-├── Exp_Game/                   # Game Engine Core (modal operator, physics, interactions)
-│   ├── engine/                 # Multiprocessing engine for offloading computations
-│   └── developer/              # Developer tools (debug toggles, diagnostics)
-├── Exp_Nodes/                  # Visual Node Editor System
-└── Exp_UI/                     # Web Integration & Community Features
-```
+**Before starting ANY task, ask:**
+- "Can this computation run without bpy access?"
+- "Would this benefit from running in parallel?"
+- "Will this block the main thread?"
 
----
+**If YES to any → Use the engine.**
 
-## CRITICAL: Multiprocessing Engine System
-
-### Overview
-
-A TRUE multiprocessing engine (bypasses Python's GIL) was added to offload heavy computations from the main modal thread.
-
-**Location:** `Exp_Game/engine/`
-
-**Status:** ✅ **PRODUCTION READY** - Actively used for performance culling (1000+ objects)
-
-### Architecture
+### Engine Architecture
 
 ```
-Main Thread (Blender Modal)          Worker Processes (Separate Cores)
+Main Thread (Blender Modal)          Worker Processes (4 cores)
 ┌─────────────────────────┐         ┌──────────────────────────┐
-│  ExpModal               │         │  Worker 0                │
-│  ├─ Game loop          │         │  ├─ Process jobs         │
-│  ├─ Submit jobs   ────►├────────►│  ├─ Return results       │
-│  ├─ Poll results  ◄────┤◄────────┤  └─ NO bpy access!       │
-│  └─ Apply results      │         └──────────────────────────┘
-└─────────────────────────┘         ┌──────────────────────────┐
-                                    │  Worker 1, 2, 3...       │
-         Job Queue                  │  (4 workers total)       │
-         ↓        ↑                 └──────────────────────────┘
-    Submit    Poll
+│  ExpModal               │         │  Worker 0-3              │
+│  ├─ Snapshot data  ────►├────────►│  ├─ Heavy computation    │
+│  ├─ Submit job          │         │  ├─ NO bpy access!       │
+│  ├─ Poll results   ◄────┤◄────────┤  └─ Return pickled data  │
+│  └─ Apply to Blender    │         └──────────────────────────┘
+└─────────────────────────┘
 ```
 
-### Files
+**Files:** `Exp_Game/engine/`
+- `engine_core.py` - Main thread manager
+- `engine_worker_entry.py` - Worker process handler (NO bpy imports!)
+- `engine_types.py` - Job/Result data structures
 
-```
-Exp_Game/engine/
-├── __init__.py              # Public API exports
-├── engine_core.py           # Main engine manager (EngineCore class)
-├── engine_worker_entry.py   # Worker process entry point (NO bpy imports!)
-├── engine_types.py          # Data structures (EngineJob, EngineResult, EngineHeartbeat)
-├── engine_config.py         # Configuration (worker count, queue sizes, debug flags)
-├── stress_test.py           # Comprehensive stress test suite
-├── test_operator.py         # Blender UI operators (Quick Test, Stress Test)
-└── ENGINE_STATUS.md         # Current status, test results, and next steps
-```
-
-### Key Classes
-
-**EngineCore** (engine_core.py):
-- Main manager running on Blender main thread
-- Methods: `start()`, `shutdown()`, `submit_job()`, `poll_results()`, `send_heartbeat()`, `is_alive()`, `get_stats()`
-
-**EngineJob** (engine_types.py):
+**Usage Pattern:**
 ```python
-@dataclass
-class EngineJob:
-    job_id: int
-    job_type: str
-    data: Any  # Must be picklable - NO bpy objects!
-    timestamp: float
+# Main thread - snapshot data
+data = {"positions": [(obj.location.x, obj.location.y, obj.location.z) for obj in objects]}
+
+# Submit to engine (non-blocking)
+job_id = self.engine.submit_job("JOB_TYPE", data)
+
+# Poll for results (non-blocking)
+results = self.engine.poll_results()
+
+# Apply to Blender (main thread)
+for result in results:
+    obj.hide_viewport = result.result["should_hide"]
 ```
 
-**EngineResult** (engine_types.py):
+**Current Production Workloads:**
+- `KCC_PHYSICS_STEP` - Full character physics computation (see Physics System section)
+- `CULL_BATCH` - Performance culling (1000+ objects)
+- `DYNAMIC_MESH_ACTIVATION` - Dynamic mesh distance gating
+- `INTERACTION_CHECK_BATCH` - Proximity/collision checks
+- `CAMERA_OCCLUSION_FULL` - Camera raycast occlusion
+
+---
+
+## ⚠️ PHYSICS SYSTEM (COMPLETE REBUILD - IN TRANSITION)
+
+**Status:** The entire physics system was rebuilt for full engine offload. Currently functional but in refinement phase.
+
+### Architecture: Full Physics Offload
+
+**Worker computes ENTIRE physics step:**
+1. Input → velocity acceleration
+2. Gravity
+3. Jump
+4. Horizontal collision (3D DDA spatial grid)
+5. Step-up detection
+6. Wall slide
+7. Ceiling check
+8. Ground detection
+9. Steep slope sliding
+
+**Main thread is THIN:**
+- Apply worker result
+- Dynamic mesh collision (BVH raycasts)
+- Platform carry (position offset)
+- Write position to Blender
+
+**Key Files:**
+- `Exp_Game/physics/exp_kcc.py` - Main thread coordinator (thin)
+- `Exp_Game/engine/engine_worker_entry.py` - Worker physics handler (KCC_PHYSICS_STEP)
+
+### Same-Frame Polling Pattern
+
+Physics uses **same-frame polling** to eliminate input latency:
 ```python
-@dataclass
-class EngineResult:
-    job_id: int
-    job_type: str
-    result: Any  # Must be picklable
-    success: bool
-    error: Optional[str]
-    timestamp: float
-    processing_time: float
+# Submit job
+job_id = engine.submit_job("KCC_PHYSICS_STEP", job_data)
+
+# Poll with 3ms timeout (worker typically completes in ~100-200µs)
+poll_start = time.perf_counter()
+while (time.perf_counter() - poll_start) < 0.003:
+    results = engine.poll_results(max_results=10)
+    for result in results:
+        if result.job_id == job_id:
+            self._apply_physics_result(result.result, context, dynamic_map)
+            break
+    if result_found:
+        break
+    time.sleep(0.00005)  # 50µs adaptive sleep
 ```
 
-### Integration with Modal Operator
+### Spatial Grid Acceleration
 
-**Location:** `Exp_Game/modal/exp_modal.py`
+Worker uses **3D spatial grid with DDA traversal** for collision:
+- Grid cached once at game start (`CACHE_GRID` job)
+- Cell-based lookup: O(1) instead of O(n) triangle checks
+- Typical performance: ~100-200µs per physics step
 
-**1. Import (line ~37):**
-```python
-from ..engine import EngineCore
+**Grid Stats (example):**
+- Cell size: 2.0m
+- Grid dimensions: 74 x 40 x 15 = 44,400 cells
+- Non-empty: ~5,000 cells (12% fill)
+- Triangles: ~70,000 references
+- Build time: ~180ms (one-time cost)
+
+### What's Working
+
+✅ Basic movement and collision
+✅ Ground detection and snapping
+✅ Jump buffering and coyote time
+✅ Step-up on obstacles
+✅ Wall sliding
+✅ Dynamic mesh collision (horizontal and ground)
+✅ Platform carry (linear and angular)
+✅ Same-frame polling (low latency)
+
+### Known Issues (Active Work)
+
+⚠️ **Slope handling not 100% reliable**
+- Steep slope sliding direction corrected but may need tuning
+- Slope blocking when running needs refinement
+
+⚠️ **Timing/smoothness not perfect**
+- Some jitter remains in specific scenarios
+- Physics step timing needs more work
+
+⚠️ **Dynamic mesh platform carry**
+- Movement relative to platform works but can be stuttery
+- Platform carry applied after physics (may need position prediction)
+
+### Debug Output
+
+Enable via Developer Tools panel (N-panel → Create → Developer Tools):
+- `dev_debug_kcc_offload` - KCC physics debug
+- `dev_debug_engine` - Engine job processing
+
+**Output format:**
+```
+[KCC] APPLY pos=(19.42,-0.15,3.53) ground=False blocked=False step=False | 68us 4rays 0tris
 ```
 
-**2. Startup in `invoke()` (lines ~424-436):**
-```python
-# ========== ENGINE INITIALIZATION ==========
-if not hasattr(self, 'engine'):
-    self.engine = EngineCore()
+---
 
-self.engine.start()
+## CRITICAL: BPY Import Guard
 
-if not self.engine.is_alive():
-    self.report({'WARNING'}, "Multiprocessing engine failed to start - continuing without engine")
-else:
-    print("[ExpModal] Multiprocessing engine started successfully")
-# ===========================================
-```
+**Problem:** Workers crash with `ModuleNotFoundError: No module named '_bpy'`
 
-**3. Heartbeat & Polling in `modal()` (lines ~455-469):**
-```python
-# ========== ENGINE HEARTBEAT & POLLING ==========
-if hasattr(self, 'engine') and self.engine:
-    self.engine.send_heartbeat()
-
-    results = self.engine.poll_results()
-    if results:
-        for result in results:
-            if result.success:
-                pass  # TODO: Handle successful results
-            else:
-                print(f"[ExpModal] Engine job {result.job_id} failed: {result.error}")
-# ================================================
-```
-
-**4. Shutdown in `cancel()` (lines ~496-503):**
-```python
-# ========== ENGINE SHUTDOWN ==========
-if hasattr(self, 'engine') and self.engine:
-    print("[ExpModal] Shutting down multiprocessing engine...")
-    self.engine.shutdown()
-    self.engine = None
-# ====================================
-```
-
-### CRITICAL: BPY Import Guard
-
-**Problem:** Worker processes try to import the addon's `__init__.py`, which imports `bpy`, which doesn't exist in workers → crash with `ModuleNotFoundError: No module named '_bpy'`
-
-**Solution:** Guard in `Exploratory/__init__.py` (lines ~29-58):
+**Solution:** Guard in `Exploratory/__init__.py`:
 ```python
 import sys
 if 'multiprocessing' in sys.modules and __name__ != '__main__':
@@ -187,667 +196,205 @@ if 'multiprocessing' in sys.modules and __name__ != '__main__':
 else:
     # Normal Blender context - safe to import
     import bpy
-    from .Exp_UI.internet.helpers import is_internet_available
-    # ... all other imports inside this else block ...
-
-    def version_check_timer():
-        # ...
-
-    def register():
-        # ...
-
-    def unregister():
-        # ...
+    # ... ALL imports inside this else block ...
 ```
 
-**IMPORTANT:** ALL imports and functions that depend on bpy MUST be inside the `else` block!
-
-### Worker Process Isolation
-
-**engine_worker_entry.py** is completely self-contained:
-- NO relative imports (avoids triggering addon `__init__.py`)
-- Defines `EngineJob` and `EngineResult` inline (duplicated to avoid imports)
-- Contains `process_job()` and `worker_loop()` functions
-- NO access to `bpy` module
-
-**Production Job Types:**
-- `"CULL_BATCH"` - Performance culling distance calculations (PRODUCTION USE)
-- `"ECHO"` - Simple echo test (echoes data back)
-- `"FRAME_SYNC_TEST"` - Lightweight sync test for latency measurement
-- `"COMPUTE_HEAVY"` - Stress test job with configurable iterations
-
-**To Add New Job Types:**
-1. Edit `process_job()` in `engine_worker_entry.py`:
-   ```python
-   elif job.job_type == "MY_JOB_TYPE":
-       # Pure Python logic - NO bpy!
-       result_data = {"my_result": compute_something(job.data)}
-   ```
-2. Add handler in `exp_loop.py` `_poll_and_apply_engine_results()`:
-   ```python
-   elif result.job_type == "MY_JOB_TYPE":
-       # Apply result to Blender (bpy access OK here)
-       apply_my_result(op, result.result)
-   ```
-3. **CRITICAL**: Add debug logging controlled by `scene.dev_debug_*` properties
-4. Test using Developer Tools panel (N-panel → Create → Developer Tools)
-
-### Configuration
-
-**File:** `Exp_Game/engine/engine_config.py`
-
-```python
-WORKER_COUNT = 4              # Number of worker processes (hardcoded for compatibility)
-JOB_QUEUE_SIZE = 10000        # Max buffered jobs (large for burst loads)
-RESULT_QUEUE_SIZE = 10000     # Max buffered results (large for burst loads)
-HEARTBEAT_INTERVAL = 1.0      # Seconds between heartbeats
-SHUTDOWN_TIMEOUT = 2.0        # Seconds to wait for graceful shutdown
-DEBUG_ENGINE = False          # Debug logging (controlled by scene.dev_debug_engine)
-```
-
-**⚠️ CRITICAL - Debug Logging:**
-- ALL debug output MUST be toggleable via Developer Tools panel
-- Set `DEBUG_ENGINE = False` by default (silent console)
-- Users enable debug categories in N-panel → Create → Developer Tools
-- See "Developer Tools Module" section below
-
-### Usage Pattern
-
-**1. Submit Job (Main Thread):**
-```python
-# Snapshot data from Blender (bpy access OK here)
-positions = [(obj.location.x, obj.location.y, obj.location.z) for obj in objects]
-
-# Submit to workers (non-blocking)
-job_id = self.engine.submit_job("COMPUTE", {"positions": positions})
-```
-
-**2. Process Job (Worker Process):**
-```python
-# In engine_worker_entry.py process_job()
-if job.job_type == "COMPUTE":
-    # Pure Python - NO bpy access!
-    result = heavy_computation(job.data["positions"])
-    return EngineResult(job.job_id, job.job_type, {"result": result}, success=True)
-```
-
-**3. Poll Results (Main Thread):**
-```python
-# Non-blocking poll
-results = self.engine.poll_results()
-
-for result in results:
-    if result.success:
-        # Apply to Blender objects (bpy access OK here)
-        apply_result_to_scene(result.result)
-```
-
-### Current Status
-
-**✅ Phase 1 Complete - Core Engine Functional:**
-- Engine infrastructure built and stress tested
-- Integrated into modal operator
-- BPY import guard in place
-- 4 worker processes (hardcoded for cross-platform safety)
-- Heartbeat monitoring (1/sec)
-- Graceful shutdown
-- **Stress Test Results: Grade B (USABLE)**
-  - 1,284 jobs/sec throughput
-  - 100% completion rate (7,146/7,146 jobs)
-  - 0 queue rejections
-  - Cross-platform compatible (Windows confirmed, macOS/Linux expected)
+**ALL imports and functions that use bpy MUST be inside the `else` block!**
 
 ---
 
-## ✅ ENGINE-MODAL SYNCHRONIZATION (COMPLETED)
+## Project Overview
 
-The multiprocessing engine is **fully synchronized** with the 30Hz modal game loop and **production-ready**.
+**Exploratory** is a Blender addon that transforms Blender into a game engine and interactive experience platform.
 
-### What Was Implemented
+**Target Blender Version**: 5.0.0+
+**License**: GNU GPL v2
 
-**1. Frame Tracking System** (`exp_modal.py`)
-- `_physics_frame` counter increments with each physics step
-- Tracks exact frame number for engine synchronization
+### High-Level Architecture
 
-**2. Frame-Tagged Job Submission**
-- `submit_engine_job()` tags every job with frame number and timestamp
-- `_pending_jobs` tracks submission frame for latency measurement
+```
+Exploratory/
+├── __init__.py                 # Registration (HAS BPY IMPORT GUARD!)
+├── Exp_Game/                   # Game Engine Core
+│   ├── engine/                 # Multiprocessing engine (4 workers)
+│   ├── modal/                  # Game loop (30Hz fixed timestep)
+│   ├── physics/                # KCC (offloaded to engine)
+│   ├── animations/             # Character state machine
+│   ├── interactions/           # Trigger system
+│   ├── reactions/              # Event response system
+│   ├── systems/                # Performance culling (offloaded)
+│   └── developer/              # Debug toggles (N-panel)
+├── Exp_Nodes/                  # Visual node editor
+└── Exp_UI/                     # Web integration (exploratory.online)
+```
 
-**3. Engine Polling in Game Loop** (`exp_loop.py`)
-- Moved from `modal()` to `GameLoop.on_timer()` for proper frame sync
-- `_poll_and_apply_engine_results()` processes results after physics
-- Integrated into update order: threads_poll → **engine_poll** → animations
+### Game Loop (30Hz Fixed Timestep)
 
-**4. Comprehensive Stress Test Suite**
-- 6 test scenarios: BASELINE, LIGHT_LOAD, MEDIUM_LOAD, HEAVY_LOAD, BURST_TEST, CATCHUP_STRESS
-- Total duration: ~18 seconds, automatic execution on game start
-- Per-scenario metrics: frame/time latency, catchup events, stale results
-- `EngineSyncTestManager` class manages all testing
+**File:** `Exp_Game/modal/exp_loop.py` (`GameLoop.on_timer`)
 
-### Test Results (Proven Capabilities)
+**Update order per frame:**
+1. Time update (wall-clock + scaled)
+2. Custom tasks (scripted animations, property changes)
+3. Dynamic meshes (BVH rebuild for moving platforms)
+4. **Performance culling submit** (engine job)
+5. **Engine poll** (apply completed jobs)
+6. Animations (character state machine)
+7. Input handling
+8. **Physics** (KCC via engine)
+9. Camera update
+10. Interactions/reactions
+11. UI/audio
 
-**✅ Zero-Frame Latency Under Load**
-- LIGHT_LOAD (5 jobs/frame): 0.00 avg, 0 max latency
-- MEDIUM_LOAD (15 jobs/frame): 0.00 avg, 0 max latency
-- HEAVY_LOAD (30 jobs/frame): 0.00 avg, 0 max latency
+### Core Systems
 
-**✅ Catchup Frame Synchronization**
-- HEAVY_LOAD scenario: **50% catchup rate** (half of timer events had 2-3 physics steps)
-- Still achieved **0.00 frame latency** - results arrive at correct physics frames
-- Proves frame attribution is accurate during modal inconsistency
+**Interactions/Reactions:**
+- Triggers: PROXIMITY, COLLISION, INTERACT, ACTION, TIMER, ON_GAME_START
+- Reactions: Actions, sounds, transforms, projectiles, UI, objectives
+- Task-based execution with delays and interpolation
 
-**✅ Burst Load Tolerance**
-- 50-job bursts every second: 0.00 avg latency, no saturation
-- Queue handles simultaneous job submissions without degradation
+**Performance Culling:**
+- Distance-based object visibility (1000+ objects)
+- Fully offloaded to engine workers
+- Round-robin batching for sustained load
 
-**✅ Forced Modal Inconsistency**
-- CATCHUP_STRESS: Injected 100ms delays every 15 frames
-- 19.2% catchup rate, still 0.00 frame latency
-- Engine maintains sync during deliberate timer irregularities
-
-**✅ Sustained Throughput**
-- 900+ jobs/sec sustained over multiple scenarios
-- 4,600+ total jobs processed in 18 seconds
-- No dropped jobs (except 5 in early test iteration, fixed)
-
-**⚠️ Startup Overhead (Known Issue)**
-- BASELINE scenario: Max 7 frames latency during first 60 frames
-- 11.9% stale results in first 2 seconds (worker warm-up)
-- Not a concern for gameplay (only affects initial startup)
-
-### Active Production Workloads
-
-**Performance Culling (CULL_BATCH):**
-- **Purpose**: Distance-based object visibility culling
-- **Location**: `exp_performance.py` → `engine_worker_entry.py`
-- **Throughput**: 1000+ objects per frame, round-robin batching
-- **Optimization**: Zero main-thread distance calculations (only bpy writes)
-- **Main Thread**: Snapshot positions, apply hide_viewport results
-- **Worker**: Pure math distance calculations, threshold comparisons
-
-**Test Jobs:**
-- `"ECHO"` - Simple echo test (0ms compute)
-- `"FRAME_SYNC_TEST"` - Lightweight sync test (0-0.1ms compute)
-- `"COMPUTE_HEAVY"` - Stress test job (1-8ms compute, configurable iterations)
-
-### Remaining Engine Tests (TODO Before Production)
-
-**CRITICAL (Do First):**
-1. **Long-Duration Stability** - Run 5-minute test, monitor memory/latency over time
-2. **Worker Failure Recovery** - Kill worker mid-test, verify engine continues with 3 workers
-3. **Queue Saturation** - Submit 15k jobs at once, verify graceful rejection
-
-**RECOMMENDED:**
-4. **Frame Rate Impact** - Monitor actual physics timing, verify 30Hz maintained
-5. **Shutdown Under Load** - Force shutdown at peak load, verify clean exit
-
-**Success Criteria for Production:**
-- Phase 1 tests pass → Safe for production use
-- Know exact capacity limits and failure modes
-- Confidence in fault tolerance
+**Character Animation:**
+- State machine: idle/walk/run/jump/fall/land
+- NLA track integration
+- Audio state synchronization
 
 ---
 
-**Current Status:** ✅ **PRODUCTION** - Engine running performance culling for 1000+ objects
-
-**Debug Output Control:**
-- **Default**: Silent console (all debug flags = False)
-- **Enable**: N-panel → Create → Developer Tools → "Engine (Multiprocessing)"
-- **Sync Tests**: Toggle "Run Sync Stress Tests on Start" (off by default)
-
-**Expected Behavior (Debug Enabled):**
-- Game start: `[Engine Worker 0-3] Started`, `Workers: 4/4`
-- During game: Heartbeat messages showing workers alive
-- Test mode: Scenario progress and [CATCHUP]/[BURST]/[DELAY] messages
-- Game end: `[Engine Core] Shutdown complete (processed N jobs in X.Xs)`
-
-**Expected Behavior (Production - Debug Disabled):**
-- **Silent console** - no engine messages
-- Engine runs invisibly in background
-- Performance culling works without any console output
-
-**If Workers Crash:**
-- Error: `ModuleNotFoundError: No module named '_bpy'`
-- Cause: BPY import guard not working or workers importing addon
-- Fix: Check that `__init__.py` has the guard and all imports are inside `else` block
-
----
-
-## Developer Tools Module
+## Developer Tools
 
 **Location:** `Exp_Game/developer/`
 
-**Purpose:** Centralized debug controls for developers and advanced users.
+**Debug Categories (N-panel → Create → Developer Tools):**
+- `dev_debug_engine` - Engine/worker debug
+- `dev_debug_kcc_offload` - Physics offload debug
+- `dev_debug_performance` - Culling debug
+- `dev_debug_physics` - Movement/collision debug
+- `dev_debug_interactions` - Trigger/reaction debug
+- `dev_debug_audio` - Audio debug
+- `dev_debug_animations` - Animation debug
+- `dev_debug_all` - Master toggle
 
-### Structure
-
-```
-Exp_Game/developer/
-├── __init__.py          # Module initialization and exports
-├── dev_properties.py    # Debug toggle properties (scene properties)
-└── dev_panel.py         # UI panel in Create tab
-```
-
-### Debug Categories (All Toggleable from N-Panel)
-
-**Console Debug Output:**
-- `dev_debug_engine` - Engine/multiprocessing debug (workers, jobs, heartbeats)
-- `dev_debug_performance` - Performance culling debug (distance calcs, batch processing)
-- `dev_debug_physics` - Physics & character controller debug (movement, collisions)
-- `dev_debug_interactions` - Interactions & reactions debug (triggers, task execution)
-- `dev_debug_audio` - Audio system debug (playback, state changes)
-- `dev_debug_animations` - Animation & NLA debug (state transitions, blending)
-
-**Master Toggle:**
-- `dev_debug_all` - Enable ALL debug categories at once (convenience toggle)
-
-**Engine Diagnostics:**
-- `dev_run_sync_test` - Run comprehensive engine stress tests on game start (~18 seconds)
-
-### Adding New Debug Categories
-
-**1. Add Property** (`dev_properties.py`):
-```python
-bpy.types.Scene.dev_debug_NEW_CATEGORY = bpy.props.BoolProperty(
-    name="New Category Debug",
-    description="Detailed description of what this debugs",
-    default=False
-)
-```
-
-**2. Add to UI** (`dev_panel.py`):
-```python
-col.prop(scene, "dev_debug_NEW_CATEGORY", text="New Category Name")
-```
-
-**3. Update Master Toggle** (`dev_properties.py` → `_update_all_debug_flags()`):
-```python
-scene.dev_debug_NEW_CATEGORY = enabled
-```
-
-**4. Use in Code:**
-```python
-if context.scene.dev_debug_NEW_CATEGORY:
-    print("[NewCategory] Debug message here")
-```
-
-### ⚠️ CRITICAL DEBUG LOGGING REQUIREMENTS
-
-**ALL future engine changes MUST:**
-1. ✅ Add debug logging for significant events
-2. ✅ Make logging toggleable via `scene.dev_debug_*` properties
-3. ✅ Test with debug enabled/disabled before committing
-4. ✅ Default to **silent console** (debug flags = False)
-5. ✅ Document new debug flags in this file
-
-**Example - Adding Engine Job Type:**
-```python
-# In engine_worker_entry.py
-elif job.job_type == "NEW_JOB":
-    if DEBUG_ENGINE:  # Controlled by scene.dev_debug_engine
-        print(f"[Worker] Processing NEW_JOB: {job.data}")
-    # ... processing logic
-```
-
-**Philosophy:**
-- **Production**: Silent console, no spam
-- **Development**: Toggle specific categories as needed
-- **Organized**: Group related debug output by category
-- **Scalable**: Easy to add new categories without refactoring
+**⚠️ ALL debug output MUST:**
+1. Be toggleable via `scene.dev_debug_*` properties
+2. Default to False (silent console in production)
+3. Use format: `[Category] message`
 
 ---
 
-## Original Architecture (Pre-Engine)
+## Common Patterns
 
-### 1. Exp_Game: Game Engine Core
+### Engine Offload Pattern
 
-Modal operator-based game loop running at 30Hz with fixed timestep physics.
-
-**Core Systems**:
-- **modal/**: Main game loop (`exp_modal.py` modal operator + `exp_loop.py` frame updates)
-- **physics/**: Kinematic Character Controller (KCC), BVH collision trees, camera modes
-- **animations/**: Character state machine (idle/walk/run/jump/fall/land)
-- **interactions/**: Trigger system (proximity, collision, interact key, timers)
-- **reactions/**: Event response system (actions, sounds, transforms, UI, projectiles, objectives)
-- **systems/**: Performance culling (`exp_performance.py`), objectives
-- **audio/**: Sound management
-- **engine/**: Multiprocessing engine (TRUE parallelism, bypasses GIL)
-- **developer/**: Debug toggles and diagnostic tools (N-panel UI)
-
-**Game Loop Pattern** (`GameLoop.on_timer` in exp_loop.py):
-1. Fixed 30Hz physics updates (wall-clock locked, uses `time.perf_counter()`)
-2. Up to 3 catchup steps per frame to prevent time dilation
-3. Per-frame update order:
-   - time → tasks → dynamic meshes
-   - **culling submit** → **engine poll** (performance culling via multiprocessing)
-   - animations → input → physics → camera
-   - interactions → UI → audio
-
-**Physics System** (exp_kcc.py):
-- Capsule-based collision with BVH raycasting
-- Static BVH built once at game start, dynamic BVH per-frame for moving platforms
-- Ground detection, jump buffering, platform riding
-
-**Interaction/Reaction System**:
-- Interactions define triggers (PROXIMITY, COLLISION, INTERACT, ACTION, OBJECTIVE_UPDATE, TIMER_COMPLETE, ON_GAME_START, EXTERNAL)
-- Reactions execute responses (custom actions, sounds, property changes, transforms, projectiles, UI text, objective updates, mobility locks, etc.)
-- Task-based execution with delays and interpolation
-- Nodes translate to these same property groups at game start
-
-**Performance Culling System:**
-- **File**: `Exp_Game/systems/exp_performance.py`
-- **Engine Integration**: Uses multiprocessing engine for distance calculations
-- **Architecture**: Zero main-thread distance calculations (max offloading)
-- **Main Thread**: Snapshot positions, apply hide_viewport, placeholder toggling
-- **Engine Workers**: Per-object distance calculations, threshold comparisons
-- **Throughput**: 1000+ objects per frame with round-robin batching
-- **Optimization**: Single-object proxy check for per-object mode (no redundant iteration)
-
-**Legacy Threading (REMOVED):**
-- ❌ `exp_threads.py` - DELETED (replaced by multiprocessing engine)
-- ❌ `ThreadEngine` class - REMOVED (Python threading, GIL-limited)
-- ✅ All culling now uses multiprocessing engine (true parallelism)
-
-### 2. Exp_Nodes: Visual Node Programming
-
-Custom node tree (`ExploratoryNodesTreeType`) for authoring interactions without code.
-
-**Node Categories**:
-- **Triggers** (blue): Proximity, Collision, Interact Key, Action Key, External, Objective Update, Timer Complete, On Game Start
-- **Reactions** (green/yellow): Custom Action, Character Action, Play Sound, Property Value, Transform, Custom UI Text, Crosshairs, Projectile, Hitscan, Objective Counter/Timer, Mobility, Mesh Visibility, Reset Game, Action Keys, Parenting, Tracking
-- **Objectives** (orange): Counter/Timer nodes
-- **Utilities** (gray): Delay, Capture Float Vector
-
-**Runtime Behavior**: Nodes are NOT executed during gameplay. At game start, node trees are translated into `scene.interactions` collection. The game engine reads from property groups, not node trees.
-
-### 3. Exp_UI: Web Integration
-
-Connects Blender to exploratory.online for downloading/uploading worlds.
-
-**Key Features**:
-- Token-based authentication (`auth/`)
-- Package browsing and downloading (`download_and_explore/`)
-- GPU-accelerated custom UI overlay (`interface/drawing/`)
-- Social features: likes, comments, event voting (`packages/`, `events/`)
-- Preferences persistence workaround for Blender 5.0 (`prefs_persistence.py`)
-
-**API Base URL** (`main_config.py`):
-- Production: `https://exploratory.online`
-- Dev: `http://127.0.0.1:5000` (via `ADDON_ENV` environment variable)
-
----
-
-## Critical Registration Order
-
-**IMPORTANT**: Submodules must register in this exact order due to dependencies:
-1. **Developer properties** (early registration, used by all systems)
-2. Core preferences and operators
-3. Preferences persistence handlers
-4. **Exp_Game** (defines scene properties used by nodes)
-5. **Exp_UI** (may reference Game properties)
-6. **Exp_Nodes** (node sockets reference Game property types)
-
-See `Exp_Game/__init__.py` `register()` function for implementation.
-
----
-
-## Key Property Storage Locations
-
-**Scene Properties** (game state):
-- `scene.target_armature`: Player armature
-- `scene.character_actions`: Action pointers (idle, walk, run, jump, fall, land)
-- `scene.character_audio`: Audio settings
-- `scene.interactions`: Interaction definitions
-- `scene.reactions`: Global reaction library
-- `scene.objectives`: Quest objectives
-- `scene.proxy_meshes`: Collision mesh list
-- `scene.mobility_game`: Movement locks
-
-**Addon Preferences** (user settings):
-- Keybinds (WASD, jump, run, interact, action)
-- Mouse sensitivity
-- Character customization (skin, actions, sounds)
-- Performance presets (Low/Medium/High)
-
----
-
-## Common Development Tasks
-
-### Running the Addon
-1. Copy `Exploratory/` to Blender addons directory
-2. Enable in Preferences → Add-ons → "Exploratory"
-3. Access via 3D Viewport → N-panel → "Exploratory" tab
-
-### Testing the Engine
-1. Start game (modal operator)
-2. Check System Console for:
-   - `[Engine Worker 0] Started` through `[Engine Worker 3] Started`
-   - `Workers: 4/4` in heartbeat messages
-3. End game - should see `[Engine Core] Shutdown complete`
-
-### Building a Game
-**Method 1 - UI Panels**:
-1. Set `scene.target_armature` to player armature
-2. Add proxy meshes to `scene.proxy_meshes` collection
-3. Create interactions in Studio panel (`VIEW3D_PT_Exploratory_Studio`)
-4. Add reactions to interactions
-5. Press "Start Game" to launch modal operator
-
-**Method 2 - Node Editor**:
-1. Create "Exploratory Nodes" tree in Node Editor
-2. Add trigger nodes (proximity, collision, etc.)
-3. Connect reaction nodes
-4. Nodes auto-translate to interactions on game start
-
-### Debugging
-- Enable performance overlay: `Exp_Game/systems/exp_live_performance.py` (shows frame timing, physics steps)
-- Console output: Use `print()` statements (visible in Blender console)
-- Check registration order if properties are missing
-- Engine debug: Set `DEBUG_ENGINE = True` in `engine_config.py`
-
----
-
-## Important Patterns
-
-### Modal Operator Pattern
-`ExpModal` (Exp_Game/modal/exp_modal.py) demonstrates best practices:
-- Store state as operator properties (not global variables)
-- Use `time.perf_counter()` for monotonic timing
-- Fixed timestep physics (separate from render FPS)
-- Cleanup in `cancel()` method
-- Timer for periodic updates (`event_timer_add`)
-- **NEW:** Engine lifecycle (start in invoke, heartbeat in modal, shutdown in cancel)
-
-### Multiprocessing Pattern
-**Main Thread (Blender):**
 ```python
-# Snapshot (read-only bpy access)
-data = snapshot_from_blender()
+# 1. SNAPSHOT (main thread)
+data = snapshot_blender_data()
 
-# Submit (non-blocking)
-job_id = engine.submit_job("TYPE", data)
+# 2. SUBMIT (non-blocking)
+job_id = engine.submit_job("JOB_TYPE", data)
 
-# Poll (non-blocking)
+# 3. POLL (non-blocking, in game loop)
 results = engine.poll_results()
 
-# Apply (write bpy)
+# 4. APPLY (main thread, bpy writes)
 for result in results:
-    apply_to_blender(result)
+    apply_to_blender(result.result)
 ```
 
-**Worker Process:**
+### Adding New Engine Job Type
+
+**1. Worker Handler** (`engine_worker_entry.py`):
 ```python
-# NO bpy access allowed!
-def process_job(job):
-    # Pure Python computation
-    result = compute(job.data)
-    return EngineResult(...)
+elif job.job_type == "MY_JOB":
+    # Pure Python - NO bpy!
+    result = compute_something(job.data)
+    return {"result": result}
 ```
 
-### BVH Tree Usage
-1. Build once for static meshes (`create_bvh_tree` in exp_bvh_local.py)
-2. Per-frame rebuild for dynamic meshes (moving platforms)
-3. Raycast down from character for ground detection
-4. Store as operator property to avoid rebuilding
+**2. Main Thread Handler** (`exp_loop.py` or system file):
+```python
+elif result.job_type == "MY_JOB":
+    apply_my_result(op, result.result)
+```
 
-### Task System (Reactions)
-1. Interaction fires → creates task dictionary
-2. Task added to global task list
-3. Each frame, task update function runs
-4. Task removes itself when complete
-5. Supports delays and property interpolation
+**3. Debug Logging:**
+```python
+if context.scene.dev_debug_MY_CATEGORY:
+    print(f"[MyCategory] {message}")
+```
 
----
+### Modal Operator Pattern
 
-## Extension Points
-
-### Adding New Job Types to Engine
-1. Edit `engine_worker_entry.py` → `process_job()` function
-2. Add new `if job.job_type == "YOUR_TYPE":` branch
-3. Implement pure Python logic (NO bpy!)
-4. Return `EngineResult` with result data
-
-### Adding New Trigger Types
-1. Define enum in `exp_interaction_definition.py`
-2. Add properties to `InteractionDefinition` class
-3. Implement check logic in `exp_interactions.py`
-4. Create node class in `trigger_nodes.py`
-5. Add to node menu in `node_editor.py`
-
-### Adding New Reaction Types
-1. Define properties in `exp_reaction_definition.py`
-2. Implement execution in `exp_reactions.py` (or new module)
-3. Create node class in `reaction_nodes.py`
-4. Add to node menu in `node_editor.py`
-5. Update UIList drawing in `trig_react_obj_lists.py`
-
-### Customizing Character Physics
-Physics tuning exposed in `Exp_Game/physics/exp_kcc.py`:
-- `CharacterPhysicsConfigPG`: Gravity, jump force, acceleration, friction
-- Editable via `VIEW3D_PT_Exploratory_PhysicsTuning` panel
+- Store state as operator properties (not globals)
+- Use `time.perf_counter()` for timing
+- Engine lifecycle: start in `invoke()`, shutdown in `cancel()`
+- Fixed timestep physics (30Hz, up to 3 catchup steps)
 
 ---
 
-## File Naming Conventions
+## Performance Considerations
 
-**Prefixes**:
-- `exp_`: Game engine implementation files
-- `EXPLORATORY_`: Operator/panel class names
-- `EXP_`: Panel/UI class names
-- `_`: Private functions/variables
+**Main thread should ONLY:**
+- Read Blender data (snapshots)
+- Write Blender data (apply results)
+- Coordinate engine jobs
+- Handle user input
 
-**Patterns**:
-- `exp_<feature>.py`: Feature implementation
-- `<feature>_definition.py`: Property group definitions
-- `<feature>_nodes.py`: Node implementations
+**Engine workers should do:**
+- Heavy computation (distance, raycasts, pathfinding)
+- Physics simulation
+- AI decision-making
+- Batch processing
+
+**Current bottlenecks:**
+- Dynamic mesh BVH rebuild (per-frame, main thread) - CANNOT offload (needs bpy)
+- Platform carry (needs bpy for matrix_world)
+- Camera updates (needs bpy for object transforms)
 
 ---
 
-## Known Limitations & Considerations
+## Known Limitations
 
-**Blender 5.0 Compatibility**:
-- Uses preferences persistence workaround (no `AddonPreferences` IDProperties)
-- Sentinel enum pattern to avoid empty enum errors
-- `mtime` caching for enum loading from .blend files
+**Physics (In Transition):**
+- Slope handling needs refinement
+- Some timing/smoothness issues remain
+- Dynamic platform carry can be stuttery
 
-**Performance**:
-- Distance-based culling system (multiprocessing engine - TRUE parallelism)
-- Performance culling: 1000+ objects per frame with zero main-thread distance calculations
-- **Sprint 1.1 COMPLETE**: Dynamic mesh activation offloaded (distance checks in workers)
-- **Sprint 1.2 COMPLETE**: Interaction proximity/AABB checks offloaded (4-34µs per batch)
-- Debug output: Toggleable via Developer Tools panel (silent by default)
-- Moving platforms: Only vertical and rotational motion transfer (no lateral sliding)
+**Performance:**
+- Moving platforms: Only vertical/rotational motion (no lateral sliding)
+- Capsule collision only (no complex shapes)
 
-**Physics**:
-- Capsule-based collision only (no complex shapes)
-- Fixed 30Hz timestep (up to 3 catchup steps)
-
-**Character Customization**:
-- Must use compatible armature with default bone structure
-- Custom skins must be rigged to compatible skeleton
-
-**Multiprocessing**:
-- Workers have NO bpy access (will crash if attempted)
+**Multiprocessing:**
+- Workers have NO bpy access (will crash)
 - All data must be picklable (no Blender objects!)
-- 1-2 frame latency acceptable for AI/physics predictions
-- Not for player input (must be immediate)
-
----
-
-## Special Files
-
-**combine.py**: Development tool (Tkinter GUI for combining Python files into single text file, excluded from distribution via .gitignore)
-
-**update_addon.py**: Self-update mechanism that downloads updates from exploratory.online, preserves cache/database, handles Windows file locking
-
-**__init__.py**: HAS CRITICAL BPY IMPORT GUARD - DO NOT REMOVE!
-
----
-
-## Asset Locations
-
-**Default Assets**:
-- Character skin/armature: `Exp_Game/exp_assets/Skins/exp_default_char.blend`
-- Default armature only: `Exp_Game/exp_assets/Armature/Armature.blend`
-- Sounds: `exp_assets/Sounds/` (folder structure present)
-
-**Downloaded Worlds**:
-- Temporary location: `Exp_UI/World Downloads/`
-- Auto-cleanup on game end
-
----
-
-## Architecture Philosophy
-
-- **Blender-native**: Uses Blender's data model (no external engine)
-- **Modular**: Clear separation between game engine, nodes, and web UI
-- **Property-based**: Scene properties for state (not global variables)
-- **Timer-driven**: Modal operator with timer (not frame handlers)
-- **Fixed timestep**: Consistent physics regardless of render FPS
-- **TRUE parallelism**: Multiprocessing engine for heavy computations (NEW!)
+- 0-1 frame latency acceptable for most systems
 
 ---
 
 ## Troubleshooting
 
-### Engine Workers Not Starting
-**Symptom:** `Workers: 0/4`, `ModuleNotFoundError: No module named '_bpy'`
+### Workers Not Starting
+**Symptom:** `ModuleNotFoundError: No module named '_bpy'`
+**Fix:** Check BPY import guard in `__init__.py`, ensure ALL imports inside `else` block
 
-**Cause:** BPY import guard not working in `__init__.py`
+### Physics Issues
+**Symptom:** Character behaves incorrectly
+**Fix:** Enable `dev_debug_kcc_offload` to see per-frame physics output
 
-**Fix:**
-1. Check `__init__.py` lines 29-58 have the guard
-2. Ensure ALL imports are inside the `else` block
-3. Restart Blender completely
-4. Check System Console for errors
+### Silent Console
+**Symptom:** No debug output
+**Fix:** Enable debug categories in Developer Tools panel (N-panel → Create)
 
-### Engine Jobs Not Processing
-**Symptom:** Jobs submitted but no results returned
+---
 
-**Cause:** Job type not implemented in worker
+## Architecture Philosophy
 
-**Fix:**
-1. Edit `engine_worker_entry.py`
-2. Add handler for your job type in `process_job()`
-3. Restart game to reload worker code
-
-### Performance Issues
-**Symptom:** Game running slow
-
-**Solutions:**
-1. Enable Developer Tools panel → Toggle debug categories to identify bottlenecks
-2. Use performance culling entries for distant objects (supports 1000+ objects)
-3. Check if engine is processing jobs (toggle `dev_debug_engine`)
-4. Reduce physics step count if needed (Character Physics & View panel)
-5. Consider offloading heavy calculations to multiprocessing engine
-
-### No Debug Output / Silent Console
-**Symptom:** Expected to see debug messages but console is silent
-
-**Cause:** Debug flags are disabled by default (production mode)
-
-**Fix:**
-1. Open N-panel → Exploratory → Create tab
-2. Open "Developer Tools" panel
-3. Enable specific debug categories or use "Enable All Debug Output" toggle
-4. Restart game to see debug messages
+- **Blender-native** - Uses Blender's data model
+- **Modal-driven** - Timer-based game loop (not frame handlers)
+- **Fixed timestep** - Consistent physics (30Hz)
+- **Engine-first** - Offload everything possible to workers
+- **TRUE parallelism** - Multiprocessing bypasses GIL
+- **Responsive main thread** - Critical for smooth gameplay

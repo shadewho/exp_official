@@ -4,6 +4,11 @@ Developer Tools UI Panel
 
 Provides a clean interface for toggling debug output categories
 and running diagnostic tests.
+
+Categories:
+  - Engine Health: Core multiprocessing engine diagnostics
+  - Offload Systems: Worker-bound computation
+  - Game Systems: Main thread game logic
 """
 
 import bpy
@@ -48,99 +53,87 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Console Debug Categories
+        # Engine Health
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
-        box.label(text="Console Debug Output", icon='CONSOLE')
+        box.label(text="Engine Health", icon='MEMORY')
 
         col = box.column(align=True)
 
-        # Engine debug with Hz control
         row = col.row(align=True)
-        row.prop(scene, "dev_debug_engine", text="Engine (Multiprocessing)")
+        row.prop(scene, "dev_debug_engine", text="Engine Diagnostics")
         if scene.dev_debug_engine:
             row.prop(scene, "dev_debug_engine_hz", text="Hz")
 
-        # Performance debug with Hz control
+        # Stress test toggle
+        col.separator()
+        col.prop(scene, "dev_run_sync_test", text="Run Stress Tests on Start")
+
+        if scene.dev_run_sync_test:
+            info_box = box.box()
+            info_col = info_box.column(align=True)
+            info_col.scale_y = 0.8
+            info_col.label(text="Tests engine-modal sync", icon='INFO')
+            info_col.label(text="Duration: ~18 seconds")
+
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
+        # Offload Systems (Worker-bound)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Offload Systems", icon='FORCE_CHARGE')
+
+        col = box.column(align=True)
+
+        # KCC Physics (the big one)
+        row = col.row(align=True)
+        row.prop(scene, "dev_debug_kcc_offload", text="KCC Physics")
+        if scene.dev_debug_kcc_offload:
+            row.prop(scene, "dev_debug_kcc_offload_hz", text="Hz")
+
+        # Camera Occlusion
+        row = col.row(align=True)
+        row.prop(scene, "dev_debug_camera_offload", text="Camera Occlusion")
+        if scene.dev_debug_camera_offload:
+            row.prop(scene, "dev_debug_camera_offload_hz", text="Hz")
+
+        # Performance Culling
         row = col.row(align=True)
         row.prop(scene, "dev_debug_performance", text="Performance Culling")
         if scene.dev_debug_performance:
             row.prop(scene, "dev_debug_performance_hz", text="Hz")
 
-        # Dynamic mesh offload debug with Hz control
+        # Dynamic Mesh
         row = col.row(align=True)
-        row.prop(scene, "dev_debug_dynamic_offload", text="Dynamic Mesh Offload")
+        row.prop(scene, "dev_debug_dynamic_offload", text="Dynamic Mesh")
         if scene.dev_debug_dynamic_offload:
             row.prop(scene, "dev_debug_dynamic_offload_hz", text="Hz")
 
-        # KCC offload debug with Hz control
-        row = col.row(align=True)
-        row.prop(scene, "dev_debug_kcc_offload", text="KCC Physics Offload")
-        if scene.dev_debug_kcc_offload:
-            row.prop(scene, "dev_debug_kcc_offload_hz", text="Hz")
+        layout.separator()
 
-        # Raycast offload debug with Hz control
-        row = col.row(align=True)
-        row.prop(scene, "dev_debug_raycast_offload", text="Raycast Offload")
-        if scene.dev_debug_raycast_offload:
-            row.prop(scene, "dev_debug_raycast_offload_hz", text="Hz")
+        # ═══════════════════════════════════════════════════════════════
+        # Game Systems (Main thread)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Game Systems", icon='PLAY')
 
-        # Physics debug with Hz control
-        row = col.row(align=True)
-        row.prop(scene, "dev_debug_physics", text="Physics & Character")
-        if scene.dev_debug_physics:
-            row.prop(scene, "dev_debug_physics_hz", text="Hz")
+        col = box.column(align=True)
 
-        # Interactions debug with Hz control
+        # Interactions
         row = col.row(align=True)
-        row.prop(scene, "dev_debug_interactions", text="Interactions & Reactions")
+        row.prop(scene, "dev_debug_interactions", text="Interactions")
         if scene.dev_debug_interactions:
             row.prop(scene, "dev_debug_interactions_hz", text="Hz")
 
-        # Audio debug with Hz control
+        # Audio
         row = col.row(align=True)
-        row.prop(scene, "dev_debug_audio", text="Audio System")
+        row.prop(scene, "dev_debug_audio", text="Audio")
         if scene.dev_debug_audio:
             row.prop(scene, "dev_debug_audio_hz", text="Hz")
 
-        # Animations debug with Hz control
+        # Animations
         row = col.row(align=True)
-        row.prop(scene, "dev_debug_animations", text="Animations & NLA")
+        row.prop(scene, "dev_debug_animations", text="Animations")
         if scene.dev_debug_animations:
             row.prop(scene, "dev_debug_animations_hz", text="Hz")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Engine Stress Tests
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Engine Diagnostics", icon='EXPERIMENTAL')
-
-        col = box.column(align=True)
-        col.prop(scene, "dev_run_sync_test", text="Run Sync Stress Tests on Start")
-
-        # Info label
-        if scene.dev_run_sync_test:
-            info_box = box.box()
-            info_col = info_box.column(align=True)
-            info_col.scale_y = 0.8
-            info_col.label(text="Tests engine-modal synchronization", icon='INFO')
-            info_col.label(text="Duration: ~18 seconds")
-            info_col.label(text="Results: Printed to console on game end")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Future: Performance Rendering (placeholder for later)
-        # ═══════════════════════════════════════════════════════════════
-        # Uncomment when ready to add render diagnostics:
-        #
-        # box = layout.box()
-        # box.label(text="Performance Rendering", icon='SHADING_RENDERED')
-        # col = box.column(align=True)
-        # col.enabled = False  # Disabled until implemented
-        # col.label(text="Coming Soon:", icon='TIME')
-        # col.label(text="• Frame timing overlay")
-        # col.label(text="• Physics step counter")
-        # col.label(text="• Memory usage graph")

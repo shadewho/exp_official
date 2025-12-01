@@ -8,8 +8,7 @@ IMPORTANT: This file has NO relative imports to avoid triggering addon __init__.
 import time
 import traceback
 from queue import Empty
-from dataclasses import dataclass
-from typing import Any, Optional
+
 
 # ============================================================================
 # INLINE DEFINITIONS - Use DICTS instead of dataclasses for pickle safety
@@ -195,7 +194,8 @@ def process_job(job) -> dict:
                 _cached_grid = grid
                 tri_count = len(grid.get("triangles", []))
                 cell_count = len(grid.get("cells", {}))
-                print(f"[Worker] Grid cached: {tri_count:,} triangles, {cell_count:,} cells")
+                if DEBUG_ENGINE:
+                    print(f"[Worker] Grid cached: {tri_count:,} triangles, {cell_count:,} cells")
                 result_data = {
                     "success": True,
                     "triangles": tri_count,
@@ -413,274 +413,152 @@ def process_job(job) -> dict:
                 "calc_time_us": calc_time_us
             }
 
-        elif job.job_type == "KCC_SLOPE_PLATFORM_MATH":
-            # KCC XY slope sliding calculations ONLY
-            # NOTE: Z velocity and platform carry calculated on main thread for frame-perfect sync
-            # 1-frame latency on Z causes jitter/bouncing due to immediate ground feedback loop
-            # Pure math (NO bpy access) - vector projections, normalizations, slope sliding
+        elif job.job_type == "KCC_PHYSICS_STEP":
+            # =================================================================
+            # FULL KCC PHYSICS STEP - Worker computes entire physics frame
+            # =================================================================
+            # This is the new architecture: worker does ALL physics computation,
+            # main thread only applies results to Blender objects.
+            # NO prediction needed - worker computes actual result.
+            # =================================================================
             import math
 
             calc_start = time.perf_counter()
 
-            # Extract input data
-            vel = job.data.get("vel", (0.0, 0.0, 0.0))  # Current velocity
+            # ─────────────────────────────────────────────────────────────────
+            # UNPACK INPUT
+            # ─────────────────────────────────────────────────────────────────
+            pos = job.data.get("pos", (0.0, 0.0, 0.0))
+            vel = job.data.get("vel", (0.0, 0.0, 0.0))
             on_ground = job.data.get("on_ground", False)
             on_walkable = job.data.get("on_walkable", True)
-            ground_norm = job.data.get("ground_norm", (0.0, 0.0, 1.0))
+            ground_normal = job.data.get("ground_normal", (0.0, 0.0, 1.0))
 
-            # Config values
-            gravity = job.data.get("gravity", -9.81)
-            steep_slide_gain = job.data.get("steep_slide_gain", 18.0)
-            steep_min_speed = job.data.get("steep_min_speed", 2.5)
-            dt = job.data.get("dt", 0.033)
+            wish_dir = job.data.get("wish_dir", (0.0, 0.0))
+            is_running = job.data.get("is_running", False)
+            jump_requested = job.data.get("jump_requested", False)
 
-            # Convert to local variables
-            vel_x, vel_y, vel_z = vel
-            UP = (0.0, 0.0, 1.0)
+            coyote_remaining = job.data.get("coyote_remaining", 0.0)
+            jump_buffer_remaining = job.data.get("jump_buffer_remaining", 0.0)
 
-            # Initialize output
-            slide_xy_x, slide_xy_y = 0.0, 0.0  # XY slide velocity for steep slopes
-            is_sliding = False  # Flag indicating character is sliding on steep slope
+            dt = job.data.get("dt", 1.0/30.0)
 
-            # ===== XY SLOPE SLIDING (steep slopes only) =====
+            # Config
+            cfg = job.data.get("config", {})
+            radius = cfg.get("radius", 0.22)
+            height = cfg.get("height", 1.8)
+            gravity = cfg.get("gravity", -9.81)
+            max_walk = cfg.get("max_walk", 2.5)
+            max_run = cfg.get("max_run", 5.5)
+            accel_ground = cfg.get("accel_ground", 20.0)
+            accel_air = cfg.get("accel_air", 5.0)
+            step_height = cfg.get("step_height", 0.4)
+            snap_down = cfg.get("snap_down", 0.5)
+            slope_limit_deg = cfg.get("slope_limit_deg", 50.0)
+            jump_speed = cfg.get("jump_speed", 7.0)
+            coyote_time = cfg.get("coyote_time", 0.08)
+
+            floor_cos = math.cos(math.radians(slope_limit_deg))
+
+            # Convert to mutable lists for computation
+            px, py, pz = pos
+            vx, vy, vz = vel
+            gn_x, gn_y, gn_z = ground_normal
+            wish_x, wish_y = wish_dir
+
+            # Debug counters
+            total_rays = 0
+            total_tris = 0
+            total_cells = 0
+            h_blocked = False
+            did_step_up = False
+            did_slide = False
+            hit_ceiling = False
+            jump_consumed = False
+
+            # ─────────────────────────────────────────────────────────────────
+            # 1. TIMERS
+            # ─────────────────────────────────────────────────────────────────
+            coyote_remaining = max(0.0, coyote_remaining - dt)
+
+            # ─────────────────────────────────────────────────────────────────
+            # 2. INPUT → VELOCITY (Acceleration)
+            # ─────────────────────────────────────────────────────────────────
+            target_speed = max_run if is_running else max_walk
+            accel = accel_ground if on_ground else accel_air
+
+            # Lerp toward desired velocity
+            desired_x = wish_x * target_speed
+            desired_y = wish_y * target_speed
+
+            # STEEP SLOPE BLOCKING: Remove ONLY upward component on non-walkable slopes
+            # Downhill and sideways movement is allowed at FULL SPEED
             if on_ground and not on_walkable:
-                # Steep slope - calculate XY sliding only (Z done on main thread)
-                # Calculate downhill direction: downhill = -(UP - n*(UP·n))
-                gn_x, gn_y, gn_z = ground_norm
+                # Ground normal's XY component points uphill
+                gn_xy_len = math.sqrt(gn_x*gn_x + gn_y*gn_y)
+                if gn_xy_len > 0.001:
+                    # Normalize uphill direction
+                    uphill_x = gn_x / gn_xy_len
+                    uphill_y = gn_y / gn_xy_len
 
-                # Normalize ground normal
-                gn_len = math.sqrt(gn_x*gn_x + gn_y*gn_y + gn_z*gn_z)
-                if gn_len > 1.0e-12:
-                    gn_x /= gn_len
-                    gn_y /= gn_len
-                    gn_z /= gn_len
+                    # Project desired velocity onto uphill direction
+                    dot_with_uphill = desired_x * uphill_x + desired_y * uphill_y
 
-                    # uphill = UP - n * (UP·n)
-                    up_dot_n = gn_z  # UP·n (UP = (0,0,1))
-                    uphill_x = 0.0 - gn_x * up_dot_n
-                    uphill_y = 0.0 - gn_y * up_dot_n
-                    uphill_z = 1.0 - gn_z * up_dot_n
+                    # If moving uphill (dot > 0), remove ONLY that component
+                    if dot_with_uphill > 0.0:
+                        desired_x = desired_x - uphill_x * dot_with_uphill
+                        desired_y = desired_y - uphill_y * dot_with_uphill
+                        # Downhill and perpendicular components remain at FULL SPEED
 
-                    # downhill = -uphill
-                    downhill_x = -uphill_x
-                    downhill_y = -uphill_y
-                    downhill_z = -uphill_z
+            t = min(1.0, accel * dt)
+            vx = vx + (desired_x - vx) * t
+            vy = vy + (desired_y - vy) * t
 
-                    # Normalize downhill
-                    dh_len = math.sqrt(downhill_x*downhill_x + downhill_y*downhill_y + downhill_z*downhill_z)
-                    if dh_len > 1.0e-12:
-                        downhill_x /= dh_len
-                        downhill_y /= dh_len
-                        downhill_z /= dh_len
-
-                        # Apply gravity-scaled acceleration
-                        slide_acc_scale = abs(gravity) * steep_slide_gain
-
-                        # XY component only (velocity to apply)
-                        # Calculate target slide velocity (clamped to steep_min_speed minimum)
-                        slide_speed = math.sqrt(vel_x*vel_x + vel_y*vel_y)
-                        target_speed = max(slide_speed + slide_acc_scale * dt, steep_min_speed)
-
-                        # Slide velocity = downhill direction * target speed (XY only)
-                        slide_xy_x = downhill_x * target_speed
-                        slide_xy_y = downhill_y * target_speed
-                        is_sliding = True
-
-            calc_end = time.perf_counter()
-            calc_time_us = (calc_end - calc_start) * 1_000_000
-
-            result_data = {
-                "delta_z": 0.0,  # Dummy (calculated on main thread to avoid jitter)
-                "slide_xy": (slide_xy_x, slide_xy_y),  # XY slide velocity (replaces movement on steep slopes)
-                "is_sliding": is_sliding,  # Flag indicating character is sliding
-                "carry": (0.0, 0.0, 0.0),  # Dummy (calculated on main thread for frame-perfect sync)
-                "rot_delta_z": 0.0,  # Dummy (calculated on main thread)
-                "calc_time_us": calc_time_us
-            }
-
-        elif job.job_type == "KCC_INPUT_VECTOR":
-            # KCC input vector calculation - camera-relative WASD transformation
-            # Pure math (NO bpy access) - matrix rotations, normalizations, slope removal
-            import math
-
-            calc_start = time.perf_counter()
-
-            # Extract input data
-            keys_pressed = job.data.get("keys_pressed", [])
-            camera_yaw = job.data.get("camera_yaw", 0.0)
-            on_ground = job.data.get("on_ground", False)
-            ground_norm = job.data.get("ground_norm", (0.0, 0.0, 1.0))
-            floor_cos = job.data.get("floor_cos", 0.7)
-
-            # Preference keys
-            fwd_key = job.data.get("pref_forward", "W")
-            back_key = job.data.get("pref_backward", "S")
-            left_key = job.data.get("pref_left", "A")
-            right_key = job.data.get("pref_right", "D")
-            run_key = job.data.get("pref_run", "LEFT_SHIFT")
-
-            # 1) Build raw input vector (local space)
-            x = 0.0
-            y = 0.0
-            if fwd_key in keys_pressed:
-                y += 1.0
-            if back_key in keys_pressed:
-                y -= 1.0
-            if right_key in keys_pressed:
-                x += 1.0
-            if left_key in keys_pressed:
-                x -= 1.0
-
-            # 2) Normalize input (camera-plane intent)
-            v_len2 = x*x + y*y
-            if v_len2 > 1.0e-12:
-                inv_len = 1.0 / math.sqrt(v_len2)
-                vx = x * inv_len
-                vy = y * inv_len
+            # ─────────────────────────────────────────────────────────────────
+            # 3. GRAVITY
+            # ─────────────────────────────────────────────────────────────────
+            # Note: Steep slope sliding moved to step 8 (after ground detection)
+            if not on_ground:
+                vz += gravity * dt
             else:
-                vx = vy = 0.0
+                if on_walkable:
+                    vz = max(vz, 0.0)
+                # Steep slope sliding handled in step 8 after ground normal is updated
 
-            # 3) Rotate by camera yaw (matrix rotation about Z)
-            # Simplified rotation: world_x = vx * cos(yaw) - vy * sin(yaw)
-            #                      world_y = vx * sin(yaw) + vy * cos(yaw)
-            cos_yaw = math.cos(camera_yaw)
-            sin_yaw = math.sin(camera_yaw)
-            world_x = vx * cos_yaw - vy * sin_yaw
-            world_y = vx * sin_yaw + vy * cos_yaw
+            # ─────────────────────────────────────────────────────────────────
+            # 4. JUMP
+            # ─────────────────────────────────────────────────────────────────
+            can_jump = (on_ground and on_walkable) or (coyote_remaining > 0.0)
+            if jump_requested and can_jump:
+                vz = jump_speed
+                on_ground = False
+                jump_consumed = True
+                coyote_remaining = 0.0
 
-            # 4) Normalize XY result
-            xy_len2 = world_x * world_x + world_y * world_y
-            if xy_len2 > 1.0e-12:
-                inv_xy = 1.0 / math.sqrt(xy_len2)
-                xy_x = world_x * inv_xy
-                xy_y = world_y * inv_xy
-            else:
-                xy_x = xy_y = 0.0
+            # ─────────────────────────────────────────────────────────────────
+            # 5. HORIZONTAL COLLISION (3D DDA on cached grid)
+            # ─────────────────────────────────────────────────────────────────
+            move_x = vx * dt
+            move_y = vy * dt
+            move_len = math.sqrt(move_x*move_x + move_y*move_y)
 
-            # 5) Steep slope uphill removal (if on non-walkable ground)
-            UP = (0.0, 0.0, 1.0)
-            if on_ground and ground_norm is not None:
-                # Check if slope is walkable (n·up >= floor_cos)
-                gn_x, gn_y, gn_z = ground_norm
-                gn_len = math.sqrt(gn_x*gn_x + gn_y*gn_y + gn_z*gn_z)
-                if gn_len > 1.0e-12:
-                    gn_x /= gn_len
-                    gn_y /= gn_len
-                    gn_z /= gn_len
-                    n_dot_up = gn_z  # ground_norm · UP (UP = (0,0,1))
+            # For high-speed movement (running), subdivide into substeps to prevent tunneling
+            # This is especially important for steep slopes where rays might miss
+            max_step_len = radius * 0.8  # Max movement per substep
+            num_substeps = max(1, int(math.ceil(move_len / max_step_len)))
+            substep_len = move_len / num_substeps if num_substeps > 0 else 0
 
-                    # If not walkable (too steep)
-                    if n_dot_up < floor_cos:
-                        # Compute uphill direction: UP - n * (UP·n)
-                        up_dot_n = gn_z  # UP·n
-                        uphill_x = 0.0 - gn_x * up_dot_n
-                        uphill_y = 0.0 - gn_y * up_dot_n
-                        uphill_z = 1.0 - gn_z * up_dot_n
+            if move_len > 1e-9 and _cached_grid is not None:
+                # Normalize movement direction
+                fwd_x = move_x / move_len
+                fwd_y = move_y / move_len
 
-                        # Get XY component of uphill
-                        g_xy_len = math.sqrt(uphill_x*uphill_x + uphill_y*uphill_y)
-                        if g_xy_len > 1.0e-12:
-                            g_xy_x = uphill_x / g_xy_len
-                            g_xy_y = uphill_y / g_xy_len
+                # Track total movement allowed across all substeps
+                total_allowed = 0.0
+                blocked_this_frame = False
+                final_wall_normal = None
 
-                            # Remove uphill component from input XY
-                            comp = xy_x * g_xy_x + xy_y * g_xy_y
-                            if comp > 0.0:
-                                xy_x -= g_xy_x * comp
-                                xy_y -= g_xy_y * comp
-
-            # 6) Check if running
-            is_running = run_key in keys_pressed
-
-            calc_end = time.perf_counter()
-            calc_time_us = (calc_end - calc_start) * 1_000_000
-
-            result_data = {
-                "wish_dir_xy": (xy_x, xy_y),
-                "is_running": is_running,
-                "calc_time_us": calc_time_us
-            }
-
-        elif job.job_type == "KCC_RAYCAST":
-            # KCC raycasting - ground detection using mesh soup intersection
-            # Pure math (NO bpy access) - ray-triangle intersection (Möller-Trumbore)
-            # Phase 1: Brute force mesh soup (slow, 1-5ms expected)
-            # Phase 2: TODO - Add spatial acceleration (uniform grid/octree)
-            import math
-
-            calc_start = time.perf_counter()
-
-            # Extract input data
-            ray_origin = job.data.get("ray_origin", (0.0, 0.0, 0.0))
-            ray_direction = job.data.get("ray_direction", (0.0, 0.0, -1.0))
-            max_distance = job.data.get("max_distance", 100.0)
-            triangles = job.data.get("triangles", [])
-
-            # Brute force mesh soup raycast
-            closest_hit = None
-            closest_dist = max_distance
-            closest_triangle = None
-
-            for tri in triangles:
-                v0, v1, v2 = tri
-                hit, dist, hit_point = ray_triangle_intersect(ray_origin, ray_direction, v0, v1, v2)
-
-                if hit and dist < closest_dist:
-                    closest_hit = hit_point
-                    closest_dist = dist
-                    closest_triangle = tri
-
-            # Compute normal if we hit something
-            if closest_hit is not None:
-                v0, v1, v2 = closest_triangle
-                normal = compute_triangle_normal(v0, v1, v2)
-            else:
-                normal = None
-
-            calc_end = time.perf_counter()
-            calc_time_us = (calc_end - calc_start) * 1_000_000
-
-            result_data = {
-                "hit": closest_hit is not None,
-                "hit_location": closest_hit,  # (x, y, z) or None
-                "hit_normal": normal,  # (nx, ny, nz) or None
-                "hit_distance": closest_dist if closest_hit is not None else None,
-                "triangles_tested": len(triangles),
-                "calc_time_us": calc_time_us,
-                "method": "BRUTE_FORCE"
-            }
-
-        elif job.job_type == "KCC_RAYCAST_GRID":
-            # KCC raycasting with spatial grid acceleration (3D DDA traversal)
-            # Dramatically faster than brute force for large scenes
-            import math
-
-            # Debug: announce job start
-            print(f"[Worker] KCC_RAYCAST_GRID job {job.job_id} starting...")
-
-            calc_start = time.perf_counter()
-
-            # Extract input data
-            ray_origin = job.data.get("ray_origin", (0.0, 0.0, 0.0))
-            ray_direction = job.data.get("ray_direction", (0.0, 0.0, -1.0))
-            max_distance = job.data.get("max_distance", 100.0)
-            grid = job.data.get("grid", None)
-
-            if grid is None:
-                # No grid provided - fall back to error
-                result_data = {
-                    "hit": False,
-                    "hit_location": None,
-                    "hit_normal": None,
-                    "hit_distance": None,
-                    "triangles_tested": 0,
-                    "cells_traversed": 0,
-                    "calc_time_us": 0.0,
-                    "method": "GRID_ERROR",
-                    "error": "No grid data provided"
-                }
-            else:
-                # Extract grid data
+                grid = _cached_grid
                 bounds_min = grid["bounds_min"]
                 bounds_max = grid["bounds_max"]
                 cell_size = grid["cell_size"]
@@ -688,192 +566,676 @@ def process_job(job) -> dict:
                 cells = grid["cells"]
                 triangles = grid["triangles"]
 
-                ox, oy, oz = ray_origin
-                dx, dy, dz = ray_direction
-
-                # Normalize ray direction
-                d_len = math.sqrt(dx*dx + dy*dy + dz*dz)
-                if d_len > 1e-12:
-                    dx /= d_len
-                    dy /= d_len
-                    dz /= d_len
-
-                nx, ny, nz = grid_dims
                 min_x, min_y, min_z = bounds_min
                 max_x, max_y, max_z = bounds_max
+                nx_grid, ny_grid, nz_grid = grid_dims
 
-                # ========== 3D DDA Ray Traversal ==========
-                # Reference: "A Fast Voxel Traversal Algorithm" by Amanatides & Woo
+                # Cast rays at 3 heights (feet, mid, head) + angled rays for steep slopes
+                ray_heights = [radius, min(height * 0.5, height - radius), height - radius]
+                ray_len = move_len + radius
 
-                # Calculate starting cell
-                # Clamp ray origin to grid bounds if outside
-                start_x = max(min_x, min(max_x - 0.001, ox))
-                start_y = max(min_y, min(max_y - 0.001, oy))
-                start_z = max(min_z, min(max_z - 0.001, oz))
+                # Additional slope detection rays (angled slightly down to catch slopes)
+                # These are critical for detecting steep slopes when running
+                slope_ray_configs = []
+                if on_ground:
+                    # Cast rays angled downward at 30 degrees to catch slopes
+                    slope_angle = 0.5  # ~30 degrees down
+                    slope_ray_z = radius * 2  # Knee height
+                    slope_fwd_len = math.sqrt(1.0 / (1.0 + slope_angle * slope_angle))
+                    slope_down_len = slope_angle * slope_fwd_len
+                    slope_ray_configs.append((slope_ray_z, slope_fwd_len, -slope_down_len))
+
+                best_d = None
+                best_n = None
+                per_ray_hits = []
+
+                # First, do horizontal rays
+                for ray_z in ray_heights:
+                    total_rays += 1
+                    ox, oy, oz = px, py, pz + ray_z
+
+                    # 3D DDA traversal
+                    start_x = max(min_x, min(max_x - 0.001, ox))
+                    start_y = max(min_y, min(max_y - 0.001, oy))
+                    start_z = max(min_z, min(max_z - 0.001, oz))
+
+                    ix = int((start_x - min_x) / cell_size)
+                    iy = int((start_y - min_y) / cell_size)
+                    iz = int((start_z - min_z) / cell_size)
+
+                    ix = max(0, min(nx_grid - 1, ix))
+                    iy = max(0, min(ny_grid - 1, iy))
+                    iz = max(0, min(nz_grid - 1, iz))
+
+                    step_x = 1 if fwd_x >= 0 else -1
+                    step_y = 1 if fwd_y >= 0 else -1
+                    step_z = 0  # Horizontal only
+
+                    INF = float('inf')
+
+                    if abs(fwd_x) > 1e-12:
+                        if fwd_x > 0:
+                            t_max_x = ((min_x + (ix + 1) * cell_size) - ox) / fwd_x
+                        else:
+                            t_max_x = ((min_x + ix * cell_size) - ox) / fwd_x
+                        t_delta_x = abs(cell_size / fwd_x)
+                    else:
+                        t_max_x = INF
+                        t_delta_x = INF
+
+                    if abs(fwd_y) > 1e-12:
+                        if fwd_y > 0:
+                            t_max_y = ((min_y + (iy + 1) * cell_size) - oy) / fwd_y
+                        else:
+                            t_max_y = ((min_y + iy * cell_size) - oy) / fwd_y
+                        t_delta_y = abs(cell_size / fwd_y)
+                    else:
+                        t_max_y = INF
+                        t_delta_y = INF
+
+                    ray_closest_dist = ray_len
+                    ray_closest_tri = None
+                    tested_triangles = set()
+                    cells_traversed = 0
+                    max_cells = nx_grid + ny_grid + 10
+                    t_current = 0.0
+
+                    while cells_traversed < max_cells:
+                        cells_traversed += 1
+                        total_cells += 1
+
+                        if t_current > ray_len:
+                            break
+                        if ix < 0 or ix >= nx_grid or iy < 0 or iy >= ny_grid or iz < 0 or iz >= nz_grid:
+                            break
+
+                        cell_key = (ix, iy, iz)
+                        if cell_key in cells:
+                            for tri_idx in cells[cell_key]:
+                                if tri_idx in tested_triangles:
+                                    continue
+                                tested_triangles.add(tri_idx)
+                                total_tris += 1
+
+                                tri = triangles[tri_idx]
+                                hit, dist, _ = ray_triangle_intersect((ox, oy, oz), (fwd_x, fwd_y, 0), tri[0], tri[1], tri[2])
+                                if hit and dist < ray_closest_dist:
+                                    ray_closest_dist = dist
+                                    ray_closest_tri = tri
+
+                        t_next = min(t_max_x, t_max_y)
+                        if ray_closest_tri is not None and ray_closest_dist <= t_next:
+                            break
+
+                        if t_max_x < t_max_y:
+                            ix += step_x
+                            t_current = t_max_x
+                            t_max_x += t_delta_x
+                        else:
+                            iy += step_y
+                            t_current = t_max_y
+                            t_max_y += t_delta_y
+
+                    # Track per-ray hits
+                    if ray_closest_tri is not None:
+                        per_ray_hits.append(ray_closest_dist)
+                        if best_d is None or ray_closest_dist < best_d:
+                            best_d = ray_closest_dist
+                            best_n = compute_triangle_normal(ray_closest_tri[0], ray_closest_tri[1], ray_closest_tri[2])
+                    else:
+                        per_ray_hits.append(None)
+
+                # Second, do angled slope detection rays (only when grounded)
+                # These catch steep slopes that horizontal rays might miss
+                for slope_cfg in slope_ray_configs:
+                    slope_ray_z, slope_fwd_mult, slope_z_mult = slope_cfg
+                    total_rays += 1
+
+                    # Ray direction is forward + slightly down
+                    ray_dx = fwd_x * slope_fwd_mult
+                    ray_dy = fwd_y * slope_fwd_mult
+                    ray_dz = slope_z_mult  # Negative = downward
+
+                    ox, oy, oz = px, py, pz + slope_ray_z
+
+                    # Simple brute-force check in nearby cells (cheaper than full DDA for one ray)
+                    start_ix = int((ox - min_x) / cell_size)
+                    start_iy = int((oy - min_y) / cell_size)
+                    start_iz = int((oz - min_z) / cell_size)
+                    start_ix = max(0, min(nx_grid - 1, start_ix))
+                    start_iy = max(0, min(ny_grid - 1, start_iy))
+                    start_iz = max(0, min(nz_grid - 1, start_iz))
+
+                    # Check cells in forward direction (3 cells deep)
+                    tested_slope = set()
+                    for depth in range(3):
+                        check_x = ox + ray_dx * cell_size * (depth + 1)
+                        check_y = oy + ray_dy * cell_size * (depth + 1)
+                        check_z = oz + ray_dz * cell_size * (depth + 1)
+
+                        cix = int((check_x - min_x) / cell_size)
+                        ciy = int((check_y - min_y) / cell_size)
+                        ciz = int((check_z - min_z) / cell_size)
+                        cix = max(0, min(nx_grid - 1, cix))
+                        ciy = max(0, min(ny_grid - 1, ciy))
+                        ciz = max(0, min(nz_grid - 1, ciz))
+
+                        cell_key = (cix, ciy, ciz)
+                        if cell_key in cells:
+                            for tri_idx in cells[cell_key]:
+                                if tri_idx in tested_slope:
+                                    continue
+                                tested_slope.add(tri_idx)
+                                total_tris += 1
+
+                                tri = triangles[tri_idx]
+                                hit, dist, _ = ray_triangle_intersect(
+                                    (ox, oy, oz), (ray_dx, ray_dy, ray_dz),
+                                    tri[0], tri[1], tri[2]
+                                )
+                                if hit and dist < ray_len:
+                                    tri_n = compute_triangle_normal(tri[0], tri[1], tri[2])
+                                    # Only count steep slopes (not floors)
+                                    if tri_n[2] < floor_cos and tri_n[2] > 0.1:
+                                        # This is a steep slope - treat as wall
+                                        # Convert angled ray hit to equivalent horizontal distance
+                                        horiz_dist = dist * slope_fwd_mult
+                                        if best_d is None or horiz_dist < best_d:
+                                            best_d = horiz_dist
+                                            best_n = tri_n
+
+                # Apply horizontal collision result
+                if best_d is not None:
+                    h_blocked = True
+                    allowed = max(0.0, best_d - radius)
+
+                    # Move position
+                    if allowed > 1e-9:
+                        px += fwd_x * allowed
+                        py += fwd_y * allowed
+
+                    # Remove velocity component into wall
+                    if best_n is not None:
+                        bn_x, bn_y, bn_z = best_n
+                        vn = vx * bn_x + vy * bn_y
+                        if vn > 0.0:
+                            vx -= bn_x * vn
+                            vy -= bn_y * vn
+
+                    # ─────────────────────────────────────────────────────────
+                    # 5a. STEP-UP (if only feet ray hit)
+                    # ─────────────────────────────────────────────────────────
+                    feet_only = (len(per_ray_hits) >= 3 and
+                                per_ray_hits[0] is not None and
+                                per_ray_hits[1] is None and
+                                per_ray_hits[2] is None)
+
+                    if on_ground and feet_only and step_height > 0.0 and best_n is not None:
+                        # Check if it's a steep face (step-able)
+                        bn_x, bn_y, bn_z = best_n
+                        if bn_z < floor_cos:  # Steep face
+                            # Try step-up: raise, forward, drop
+                            test_z = pz + step_height
+                            test_ox = px
+                            test_oy = py
+
+                            # Check headroom using grid (not brute force)
+                            head_clear = True
+                            head_ray_z = test_z + height
+
+                            # Grid-based ceiling check at raised position
+                            check_ix = int((test_ox - min_x) / cell_size)
+                            check_iy = int((test_oy - min_y) / cell_size)
+                            check_iz = int((head_ray_z - min_z) / cell_size)
+                            check_ix = max(0, min(nx_grid - 1, check_ix))
+                            check_iy = max(0, min(ny_grid - 1, check_iy))
+                            check_iz = max(0, min(nz_grid - 1, check_iz))
+
+                            # Check a few cells above for ceiling
+                            tested_ceil = set()
+                            for dz_off in range(3):
+                                ceil_iz = min(nz_grid - 1, check_iz + dz_off)
+                                ceil_key = (check_ix, check_iy, ceil_iz)
+                                if ceil_key in cells:
+                                    for tri_idx in cells[ceil_key]:
+                                        if tri_idx in tested_ceil:
+                                            continue
+                                        tested_ceil.add(tri_idx)
+                                        tri = triangles[tri_idx]
+                                        hit, dist, _ = ray_triangle_intersect(
+                                            (test_ox, test_oy, head_ray_z),
+                                            (0, 0, 1),
+                                            tri[0], tri[1], tri[2]
+                                        )
+                                        if hit and dist < step_height:
+                                            head_clear = False
+                                            break
+                                if not head_clear:
+                                    break
+
+                            if head_clear:
+                                # Cast forward ray at raised position
+                                remaining_move = move_len - allowed
+                                if remaining_move > 0.01:
+                                    # Simple forward check at raised height (abbreviated)
+                                    can_step = True
+                                    if can_step:
+                                        # Drop down to find ground
+                                        drop_ox = test_ox + fwd_x * min(remaining_move, radius)
+                                        drop_oy = test_oy + fwd_y * min(remaining_move, radius)
+                                        drop_max = step_height + snap_down
+
+                                        # Grid-based ground raycast at dropped position
+                                        step_ground_z = None
+                                        step_ground_n = None
+
+                                        # Find cell for drop position
+                                        drop_ix = int((drop_ox - min_x) / cell_size)
+                                        drop_iy = int((drop_oy - min_y) / cell_size)
+                                        drop_iz = int((test_z + 1.0 - min_z) / cell_size)
+                                        drop_ix = max(0, min(nx_grid - 1, drop_ix))
+                                        drop_iy = max(0, min(ny_grid - 1, drop_iy))
+                                        drop_iz = max(0, min(nz_grid - 1, drop_iz))
+
+                                        # Search downward through cells
+                                        tested_step = set()
+                                        for dz_off in range(min(10, nz_grid)):
+                                            step_iz = drop_iz - dz_off
+                                            if step_iz < 0:
+                                                break
+                                            step_key = (drop_ix, drop_iy, step_iz)
+                                            if step_key in cells:
+                                                for tri_idx in cells[step_key]:
+                                                    if tri_idx in tested_step:
+                                                        continue
+                                                    tested_step.add(tri_idx)
+                                                    total_tris += 1
+                                                    tri = triangles[tri_idx]
+                                                    hit, dist, hp = ray_triangle_intersect(
+                                                        (drop_ox, drop_oy, test_z + 1.0),
+                                                        (0, 0, -1),
+                                                        tri[0], tri[1], tri[2]
+                                                    )
+                                                    if hit and dist < drop_max + 1.0:
+                                                        hit_z = test_z + 1.0 - dist
+                                                        if step_ground_z is None or hit_z > step_ground_z:
+                                                            step_ground_z = hit_z
+                                                            step_ground_n = compute_triangle_normal(tri[0], tri[1], tri[2])
+
+                                        if step_ground_z is not None and step_ground_n is not None:
+                                            # Check if walkable
+                                            gn_check = step_ground_n[2]
+                                            if gn_check >= floor_cos:
+                                                px = drop_ox
+                                                py = drop_oy
+                                                pz = step_ground_z
+                                                vz = 0.0
+                                                on_ground = True
+                                                on_walkable = True
+                                                gn_x, gn_y, gn_z = step_ground_n
+                                                did_step_up = True
+                                                coyote_remaining = coyote_time
+
+                    # ─────────────────────────────────────────────────────────
+                    # 5b. WALL SLIDE (if blocked and not step-up)
+                    # ─────────────────────────────────────────────────────────
+                    if not did_step_up and best_n is not None:
+                        remaining = move_len - allowed
+                        if remaining > radius * 0.15:
+                            bn_x, bn_y, bn_z = best_n
+
+                            # Check if this is a steep slope we're trying to climb
+                            # If hitting a steep face (bn_z < floor_cos) and we're grounded,
+                            # don't allow wall slide that would move us up the slope
+                            is_steep_face = bn_z < floor_cos and bn_z > 0.1  # Not a ceiling
+
+                            # Compute slide direction (tangent to wall)
+                            dot = fwd_x * bn_x + fwd_y * bn_y
+                            slide_x = fwd_x - bn_x * dot
+                            slide_y = fwd_y - bn_y * dot
+                            slide_len = math.sqrt(slide_x*slide_x + slide_y*slide_y)
+
+                            # For steep slopes: check if slide would move us "up" the slope
+                            # We detect this by checking if the slide direction aligns with
+                            # the uphill direction (opposite of normal's XY projection)
+                            if is_steep_face and on_ground and slide_len > 1e-9:
+                                # Uphill direction in XY
+                                uphill_xy_len = math.sqrt(bn_x*bn_x + bn_y*bn_y)
+                                if uphill_xy_len > 0.001:
+                                    uphill_x = bn_x / uphill_xy_len
+                                    uphill_y = bn_y / uphill_xy_len
+
+                                    # How much is slide aligned with uphill?
+                                    slide_nx = slide_x / slide_len
+                                    slide_ny = slide_y / slide_len
+                                    uphill_dot = slide_nx * uphill_x + slide_ny * uphill_y
+
+                                    # If slide is uphill at all (dot > -0.1), block it
+                                    # Changed from 0.3 to -0.1 for much stricter blocking
+                                    # This prevents nearly all uphill sliding on steep slopes
+                                    if uphill_dot > -0.1:
+                                        slide_len = 0.0  # Prevent slide
+
+                            if slide_len > 1e-9:
+                                slide_x /= slide_len
+                                slide_y /= slide_len
+                                slide_dist = remaining * 0.65
+
+                                # Collision check for slide movement
+                                # Cast a single ray in slide direction to prevent corner clipping
+                                slide_blocked = False
+                                slide_allowed = slide_dist
+
+                                slide_ox, slide_oy = px, py
+                                slide_oz = pz + height * 0.5  # Mid-height check
+
+                                # Quick cell-based check in slide direction
+                                slide_ix = int((slide_ox - min_x) / cell_size)
+                                slide_iy = int((slide_oy - min_y) / cell_size)
+                                slide_iz = int((slide_oz - min_z) / cell_size)
+                                slide_ix = max(0, min(nx_grid - 1, slide_ix))
+                                slide_iy = max(0, min(ny_grid - 1, slide_iy))
+                                slide_iz = max(0, min(nz_grid - 1, slide_iz))
+
+                                # Check current cell and adjacent cells in slide direction
+                                tested_slide = set()
+                                for dx_off in range(-1, 2):
+                                    for dy_off in range(-1, 2):
+                                        check_ix = slide_ix + dx_off
+                                        check_iy = slide_iy + dy_off
+                                        if check_ix < 0 or check_ix >= nx_grid or check_iy < 0 or check_iy >= ny_grid:
+                                            continue
+                                        cell_key = (check_ix, check_iy, slide_iz)
+                                        if cell_key in cells:
+                                            for tri_idx in cells[cell_key]:
+                                                if tri_idx in tested_slide:
+                                                    continue
+                                                tested_slide.add(tri_idx)
+                                                tri = triangles[tri_idx]
+                                                hit, dist, _ = ray_triangle_intersect(
+                                                    (slide_ox, slide_oy, slide_oz),
+                                                    (slide_x, slide_y, 0),
+                                                    tri[0], tri[1], tri[2]
+                                                )
+                                                if hit and dist < slide_dist + radius:
+                                                    slide_allowed = min(slide_allowed, max(0, dist - radius))
+                                                    slide_blocked = True
+
+                                # Apply slide with collision result
+                                if slide_allowed > 0.01:
+                                    px += slide_x * slide_allowed
+                                    py += slide_y * slide_allowed
+                                    did_slide = True
+
+                                # Reduce velocity
+                                vx *= 0.65
+                                vy *= 0.65
+                else:
+                    # No collision - full movement
+                    px += move_x
+                    py += move_y
+
+            elif move_len > 1e-9:
+                # No grid cached - just move (will be handled by dynamic check on main thread)
+                px += move_x
+                py += move_y
+
+            # ─────────────────────────────────────────────────────────────────
+            # 6. CEILING CHECK (if moving up)
+            # ─────────────────────────────────────────────────────────────────
+            if vz > 0.0 and _cached_grid is not None:
+                up_dist = vz * dt
+                head_z = pz + height
+                grid = _cached_grid
+                triangles = grid["triangles"]
+
+                for tri in triangles[:500]:  # Limit for performance
+                    hit, dist, _ = ray_triangle_intersect(
+                        (px, py, head_z), (0, 0, 1),
+                        tri[0], tri[1], tri[2]
+                    )
+                    if hit and dist < up_dist:
+                        pz = head_z + dist - height
+                        vz = 0.0
+                        hit_ceiling = True
+                        break
+
+            # ─────────────────────────────────────────────────────────────────
+            # 7. VERTICAL MOVEMENT + GROUND DETECTION
+            # ─────────────────────────────────────────────────────────────────
+            dz = vz * dt
+            was_grounded = on_ground
+
+            if _cached_grid is not None:
+                grid = _cached_grid
+                triangles = grid["triangles"]
+
+                # Raycast down for ground
+                ray_start_z = pz + 1.0  # Guard above
+                ray_max = snap_down + 1.0 + (abs(dz) if dz < 0 else 0)
+
+                ground_hit_z = None
+                ground_hit_n = None
+
+                # 3D DDA for ground detection
+                bounds_min = grid["bounds_min"]
+                bounds_max = grid["bounds_max"]
+                cell_size = grid["cell_size"]
+                grid_dims = grid["grid_dims"]
+                cells = grid["cells"]
+
+                min_x, min_y, min_z = bounds_min
+                max_x, max_y, max_z = bounds_max
+                nx_grid, ny_grid, nz_grid = grid_dims
+
+                start_x = max(min_x, min(max_x - 0.001, px))
+                start_y = max(min_y, min(max_y - 0.001, py))
+                start_z = max(min_z, min(max_z - 0.001, ray_start_z))
 
                 ix = int((start_x - min_x) / cell_size)
                 iy = int((start_y - min_y) / cell_size)
                 iz = int((start_z - min_z) / cell_size)
 
-                # Clamp to valid range
-                ix = max(0, min(nx - 1, ix))
-                iy = max(0, min(ny - 1, iy))
-                iz = max(0, min(nz - 1, iz))
+                ix = max(0, min(nx_grid - 1, ix))
+                iy = max(0, min(ny_grid - 1, iy))
+                iz = max(0, min(nz_grid - 1, iz))
 
-                # Step direction (+1 or -1)
-                step_x = 1 if dx >= 0 else -1
-                step_y = 1 if dy >= 0 else -1
-                step_z = 1 if dz >= 0 else -1
-
-                # Calculate tMax (t value at first cell boundary crossing)
-                # and tDelta (t to cross one cell)
                 INF = float('inf')
+                t_max_z = ((min_z + iz * cell_size) - ray_start_z) / (-1.0) if True else INF
+                t_delta_z = abs(cell_size / 1.0)
 
-                if abs(dx) > 1e-12:
-                    if dx > 0:
-                        t_max_x = ((min_x + (ix + 1) * cell_size) - ox) / dx
-                    else:
-                        t_max_x = ((min_x + ix * cell_size) - ox) / dx
-                    t_delta_x = abs(cell_size / dx)
-                else:
-                    t_max_x = INF
-                    t_delta_x = INF
-
-                if abs(dy) > 1e-12:
-                    if dy > 0:
-                        t_max_y = ((min_y + (iy + 1) * cell_size) - oy) / dy
-                    else:
-                        t_max_y = ((min_y + iy * cell_size) - oy) / dy
-                    t_delta_y = abs(cell_size / dy)
-                else:
-                    t_max_y = INF
-                    t_delta_y = INF
-
-                if abs(dz) > 1e-12:
-                    if dz > 0:
-                        t_max_z = ((min_z + (iz + 1) * cell_size) - oz) / dz
-                    else:
-                        t_max_z = ((min_z + iz * cell_size) - oz) / dz
-                    t_delta_z = abs(cell_size / dz)
-                else:
-                    t_max_z = INF
-                    t_delta_z = INF
-
-                # Traversal state
-                closest_hit = None
-                closest_dist = max_distance
-                closest_triangle = None
-                triangles_tested = 0
+                tested_triangles = set()
                 cells_traversed = 0
-                tested_triangles = set()  # Avoid testing same triangle twice
-
-                # Traverse grid using 3D DDA
-                max_cells = nx + ny + nz + 10  # Safety limit
+                max_cells = nz_grid + 10
                 t_current = 0.0
+                total_rays += 1
 
-                while cells_traversed < max_cells:
+                while cells_traversed < max_cells and t_current < ray_max:
                     cells_traversed += 1
+                    total_cells += 1
 
-                    # Check if we've gone past max_distance
-                    if t_current > max_distance:
+                    if iz < 0 or iz >= nz_grid:
                         break
 
-                    # Check if cell is within bounds
-                    if ix < 0 or ix >= nx or iy < 0 or iy >= ny or iz < 0 or iz >= nz:
-                        break
-
-                    # Get triangles in current cell
                     cell_key = (ix, iy, iz)
                     if cell_key in cells:
-                        cell_tris = cells[cell_key]
-
-                        for tri_idx in cell_tris:
-                            # Skip if already tested this triangle
+                        for tri_idx in cells[cell_key]:
                             if tri_idx in tested_triangles:
                                 continue
                             tested_triangles.add(tri_idx)
-                            triangles_tested += 1
+                            total_tris += 1
 
-                            # Test ray-triangle intersection
                             tri = triangles[tri_idx]
-                            v0, v1, v2 = tri
-                            hit, dist, hit_point = ray_triangle_intersect(
-                                ray_origin, (dx, dy, dz), v0, v1, v2
+                            hit, dist, hp = ray_triangle_intersect(
+                                (px, py, ray_start_z), (0, 0, -1),
+                                tri[0], tri[1], tri[2]
                             )
+                            if hit and dist < ray_max:
+                                hit_z = ray_start_z - dist
+                                if ground_hit_z is None or hit_z > ground_hit_z:
+                                    ground_hit_z = hit_z
+                                    ground_hit_n = compute_triangle_normal(tri[0], tri[1], tri[2])
 
-                            if hit and dist < closest_dist:
-                                closest_hit = hit_point
-                                closest_dist = dist
-                                closest_triangle = tri
+                    iz -= 1
+                    t_current = t_max_z
+                    t_max_z += t_delta_z
 
-                    # Early exit: if we found a hit and it's within the current cell's t range
-                    # we can stop (no closer hit possible in further cells)
-                    t_next = min(t_max_x, t_max_y, t_max_z)
-                    if closest_hit is not None and closest_dist <= t_next:
+                    if ground_hit_z is not None:
                         break
 
-                    # Step to next cell (DDA step)
-                    if t_max_x < t_max_y:
-                        if t_max_x < t_max_z:
-                            ix += step_x
-                            t_current = t_max_x
-                            t_max_x += t_delta_x
-                        else:
-                            iz += step_z
-                            t_current = t_max_z
-                            t_max_z += t_delta_z
+                # Apply vertical movement and ground snap
+                if dz < 0.0:  # Falling
+                    target_z = pz + dz
+                    if ground_hit_z is not None and target_z <= ground_hit_z:
+                        pz = ground_hit_z
+                        vz = 0.0
+                        on_ground = True
+                        if ground_hit_n is not None:
+                            gn_x, gn_y, gn_z = ground_hit_n
+                            on_walkable = gn_z >= floor_cos
+                        coyote_remaining = coyote_time
                     else:
-                        if t_max_y < t_max_z:
-                            iy += step_y
-                            t_current = t_max_y
-                            t_max_y += t_delta_y
-                        else:
-                            iz += step_z
-                            t_current = t_max_z
-                            t_max_z += t_delta_z
-
-                # Compute normal if we hit something
-                if closest_hit is not None:
-                    v0, v1, v2 = closest_triangle
-                    normal = compute_triangle_normal(v0, v1, v2)
+                        pz = target_z
+                        on_ground = False
+                        on_walkable = False
                 else:
-                    normal = None
+                    pz += dz
 
-                calc_end = time.perf_counter()
-                calc_time_us = (calc_end - calc_start) * 1_000_000
+                # Ground snap (when grounded) or unground (when no ground found)
+                if ground_hit_z is not None and abs(ground_hit_z - pz) <= snap_down and vz <= 0.0:
+                    # Ground found within snap distance - snap to it
+                    pz = ground_hit_z
+                    on_ground = True
+                    vz = 0.0
+                    if ground_hit_n is not None:
+                        gn_x, gn_y, gn_z = ground_hit_n
+                        on_walkable = gn_z >= floor_cos
+                    coyote_remaining = coyote_time
+                elif ground_hit_z is None and was_grounded:
+                    # Was grounded but no ground found - walked off a ledge!
+                    on_ground = False
+                    on_walkable = False
+                    coyote_remaining = coyote_time  # Grant coyote time
+                elif not on_ground and was_grounded:
+                    coyote_remaining = coyote_time
+            else:
+                # No grid - just apply vertical movement
+                pz += dz
+                on_ground = False
 
-                result_data = {
-                    "hit": closest_hit is not None,
-                    "hit_location": closest_hit,
-                    "hit_normal": normal,
-                    "hit_distance": closest_dist if closest_hit is not None else None,
-                    "triangles_tested": triangles_tested,
-                    "cells_traversed": cells_traversed,
+            # ─────────────────────────────────────────────────────────────────
+            # 8. STEEP SLOPE SLIDING (after ground detection updates the normal)
+            # ─────────────────────────────────────────────────────────────────
+            # If we're on ground but NOT walkable (steep slope), apply sliding
+            if on_ground and not on_walkable:
+                # Ground normal is now updated from ground detection
+                gn_len = math.sqrt(gn_x*gn_x + gn_y*gn_y + gn_z*gn_z)
+                if gn_len > 0.001:
+                    n_x = gn_x / gn_len
+                    n_y = gn_y / gn_len
+                    n_z = gn_z / gn_len
+
+                    # Compute slide direction (down the slope in XY plane)
+                    # The normal points OUT of the slope surface.
+                    # For a slope facing up-and-outward, normal XY points UPHILL.
+                    # To slide DOWNHILL, we go OPPOSITE to normal's XY projection.
+                    # But wait - if normal points outward from surface, and surface
+                    # is tilted up, then normal.xy points in the uphill direction.
+                    # So downhill = +normal.xy (not negative!)
+                    #
+                    # Actually: Consider a ramp going up in +X direction.
+                    # The surface normal would point up and back: (+small, 0, +large)
+                    # normalized, n_x is positive (pointing in +X, which is uphill)
+                    # To slide DOWN, we want -X direction, so slide = -n_x
+                    #
+                    # Hmm, let me think again with gravity:
+                    # Gravity pulls down (0,0,-1). Project onto slope plane:
+                    # g_tangent = g - n*(g.n) = (0,0,-1) - n*(-n_z) = (0,0,-1) + n*n_z
+                    # = (n_x*n_z, n_y*n_z, -1 + n_z*n_z)
+                    # The XY components are (n_x*n_z, n_y*n_z) - this IS the downhill direction
+
+                    slide_xy_len = math.sqrt(n_x*n_x + n_y*n_y)
+                    if slide_xy_len > 0.001:
+                        # Gravity projected onto slope gives downhill direction
+                        # g_tangent.xy = (n_x * n_z, n_y * n_z)
+                        slide_x = n_x * n_z
+                        slide_y = n_y * n_z
+
+                        # Normalize the slide direction
+                        slide_len = math.sqrt(slide_x*slide_x + slide_y*slide_y)
+                        if slide_len > 0.001:
+                            slide_x /= slide_len
+                            slide_y /= slide_len
+
+                            # Slope steepness factor (0 = flat, 1 = vertical)
+                            steepness = 1.0 - n_z
+
+                            # Apply slide acceleration (VERY aggressive sliding)
+                            # Increased from 35.0 to 60.0 for much more aggressive sliding
+                            slope_slide_gain = 60.0
+                            slide_accel = slope_slide_gain * steepness * dt
+
+                            vx += slide_x * slide_accel
+                            vy += slide_y * slide_accel
+
+                            # Push position down slope to prevent sticking (increased from 4.0 to 8.0)
+                            slide_push = steepness * dt * 8.0
+                            px += slide_x * slide_push
+                            py += slide_y * slide_push
+
+                            # Apply strong downward velocity (increased from 0.8 to 1.2)
+                            # This makes you accelerate downward while sliding
+                            vz += gravity * 1.2 * dt
+
+            # ─────────────────────────────────────────────────────────────────
+            # BUILD RESULT
+            # ─────────────────────────────────────────────────────────────────
+            calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+            result_data = {
+                "pos": (px, py, pz),
+                "vel": (vx, vy, vz),
+                "on_ground": on_ground,
+                "on_walkable": on_walkable,
+                "ground_normal": (gn_x, gn_y, gn_z),
+                "coyote_remaining": coyote_remaining,
+                "jump_consumed": jump_consumed,
+                "debug": {
+                    "rays_cast": total_rays,
+                    "triangles_tested": total_tris,
+                    "cells_traversed": total_cells,
                     "calc_time_us": calc_time_us,
-                    "method": "GRID_DDA"
+                    "h_blocked": h_blocked,
+                    "did_step_up": did_step_up,
+                    "did_slide": did_slide,
+                    "hit_ceiling": hit_ceiling,
                 }
+            }
 
-                # Debug: announce completion
-                print(f"[Worker] KCC_RAYCAST_GRID job {job.job_id} complete: tested={triangles_tested} tris, cells={cells_traversed}, time={calc_time_us:.1f}µs")
+        # =====================================================================
+        # CAMERA OCCLUSION HANDLERS
+        # =====================================================================
 
-        elif job.job_type == "KCC_RAYCAST_CACHED":
-            # KCC raycasting using CACHED grid (no serialization overhead!)
-            # Grid must be cached first via CACHE_GRID job
+        # REMOVED: Old KCC handlers (KCC_INPUT_VECTOR, KCC_RAYCAST, KCC_RAYCAST_GRID, KCC_RAYCAST_CACHED)
+        # Now using unified KCC_PHYSICS_STEP handler above
+
+        elif job.job_type == "CAMERA_OCCLUSION_STATIC":
+            # Camera occlusion raycast against cached static grid
+            # Uses the same cached grid as KCC_RAYCAST_CACHED
+            # Returns hit distance for camera pull-in calculations
             import math
 
             calc_start = time.perf_counter()
 
-            # Extract ray data (small payload - ~100 bytes)
+            # Extract ray data
             ray_origin = job.data.get("ray_origin", (0.0, 0.0, 0.0))
             ray_direction = job.data.get("ray_direction", (0.0, 0.0, -1.0))
-            max_distance = job.data.get("max_distance", 100.0)
+            max_distance = job.data.get("max_distance", 10.0)
 
             # Use cached grid
             if _cached_grid is None:
                 result_data = {
                     "hit": False,
-                    "hit_location": None,
-                    "hit_normal": None,
                     "hit_distance": None,
                     "triangles_tested": 0,
                     "cells_traversed": 0,
@@ -906,7 +1268,7 @@ def process_job(job) -> dict:
                 min_x, min_y, min_z = bounds_min
                 max_x, max_y, max_z = bounds_max
 
-                # 3D DDA Ray Traversal (same algorithm as KCC_RAYCAST_GRID)
+                # 3D DDA Ray Traversal (same algorithm as KCC_RAYCAST_CACHED)
                 start_x = max(min_x, min(max_x - 0.001, ox))
                 start_y = max(min_y, min(max_y - 0.001, oy))
                 start_z = max(min_z, min(max_z - 0.001, oz))
@@ -955,12 +1317,11 @@ def process_job(job) -> dict:
                     t_max_z = INF
                     t_delta_z = INF
 
-                closest_hit = None
                 closest_dist = max_distance
-                closest_triangle = None
                 triangles_tested = 0
                 cells_traversed = 0
                 tested_triangles = set()
+                hit_found = False
 
                 max_cells = nx + ny + nz + 10
                 t_current = 0.0
@@ -991,12 +1352,11 @@ def process_job(job) -> dict:
                             )
 
                             if hit and dist < closest_dist:
-                                closest_hit = hit_point
                                 closest_dist = dist
-                                closest_triangle = tri
+                                hit_found = True
 
                     t_next = min(t_max_x, t_max_y, t_max_z)
-                    if closest_hit is not None and closest_dist <= t_next:
+                    if hit_found and closest_dist <= t_next:
                         break
 
                     if t_max_x < t_max_y:
@@ -1018,25 +1378,183 @@ def process_job(job) -> dict:
                             t_current = t_max_z
                             t_max_z += t_delta_z
 
-                if closest_hit is not None:
-                    v0, v1, v2 = closest_triangle
-                    normal = compute_triangle_normal(v0, v1, v2)
-                else:
-                    normal = None
-
                 calc_end = time.perf_counter()
                 calc_time_us = (calc_end - calc_start) * 1_000_000
 
                 result_data = {
-                    "hit": closest_hit is not None,
-                    "hit_location": closest_hit,
-                    "hit_normal": normal,
-                    "hit_distance": closest_dist if closest_hit is not None else None,
+                    "hit": hit_found,
+                    "hit_distance": closest_dist if hit_found else None,
                     "triangles_tested": triangles_tested,
                     "cells_traversed": cells_traversed,
                     "calc_time_us": calc_time_us,
-                    "method": "CACHED_DDA"
+                    "method": "CAMERA_CACHED_DDA"
                 }
+
+        elif job.job_type == "CAMERA_OCCLUSION_FULL":
+            # Full camera occlusion: static grid + dynamic triangles
+            # Returns closest hit - LoS+Pushout done on main thread (Blender BVH is faster)
+            import math
+
+            calc_start = time.perf_counter()
+
+            # Ray parameters
+            ray_origin = job.data.get("ray_origin", (0.0, 0.0, 0.0))
+            ray_direction = job.data.get("ray_direction", (0.0, 0.0, -1.0))
+            max_distance = job.data.get("max_distance", 10.0)
+            dynamic_triangles = job.data.get("dynamic_triangles", [])
+
+            ox, oy, oz = ray_origin
+            dx, dy, dz = ray_direction
+
+            # Normalize direction
+            d_len = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if d_len > 1e-12:
+                dx /= d_len
+                dy /= d_len
+                dz /= d_len
+
+            closest_dist = max_distance
+            hit_found = False
+            hit_source = None
+            static_tris_tested = 0
+            static_cells_traversed = 0
+            dynamic_tris_tested = 0
+
+            # === STATIC GEOMETRY (cached grid) ===
+            if _cached_grid is not None:
+                grid = _cached_grid
+                bounds_min = grid["bounds_min"]
+                bounds_max = grid["bounds_max"]
+                cell_size = grid["cell_size"]
+                grid_dims = grid["grid_dims"]
+                cells = grid["cells"]
+                triangles = grid["triangles"]
+
+                nx, ny, nz = grid_dims
+                min_x, min_y, min_z = bounds_min
+                max_x, max_y, max_z = bounds_max
+
+                start_x = max(min_x, min(max_x - 0.001, ox))
+                start_y = max(min_y, min(max_y - 0.001, oy))
+                start_z = max(min_z, min(max_z - 0.001, oz))
+
+                ix = int((start_x - min_x) / cell_size)
+                iy = int((start_y - min_y) / cell_size)
+                iz = int((start_z - min_z) / cell_size)
+
+                ix = max(0, min(nx - 1, ix))
+                iy = max(0, min(ny - 1, iy))
+                iz = max(0, min(nz - 1, iz))
+
+                step_x = 1 if dx >= 0 else -1
+                step_y = 1 if dy >= 0 else -1
+                step_z = 1 if dz >= 0 else -1
+
+                INF = float('inf')
+
+                if abs(dx) > 1e-12:
+                    if dx > 0:
+                        t_max_x = ((min_x + (ix + 1) * cell_size) - ox) / dx
+                    else:
+                        t_max_x = ((min_x + ix * cell_size) - ox) / dx
+                    t_delta_x = abs(cell_size / dx)
+                else:
+                    t_max_x = INF
+                    t_delta_x = INF
+
+                if abs(dy) > 1e-12:
+                    if dy > 0:
+                        t_max_y = ((min_y + (iy + 1) * cell_size) - oy) / dy
+                    else:
+                        t_max_y = ((min_y + iy * cell_size) - oy) / dy
+                    t_delta_y = abs(cell_size / dy)
+                else:
+                    t_max_y = INF
+                    t_delta_y = INF
+
+                if abs(dz) > 1e-12:
+                    if dz > 0:
+                        t_max_z = ((min_z + (iz + 1) * cell_size) - oz) / dz
+                    else:
+                        t_max_z = ((min_z + iz * cell_size) - oz) / dz
+                    t_delta_z = abs(cell_size / dz)
+                else:
+                    t_max_z = INF
+                    t_delta_z = INF
+
+                tested_triangles = set()
+                max_cells = nx + ny + nz + 10
+                t_current = 0.0
+
+                while static_cells_traversed < max_cells:
+                    static_cells_traversed += 1
+
+                    if t_current > closest_dist:
+                        break
+                    if ix < 0 or ix >= nx or iy < 0 or iy >= ny or iz < 0 or iz >= nz:
+                        break
+
+                    cell_key = (ix, iy, iz)
+                    if cell_key in cells:
+                        for tri_idx in cells[cell_key]:
+                            if tri_idx in tested_triangles:
+                                continue
+                            tested_triangles.add(tri_idx)
+                            static_tris_tested += 1
+
+                            tri = triangles[tri_idx]
+                            hit, dist, _ = ray_triangle_intersect(ray_origin, (dx, dy, dz), tri[0], tri[1], tri[2])
+                            if hit and dist < closest_dist:
+                                closest_dist = dist
+                                hit_found = True
+                                hit_source = "STATIC"
+
+                    t_next = min(t_max_x, t_max_y, t_max_z)
+                    if hit_found and closest_dist <= t_next:
+                        break
+
+                    if t_max_x < t_max_y:
+                        if t_max_x < t_max_z:
+                            ix += step_x
+                            t_current = t_max_x
+                            t_max_x += t_delta_x
+                        else:
+                            iz += step_z
+                            t_current = t_max_z
+                            t_max_z += t_delta_z
+                    else:
+                        if t_max_y < t_max_z:
+                            iy += step_y
+                            t_current = t_max_y
+                            t_max_y += t_delta_y
+                        else:
+                            iz += step_z
+                            t_current = t_max_z
+                            t_max_z += t_delta_z
+
+            # === DYNAMIC GEOMETRY (brute force on provided triangles) ===
+            for tri in dynamic_triangles:
+                dynamic_tris_tested += 1
+                v0, v1, v2 = tri
+                hit, dist, _ = ray_triangle_intersect(ray_origin, (dx, dy, dz), v0, v1, v2)
+                if hit and dist < closest_dist:
+                    closest_dist = dist
+                    hit_found = True
+                    hit_source = "DYNAMIC"
+
+            calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+            result_data = {
+                "hit": hit_found,
+                "hit_distance": closest_dist if hit_found else None,
+                "hit_source": hit_source,
+                "static_triangles_tested": static_tris_tested,
+                "static_cells_traversed": static_cells_traversed,
+                "dynamic_triangles_tested": dynamic_tris_tested,
+                "calc_time_us": calc_time_us,
+                "method": "CAMERA_FULL",
+                "grid_cached": _cached_grid is not None
+            }
 
         else:
             # Unknown job type - still succeed but note it

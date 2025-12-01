@@ -1,4 +1,24 @@
 # Exploratory/Exp_Game/physics/exp_kcc.py
+"""
+Kinematic Character Controller - Full Physics Offload Architecture
+
+Worker does the ENTIRE physics step:
+  1. Input → Velocity acceleration
+  2. Gravity
+  3. Jump
+  4. Horizontal collision (3D DDA on cached grid)
+  5. Step-up
+  6. Wall slide
+  7. Ceiling check
+  8. Ground detection
+
+Main thread is THIN:
+  - Apply previous frame's worker result
+  - Handle dynamic movers (frame-perfect)
+  - Snapshot state + input
+  - Submit KCC_PHYSICS_STEP job
+  - Write position to Blender
+"""
 import math
 import mathutils
 from mathutils import Vector
@@ -9,34 +29,6 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 _UP = Vector((0.0, 0.0, 1.0))
-
-def remove_steep_slope_component(move_dir: Vector, slope_normal: Vector, max_slope_dot: float = 0.7) -> Vector:
-    """
-    XY-only uphill clamp for steep slopes.
-    Returns a vector with z = 0.0. No behavior change vs. original.
-    """
-    n = slope_normal
-    if n.length <= 1.0e-12:
-        return Vector((move_dir.x, move_dir.y, 0.0))
-    n = n.normalized()
-
-    # Walkable => unchanged
-    if n.dot(_UP) >= float(max_slope_dot):
-        return Vector((move_dir.x, move_dir.y, 0.0))
-
-    # In-plane uphill direction and its XY
-    uphill = _UP - n * _UP.dot(n)
-    g_xy = Vector((uphill.x, uphill.y))
-    if g_xy.length <= 1.0e-12:
-        return Vector((move_dir.x, move_dir.y, 0.0))
-    g_xy.normalize()
-
-    m_xy = Vector((move_dir.x, move_dir.y))
-    comp = m_xy.dot(g_xy)
-    if comp > 0.0:
-        m_xy -= g_xy * comp  # remove only the uphill component
-
-    return Vector((m_xy.x, m_xy.y, 0.0))
 
 # ---- Config ----------------------------------------------------------------
 
@@ -62,17 +54,18 @@ class KCCConfig:
 
 class KinematicCharacterController:
     """
-    Capsule controller:
-      • Horizontal pre-sweep (height bands), optional slide
-      • Clean step-up: lift -> short forward -> drop
-      • Ceiling ray blocks jump-through ceilings
-      • Single downward ray shared by penetration & snap
+    Full Physics Offload KCC:
+    - Worker computes entire physics step (no prediction needed)
+    - Main thread only applies results and handles dynamic movers
+    - 1-frame latency is acceptable (33ms at 30Hz)
     """
 
     def __init__(self, obj, scene_cfg):
         self.obj = obj
         self.cfg = KCCConfig(scene_cfg)
 
+        # Physics state
+        self.pos          = obj.location.copy()
         self.vel          = Vector((0.0, 0.0, 0.0))
         self.on_ground    = False
         self.on_walkable  = True
@@ -81,23 +74,20 @@ class KinematicCharacterController:
         self._coyote      = 0.0
         self._jump_buf    = 0.0
 
-        # Cached constants to avoid recomputation every step
+        # Cached constants
         self._up = _UP
         self._floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
 
-        # Multiprocessing engine offload caching (for 1-frame latency pattern)
-        self._cached_input_result = None  # Result from previous frame's job
-        self._last_input_job_id = None    # Track submitted job ID
-        self._cached_slope_platform_result = None  # Slope/platform math result
-        self._last_slope_platform_job_id = None    # Track submitted job ID
-        self._cached_raycast_result = None  # Raycast result (hit, location, normal, distance)
-        self._last_raycast_job_id = None    # Track submitted job ID
+        # Worker result caching (1-frame latency pattern)
+        self._cached_physics_result = None
+        self._last_physics_job_id = None
 
     # --------------------
-    # Input & helpers
+    # Input calculation (main thread - always immediate)
     # --------------------
 
     def _input_vector(self, keys_pressed, prefs, camera_yaw):
+        """Calculate wish direction from input keys and camera yaw."""
         fwd_key  = prefs.key_forward
         back_key = prefs.key_backward
         left_key = prefs.key_left
@@ -110,7 +100,7 @@ class KinematicCharacterController:
         if right_key in keys_pressed: x += 1.0
         if left_key in keys_pressed:  x -= 1.0
 
-        # Camera-plane intent (no terrain-induced yaw)
+        # Normalize
         v_len2 = x*x + y*y
         if v_len2 > 1.0e-12:
             inv_len = 1.0 / math.sqrt(v_len2)
@@ -125,314 +115,24 @@ class KinematicCharacterController:
         xy_len2 = world3.x * world3.x + world3.y * world3.y
         if xy_len2 > 1.0e-12:
             inv_xy = 1.0 / math.sqrt(xy_len2)
-            xy = Vector((world3.x * inv_xy, world3.y * inv_xy))
+            wish_x = world3.x * inv_xy
+            wish_y = world3.y * inv_xy
         else:
-            xy = Vector((0.0, 0.0))
+            wish_x = wish_y = 0.0
 
-        # Steep-slope uphill removal when standing on non-walkable
-        if self.on_ground and self.ground_norm is not None and not self._slope_ok(self.ground_norm):
-            v3 = Vector((xy.x, xy.y, 0.0))
-            v3 = remove_steep_slope_component(v3, self.ground_norm, max_slope_dot=self._floor_cos)
-            xy = Vector((v3.x, v3.y))
+        return (wish_x, wish_y), (run_key in keys_pressed)
 
-        return xy, (run_key in keys_pressed)
+    # --------------------
+    # Dynamic mover handling (main thread - frame-perfect)
+    # --------------------
 
-    def _accelerate(self, cur_xy: Vector, wish_dir_xy: Vector, target_speed: float, accel: float, dt: float) -> Vector:
-        desired = Vector((wish_dir_xy.x * target_speed, wish_dir_xy.y * target_speed))
-        t = clamp(accel * dt, 0.0, 1.0)
-        return cur_xy.lerp(desired, t)
-
-    def _slope_ok(self, n: Vector) -> bool:
-        # Exact comparison to your configured limit (no eps tweaks)
-        return math.degrees(_UP.angle(n)) <= self.cfg.slope_limit_deg
-
-    # ---- Fast geometric prefilters / rays ----------------------------------
-
-    @staticmethod
-    def _ray_hits_sphere_segment(origin: Vector, dir_norm: Vector, max_dist: float,
-                                 center: Vector, radius: float) -> bool:
-        oc = center - origin
-        t = oc.dot(dir_norm)
-        if t < -radius or t > max_dist + radius:
-            return False
-        if t < 0.0:
-            closest = oc
-        elif t > max_dist:
-            closest = oc - dir_norm * max_dist
-        else:
-            closest = oc - dir_norm * t
-        return closest.length_squared <= (radius * radius)
-
-    def _raycast_any(self, static_bvh, dynamic_map, origin: Vector, direction: Vector, distance: float):
-        """Generic ray (normalizes direction). Returns (loc, norm, obj, dist) or (None, None, None, None)."""
-        if distance <= 1.0e-9 or direction.length <= 1.0e-9:
-            return (None, None, None, None)
-        return self._raycast_any_norm(static_bvh, dynamic_map, origin, direction.normalized(), distance)
-
-    def _raycast_any_norm(self, static_bvh, dynamic_map, origin: Vector, dnorm: Vector, distance: float):
-        """Normalized-direction fast path. Returns (loc, norm, obj, dist) or (None, None, None, None)."""
-        if distance <= 1.0e-9:
-            return (None, None, None, None)
-
-        best = (None, None, None, 1e9)
-
-        if static_bvh:
-            hit = static_bvh.ray_cast(origin, dnorm, distance)
-            if hit and hit[0] is not None and hit[3] < best[3]:
-                best = (hit[0], hit[1], None, hit[3])
-
-        if dynamic_map:
-            pf_pad = float(self.cfg.radius) + 0.05
-            for obj, (bvh_like, rad) in dynamic_map.items():
-                center = obj.matrix_world.translation
-                if not self._ray_hits_sphere_segment(origin, dnorm, distance, center, float(rad) + pf_pad):
-                    continue
-                hit = bvh_like.ray_cast(origin, dnorm, distance)
-                if hit and hit[0] is not None and hit[3] < best[3]:
-                    best = (hit[0], hit[1], obj, hit[3])
-
-        return best if best[0] is not None else (None, None, None, None)
-
-    def _raycast_down_any(self, static_bvh, dynamic_map, origin: Vector, max_dist: float, use_cache=False):
-        """Single downward probe used for both penetration resolve and snap.
-
-        Args:
-            use_cache: If True and cached raycast result exists, use it for static geometry
-                       instead of calling static_bvh.ray_cast(). This enables 1-frame-latency
-                       offloading to worker processes while keeping dynamic platform checks
-                       on the main thread for frame-perfect accuracy.
+    def _handle_dynamic_movers(self, dynamic_map, v_lin_map, v_ang_map, pos, dt):
         """
-        best = (None, None, None, 1e9)
-        d = Vector((0.0, 0.0, -1.0))
-        start = origin + Vector((0.0, 0.0, 1.0))  # guard above head
-
-        # Static geometry: use cached worker result (NO main thread fallback)
-        # Phase 4c: Full offload - trust worker results completely
-        if use_cache and self._cached_raycast_result is not None:
-            hit_bool, hit_loc, hit_norm, hit_dist = self._cached_raycast_result
-            if hit_bool and hit_loc is not None:
-                # Cache has a valid HIT - use it
-                loc = Vector(hit_loc)
-                norm = Vector(hit_norm) if hit_norm else Vector((0.0, 0.0, 1.0))
-                dist = (origin - loc).length
-                best = (loc, norm, None, dist)
-            # If cache is MISS, best stays as (None, None, None, 1e9)
-            # Dynamic platforms below may still provide a hit
-        elif not use_cache and static_bvh:
-            # Only use BVH when engine is NOT available (e.g., engine disabled)
-            hit = static_bvh.ray_cast(start, d, max_dist + 1.0)
-            if hit and hit[0] is not None:
-                dist = (origin - hit[0]).length
-                best = (hit[0], hit[1], None, dist)
-
-        if dynamic_map:
-            pf_pad = float(self.cfg.radius) + 0.05
-            ring2_extra = (pf_pad * pf_pad)
-            seg_top = start.z
-            seg_bot = start.z - (max_dist + 1.0)
-
-            for obj, (bvh_like, rad) in dynamic_map.items():
-                c = obj.matrix_world.translation
-                dx = c.x - start.x
-                dy = c.y - start.y
-                ring = float(rad) + pf_pad
-                if (dx*dx + dy*dy) > (ring * ring + ring2_extra):
-                    continue
-                if (c.z + float(rad) + pf_pad) < seg_bot or (c.z - float(rad) - pf_pad) > seg_top:
-                    continue
-
-                hit = bvh_like.ray_cast(start, d, max_dist + 1.0)
-                if hit and hit[0] is not None:
-                    dist = (origin - hit[0]).length
-                    if dist < best[3]:
-                        best = (hit[0], hit[1], obj, dist)
-
-        return best if best[0] is not None else (None, None, None, None)
-
-    def _forward_sweep_min3(self, static_bvh, dynamic_map, pos: Vector,
-                            fwd_norm: Vector, step_len: float):
-        """
-        Minimal forward sweep with one cheap slide attempt:
-        • Cast 3 rays: feet (z=r), mid (z=h*0.5), head (z=h-r)
-        • Move up to (nearest_hit - r)
-        • Project XY velocity off blocking normal
-        • Slide only if approach angle to the wall normal is in [20°, 70°]
-            (not near-parallel to the wall and not head-on), and then advance
-            once along the tangent at half speed.
-        Returns: (new_pos, hit_normal or None)
-        """
-        r = float(self.cfg.radius)
-        h = float(self.cfg.height)
-        floor_cos = self._floor_cos
-        ray_len = step_len + r
-
-        # ---- primary forward rays (feet, mid, head) ----
-        best_d = None
-        best_n = None
-        for z in (r, clamp(h * 0.5, r, h - r), h - r):
-            o = pos + Vector((0.0, 0.0, z))
-            hit_loc, hit_n, _obj, d = self._raycast_any_norm(static_bvh, dynamic_map, o, fwd_norm, ray_len)
-            if hit_loc is None:
-                continue
-            if best_d is None or d < best_d:
-                best_d = d
-                best_n = hit_n.normalized()
-
-        # No block: full advance
-        if best_d is None:
-            return pos + fwd_norm * step_len, None
-
-        # Clamp to contact
-        allowed = max(0.0, best_d - r)
-        moved_pos = pos
-        if allowed > 1.0e-9:
-            moved_pos = pos + fwd_norm * allowed
-
-        # Remove normal component from XY velocity (retain tangent momentum)
-        if best_n is not None:
-            hvel = Vector((self.vel.x, self.vel.y, 0.0))
-            vn = hvel.dot(best_n)
-            if vn > 0.0:
-                hvel -= best_n * vn
-                self.vel.x, self.vel.y = hvel.x, hvel.y
-
-        # ---- decide if we should slide at all ----
-        remaining = max(0.0, step_len - allowed)
-        if remaining <= (0.15 * r):
-            return moved_pos, best_n
-
-        # Approach angle (to wall normal) gate: slide only if 20°..70°
-        #   θ = arccos(|fwd·n|) in degrees  (0° = head-on, 90° = parallel to wall)
-        dot = abs(fwd_norm.dot(best_n))
-        # clamp for numeric stability
-        dot = max(0.0, min(1.0, float(dot)))
-        from math import acos, degrees
-        theta = degrees(acos(dot))
-        if not (20.0 <= theta <= 85.0):
-            # too head-on (<20°) or too parallel (>70°): don't slide
-            return moved_pos, best_n
-
-        # Tangent direction to the blocking normal
-        slide_dir = fwd_norm - best_n * fwd_norm.dot(best_n)
-        # On too-steep surfaces, slide only in XY
-        if best_n.dot(_UP) < floor_cos:
-            slide_dir = Vector((slide_dir.x, slide_dir.y, 0.0))
-        if slide_dir.length <= 1.0e-12:
-            return moved_pos, best_n
-        slide_dir.normalize()
-
-        # Slow down while sliding (half advance and halve horizontal velocity)
-        remaining *= 0.65
-        self.vel.x *= 0.65
-        self.vel.y *= 0.65
-
-        # One slide attempt using the same 3-ray scheme
-        ray_len2 = remaining + r
-        best_d2 = None
-        for z in (r, clamp(h * 0.5, r, h - r), h - r):
-            o2 = moved_pos + Vector((0.0, 0.0, z))
-            h2, n2, _o, d2 = self._raycast_any_norm(static_bvh, dynamic_map, o2, slide_dir, ray_len2)
-            if h2 is None:
-                continue
-            if best_d2 is None or d2 < best_d2:
-                best_d2 = d2
-
-        if best_d2 is None:
-            return moved_pos + slide_dir * remaining, best_n
-
-        allow2 = max(0.0, best_d2 - r)
-        if allow2 > 1.0e-9:
-            moved_pos = moved_pos + slide_dir * allow2
-
-        return moved_pos, best_n
-
-    # ---- Step-up ------------------------------------------------------------
-
-    def _try_step_up(self, static_bvh, dynamic_map, pos: Vector,
-                     forward_norm: Vector, move_len: float,
-                     low_hit_normal: Vector, low_hit_dist: float):
-        if not self.on_ground or move_len <= 1.0e-6:
-            return (False, pos)
-
-        r      = float(self.cfg.radius)
-        max_up = max(0.0, float(self.cfg.step_height))
-        if max_up <= 1.0e-6:
-            return (False, pos)
-
-        up = self._up
-        floor_cos = self._floor_cos
-
-        # Low band must be a steep riser (non-walkable)
-        if low_hit_normal is None or low_hit_normal.dot(up) >= floor_cos:
-            return (False, pos)
-
-        # 1) Headroom
-        top_start = pos + Vector((0.0, 0.0, float(self.cfg.height)))
-        locUp, _, _, _ = self._raycast_any_norm(static_bvh, dynamic_map, top_start, up, max_up)
-        if locUp is not None:
-            return (False, pos)
-
-        # 2) Raise
-        raised_pos = pos.copy()
-        raised_pos.z += max_up
-
-        # 3) Raised low forward ray
-        ray_len = move_len + r
-        o_low_raised = raised_pos + Vector((0.0, 0.0, r))
-        h2, n2, _, d2 = self._raycast_any_norm(static_bvh, dynamic_map, o_low_raised, forward_norm, ray_len)
-
-        advanced = 0.0
-        if h2 is None:
-            raised_pos += forward_norm * move_len
-            advanced = move_len
-        else:
-            allow2 = max(0.0, d2 - r)
-            if allow2 > 0.0:
-                raised_pos += forward_norm * allow2
-            advanced = allow2
-
-        if advanced <= 1.0e-5:
-            return (False, pos)
-
-        # 4) Drop
-        drop_max = max_up + max(0.0, float(self.cfg.snap_down))
-        locD, nD, gobjD, _ = self._raycast_down_any(static_bvh, dynamic_map, raised_pos, drop_max)
-        if locD is None or nD is None or nD.dot(up) < floor_cos:
-            return (False, pos)
-
-        new_pos = raised_pos.copy()
-        new_pos.z = locD.z
-        self.vel.z       = 0.0
-        self.on_ground   = True
-        self.ground_norm = nD
-        self.ground_obj  = gobjD
-        self._coyote     = self.cfg.coyote_time
-        return (True, new_pos)
-
-
-
-    def _dynamic_contact_influence(
-        self,
-        dynamic_map,                   # {obj: (LocalBVH_like, approx_radius)}
-        v_lin_map,                     # {obj: Vector} linear velocity (m/s)
-        v_ang_map,                     # unused (kept for signature compatibility)
-        pos: Vector,                   # current character base position
-        skip_obj=None                  # don't double-count support obj
-    ):
-        """
-        Ultra-simple, CPU-friendly influence:
-          • One nearest-point query per candidate (mid sample only)
-          • Tiny push-out if overlapping
-          • Mild carry from mover linear velocity only (no angular), with rules:
-              - Floor-like contact (n·up >= 0.6): carry XY freely; clamp vertical add to 0
-              - Wall-like (0.0 <= n·up < 0.6): carry only XY tangent; no normal add
-              - Ceiling-like (n·up < 0.0): no carry (prevents upward boosts)
-          • Per-step carry clamp to avoid jitter/tunneling (≤ 0.5 * radius in any axis)
-
-        Cost: ≤ 1 find_nearest per chosen mover (we still gate movers).
+        Handle dynamic platform carry on main thread (frame-perfect accuracy).
+        Returns (velocity_add, push_out, rotation_delta_z).
         """
         if not dynamic_map:
-            return Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0))
+            return Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0)), 0.0
 
         r = float(self.cfg.radius)
         h = float(self.cfg.height)
@@ -442,43 +142,40 @@ class KinematicCharacterController:
         mid_z = max(r, min(h - r, h * 0.5))
         sample_mid = pos + Vector((0.0, 0.0, mid_z))
 
-        # Bounding sphere of capsule for quick center gating
+        # Bounding sphere for quick gate
         cap_center = pos + Vector((0.0, 0.0, h * 0.5))
         cap_bs_rad = (h * 0.5 + r)
 
-        # Choose the few nearest centers (up to 3) using a quick gate
+        # Find nearby movers
         candidates = []
         for obj, (_lbvh, approx_rad) in dynamic_map.items():
             if obj is None or _lbvh is None:
                 continue
-            if skip_obj is not None and obj == skip_obj:
-                continue
+            if self.ground_obj is not None and obj == self.ground_obj:
+                continue  # Skip ground object (handled separately)
             try:
                 c = obj.matrix_world.translation
             except Exception:
                 continue
-            # quick sphere-sphere gate with a small slack
             if (c - cap_center).length <= (float(approx_rad) + cap_bs_rad + 0.4):
                 candidates.append((obj, (c - cap_center).length_squared))
+
         if not candidates:
-            return Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0))
+            return Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0)), 0.0
 
         candidates.sort(key=lambda t: t[1])
-        # Keep at most 3 movers for this step
         movers = [t[0] for t in candidates[:3]]
 
         vel_add = Vector((0.0, 0.0, 0.0))
         push_out = Vector((0.0, 0.0, 0.0))
-
-        # Per-step clamp to avoid jitter & “teleport carry”
-        carry_cap = max(0.001, 0.5 * r)  # meters per step
+        rot_delta_z = 0.0
+        carry_cap = max(0.001, 0.5 * r)
 
         for obj in movers:
             lbvh, _ = dynamic_map.get(obj, (None, None))
             if lbvh is None:
                 continue
 
-            # Single nearest query (mid sample)
             try:
                 hit_co, hit_n, _idx, dist = lbvh.find_nearest(sample_mid, distance=r + 0.20)
             except Exception:
@@ -487,47 +184,323 @@ class KinematicCharacterController:
                 continue
 
             n = hit_n.normalized()
-            # Orient normal from surface toward the sample
             if (sample_mid - hit_co).dot(n) < 0.0:
                 n = -n
 
-            # 1) Tiny push-out if overlapping
+            # Push-out if overlapping
             if dist < r:
                 push_out += n * min((r - dist), 0.20)
 
-            # 2) Linear carry only (no angular): calm & predictable
+            # Linear carry
             v_lin = v_lin_map.get(obj, Vector((0.0, 0.0, 0.0))) if v_lin_map else Vector((0.0, 0.0, 0.0))
             if v_lin.length_squared <= 1.0e-12:
                 continue
 
-            # Classify contact
             n_up = n.dot(up)
             v_xy = Vector((v_lin.x, v_lin.y, 0.0))
 
             if n_up >= 0.6:
-                # Floor-like: carry XY; block vertical boosts
                 v_add = Vector((v_xy.x, v_xy.y, 0.0))
             elif n_up >= 0.0:
-                # Wall-like: only tangent XY carry (no “suck” into wall)
-                # Remove normal component from XY
                 vn = v_xy.dot(n)
                 if vn > 0.0:
                     v_xy = v_xy - n * vn
                 v_add = Vector((v_xy.x, v_xy.y, 0.0))
             else:
-                # Ceiling-like: no carry (prevents launch)
                 v_add = Vector((0.0, 0.0, 0.0))
 
-            # Per-axis clamp to keep things stable at high mover speeds
-            v_add.x = max(-carry_cap / max(1.0e-6, 1.0), min(carry_cap / max(1.0e-6, 1.0), v_add.x))
-            v_add.y = max(-carry_cap / max(1.0e-6, 1.0), min(carry_cap / max(1.0e-6, 1.0), v_add.y))
-            v_add.z = 0.0  # never add vertical (no boosts)
+            v_add.x = clamp(v_add.x, -carry_cap, carry_cap)
+            v_add.y = clamp(v_add.y, -carry_cap, carry_cap)
+            v_add.z = 0.0
 
             vel_add += v_add
 
-        return vel_add, push_out
+        return vel_add, push_out, rot_delta_z
 
+    def _get_platform_carry(self, platform_linear_velocity_map, platform_ang_velocity_map, pos, rot, dt):
+        """Get velocity carry from ground platform (main thread, frame-perfect)."""
+        carry = Vector((0.0, 0.0, 0.0))
+        rot_delta_z = 0.0
 
+        if self.on_ground and self.ground_obj:
+            v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
+            v_rot = Vector((0.0, 0.0, 0.0))
+
+            if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
+                omega = platform_ang_velocity_map[self.ground_obj]
+                r_vec = (pos - self.ground_obj.matrix_world.translation)
+                v_rot = omega.cross(r_vec)
+                rot_delta_z = omega.z * dt
+
+            carry = v_lin + v_rot
+
+        return carry, rot_delta_z
+
+    # --------------------
+    # Worker result application
+    # --------------------
+
+    def _apply_physics_result(self, result, context=None, dynamic_map=None):
+        """
+        Apply physics result from worker to character state.
+        Also checks collision against dynamic meshes (not in static grid).
+        """
+        if result is None:
+            return
+
+        # Extract result data
+        new_pos = result.get("pos")
+        new_vel = result.get("vel")
+        on_ground = result.get("on_ground", False)
+        on_walkable = result.get("on_walkable", True)
+        ground_normal = result.get("ground_normal", (0.0, 0.0, 1.0))
+        coyote = result.get("coyote_remaining", 0.0)
+        jump_consumed = result.get("jump_consumed", False)
+
+        # Apply state
+        if new_pos:
+            self.pos = Vector(new_pos)
+        if new_vel:
+            self.vel = Vector(new_vel)
+
+        self.on_ground = on_ground
+        self.on_walkable = on_walkable
+        self.ground_norm = Vector(ground_normal)
+        self._coyote = coyote
+
+        if jump_consumed:
+            self._jump_buf = 0.0
+
+        # ─────────────────────────────────────────────────────────────────────
+        # DYNAMIC MESH COLLISION CHECK (main thread, after worker result)
+        # Worker only checks static grid - dynamic meshes need separate check
+        # ─────────────────────────────────────────────────────────────────────
+        if dynamic_map:
+            self._check_dynamic_collision(dynamic_map)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # PLATFORM CARRY (after dynamic collision sets ground_obj)
+        # This must happen AFTER physics to avoid stutter - we ADD platform
+        # motion to the physics result rather than baking it into velocity
+        # ─────────────────────────────────────────────────────────────────────
+        platform_lin_map = getattr(self, '_pending_platform_lin_map', None)
+        platform_ang_map = getattr(self, '_pending_platform_ang_map', None)
+        pending_dt = getattr(self, '_pending_dt', 1.0/30.0)
+
+        if self.on_ground and self.ground_obj and platform_lin_map:
+            v_lin = platform_lin_map.get(self.ground_obj)
+            if v_lin and v_lin.length_squared > 1e-12:
+                # Add platform velocity directly to position (not velocity)
+                # This keeps the character fixed relative to the platform
+                self.pos.x += v_lin.x * pending_dt
+                self.pos.y += v_lin.y * pending_dt
+                self.pos.z += v_lin.z * pending_dt
+
+            # Handle angular velocity (rotation around platform center)
+            if platform_ang_map:
+                omega = platform_ang_map.get(self.ground_obj)
+                if omega and abs(omega.z) > 1e-9:
+                    # Rotate position around platform center
+                    import math
+                    platform_center = self.ground_obj.matrix_world.translation
+                    rel_pos = self.pos - platform_center
+                    angle = omega.z * pending_dt
+                    cos_a = math.cos(angle)
+                    sin_a = math.sin(angle)
+                    new_x = rel_pos.x * cos_a - rel_pos.y * sin_a
+                    new_y = rel_pos.x * sin_a + rel_pos.y * cos_a
+                    self.pos.x = platform_center.x + new_x
+                    self.pos.y = platform_center.y + new_y
+
+        # Debug output
+        if context:
+            from ..developer.dev_debug_gate import should_print_debug
+            if should_print_debug("kcc_offload"):
+                debug = result.get("debug", {})
+                print(f"[KCC] APPLY pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                      f"ground={on_ground} blocked={debug.get('h_blocked', False)} "
+                      f"step={debug.get('did_step_up', False)} | "
+                      f"{debug.get('calc_time_us', 0):.0f}us {debug.get('rays_cast', 0)}rays "
+                      f"{debug.get('triangles_tested', 0)}tris")
+
+    def _check_dynamic_collision(self, dynamic_map):
+        """
+        Check collision against dynamic meshes:
+        1. Ground detection (raycast down) - allows standing on dynamic meshes
+        2. Horizontal collision (push out) - prevents walking through
+        Called after applying worker physics result.
+        """
+        import math
+        if not dynamic_map:
+            return
+
+        r = float(self.cfg.radius)
+        h = float(self.cfg.height)
+        snap_down = float(self.cfg.snap_down)
+
+        # Bounding sphere for quick gate
+        cap_center = self.pos + Vector((0.0, 0.0, h * 0.5))
+        cap_bs_rad = (h * 0.5 + r)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 1. GROUND DETECTION ON DYNAMIC MESHES
+        # ─────────────────────────────────────────────────────────────────────
+        # Raycast down from feet to find dynamic ground
+        best_ground_z = None
+        best_ground_n = None
+        best_ground_obj = None
+
+        ray_origin = self.pos + Vector((0.0, 0.0, 0.5))  # Start slightly above feet
+        ray_max = snap_down + 0.5 + 0.1  # How far down to check
+
+        for obj, (lbvh, approx_rad) in dynamic_map.items():
+            if obj is None or lbvh is None:
+                continue
+
+            try:
+                c = obj.matrix_world.translation
+            except Exception:
+                continue
+
+            # Quick distance gate (generous for ground check)
+            if (c - cap_center).length > (float(approx_rad) + cap_bs_rad + 2.0):
+                continue
+
+            # Raycast down using BVH
+            try:
+                hit_co, hit_n, _idx, dist = lbvh.ray_cast(ray_origin, Vector((0.0, 0.0, -1.0)), ray_max)
+            except Exception:
+                continue
+
+            if hit_co is not None and hit_n is not None:
+                hit_z = hit_co.z
+                # Check if this is a valid ground (normal pointing up enough)
+                if hit_n.z >= self._floor_cos:
+                    if best_ground_z is None or hit_z > best_ground_z:
+                        best_ground_z = hit_z
+                        best_ground_n = hit_n.copy()
+                        best_ground_obj = obj
+
+        # Apply dynamic ground if found and within snap distance
+        if best_ground_z is not None:
+            ground_diff = best_ground_z - self.pos.z
+            # If we're close enough to ground OR falling onto it
+            if abs(ground_diff) <= snap_down or (self.vel.z <= 0 and ground_diff >= -0.1):
+                self.pos.z = best_ground_z
+                self.on_ground = True
+                self.on_walkable = True
+                self.ground_norm = best_ground_n
+                self.ground_obj = best_ground_obj
+                self.vel.z = max(0.0, self.vel.z)
+                self._coyote = self.cfg.coyote_time
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 2. HORIZONTAL COLLISION (push out from sides)
+        # ─────────────────────────────────────────────────────────────────────
+        sample_heights = [r, h * 0.5, h - r]
+
+        total_push = Vector((0.0, 0.0, 0.0))
+        push_count = 0
+
+        for obj, (lbvh, approx_rad) in dynamic_map.items():
+            if obj is None or lbvh is None:
+                continue
+            # Skip our current ground object for horizontal checks
+            if best_ground_obj is not None and obj == best_ground_obj:
+                continue
+
+            try:
+                c = obj.matrix_world.translation
+            except Exception:
+                continue
+
+            # Quick distance gate
+            if (c - cap_center).length > (float(approx_rad) + cap_bs_rad + 0.5):
+                continue
+
+            # Check collision at multiple heights
+            for sample_z in sample_heights:
+                sample_pt = self.pos + Vector((0.0, 0.0, sample_z))
+
+                try:
+                    hit_co, hit_n, _idx, dist = lbvh.find_nearest(sample_pt, distance=r + 0.15)
+                except Exception:
+                    continue
+
+                if hit_co is None or hit_n is None:
+                    continue
+
+                # Push out if overlapping
+                if dist < r:
+                    n = hit_n.normalized()
+                    # Make sure normal points away from mesh
+                    if (sample_pt - hit_co).dot(n) < 0.0:
+                        n = -n
+                    push_dist = min((r - dist) + 0.02, 0.3)  # Max 0.3m push
+                    total_push += n * push_dist
+                    push_count += 1
+
+        # Apply accumulated horizontal push
+        if push_count > 0:
+            # Average the push if multiple hits
+            total_push /= push_count
+            # Only apply horizontal component (Z push handled by ground detection)
+            self.pos.x += total_push.x
+            self.pos.y += total_push.y
+
+            # Remove velocity component into the push
+            push_xy = Vector((total_push.x, total_push.y, 0.0))
+            if push_xy.length > 0.01:
+                push_n = push_xy.normalized()
+                vn = self.vel.x * push_n.x + self.vel.y * push_n.y
+                if vn < 0.0:  # Moving into the obstacle
+                    self.vel.x -= push_n.x * vn
+                    self.vel.y -= push_n.y * vn
+
+    # --------------------
+    # Job building
+    # --------------------
+
+    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt):
+        """Build KCC_PHYSICS_STEP job data for worker."""
+        cfg = self.cfg
+
+        return {
+            # Current state
+            "pos": (self.pos.x, self.pos.y, self.pos.z),
+            "vel": (self.vel.x, self.vel.y, self.vel.z),
+            "on_ground": self.on_ground,
+            "on_walkable": self.on_walkable,
+            "ground_normal": (self.ground_norm.x, self.ground_norm.y, self.ground_norm.z),
+
+            # Input this frame
+            "wish_dir": wish_dir,  # (dx, dy) normalized
+            "is_running": is_running,
+            "jump_requested": jump_requested,
+
+            # Physics config
+            "config": {
+                "radius": float(cfg.radius),
+                "height": float(cfg.height),
+                "gravity": float(cfg.gravity),
+                "max_walk": float(cfg.max_walk),
+                "max_run": float(cfg.max_run),
+                "accel_ground": float(cfg.accel_ground),
+                "accel_air": float(cfg.accel_air),
+                "step_height": float(cfg.step_height),
+                "snap_down": float(cfg.snap_down),
+                "slope_limit_deg": float(cfg.slope_limit_deg),
+                "jump_speed": float(cfg.jump_speed),
+                "coyote_time": float(cfg.coyote_time),
+            },
+
+            # Timing
+            "dt": dt,
+
+            # Timers
+            "coyote_remaining": self._coyote,
+            "jump_buffer_remaining": self._jump_buf,
+        }
 
     # ---- Main step ----------------------------------------------------------
 
@@ -537,394 +510,192 @@ class KinematicCharacterController:
         prefs,
         keys_pressed,
         camera_yaw: float,
-        static_bvh,
+        static_bvh,  # Not used - worker has cached grid
         dynamic_map,
         platform_linear_velocity_map=None,
         platform_ang_velocity_map=None,
-        engine=None,  # Optional engine for offloading
-        context=None,  # Optional context for debug output
+        engine=None,
+        context=None,
     ):
-        pos = self.obj.location.copy()
+        """
+        Same-Frame Physics Offload step:
+        1. Handle dynamic movers (frame-perfect, main thread)
+        2. SNAPSHOT current state + input
+        3. SUBMIT job to worker
+        4. POLL for result (same-frame, with timeout)
+        5. APPLY result immediately
+        6. Write position to Blender
+
+        This eliminates the 1-frame latency of the previous architecture.
+        Worker computation is ~100-200µs, well within frame budget.
+        """
+        import time
         rot = self.obj.rotation_euler.copy()
 
-        cfg        = self.cfg
-        up         = self._up
-        floor_cos  = self._floor_cos
-        r          = float(cfg.radius)
-        h          = float(cfg.height)
+        # Sync position from Blender (in case of external changes)
+        self.pos = self.obj.location.copy()
 
-        # 1) Input / speed (use cached result from previous frame if available)
-        if engine and self._cached_input_result:
-            # Use offloaded result from previous frame's job
-            cached_xy, is_running = self._cached_input_result
-            # Convert tuple to Vector for compatibility with _accelerate()
-            wish_dir_xy = Vector((cached_xy[0], cached_xy[1]))
+        # Store velocity maps for post-physics platform carry
+        self._pending_platform_lin_map = platform_linear_velocity_map
+        self._pending_platform_ang_map = platform_ang_velocity_map
+        self._pending_dt = dt
 
-            # Debug output (frequency-gated)
-            if context:
-                from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("kcc_offload"):
-                    print(f"[KCC Offload] Using cached input: wish_dir={wish_dir_xy}, is_running={is_running}")
-        else:
-            # Fallback to local calculation (no engine or first frame)
-            wish_dir_xy, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
-
-        target_speed = cfg.max_run if is_running else cfg.max_walk
-
-        # Submit job for NEXT frame (at start so worker can process during physics)
-        if engine:
-            job_data = {
-                "keys_pressed": list(keys_pressed),
-                "camera_yaw": float(camera_yaw),
-                "on_ground": self.on_ground,
-                "ground_norm": (self.ground_norm.x, self.ground_norm.y, self.ground_norm.z) if self.ground_norm else (0.0, 0.0, 1.0),
-                "floor_cos": float(self._floor_cos),
-                "pref_forward": prefs.key_forward,
-                "pref_backward": prefs.key_backward,
-                "pref_left": prefs.key_left,
-                "pref_right": prefs.key_right,
-                "pref_run": prefs.key_run,
-            }
-            self._last_input_job_id = engine.submit_job("KCC_INPUT_VECTOR", job_data)
-
-            # Debug output (frequency-gated)
-            if context:
-                from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("kcc_offload"):
-                    print(f"[KCC Offload] Submitted KCC_INPUT_VECTOR job (ID: {self._last_input_job_id})")
-
-        # 2) Timers
-        self._coyote   = max(0.0, self._coyote - dt)
-        self._jump_buf = max(0.0, self._jump_buf - dt)
-
-        # 3) Horizontal accel
-        cur_xy = Vector((self.vel.x, self.vel.y))
-        accel  = cfg.accel_ground if self.on_ground else cfg.accel_air
-        new_xy = self._accelerate(cur_xy, wish_dir_xy, target_speed, accel, dt)
-        self.vel.x, self.vel.y = new_xy.x, new_xy.y
-
-        # 3.5) Minimal dynamic contact influence (any side) + tiny pushout
+        # ─────────────────────────────────────────────────────────────────────
+        # 1. Handle dynamic movers on main thread (push-out only, carry after physics)
+        # ─────────────────────────────────────────────────────────────────────
+        # Note: Platform carry is now applied AFTER physics result to prevent stutter
         if dynamic_map:
-            v_extra, p_out = self._dynamic_contact_influence(
+            # Push-out from nearby dynamic movers (no velocity carry here)
+            v_extra, p_out, _ = self._handle_dynamic_movers(
                 dynamic_map,
-                platform_linear_velocity_map,
-                platform_ang_velocity_map,  # ignored internally
-                pos,
-                skip_obj=self.ground_obj
+                None,  # Don't apply velocity here - do it after physics
+                None,
+                self.pos,
+                dt
             )
             if p_out.length_squared > 0.0:
-                pos += p_out  # positional correction before casts
-            if v_extra.length_squared > 0.0:
-                # Horizontal-only carry; no vertical boosts
-                self.vel.x += v_extra.x
-                self.vel.y += v_extra.y
+                self.pos += p_out
 
-        # 4) Vertical + steep behavior + 5) Platform carry
-        # CRITICAL: Apply cached results AFTER horizontal acceleration (step 3)
-        # so we don't overwrite the XY velocity that was just calculated
-        if engine and self._cached_slope_platform_result:
-            # Use cached result from worker (XY SLOPE SLIDING ONLY)
-            # CRITICAL: Z velocity and platform carry MUST be calculated on main thread
-            # 1-frame latency on Z velocity causes jitter/bouncing (immediate feedback loop required)
-            _, cached_slide_xy, cached_is_sliding, _, _ = self._cached_slope_platform_result
+        # ─────────────────────────────────────────────────────────────────────
+        # 2. SNAPSHOT current state + input
+        # ─────────────────────────────────────────────────────────────────────
+        wish_dir, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
+        jump_requested = (self._jump_buf > 0.0)
 
-            # Apply XY slide velocity (replaces movement velocity on steep slopes)
-            if cached_is_sliding:
-                # Sliding overrides normal movement - use slide velocity
-                self.vel.x = cached_slide_xy[0]
-                self.vel.y = cached_slide_xy[1]
+        # Decrement timers
+        self._jump_buf = max(0.0, self._jump_buf - dt)
 
-            # CRITICAL: Calculate Z velocity on MAIN THREAD (not cached!)
-            # Ground state can change every frame - needs immediate response
-            if not self.on_ground:
-                self.vel.z += cfg.gravity * dt
-            else:
-                if self.on_walkable:
-                    self.vel.z = max(self.vel.z, 0.0)
-                else:
-                    # Steep slope - calculate Z sliding on main thread too
-                    n = self.ground_norm if self.ground_norm is not None else up
-                    uphill   = up - n * up.dot(n)
-                    downhill = Vector((-uphill.x, -uphill.y, -uphill.z))
-                    if downhill.length > 0.0:
-                        downhill.normalize()
-                        slide_acc_z = downhill.z * (abs(cfg.gravity) * float(cfg.steep_slide_gain))
-                        self.vel.z = min(0.0, self.vel.z + slide_acc_z * dt)
-
-            # CRITICAL: Calculate platform carry on MAIN THREAD (not cached!)
-            # 1-frame latency causes bouncy/sliding on moving platforms
-            carry = Vector((0.0, 0.0, 0.0))
-            if self.on_ground and self.ground_obj:
-                v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
-                v_rot = Vector((0.0, 0.0, 0.0))
-                if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
-                    omega = platform_ang_velocity_map[self.ground_obj]
-                    r_vec = (pos - self.ground_obj.matrix_world.translation)
-                    v_rot = omega.cross(r_vec)
-                    rot.z += omega.z * dt
-                carry = v_lin + v_rot
-
-            # Debug output
-            if context:
-                from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("kcc_offload"):
-                    if cached_is_sliding:
-                        print(f"[KCC Offload] Using cached XY slide: slide_xy={cached_slide_xy} (Z + carry on main thread)")
-                    else:
-                        print(f"[KCC Offload] Using main thread calcs only (Z + carry on main thread)")
-        else:
-            # Fallback to local calculation (no engine or first frame)
-            # 4) Vertical + steep behavior
-            if not self.on_ground:
-                self.vel.z += cfg.gravity * dt
-            else:
-                if self.on_walkable:
-                    self.vel.z = max(self.vel.z, 0.0)
-                else:
-                    n = self.ground_norm if self.ground_norm is not None else up
-                    uphill   = up - n * up.dot(n)
-                    downhill = Vector((-uphill.x, -uphill.y, -uphill.z))
-                    if downhill.length > 0.0:
-                        downhill.normalize()
-                        slide_acc = downhill * (abs(cfg.gravity) * float(cfg.steep_slide_gain))
-                        self.vel.x += slide_acc.x * dt
-                        self.vel.y += slide_acc.y * dt
-                        self.vel.z  = min(0.0, self.vel.z + slide_acc.z * dt)
-
-                        d_xy = Vector((downhill.x, downhill.y, 0.0))
-                        if d_xy.length > 0.0:
-                            d_xy.normalize()
-                            v_xy  = Vector((self.vel.x, self.vel.y, 0.0))
-                            along = v_xy.dot(d_xy)
-                            if along < float(cfg.steep_min_speed):
-                                v_xy = v_xy - d_xy * along + d_xy * float(cfg.steep_min_speed)
-                                self.vel.x, self.vel.y = v_xy.x, v_xy.y
-
-            # 5) Moving platform carry + yaw follow
-            carry = Vector((0.0, 0.0, 0.0))
-            if self.on_ground and self.ground_obj:
-                v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
-                v_rot = Vector((0.0, 0.0, 0.0))
-                if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
-                    omega = platform_ang_velocity_map[self.ground_obj]
-                    r_vec = (pos - self.ground_obj.matrix_world.translation)
-                    v_rot = omega.cross(r_vec)
-                    rot.z += omega.z * dt
-                carry = v_lin + v_rot
-
-        # Submit job for NEXT frame (after we've used cached result from previous frame)
-        # NOTE: Platform carry is NOT offloaded - it's calculated on main thread for frame-perfect sync
+        # ─────────────────────────────────────────────────────────────────────
+        # 3. SUBMIT job and 4. POLL for same-frame result
+        # ─────────────────────────────────────────────────────────────────────
         if engine:
-            job_data = {
-                "vel": (self.vel.x, self.vel.y, self.vel.z),
-                "on_ground": self.on_ground,
-                "on_walkable": self.on_walkable,
-                "ground_norm": (self.ground_norm.x, self.ground_norm.y, self.ground_norm.z) if self.ground_norm else (0.0, 0.0, 1.0),
-                "gravity": float(cfg.gravity),
-                "steep_slide_gain": float(cfg.steep_slide_gain),
-                "steep_min_speed": float(cfg.steep_min_speed),
-                "dt": dt,
-            }
-            self._last_slope_platform_job_id = engine.submit_job("KCC_SLOPE_PLATFORM_MATH", job_data)
+            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt)
+            job_id = engine.submit_job("KCC_PHYSICS_STEP", job_data)
+            self._last_physics_job_id = job_id
 
-            # Debug output
-            if context:
-                from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("kcc_offload"):
-                    print(f"[KCC Offload] Submitted KCC_SLOPE_PLATFORM_MATH job (ID: {self._last_slope_platform_job_id})")
+            # Same-frame polling: wait for our result
+            # Worker computes in ~100-200µs typically, so this should succeed quickly
+            # Using adaptive polling: busy-poll first, then sleep if needed
+            poll_start = time.perf_counter()
+            poll_timeout = 0.003  # 3ms max wait (plenty for ~200µs worker)
+            result_found = False
+            poll_count = 0
 
-        # 6) Ceiling (only if going up)
-        if self.vel.z > 0.0:
-            top     = pos + Vector((0.0, 0.0, h))
-            up_dist = self.vel.z * dt
-            loc_up, _, _, _ = self._raycast_any_norm(static_bvh, dynamic_map, top, up, up_dist)
-            if loc_up is not None:
-                pos.z     = loc_up.z - h
-                self.vel.z = 0.0
-
-        # 7) Horizontal move (minimal 3-ray sweep + step-up + slide)
-        hvel = Vector((self.vel.x + carry.x, self.vel.y + carry.y, 0.0))
-
-        # Clamp uphill component on too-steep when grounded (exact compare kept)
-        if self.on_ground and self.ground_norm is not None and not self.on_walkable:
-            hv3 = remove_steep_slope_component(Vector((hvel.x, hvel.y, 0.0)),
-                                               self.ground_norm, max_slope_dot=floor_cos)
-            hvel = Vector((hv3.x, hv3.y, 0.0))
-
-        dz = self.vel.z * dt
-        hvel_len2 = hvel.x*hvel.x + hvel.y*hvel.y
-
-        # Early-out if idle (still do vertical block/snap below)
-        if self.on_ground and abs(self.vel.z) < 1.0e-6 and hvel_len2 < 1.0e-10:
-            pass
-        else:
-            move_total = (math.sqrt(hvel_len2) * dt) if hvel_len2 > 0.0 else 0.0
-            if move_total <= 1.0e-9:
-                fwd_norm = Vector((0.0, 0.0, 0.0))
-            else:
-                fwd_norm = (hvel / max(1.0e-12, (move_total / dt))).normalized()
-
-            # Cap sub-steps (lower than before) to reduce casts while avoiding tunneling
-            r = float(cfg.radius)
-            # Allow up to ~2 radii per sub-step; cap at 2 sub-steps
-            max_step = max(r * 2.0, r)
-            sub_steps = 1 if hvel_len2 <= (max_step / max(dt, 1e-12))**2 else 2
-            step_len = move_total / float(sub_steps) if sub_steps > 0 else 0.0
-
-            for _sub in range(sub_steps):
-                if step_len <= 1.0e-9 or fwd_norm.length <= 1.0e-9:
+            while True:
+                elapsed = time.perf_counter() - poll_start
+                if elapsed >= poll_timeout:
                     break
 
-                # (A) Low-only forward probe to gate step-up (cheap)
-                low_origin = pos + Vector((0.0, 0.0, r))
-                hL, nL, _oL, dL = self._raycast_any_norm(static_bvh, dynamic_map,
-                                                         low_origin, fwd_norm, step_len + r)
+                results = engine.poll_results(max_results=10)
+                for result in results:
+                    if result.job_id == job_id and result.job_type == "KCC_PHYSICS_STEP":
+                        # Found our result! Apply immediately
+                        if result.success:
+                            self._apply_physics_result(result.result, context, dynamic_map)
+                        result_found = True
+                        break
+                    else:
+                        # Cache other results for their handlers
+                        self._cache_other_result(result)
+                if result_found:
+                    break
 
-                # (B) Step-up: raise→short forward→drop
-                did_step = False
-                if self.on_ground and cfg.step_height > 0.0 and (hL is not None):
-                    did_step, pos = self._try_step_up(
-                        static_bvh, dynamic_map, pos, fwd_norm, step_len,
-                        nL.normalized(), dL
-                    )
-                    if did_step:
-                        continue  # go next sub-step
+                poll_count += 1
 
-                # (C) Minimal 3-ray forward sweep (feet/mid/head)
-                pos, _block_n = self._forward_sweep_min3(static_bvh, dynamic_map, pos, fwd_norm, step_len)
+                # Adaptive sleep: busy-poll first 3 times, then add tiny sleeps
+                # This minimizes latency while avoiding CPU spin
+                if poll_count >= 3:
+                    time.sleep(0.00005)  # 50µs (smaller than before)
 
+            poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
 
-        # 8) Single DOWNWARD ray shared by both vertical penetration and snap
-        #    (We intentionally reuse the same probe result for grounding.)
-        #    Use cached worker result for static geometry when engine is available.
-        down_max = cfg.snap_down if dz >= 0.0 else max(cfg.snap_down, -dz)
-        use_raycast_cache = (engine is not None)
-        locD, nD, gobjD, _ = self._raycast_down_any(static_bvh, dynamic_map, pos, down_max, use_cache=use_raycast_cache)
-
-        if dz < 0.0:
-            if locD is not None and nD is not None and (pos.z + dz) <= locD.z:
-                pos.z = locD.z
-                self.vel.z = 0.0
-                self.on_ground   = True
-                self.on_walkable = (nD.dot(up) >= floor_cos)
-                self.ground_norm = nD
-                self.ground_obj  = gobjD
-                self._coyote     = cfg.coyote_time
-            else:
-                pos.z += dz
-        else:
-            pos.z += dz
-
-        # Snap/grounding using the same hit if within snap window
-        was_grounded = self.on_ground
-        if locD is not None and nD is not None and (abs(locD.z - pos.z) <= float(cfg.snap_down)) and self.vel.z <= 0.0:
-            self.on_ground   = True
-            self.on_walkable = (nD.dot(up) >= floor_cos)
-            self.ground_norm = nD
-            self.ground_obj  = gobjD
-            pos.z            = locD.z
-            self.vel.z       = 0.0
-            self._coyote     = cfg.coyote_time
-        else:
-            self.on_ground   = False
-            self.on_walkable = False
-            self.ground_obj  = None
-            if was_grounded:
-                self._coyote = cfg.coyote_time
-
-        # 9) Submit raycast job for NEXT frame using PREDICTED position
-        #    Predict where character will be next frame based on current velocity
-        #    This compensates for 1-frame latency so cached result matches actual position
-        if engine:
-            # Predict next frame position: pos + vel * dt
-            # Use physics_dt (1/30 = 0.0333s) for prediction
-            physics_dt = 1.0 / 30.0
-            pred_x = pos.x + self.vel.x * physics_dt
-            pred_y = pos.y + self.vel.y * physics_dt
-            # For Z, predict based on gravity if airborne, else stay at ground level
-            if self.on_ground:
-                pred_z = pos.z  # Grounded - Z stays same
-            else:
-                # Airborne - predict Z with gravity (vel.z changes by gravity*dt)
-                gravity = float(cfg.gravity)
-                pred_z = pos.z + self.vel.z * physics_dt - 0.5 * gravity * physics_dt * physics_dt
-
-            # Ray starts 1m above predicted position (same as _raycast_down_any)
-            ray_start = (pred_x, pred_y, pred_z + 1.0)
-            ray_dir = (0.0, 0.0, -1.0)
-            # Max distance: snap_down + 1.0 for the guard offset + extra buffer for prediction error
-            max_dist = float(cfg.snap_down) + 2.0  # Extra 1m buffer for safety
-
-            job_data = {
-                "ray_origin": ray_start,
-                "ray_direction": ray_dir,
-                "max_distance": max_dist,
-            }
-            self._last_raycast_job_id = engine.submit_job("KCC_RAYCAST_CACHED", job_data)
-
-            # Debug output (frequency-gated)
+            # Debug output
             if context:
                 from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("raycast_offload"):
-                    print(f"[KCC Raycast] Submitted job (ID: {self._last_raycast_job_id}) pred=({pred_x:.2f}, {pred_y:.2f}, {pred_z:.2f})")
+                if should_print_debug("kcc_offload"):
+                    if result_found:
+                        print(f"[KCC] SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                              f"poll={poll_time_us:.0f}us")
+                    else:
+                        print(f"[KCC] TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                              f"poll={poll_time_us:.0f}us - using previous state")
+        else:
+            # NO ENGINE FALLBACK - Physics requires engine
+            if context:
+                from ..developer.dev_debug_gate import should_print_debug
+                if should_print_debug("kcc_offload"):
+                    print("[KCC] WARNING: No engine available - physics step skipped")
 
-        # Write-back
-        self.obj.location = pos
-        if abs(rot.z - self.obj.rotation_euler.z) > 0.0:
+        # ─────────────────────────────────────────────────────────────────────
+        # 5. Write position to Blender
+        # ─────────────────────────────────────────────────────────────────────
+        self.obj.location = self.pos
+        if abs(rot.z - self.obj.rotation_euler.z) > 1e-9:
             self.obj.rotation_euler = rot
+
+    def _cache_other_result(self, result):
+        """Cache non-KCC results for processing by other handlers."""
+        # Store in a list for the game loop to process
+        if not hasattr(self, '_other_results'):
+            self._other_results = []
+        self._other_results.append(result)
+
+    def get_cached_other_results(self):
+        """Get and clear cached non-KCC results."""
+        results = getattr(self, '_other_results', [])
+        self._other_results = []
+        return results
 
     # ---- Jumping ------------------------------------------------------------
 
     def request_jump(self):
+        """Buffer a jump request (allows jump buffering before landing)."""
         self._jump_buf = self.cfg.jump_buffer
 
     def try_consume_jump(self):
         """
-        Only allow jump if:
-        • grounded on WALKABLE ground, or
-        • within coyote time (granted from walkable support)
+        Try to execute a buffered jump.
+        Note: With full offload, actual jump execution happens in worker.
+        This method now just ensures buffer is set for worker to check.
         """
-        can_jump_from_ground = (self.on_ground and self.on_walkable)
-        if self._jump_buf > 0.0 and (can_jump_from_ground or self._coyote > 0.0):
-            self._jump_buf = 0.0
-            self.vel.z     = self.cfg.jump_speed
-            self.on_ground = False
-            self.ground_obj = None
-            return True
-        return False
+        # With full offload, jump is consumed by worker based on _jump_buf
+        # This method kept for compatibility with existing jump key handling
+        return self._jump_buf > 0.0
 
-    # ---- Engine offloading support ------------------------------------------
+    # ---- Engine result caching ----------------------------------------------
+
+    def cache_physics_result(self, result):
+        """
+        Cache physics result from engine worker (for next frame's application).
+        Called by game loop when KCC_PHYSICS_STEP job completes.
+
+        Args:
+            result: Dictionary with keys:
+                - pos: (x, y, z)
+                - vel: (vx, vy, vz)
+                - on_ground: bool
+                - on_walkable: bool
+                - ground_normal: (nx, ny, nz)
+                - coyote_remaining: float
+                - jump_consumed: bool
+                - debug: {...}
+        """
+        self._cached_physics_result = result
+
+    # ---- Deprecated methods (kept for compatibility during transition) ------
 
     def cache_input_result(self, wish_dir_xy, is_running):
-        """
-        Cache input vector result from engine worker (for next frame's use).
-        Called by game loop when KCC_INPUT_VECTOR job completes.
-        """
-        self._cached_input_result = (wish_dir_xy, is_running)
+        """DEPRECATED: Use cache_physics_result instead."""
+        pass
 
     def cache_slope_platform_result(self, delta_z, slide_xy, is_sliding, carry, rot_delta_z):
-        """
-        Cache slope/platform math result from engine worker (for next frame's use).
-        Called by game loop when KCC_SLOPE_PLATFORM_MATH job completes.
-
-        Args:
-            delta_z: Change to apply to vel.z (not final velocity!)
-            slide_xy: XY slide velocity (replaces movement on steep slopes)
-            is_sliding: Boolean flag indicating character is sliding
-            carry: IGNORED (platform carry calculated on main thread for frame-perfect sync)
-            rot_delta_z: IGNORED (rotation calculated on main thread)
-        """
-        self._cached_slope_platform_result = (delta_z, slide_xy, is_sliding, carry, rot_delta_z)
+        """DEPRECATED: Use cache_physics_result instead."""
+        pass
 
     def cache_raycast_result(self, hit, hit_location, hit_normal, hit_distance):
-        """
-        Cache raycast result from engine worker (for next frame's use).
-        Called by game loop when KCC_RAYCAST job completes.
+        """DEPRECATED: Use cache_physics_result instead."""
+        pass
 
-        Args:
-            hit: Boolean - whether ray hit geometry
-            hit_location: (x, y, z) tuple of hit point (or None)
-            hit_normal: (nx, ny, nz) tuple of hit surface normal (or None)
-            hit_distance: Distance along ray to hit (or None)
-        """
-        self._cached_raycast_result = (hit, hit_location, hit_normal, hit_distance)
+    def cache_forward_sweep_result(self, result_dict):
+        """DEPRECATED: Use cache_physics_result instead."""
+        pass
