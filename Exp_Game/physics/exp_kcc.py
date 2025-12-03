@@ -541,7 +541,7 @@ class KinematicCharacterController:
                 # Only extract debug data if we're actually printing
                 debug = result.get("debug", {})
                 # Use efficient string formatting (single f-string, no concatenation)
-                print(f"[KCC F{self._physics_frame:04d}] APPLY pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                print(f"[KCC] APPLY pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                       f"ground={on_ground} blocked={debug.get('h_blocked', False)} "
                       f"step={debug.get('did_step_up', False)} | "
                       f"{debug.get('calc_time_us', 0):.0f}us {debug.get('rays_cast', 0)}rays "
@@ -810,6 +810,14 @@ class KinematicCharacterController:
         # Increment frame counter
         self._physics_frame += 1
 
+        # Frame number output (separate from KCC logs)
+        if context and getattr(context.scene, 'dev_debug_frame_numbers', False):
+            from ..developer.dev_debug_gate import should_print_debug
+            if should_print_debug("frame_numbers"):
+                from ..props_and_utils.exp_time import get_game_time
+                game_time = get_game_time()
+                print(f"[FRAME {self._physics_frame:04d}] t={game_time:.3f}s")
+
         wish_dir, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
         jump_requested = (self._jump_buf > 0.0)
 
@@ -871,17 +879,17 @@ class KinematicCharacterController:
                 if should_print_debug("kcc_offload"):
                     poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
                     if result_found:
-                        print(f"[KCC F{self._physics_frame:04d}] SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                        print(f"[KCC] SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                               f"poll={poll_time_us:.0f}us")
                     else:
-                        print(f"[KCC F{self._physics_frame:04d}] TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                        print(f"[KCC] TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                               f"poll={poll_time_us:.0f}us - using previous state")
         else:
             # NO ENGINE FALLBACK - Physics requires engine
             if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
                 from ..developer.dev_debug_gate import should_print_debug
                 if should_print_debug("kcc_offload"):
-                    print(f"[KCC F{self._physics_frame:04d}] WARNING: No engine available - physics step skipped")
+                    print(f"[KCC] WARNING: No engine available - physics step skipped")
 
         # ─────────────────────────────────────────────────────────────────────
         # 5. Write position to Blender

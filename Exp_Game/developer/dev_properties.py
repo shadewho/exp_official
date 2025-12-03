@@ -79,6 +79,31 @@ def register_properties():
         max=30
     )
 
+    bpy.types.Scene.dev_debug_frame_numbers = bpy.props.BoolProperty(
+        name="Frame Numbers",
+        description=(
+            "Print frame numbers with timestamps.\n"
+            "Separate from other debug output for clean log analysis.\n"
+            "Shows: [FRAME 0042] t=1.400s\n"
+            "\n"
+            "Use Hz control to set frequency (1-30Hz)"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_frame_numbers_hz = bpy.props.IntProperty(
+        name="Frame Hz",
+        description=(
+            "Frame number output frequency.\n"
+            "5 = every 5th frame (~0.2s markers)\n"
+            "1 = every 30th frame (~1s markers)\n"
+            "30 = every frame"
+        ),
+        default=5,
+        min=1,
+        max=30
+    )
+
     # ──────────────────────────────────────────────────────────────────────────
     # PHYSICS DIAGNOSTICS (Multiple toggles for deep physics debugging)
     # ──────────────────────────────────────────────────────────────────────────
@@ -614,6 +639,7 @@ def unregister_properties():
 
     # Offload Systems
     for prop in ('dev_debug_kcc_offload', 'dev_debug_kcc_offload_hz',
+                 'dev_debug_frame_numbers', 'dev_debug_frame_numbers_hz',
                  'dev_debug_camera_offload', 'dev_debug_camera_offload_hz',
                  'dev_debug_performance', 'dev_debug_performance_hz',
                  'dev_debug_dynamic_offload', 'dev_debug_dynamic_offload_hz'):

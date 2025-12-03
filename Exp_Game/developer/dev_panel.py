@@ -92,6 +92,12 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         if scene.dev_debug_kcc_offload:
             row.prop(scene, "dev_debug_kcc_offload_hz", text="Hz")
 
+        # Frame Numbers (separate from KCC logs)
+        row = col.row(align=True)
+        row.prop(scene, "dev_debug_frame_numbers", text="Frame Numbers")
+        if scene.dev_debug_frame_numbers:
+            row.prop(scene, "dev_debug_frame_numbers_hz", text="Hz")
+
         # Camera Occlusion
         row = col.row(align=True)
         row.prop(scene, "dev_debug_camera_offload", text="Camera Occlusion")
