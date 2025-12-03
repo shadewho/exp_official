@@ -18,6 +18,26 @@ def register_properties():
     """Register all developer debug properties on Scene."""
 
     # ══════════════════════════════════════════════════════════════════════════
+    # MASTER FREQUENCY CONTROL
+    # Single frequency setting for all debug output
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_master_hz = bpy.props.IntProperty(
+        name="Master Hz",
+        description=(
+            "Master debug output frequency for ALL categories:\n"
+            "• 30 = every frame (verbose, use for short tests)\n"
+            "• 5 = every 5th frame (~0.17s intervals)\n"
+            "• 1 = once per second (recommended for most debugging)\n"
+            "\n"
+            "This replaces all individual Hz controls with one master control"
+        ),
+        default=1,  # Default to summary mode (once per second)
+        min=1,
+        max=30
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
     # ENGINE HEALTH
     # Core multiprocessing engine diagnostics
     # ══════════════════════════════════════════════════════════════════════════
@@ -27,24 +47,12 @@ def register_properties():
         description=(
             "Core multiprocessing engine diagnostics:\n"
             "• Worker startup/shutdown status\n"
-            "• Jobs/sec throughput (at 1Hz: rolling average)\n"
+            "• Jobs/sec throughput (rolling average)\n"
             "• Queue depth and saturation warnings\n"
             "• Heartbeat monitoring\n"
             "• Result processing latency"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_engine_hz = bpy.props.IntProperty(
-        name="Engine Hz",
-        description=(
-            "Debug output frequency.\n"
-            "30 = every frame (verbose)\n"
-            "1 = once per second (summary stats)"
-        ),
-        default=1,  # Default to summary mode
-        min=1,
-        max=30
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -60,23 +68,9 @@ def register_properties():
             "• RESULT: new pos, ground state, collision flags\n"
             "• Timing: worker calc time (µs)\n"
             "• Stats: rays cast, triangles tested\n"
-            "• Events: BLOCKED, STEP, SLIDE, CEILING\n"
-            "\n"
-            "At 1Hz: Summary with avg timing + event counts"
+            "• Events: BLOCKED, STEP, SLIDE, CEILING"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_kcc_offload_hz = bpy.props.IntProperty(
-        name="KCC Hz",
-        description=(
-            "Debug output frequency.\n"
-            "30 = every frame (per-step details)\n"
-            "1 = once per second (summary stats)"
-        ),
-        default=1,  # Default to summary mode
-        min=1,
-        max=30
     )
 
     bpy.types.Scene.dev_debug_frame_numbers = bpy.props.BoolProperty(
@@ -86,22 +80,9 @@ def register_properties():
             "Separate from other debug output for clean log analysis.\n"
             "Shows: [FRAME 0042] t=1.400s\n"
             "\n"
-            "Use Hz control to set frequency (1-30Hz)"
+            "Uses master Hz control for output frequency"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_frame_numbers_hz = bpy.props.IntProperty(
-        name="Frame Hz",
-        description=(
-            "Frame number output frequency.\n"
-            "5 = every 5th frame (~0.2s markers)\n"
-            "1 = every 30th frame (~1s markers)\n"
-            "30 = every frame"
-        ),
-        default=5,
-        min=1,
-        max=30
     )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -124,18 +105,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_timing_hz = bpy.props.IntProperty(
-        name="Timing Hz",
-        description=(
-            "Output frequency:\n"
-            "30 = every physics step\n"
-            "1 = summary per second"
-        ),
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_physics_catchup = bpy.props.BoolProperty(
         name="Physics Catchup",
         description=(
@@ -148,14 +117,6 @@ def register_properties():
             "Frequent catchup (>10%) indicates modal timer drift"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_catchup_hz = bpy.props.IntProperty(
-        name="Catchup Hz",
-        description="Output frequency (1-30 Hz)",
-        default=1,
-        min=1,
-        max=30
     )
 
     bpy.types.Scene.dev_debug_physics_platform = bpy.props.BoolProperty(
@@ -172,14 +133,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_platform_hz = bpy.props.IntProperty(
-        name="Platform Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_physics_consistency = bpy.props.BoolProperty(
         name="Physics Consistency",
         description=(
@@ -193,14 +146,6 @@ def register_properties():
             "Detects stuttering and timing irregularities"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_consistency_hz = bpy.props.IntProperty(
-        name="Consistency Hz",
-        description="Output frequency (1-30 Hz)",
-        default=1,  # Summary mode by default
-        min=1,
-        max=30
     )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -222,14 +167,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_capsule_hz = bpy.props.IntProperty(
-        name="Capsule Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_physics_depenetration = bpy.props.BoolProperty(
         name="Depenetration",
         description=(
@@ -243,14 +180,6 @@ def register_properties():
             "Use to diagnose: Getting stuck in geometry, jittery movement"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_depenetration_hz = bpy.props.IntProperty(
-        name="Depenetration Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
     )
 
     bpy.types.Scene.dev_debug_physics_ground = bpy.props.BoolProperty(
@@ -268,14 +197,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_ground_hz = bpy.props.IntProperty(
-        name="Ground Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_physics_step_up = bpy.props.BoolProperty(
         name="Step-Up",
         description=(
@@ -289,14 +210,6 @@ def register_properties():
             "Use to diagnose: Can't climb stairs, stuck on small obstacles"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_step_up_hz = bpy.props.IntProperty(
-        name="Step-Up Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
     )
 
     bpy.types.Scene.dev_debug_physics_slopes = bpy.props.BoolProperty(
@@ -314,14 +227,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_slopes_hz = bpy.props.IntProperty(
-        name="Slopes Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_physics_slide = bpy.props.BoolProperty(
         name="Wall Slide",
         description=(
@@ -337,14 +242,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_slide_hz = bpy.props.IntProperty(
-        name="Slide Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_physics_vertical = bpy.props.BoolProperty(
         name="Vertical Movement",
         description=(
@@ -358,14 +255,6 @@ def register_properties():
             "Use to diagnose: Jump not working, bonking head on ceiling"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_vertical_hz = bpy.props.IntProperty(
-        name="Vertical Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
     )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -386,14 +275,6 @@ def register_properties():
             "Use when: Debugging specific physics bugs, need exact failure reasons"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_enhanced_hz = bpy.props.IntProperty(
-        name="Enhanced Hz",
-        description="Output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
     )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -444,18 +325,48 @@ def register_properties():
         default=True
     )
 
+    bpy.types.Scene.dev_debug_kcc_visual_line_width = bpy.props.FloatProperty(
+        name="Line Width",
+        description=(
+            "Visual debug line thickness:\n"
+            "• 1.0 = Thin (default GPU line width)\n"
+            "• 2.5 = Medium (recommended, good visibility)\n"
+            "• 4.0 = Thick (very visible, may impact performance)\n"
+            "\n"
+            "Adjust for better visibility vs performance"
+        ),
+        default=2.5,
+        min=1.0,
+        max=10.0
+    )
+
+    bpy.types.Scene.dev_debug_kcc_visual_vector_scale = bpy.props.FloatProperty(
+        name="Vector Scale",
+        description=(
+            "Movement vector length multiplier:\n"
+            "• 1.0 = Normal length (velocity * dt)\n"
+            "• 3.0 = 3x longer (recommended, extends past character)\n"
+            "• 5.0 = 5x longer (very long, easier to see direction)\n"
+            "\n"
+            "Scale vectors to extend beyond character model for visibility"
+        ),
+        default=3.0,
+        min=0.5,
+        max=10.0
+    )
+
     # ──────────────────────────────────────────────────────────────────────────
     # SESSION LOG EXPORT
     # ──────────────────────────────────────────────────────────────────────────
 
     bpy.types.Scene.dev_export_session_log = bpy.props.BoolProperty(
-        name="Export Session Log",
+        name="Export Diagnostics Log",
         description=(
-            "Export console output to text file when game ends:\n"
+            "Export game diagnostics to text file when game ends:\n"
             "• Location: Desktop/engine_output_files/\n"
-            "• Files: kcc_latest.txt (current), kcc_previous.txt (backup)\n"
-            "• Contains: All console debug output from session\n"
-            "• Safe: Atomic writes, no data loss on failure\n"
+            "• File: diagnostics_latest.txt\n"
+            "• Contains: All game diagnostics (physics, engine, performance)\n"
+            "• Format: [CATEGORY F#### T##.###s] message\n"
             "\n"
             "Use this to share debug logs with Claude for analysis"
         ),
@@ -474,14 +385,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_camera_offload_hz = bpy.props.IntProperty(
-        name="Camera Hz",
-        description="Debug output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_performance = bpy.props.BoolProperty(
         name="Performance Culling",
         description=(
@@ -494,14 +397,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_performance_hz = bpy.props.IntProperty(
-        name="Culling Hz",
-        description="Debug output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_dynamic_offload = bpy.props.BoolProperty(
         name="Dynamic Mesh",
         description=(
@@ -512,14 +407,6 @@ def register_properties():
             "• Activation state transitions"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_dynamic_offload_hz = bpy.props.IntProperty(
-        name="Dynamic Hz",
-        description="Debug output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -539,14 +426,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_interactions_hz = bpy.props.IntProperty(
-        name="Interactions Hz",
-        description="Debug output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_audio = bpy.props.BoolProperty(
         name="Audio",
         description=(
@@ -559,14 +438,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_audio_hz = bpy.props.IntProperty(
-        name="Audio Hz",
-        description="Debug output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
-    )
-
     bpy.types.Scene.dev_debug_animations = bpy.props.BoolProperty(
         name="Animations",
         description=(
@@ -577,14 +448,6 @@ def register_properties():
             "• Blend timing"
         ),
         default=False
-    )
-
-    bpy.types.Scene.dev_debug_animations_hz = bpy.props.IntProperty(
-        name="Animations Hz",
-        description="Debug output frequency (1-30 Hz)",
-        default=5,
-        min=1,
-        max=30
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -626,6 +489,10 @@ def register_properties():
 def unregister_properties():
     """Unregister all developer debug properties."""
 
+    # Master frequency control
+    if hasattr(bpy.types.Scene, 'dev_debug_master_hz'):
+        del bpy.types.Scene.dev_debug_master_hz
+
     # Startup logs
     if hasattr(bpy.types.Scene, 'dev_startup_logs'):
         del bpy.types.Scene.dev_startup_logs
@@ -633,42 +500,35 @@ def unregister_properties():
     # Stress tests (property removed - now use operator buttons instead)
 
     # Engine Health
-    for prop in ('dev_debug_engine', 'dev_debug_engine_hz'):
-        if hasattr(bpy.types.Scene, prop):
-            delattr(bpy.types.Scene, prop)
+    if hasattr(bpy.types.Scene, 'dev_debug_engine'):
+        delattr(bpy.types.Scene, 'dev_debug_engine')
 
     # Offload Systems
-    for prop in ('dev_debug_kcc_offload', 'dev_debug_kcc_offload_hz',
-                 'dev_debug_frame_numbers', 'dev_debug_frame_numbers_hz',
-                 'dev_debug_camera_offload', 'dev_debug_camera_offload_hz',
-                 'dev_debug_performance', 'dev_debug_performance_hz',
-                 'dev_debug_dynamic_offload', 'dev_debug_dynamic_offload_hz'):
+    for prop in ('dev_debug_kcc_offload', 'dev_debug_frame_numbers',
+                 'dev_debug_camera_offload', 'dev_debug_performance',
+                 'dev_debug_dynamic_offload'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
     # Physics Diagnostics
-    for prop in ('dev_debug_physics_timing', 'dev_debug_physics_timing_hz',
-                 'dev_debug_physics_catchup', 'dev_debug_physics_catchup_hz',
-                 'dev_debug_physics_platform', 'dev_debug_physics_platform_hz',
-                 'dev_debug_physics_consistency', 'dev_debug_physics_consistency_hz'):
+    for prop in ('dev_debug_physics_timing', 'dev_debug_physics_catchup',
+                 'dev_debug_physics_platform', 'dev_debug_physics_consistency'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
     # Granular Physics Diagnostics
-    for prop in ('dev_debug_physics_capsule', 'dev_debug_physics_capsule_hz',
-                 'dev_debug_physics_depenetration', 'dev_debug_physics_depenetration_hz',
-                 'dev_debug_physics_ground', 'dev_debug_physics_ground_hz',
-                 'dev_debug_physics_step_up', 'dev_debug_physics_step_up_hz',
-                 'dev_debug_physics_slopes', 'dev_debug_physics_slopes_hz',
-                 'dev_debug_physics_slide', 'dev_debug_physics_slide_hz',
-                 'dev_debug_physics_vertical', 'dev_debug_physics_vertical_hz'):
+    for prop in ('dev_debug_physics_capsule', 'dev_debug_physics_depenetration',
+                 'dev_debug_physics_ground', 'dev_debug_physics_step_up',
+                 'dev_debug_physics_slopes', 'dev_debug_physics_slide',
+                 'dev_debug_physics_vertical', 'dev_debug_physics_enhanced'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
     # KCC Visual Debug
     for prop in ('dev_debug_kcc_visual', 'dev_debug_kcc_visual_capsule',
                  'dev_debug_kcc_visual_normals', 'dev_debug_kcc_visual_ground',
-                 'dev_debug_kcc_visual_movement'):
+                 'dev_debug_kcc_visual_movement', 'dev_debug_kcc_visual_line_width',
+                 'dev_debug_kcc_visual_vector_scale'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
@@ -677,15 +537,23 @@ def unregister_properties():
         delattr(bpy.types.Scene, 'dev_export_session_log')
 
     # Game Systems
-    for prop in ('dev_debug_interactions', 'dev_debug_interactions_hz',
-                 'dev_debug_audio', 'dev_debug_audio_hz',
-                 'dev_debug_animations', 'dev_debug_animations_hz'):
+    for prop in ('dev_debug_interactions', 'dev_debug_audio', 'dev_debug_animations'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
-    # Clean up removed properties from old versions
-    for old_prop in ('dev_debug_forward_sweep', 'dev_debug_forward_sweep_hz',
-                     'dev_debug_raycast_offload', 'dev_debug_raycast_offload_hz',
-                     'dev_debug_physics', 'dev_debug_physics_hz'):
+    # Clean up old individual Hz properties from previous versions
+    for old_prop in ('dev_debug_engine_hz', 'dev_debug_kcc_offload_hz',
+                     'dev_debug_frame_numbers_hz', 'dev_debug_camera_offload_hz',
+                     'dev_debug_performance_hz', 'dev_debug_dynamic_offload_hz',
+                     'dev_debug_physics_timing_hz', 'dev_debug_physics_catchup_hz',
+                     'dev_debug_physics_platform_hz', 'dev_debug_physics_consistency_hz',
+                     'dev_debug_physics_capsule_hz', 'dev_debug_physics_depenetration_hz',
+                     'dev_debug_physics_ground_hz', 'dev_debug_physics_step_up_hz',
+                     'dev_debug_physics_slopes_hz', 'dev_debug_physics_slide_hz',
+                     'dev_debug_physics_vertical_hz', 'dev_debug_physics_enhanced_hz',
+                     'dev_debug_interactions_hz', 'dev_debug_audio_hz',
+                     'dev_debug_animations_hz', 'dev_debug_forward_sweep',
+                     'dev_debug_forward_sweep_hz', 'dev_debug_raycast_offload',
+                     'dev_debug_raycast_offload_hz', 'dev_debug_physics', 'dev_debug_physics_hz'):
         if hasattr(bpy.types.Scene, old_prop):
             delattr(bpy.types.Scene, old_prop)

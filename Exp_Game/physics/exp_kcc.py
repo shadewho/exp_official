@@ -39,7 +39,7 @@ _kcc_draw_handler = None
 _kcc_vis_data = None  # Shared visualization data
 
 def _draw_kcc_visual():
-    """GPU draw callback for KCC visualization."""
+    """GPU draw callback for KCC visualization (optimized for single draw call)."""
     global _kcc_vis_data
 
     if _kcc_vis_data is None:
@@ -55,67 +55,79 @@ def _draw_kcc_visual():
     show_ground = getattr(scene, 'dev_debug_kcc_visual_ground', True)
     show_movement = getattr(scene, 'dev_debug_kcc_visual_movement', True)
 
-    # Enable depth test for 3D objects
+    # Enable depth test and blending for 3D objects
     gpu.state.depth_test_set('LESS_EQUAL')
     gpu.state.blend_set('ALPHA')
 
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    # IMPORTANT: Set line width for visibility (default is 1 pixel)
+    line_width = getattr(scene, 'dev_debug_kcc_visual_line_width', 2.5)
+    gpu.state.line_width_set(line_width)
+
+    # PERFORMANCE: Use per-vertex color shader for single batched draw call
+    shader = gpu.shader.from_builtin('FLAT_COLOR')
+
+    # Collect ALL geometry and colors for single draw call
+    all_verts = []
+    all_colors = []
 
     # ─────────────────────────────────────────────────────────────────────
     # CAPSULE (Two spheres: feet + head)
-    # PERFORMANCE: Single layer, fewer segments, batched drawing
     # ─────────────────────────────────────────────────────────────────────
     if show_capsule and 'capsule_spheres' in _kcc_vis_data:
-        capsule_color = _kcc_vis_data.get('capsule_color', (0.0, 1.0, 0.0, 0.3))
+        capsule_color = _kcc_vis_data.get('capsule_color', (0.0, 1.0, 0.0, 0.5))
         spheres = _kcc_vis_data['capsule_spheres']
 
-        segments = 16  # REDUCED to 16 for max performance (still smooth)
-
-        # Batch all circles together for fewer shader binds
-        all_verts = []
+        segments = 12  # Optimized segment count
 
         for sphere_center, sphere_radius in spheres:
-            # XY circle
-            for i in range(segments + 1):
-                angle = (i / segments) * 2.0 * math.pi
-                x = sphere_center[0] + sphere_radius * math.cos(angle)
-                y = sphere_center[1] + sphere_radius * math.sin(angle)
-                z = sphere_center[2]
-                all_verts.append((x, y, z))
+            # XY circle (horizontal around character)
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = sphere_center[0] + sphere_radius * math.cos(angle1)
+                y1 = sphere_center[1] + sphere_radius * math.sin(angle1)
+                z1 = sphere_center[2]
+                x2 = sphere_center[0] + sphere_radius * math.cos(angle2)
+                y2 = sphere_center[1] + sphere_radius * math.sin(angle2)
+                z2 = sphere_center[2]
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([capsule_color, capsule_color])
 
-            # XZ circle
-            for i in range(segments + 1):
-                angle = (i / segments) * 2.0 * math.pi
-                x = sphere_center[0] + sphere_radius * math.cos(angle)
-                y = sphere_center[1]
-                z = sphere_center[2] + sphere_radius * math.sin(angle)
-                all_verts.append((x, y, z))
+            # XZ circle (front-facing)
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = sphere_center[0] + sphere_radius * math.cos(angle1)
+                y1 = sphere_center[1]
+                z1 = sphere_center[2] + sphere_radius * math.sin(angle1)
+                x2 = sphere_center[0] + sphere_radius * math.cos(angle2)
+                y2 = sphere_center[1]
+                z2 = sphere_center[2] + sphere_radius * math.sin(angle2)
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([capsule_color, capsule_color])
 
-            # YZ circle
-            for i in range(segments + 1):
-                angle = (i / segments) * 2.0 * math.pi
-                x = sphere_center[0]
-                y = sphere_center[1] + sphere_radius * math.cos(angle)
-                z = sphere_center[2] + sphere_radius * math.sin(angle)
-                all_verts.append((x, y, z))
+        # Add vertical lines connecting the two spheres
+        if len(spheres) == 2:
+            foot_center, foot_radius = spheres[0]
+            head_center, head_radius = spheres[1]
 
-        # Single batched draw call for all circles
-        if all_verts:
-            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": all_verts})
-            shader.bind()
-            shader.uniform_float("color", capsule_color)
-            batch.draw(shader)
+            for angle in [0, math.pi/2, math.pi, 3*math.pi/2]:
+                x1 = foot_center[0] + foot_radius * math.cos(angle)
+                y1 = foot_center[1] + foot_radius * math.sin(angle)
+                z1 = foot_center[2]
+                x2 = head_center[0] + head_radius * math.cos(angle)
+                y2 = head_center[1] + head_radius * math.sin(angle)
+                z2 = head_center[2]
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([capsule_color, capsule_color])
 
     # ─────────────────────────────────────────────────────────────────────
     # HIT NORMALS (Cyan arrows)
-    # PERFORMANCE: Single line per normal, batched drawing
     # ─────────────────────────────────────────────────────────────────────
     if show_normals and 'hit_normals' in _kcc_vis_data:
-        normal_color = (0.0, 1.0, 1.0, 0.9)  # Cyan, more opaque
+        normal_color = (0.0, 1.0, 1.0, 0.9)  # Cyan
         normals = _kcc_vis_data['hit_normals']
-
         arrow_length = 0.4
-        all_lines = []
 
         for origin, normal in normals:
             end = (
@@ -123,18 +135,11 @@ def _draw_kcc_visual():
                 origin[1] + normal[1] * arrow_length,
                 origin[2] + normal[2] * arrow_length
             )
-            all_lines.extend([origin, end])
-
-        # Single batched draw call for all normals
-        if all_lines:
-            batch = batch_for_shader(shader, 'LINES', {"pos": all_lines})
-            shader.bind()
-            shader.uniform_float("color", normal_color)
-            batch.draw(shader)
+            all_verts.extend([origin, end])
+            all_colors.extend([normal_color, normal_color])
 
     # ─────────────────────────────────────────────────────────────────────
     # GROUND RAY (Magenta = hit, Purple = miss)
-    # PERFORMANCE: Simple line, single draw call
     # ─────────────────────────────────────────────────────────────────────
     if show_ground and 'ground_ray' in _kcc_vis_data:
         ray_data = _kcc_vis_data['ground_ray']
@@ -144,59 +149,79 @@ def _draw_kcc_visual():
 
         ray_color = (1.0, 0.0, 1.0, 0.9) if hit else (0.5, 0.0, 0.5, 0.7)  # Magenta/Purple
 
-        # Single line for ray
-        verts = [origin, end]
-        batch = batch_for_shader(shader, 'LINES', {"pos": verts})
-        shader.bind()
-        shader.uniform_float("color", ray_color)
-        batch.draw(shader)
+        # Add ray line
+        all_verts.extend([origin, end])
+        all_colors.extend([ray_color, ray_color])
 
-        # Simple circle at hit point if hit
+        # Add circle at hit point if hit
         if hit and 'hit_point' in ray_data:
             hit_point = ray_data['hit_point']
             segments = 12
             hit_radius = 0.08
-            verts = []
 
-            for i in range(segments + 1):
-                angle = (i / segments) * 2.0 * math.pi
-                x = hit_point[0] + hit_radius * math.cos(angle)
-                y = hit_point[1] + hit_radius * math.sin(angle)
-                z = hit_point[2]
-                verts.append((x, y, z))
-
-            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": verts})
-            shader.bind()
-            shader.uniform_float("color", ray_color)
-            batch.draw(shader)
+            # Convert circle to LINES format for batching
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = hit_point[0] + hit_radius * math.cos(angle1)
+                y1 = hit_point[1] + hit_radius * math.sin(angle1)
+                z1 = hit_point[2]
+                x2 = hit_point[0] + hit_radius * math.cos(angle2)
+                y2 = hit_point[1] + hit_radius * math.sin(angle2)
+                z2 = hit_point[2]
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([ray_color, ray_color])
 
     # ─────────────────────────────────────────────────────────────────────
     # MOVEMENT VECTORS (Green = intended, Red = actual)
-    # PERFORMANCE: Simple lines, separate batches by color
     # ─────────────────────────────────────────────────────────────────────
     if show_movement and 'movement_vectors' in _kcc_vis_data:
         vectors = _kcc_vis_data['movement_vectors']
         origin = vectors.get('origin')
+        vector_scale = getattr(scene, 'dev_debug_kcc_visual_vector_scale', 3.0)
 
         if origin and 'intended' in vectors:
             intended = vectors['intended']
+            direction = (
+                (intended[0] - origin[0]) * vector_scale,
+                (intended[1] - origin[1]) * vector_scale,
+                (intended[2] - origin[2]) * vector_scale
+            )
+            scaled_end = (
+                origin[0] + direction[0],
+                origin[1] + direction[1],
+                origin[2] + direction[2]
+            )
             intended_color = (0.0, 1.0, 0.0, 0.9)  # Green
-            verts = [origin, intended]
-            batch = batch_for_shader(shader, 'LINES', {"pos": verts})
-            shader.bind()
-            shader.uniform_float("color", intended_color)
-            batch.draw(shader)
+            all_verts.extend([origin, scaled_end])
+            all_colors.extend([intended_color, intended_color])
 
         if origin and 'actual' in vectors:
             actual = vectors['actual']
+            direction = (
+                (actual[0] - origin[0]) * vector_scale,
+                (actual[1] - origin[1]) * vector_scale,
+                (actual[2] - origin[2]) * vector_scale
+            )
+            scaled_end = (
+                origin[0] + direction[0],
+                origin[1] + direction[1],
+                origin[2] + direction[2]
+            )
             actual_color = (1.0, 0.0, 0.0, 0.9)  # Red
-            verts = [origin, actual]
-            batch = batch_for_shader(shader, 'LINES', {"pos": verts})
-            shader.bind()
-            shader.uniform_float("color", actual_color)
-            batch.draw(shader)
+            all_verts.extend([origin, scaled_end])
+            all_colors.extend([actual_color, actual_color])
+
+    # ═════════════════════════════════════════════════════════════════════
+    # SINGLE BATCHED DRAW CALL (PERFORMANCE OPTIMIZED)
+    # ═════════════════════════════════════════════════════════════════════
+    if all_verts:
+        batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
+        shader.bind()
+        batch.draw(shader)
 
     # Reset GPU state
+    gpu.state.line_width_set(1.0)
     gpu.state.depth_test_set('NONE')
     gpu.state.blend_set('NONE')
 
@@ -534,18 +559,36 @@ class KinematicCharacterController:
                     self.pos.x = platform_center.x + new_x
                     self.pos.y = platform_center.y + new_y
 
-        # Debug output (PERFORMANCE: Check flag BEFORE any string formatting)
+        # Log worker messages to fast buffer (worker collected these during computation)
+        worker_logs = result.get("logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
+
+        # Debug output (FAST BUFFER LOGGING - no console, no I/O)
         if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
-            from ..developer.dev_debug_gate import should_print_debug
-            if should_print_debug("kcc_offload"):
-                # Only extract debug data if we're actually printing
-                debug = result.get("debug", {})
-                # Use efficient string formatting (single f-string, no concatenation)
-                print(f"[KCC] APPLY pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
-                      f"ground={on_ground} blocked={debug.get('h_blocked', False)} "
-                      f"step={debug.get('did_step_up', False)} | "
-                      f"{debug.get('calc_time_us', 0):.0f}us {debug.get('rays_cast', 0)}rays "
-                      f"{debug.get('triangles_tested', 0)}tris")
+            from ..developer.dev_logger import log_game
+            # Extract debug data
+            debug = result.get("debug", {})
+            # Log to fast memory buffer (~1μs, no I/O)
+            # Determine visual state for logging (matches visualizer colors)
+            was_stuck = debug.get('was_stuck', False)
+            h_blocked = debug.get('h_blocked', False)
+
+            # Visual state indicator (matches capsule color)
+            if was_stuck:
+                state = "STUCK🔴"  # Red capsule
+            elif h_blocked:
+                state = "BLOCK🟡"  # Yellow capsule
+            elif on_ground:
+                state = "GROUND🟢"  # Green capsule
+            else:
+                state = "AIR🔵"  # Blue capsule
+
+            log_game("KCC", f"{state} pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                            f"step={debug.get('did_step_up', False)} | "
+                            f"{debug.get('calc_time_us', 0):.0f}us {debug.get('rays_cast', 0)}rays "
+                            f"{debug.get('triangles_tested', 0)}tris")
 
     def _check_dynamic_collision(self, dynamic_map):
         """
@@ -706,6 +749,8 @@ class KinematicCharacterController:
                 "step_up": getattr(scene, "dev_debug_physics_step_up", False),
                 "ground": getattr(scene, "dev_debug_physics_ground", False),
                 "capsule": getattr(scene, "dev_debug_physics_capsule", False),
+                "slopes": getattr(scene, "dev_debug_physics_slopes", False),
+                "slide": getattr(scene, "dev_debug_physics_slide", False),
                 "enhanced": getattr(scene, "dev_debug_physics_enhanced", False),
             }
 
@@ -812,11 +857,10 @@ class KinematicCharacterController:
 
         # Frame number output (separate from KCC logs)
         if context and getattr(context.scene, 'dev_debug_frame_numbers', False):
-            from ..developer.dev_debug_gate import should_print_debug
-            if should_print_debug("frame_numbers"):
-                from ..props_and_utils.exp_time import get_game_time
-                game_time = get_game_time()
-                print(f"[FRAME {self._physics_frame:04d}] t={game_time:.3f}s")
+            from ..developer.dev_logger import log_game
+            from ..props_and_utils.exp_time import get_game_time
+            game_time = get_game_time()
+            log_game("FRAME", f"{self._physics_frame:04d} t={game_time:.3f}s")
 
         wish_dir, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
         jump_requested = (self._jump_buf > 0.0)
@@ -873,23 +917,21 @@ class KinematicCharacterController:
                 if poll_count >= 3:
                     time.sleep(0.00005)  # 50µs (smaller than before)
 
-            # Debug output (PERFORMANCE: Only compute timing if debug enabled)
+            # Debug output (FAST BUFFER LOGGING)
             if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
-                from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("kcc_offload"):
-                    poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
-                    if result_found:
-                        print(f"[KCC] SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
-                              f"poll={poll_time_us:.0f}us")
-                    else:
-                        print(f"[KCC] TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
-                              f"poll={poll_time_us:.0f}us - using previous state")
+                from ..developer.dev_logger import log_game
+                poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
+                if result_found:
+                    log_game("KCC", f"SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                                    f"poll={poll_time_us:.0f}us")
+                else:
+                    log_game("KCC", f"TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                                    f"poll={poll_time_us:.0f}us - using previous state")
         else:
             # NO ENGINE FALLBACK - Physics requires engine
             if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
-                from ..developer.dev_debug_gate import should_print_debug
-                if should_print_debug("kcc_offload"):
-                    print(f"[KCC] WARNING: No engine available - physics step skipped")
+                from ..developer.dev_logger import log_game
+                log_game("KCC", "WARNING: No engine available - physics step skipped")
 
         # ─────────────────────────────────────────────────────────────────────
         # 5. Write position to Blender

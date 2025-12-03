@@ -42,14 +42,15 @@ def apply_dynamic_activation_result(modal_op, engine_result):
     apply_end = time.perf_counter() if debug_offload else 0.0
 
     if debug_offload:
+        from ..developer.dev_logger import log_game
         apply_time_ms = (apply_end - apply_start) * 1000.0
         worker_time_ms = engine_result.processing_time * 1000.0
         calc_time_us = result_data.get("calc_time_us", 0.0)
-        print(f"[DynamicOffload] Applied {len(activation_decisions)} activation decisions (apply: {apply_time_ms:.3f}ms, worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
+        log_game("DYNAMIC", f"Applied {len(activation_decisions)} activation decisions (apply: {apply_time_ms:.3f}ms, worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
         if transitions:
             for obj_name, prev_active, new_active in transitions:
                 state_change = "ACTIVATED" if new_active else "DEACTIVATED"
-                print(f"[DynamicOffload]   {obj_name}: {state_change}")
+                log_game("DYNAMIC", f"  {obj_name}: {state_change}")
 
 
 def update_dynamic_meshes(modal_op):
@@ -164,9 +165,10 @@ def update_dynamic_meshes(modal_op):
             submit_end = time.perf_counter() if debug_offload else 0.0
 
             if debug_offload:
+                from ..developer.dev_logger import log_game
                 submit_time_ms = (submit_end - submit_start) * 1000.0
-                print(f"[DynamicOffload] Submitted job {job_id} with {len(mesh_positions)} meshes (submit time: {submit_time_ms:.3f}ms)")
-                print(f"[DynamicOffload] Continuing with main thread BVH/velocity calculations using current activation states")
+                log_game("DYNAMIC", f"Submitted job {job_id} with {len(mesh_positions)} meshes (submit time: {submit_time_ms:.3f}ms)")
+                log_game("DYNAMIC", "Continuing with main thread BVH/velocity calculations using current activation states")
 
     # ========== Main Thread: BVH & Velocity Calculations ==========
     # Use current activation states (updated by worker results from previous frame)

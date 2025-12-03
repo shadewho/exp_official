@@ -2,7 +2,7 @@
 
 **Status:** Core offload functional, smooth with prints off, collision resolution needs work
 **Last Updated:** 2025-12-02
-**Session Logs:** `C:\Users\spenc\Desktop\engine_output_files\kcc_latest.txt`
+**Session Logs:** `C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt`
 
 ---
 
@@ -66,9 +66,9 @@ All physics computation MUST happen in worker (`engine_worker_entry.py`). Main t
 ### Debug Output Pipeline
 ```
 1. Enable debug categories (N-panel → Developer Tools)
-2. Enable "Export Session Log" toggle
-3. Play game (prints go to console + session log)
-4. Stop game → auto-exports to C:\Users\spenc\Desktop\engine_output_files\kcc_latest.txt
+2. Enable "Export Diagnostics Log" toggle
+3. Play game (diagnostics go to memory buffer)
+4. Stop game → auto-exports to C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt
 5. Read log file in Claude → analyze frame-by-frame
 6. Make targeted changes based on DATA
 ```

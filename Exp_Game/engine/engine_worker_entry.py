@@ -465,7 +465,12 @@ def process_job(job) -> dict:
             debug_step_up = debug_flags.get("step_up", False)
             debug_ground = debug_flags.get("ground", False)
             debug_capsule = debug_flags.get("capsule", False)
+            debug_slopes = debug_flags.get("slopes", False)
+            debug_slide = debug_flags.get("slide", False)
             debug_enhanced = debug_flags.get("enhanced", False)
+
+            # Worker log buffer (collected during computation, returned to main thread)
+            worker_logs = []
 
             # Convert to mutable lists for computation
             px, py, pz = pos
@@ -513,6 +518,13 @@ def process_job(job) -> dict:
 
                     # If moving uphill (dot > 0), remove ONLY that component
                     if dot_with_uphill > 0.0:
+                        # Debug logging for uphill blocking
+                        if debug_slopes:
+                            slope_angle = math.degrees(math.acos(min(1.0, max(-1.0, gn_z))))
+                            blocked_speed = dot_with_uphill
+                            worker_logs.append(("PHYS-SLOPES", f"UPHILL-BLOCK angle={slope_angle:.0f}° normal=({gn_x:.2f},{gn_y:.2f},{gn_z:.2f}) "
+                                                               f"blocked_vel={blocked_speed:.2f} uphill=({uphill_x:.2f},{uphill_y:.2f})"))
+
                         desired_x = desired_x - uphill_x * dot_with_uphill
                         desired_y = desired_y - uphill_y * dot_with_uphill
                         # Downhill and perpendicular components remain at FULL SPEED
@@ -772,9 +784,9 @@ def process_job(job) -> dict:
                     # Debug logging
                     if debug_capsule:
                         if best_n is not None:
-                            print(f"[PHYS-CAPSULE] blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=({best_n[0]:.2f},{best_n[1]:.2f},{best_n[2]:.2f}) | {total_rays}rays {total_tris}tris")
+                            worker_logs.append(("PHYS-CAPSULE", f"blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=({best_n[0]:.2f},{best_n[1]:.2f},{best_n[2]:.2f}) | {total_rays}rays {total_tris}tris"))
                         else:
-                            print(f"[PHYS-CAPSULE] blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=None | {total_rays}rays {total_tris}tris")
+                            worker_logs.append(("PHYS-CAPSULE", f"blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=None | {total_rays}rays {total_tris}tris"))
 
                     # ─────────────────────────────────────────────────────────
                     # 5a. STEP-UP (if only feet ray hit)
@@ -789,7 +801,7 @@ def process_job(job) -> dict:
                         bn_x, bn_y, bn_z = best_n
                         if bn_z < floor_cos:  # Steep face
                             if debug_step_up:
-                                print(f"[PHYS-STEP] attempting step-up | pos=({px:.2f},{py:.2f},{pz:.2f}) face_nz={bn_z:.3f}")
+                                worker_logs.append(("PHYS-STEP", f"attempting step-up | pos=({px:.2f},{py:.2f},{pz:.2f}) face_nz={bn_z:.3f}"))
                             # Try step-up: raise, forward, drop
                             test_z = pz + step_height
                             test_ox = px
@@ -883,7 +895,7 @@ def process_job(job) -> dict:
                                             gn_check = step_ground_n[2]
                                             if gn_check >= floor_cos:
                                                 if debug_step_up:
-                                                    print(f"[PHYS-STEP] SUCCESS | drop_pos=({drop_ox:.2f},{drop_oy:.2f},{step_ground_z:.2f}) gn_z={gn_check:.3f}")
+                                                    worker_logs.append(("PHYS-STEP", f"SUCCESS | drop_pos=({drop_ox:.2f},{drop_oy:.2f},{step_ground_z:.2f}) gn_z={gn_check:.3f}"))
                                                 px = drop_ox
                                                 py = drop_oy
                                                 pz = step_ground_z
@@ -985,6 +997,18 @@ def process_job(job) -> dict:
                                     py += slide_y * slide_allowed
                                     did_slide = True
 
+                                    # Debug logging for wall slide
+                                    if debug_slide:
+                                        wall_angle = math.degrees(math.acos(min(1.0, max(-1.0, bn_z))))
+                                        uphill_status = "BLOCKED" if is_steep_face and uphill_dot > -0.1 else "OK"
+                                        worker_logs.append(("PHYS-SLIDE", f"WALL angle={wall_angle:.0f}° normal=({bn_x:.2f},{bn_y:.2f},{bn_z:.2f}) "
+                                                                          f"dir=({slide_x:.2f},{slide_y:.2f}) dist={slide_allowed:.3f}m "
+                                                                          f"steep={is_steep_face} uphill={uphill_status}"))
+                                elif debug_slide and remaining > radius * 0.15:
+                                    # Slide was blocked or prevented
+                                    reason = "uphill-blocked" if is_steep_face and uphill_dot > -0.1 else "no-space"
+                                    worker_logs.append(("PHYS-SLIDE", f"BLOCKED reason={reason} remaining={remaining:.3f}m"))
+
                                 # Reduce velocity
                                 vx *= 0.65
                                 vy *= 0.65
@@ -993,7 +1017,7 @@ def process_job(job) -> dict:
                     px += move_x
                     py += move_y
                     if debug_capsule and move_len > 1e-9:
-                        print(f"[PHYS-CAPSULE] clear move={move_len:.3f}m | {total_rays}rays {total_tris}tris")
+                        worker_logs.append(("PHYS-CAPSULE", f"clear move={move_len:.3f}m | {total_rays}rays {total_tris}tris"))
 
             elif move_len > 1e-9:
                 # No grid cached - just move (will be handled by dynamic check on main thread)
@@ -1132,19 +1156,19 @@ def process_job(job) -> dict:
                         on_walkable = gn_z >= floor_cos
                     coyote_remaining = coyote_time
                     if debug_ground:
-                        print(f"[PHYS-GROUND] ON_GROUND snap | dist={abs(ground_hit_z - pz):.3f}m gn_z={gn_z:.3f} walkable={on_walkable}")
+                        worker_logs.append(("PHYS-GROUND", f"ON_GROUND snap | dist={abs(ground_hit_z - pz):.3f}m gn_z={gn_z:.3f} walkable={on_walkable}"))
                 elif ground_hit_z is None and was_grounded:
                     # Was grounded but no ground found - walked off a ledge!
                     on_ground = False
                     on_walkable = False
                     coyote_remaining = coyote_time  # Grant coyote time
                     if debug_ground:
-                        print(f"[PHYS-GROUND] airborne | walked_off_ledge coyote={coyote_time:.2f}s")
+                        worker_logs.append(("PHYS-GROUND", f"airborne | walked_off_ledge coyote={coyote_time:.2f}s"))
                 elif not on_ground and was_grounded:
                     coyote_remaining = coyote_time
 
                 if debug_ground and ground_hit_z is not None and not on_ground:
-                    print(f"[PHYS-GROUND] airborne | dist={abs(ground_hit_z - pz):.3f}m too_far | {total_tris}tris")
+                    worker_logs.append(("PHYS-GROUND", f"airborne | dist={abs(ground_hit_z - pz):.3f}m too_far | {total_tris}tris"))
             else:
                 # No grid - just apply vertical movement
                 pz += dz
@@ -1214,6 +1238,13 @@ def process_job(job) -> dict:
                             # This makes you accelerate downward while sliding
                             vz += gravity * 1.2 * dt
 
+                            # Debug logging for steep slope sliding
+                            if debug_slopes:
+                                slope_angle = math.degrees(math.acos(min(1.0, max(-1.0, n_z))))
+                                worker_logs.append(("PHYS-SLOPES", f"GRAVITY-SLIDE angle={slope_angle:.0f}° normal=({n_x:.2f},{n_y:.2f},{n_z:.2f}) "
+                                                                   f"dir=({slide_x:.2f},{slide_y:.2f}) push={slide_push:.3f}m "
+                                                                   f"accel={slide_accel:.2f} steep={steepness:.2f}"))
+
             # ─────────────────────────────────────────────────────────────────
             # BUILD RESULT
             # ─────────────────────────────────────────────────────────────────
@@ -1221,7 +1252,7 @@ def process_job(job) -> dict:
 
             # Summary debug log
             if debug_enhanced:
-                print(f"[KCC] COMPLETE pos=({px:.2f},{py:.2f},{pz:.2f}) vel=({vx:.2f},{vy:.2f},{vz:.2f}) ground={on_ground} walkable={on_walkable} blocked={h_blocked} step={did_step_up} slide={did_slide} | {calc_time_us:.0f}us {total_rays}rays {total_tris}tris")
+                worker_logs.append(("KCC", f"COMPLETE pos=({px:.2f},{py:.2f},{pz:.2f}) vel=({vx:.2f},{vy:.2f},{vz:.2f}) ground={on_ground} walkable={on_walkable} blocked={h_blocked} step={did_step_up} slide={did_slide} | {calc_time_us:.0f}us {total_rays}rays {total_tris}tris"))
 
             result_data = {
                 "pos": (px, py, pz),
@@ -1231,6 +1262,7 @@ def process_job(job) -> dict:
                 "ground_normal": (gn_x, gn_y, gn_z),
                 "coyote_remaining": coyote_remaining,
                 "jump_consumed": jump_consumed,
+                "logs": worker_logs,  # Fast buffer logs (sent to main thread)
                 "debug": {
                     "rays_cast": total_rays,
                     "triangles_tested": total_tris,

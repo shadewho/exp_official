@@ -51,6 +51,10 @@ class GameLoop:
         """
         op = self.op
 
+        # Increment frame counter for fast logger
+        from ..developer.dev_logger import increment_frame
+        increment_frame()
+
         # A) Timebases (scaled + wall clock)
         op.update_time()        # scaled per-frame dt (UI / interpolation)
         _ = update_real_time()  # wall-clock (kept for diagnostics/overlays)

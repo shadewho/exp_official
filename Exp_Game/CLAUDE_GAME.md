@@ -9,8 +9,18 @@ This file provides guidance to Claude Code when working with the Exploratory gam
 **Testing > Guessing**
 It's more important to set up tests, get detailed results, and make informed changes than to poke around aimlessly. Solid foundations with visualized results beat guesswork.
 
-**Visualization > Confusion**
-Logs, files, and visual debug tools that help Claude see what's happening are CRITICAL. If Claude can't see it, Claude can't fix it.
+**Visualization = Understanding**
+The #1 goal is to **paint a complete picture** of what's happening in the game through logs and visualization. When you see something on screen, Claude should see it in the logs.
+
+**Critical Development Goal:**
+- Visualizer shows RED capsule → Logs show `STUCK🔴`
+- Visualizer shows YELLOW capsule → Logs show `BLOCK🟡`
+- Visualizer shows GREEN capsule → Logs show `GROUND🟢`
+- Visualizer shows BLUE capsule → Logs show `AIR🔵`
+
+**What you see = What Claude sees.**
+
+Logs, files, and visual debug tools that help Claude see what's happening are CRITICAL. If Claude can't see it through data, Claude can't fix it. Always develop the logging and developer systems to create a 1:1 mapping between visual state and log output.
 
 **Tests → Results → Changes**
 This is the development loop. Not: Try → Hope → Try Again.
@@ -134,59 +144,83 @@ if context.scene.dev_debug_physics_ground:
 
 ---
 
-## 📁 Engine Output System (NEW)
+## 📁 Fast Buffer Logger System (CRITICAL)
+
+**⚠️ PERFORMANCE CRITICAL**: Console `print()` statements during gameplay cause severe performance degradation (~1000μs per call). This was causing frame drops, stuttering, and unacceptable game performance.
+
+**📖 Full Documentation**: See `developer/CLAUDE_LOGGER.md` for complete logger system documentation.
+
+### Quick Summary
 
 **Location:** `C:\Users\spenc\Desktop\engine_output_files\`
 
 **Files:**
-- `kcc_latest.txt` - Current session log
-- `kcc_previous.txt` - Previous session (backup)
+- `diagnostics_latest.txt` - Game diagnostics log (exported after game stops)
 
-**Purpose:**
-Faster visualization and better detail of what's happening in-game. This is the **primary way** to share debug data with Claude.
+**Key Rules:**
+1. ✅ **Use logger for in-game diagnostics** - Anything in the game loop MUST use `log_game()` (1000x faster than print)
+2. ✅ **Use print for one-time events** - Startup, errors, user actions (outside game loop) can use print()
+3. ✅ **Master Hz control** - Set logging frequency (1-30 Hz) to control output verbosity
+4. ✅ **Export on demand** - Enable "Export Diagnostics Log" toggle to save logs to file
+
+### Why Logger vs Print?
+
+| Aspect | Console Print | Fast Buffer Logger |
+|--------|---------------|-------------------|
+| **Speed** | ~1000μs (1 millisecond) | ~1μs (1 microsecond) |
+| **Impact** | 100 prints/frame = **3 FPS** | 100 logs/frame = **minimal** |
+| **Gameplay** | Severe stuttering, unplayable | Smooth, full diagnostics |
+| **Performance** | 1x baseline | **1000x faster** |
 
 **How it works:**
-1. Enable "Export Session Log" toggle in dev panel
-2. Play game with debug categories enabled
-3. Stop game → auto-exports all console output to file
-4. User tells Claude: "Read C:\Users\spenc\Desktop\engine_output_files\kcc_latest.txt"
-5. Claude analyzes full session timeline
-
-**Goal:** Eventually ALL possible prints go through engine output system for complete session capture.
+1. Enable "Export Diagnostics Log" toggle in dev panel
+2. Set Master Hz (1 Hz recommended for most debugging)
+3. Play game with debug categories enabled
+4. Logs written to memory buffer (zero I/O during gameplay)
+5. Stop game → auto-exports all diagnostics to file
+6. User tells Claude: "Read C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt"
+7. Claude analyzes full session timeline with frame numbers and timestamps
 
 **Workflow:**
 ```
 Test → Capture Data → Share with Claude → Analyze → Make Changes → Repeat
 ```
 
+**Critical**: ALL in-game diagnostics now go through the fast buffer logger. Never use print() in the game loop.
+
 ---
 
-## 🎨 Character Visualizer (NEW - 3D Viewport Overlay)
+## 🎨 Character Visualizer (3D Viewport Overlay)
 
-**Location:** `Exp_Game/physics/exp_kcc.py` (GPU rendering)
+**Location:** `Exp_Game/physics/exp_kcc.py` (GPU rendering - single batched draw call)
 **Toggle:** `dev_debug_kcc_visual` in N-panel
 
 **What it shows:**
 - **Capsule shape** (two spheres - feet + head)
-  - Green = grounded
-  - Yellow = colliding
-  - Red = stuck (depenetrating)
-  - Blue = airborne
+  - 🟢 Green = grounded
+  - 🟡 Yellow = colliding
+  - 🔴 Red = stuck (depenetrating)
+  - 🔵 Blue = airborne
 - **Hit normals** - Cyan arrows showing collision surfaces
 - **Ground ray** - Magenta (hit) or purple (miss)
 - **Movement vectors** - Green (intended) vs Red (actual)
 
-**Philosophy:** Prints + Visualizer = Sequence Understanding
+**Philosophy: Logs Mirror Visual State**
 
-The visualizer is **coupled with prints** so Claude can see what you see in sequence. It's like having a video, but through data:
+The visualizer and logs are **perfectly synchronized** - what you see on screen is exactly what Claude sees in logs:
+
 ```
-Frame 1544: Capsule=YELLOW Ray=MAGENTA(0.15m) Normals=2 | [PHYS-STEP] FAILED
-Frame 1545: Capsule=BLUE Ray=PURPLE(miss) Normals=0 | [PHYS-GROUND] MISS
+[KCC F1544 T51.467s] BLOCK🟡 pos=(10.5,5.2,3.1) step=False | 120us 4rays 12tris
+[KCC F1545 T51.500s] AIR🔵 pos=(10.5,5.2,2.9) step=False | 115us 4rays 12tris
+[KCC F1546 T51.533s] GROUND🟢 pos=(10.5,5.2,3.0) step=False | 118us 4rays 12tris
+[KCC F1547 T51.567s] STUCK🔴 pos=(10.5,5.2,3.1) step=False | 142us 8rays 24tris
 ```
 
-Claude can read this and visualize exactly what happened, frame by frame.
+**What you see = What Claude sees.**
 
-**Goal:** Continue developing character visualization system to paint a complete picture of physics state.
+When you report "the capsule turned red and got stuck," Claude can read the logs and see `STUCK🔴` entries with the exact frame, position, and diagnostic data. It's like having a video, but through data.
+
+**Goal:** Continue developing visualization and logging systems to paint a complete picture of game state. Every visual element should have a corresponding log entry.
 
 ---
 
@@ -226,7 +260,7 @@ Claude can read this and visualize exactly what happened, frame by frame.
 **3. Reproduce and Capture**
 - User plays game with debug enabled
 - System captures full timeline
-- Export to `kcc_latest.txt`
+- Export to `diagnostics_latest.txt`
 
 **4. Analyze**
 - Claude reads exported log
@@ -288,10 +322,18 @@ Claude can read this and visualize exactly what happened, frame by frame.
 
 ## 💡 Remember
 
-**"Visualization and painting pictures via logs and other results"** - This is paramount.
+**"Paint a complete picture - What you see = What Claude sees"** - This is paramount.
 
-If Claude can't see what's happening through data, Claude can't help effectively. Every system should be observable, measurable, and exportable.
+The goal is always to develop logs and visualization systems so that when you see something on screen, Claude sees it in the logs with perfect clarity. Visual state should map 1:1 to log output.
 
-**The engine output system + character visualizer + detailed logs = complete picture of game state.**
+**Core principle:**
+- 🔴 RED capsule on screen → `STUCK🔴` in logs
+- 🟡 YELLOW capsule on screen → `BLOCK🟡` in logs
+- 🟢 GREEN capsule on screen → `GROUND🟢` in logs
+- 🔵 BLUE capsule on screen → `AIR🔵` in logs
 
-This is how we build a solid game engine.
+If Claude can't see what's happening through data, Claude can't help effectively. Every system should be observable, measurable, and exportable. Every visual element should have corresponding diagnostic output.
+
+**Fast buffer logger + GPU visualizer + frame-accurate logs = complete picture of game state.**
+
+This is how we build a solid, debuggable game engine - by ensuring transparency through data.

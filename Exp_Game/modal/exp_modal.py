@@ -39,64 +39,6 @@ from .exp_loop import GameLoop
 from ..physics.exp_view_fpv import reset_fpv_rot_scale
 from ..engine import EngineCore
 
-def export_session_log(console_buffer_content):
-    """
-    Export session log to Desktop with rotation (latest → previous).
-    Safe: All operations wrapped in try/except, won't crash game on failure.
-
-    Args:
-        console_buffer_content: String containing all console output from session
-    """
-    import os
-    import shutil
-    from datetime import datetime
-
-    try:
-        # 1. Setup paths (hardcoded as requested)
-        folder = "C:/Users/spenc/Desktop/engine_output_files"
-        latest_path = os.path.join(folder, "kcc_latest.txt")
-        previous_path = os.path.join(folder, "kcc_previous.txt")
-
-        # 2. Create folder if doesn't exist
-        os.makedirs(folder, exist_ok=True)
-
-        # 3. Rotate: latest → previous (safe copy, not move)
-        if os.path.exists(latest_path):
-            try:
-                # Copy first (safer than rename - if copy fails, latest still exists)
-                shutil.copy2(latest_path, previous_path)
-            except Exception as e:
-                print(f"[SessionLog] Warning: Could not backup previous session: {e}")
-                # Continue anyway - not critical
-
-        # 4. Write new session (atomic write - write to temp, then rename)
-        temp_path = os.path.join(folder, "kcc_latest.tmp")
-
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 60 + "\n")
-            f.write("KCC Physics Session Log\n")
-            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(console_buffer_content)
-            f.write("\n\n" + "=" * 60 + "\n")
-            f.write("Session ended successfully\n")
-
-        # 5. Atomic rename (ensures file is never partial/corrupted)
-        if os.path.exists(latest_path):
-            os.remove(latest_path)
-        os.rename(temp_path, latest_path)
-
-        print(f"[SessionLog] ✓ Exported to: {latest_path}")
-
-    except PermissionError:
-        print(f"[SessionLog] ✗ Error: No write permission to Desktop/engine_output_files/")
-        print(f"[SessionLog] Check folder permissions or choose different location")
-    except OSError as e:
-        print(f"[SessionLog] ✗ Error: Disk full or path invalid: {e}")
-    except Exception as e:
-        print(f"[SessionLog] ✗ Unexpected error: {e}")
-        # Don't crash - game cleanup continues
-
 def _first_view3d_r3d():
     """
     Return a valid SpaceView3D.region_3d from any open VIEW_3D/WINDOW,
@@ -629,28 +571,11 @@ class ExpModal(bpy.types.Operator):
             self._force_hide_names.clear()
         # --------------------------------------------------------------------------------
 
-        # ========== CONSOLE BUFFER SETUP ==========
-        # Initialize console buffer for session log export
-        self._console_buffer = io.StringIO()
-        self._original_stdout = sys.stdout
-
-        # Create a tee that writes to both console and buffer
-        class ConsoleTee:
-            def __init__(self, original, buffer):
-                self.original = original
-                self.buffer = buffer
-
-            def write(self, text):
-                self.original.write(text)
-                self.buffer.write(text)
-
-            def flush(self):
-                self.original.flush()
-
-        # Only redirect if export is enabled (reduces overhead if disabled)
-        if context.scene.dev_export_session_log:
-            sys.stdout = ConsoleTee(self._original_stdout, self._console_buffer)
-        # ==========================================
+        # ========== FAST BUFFER LOGGER SETUP ==========
+        # Initialize fast memory buffer logger for game diagnostics
+        from ..developer.dev_logger import start_session
+        start_session()
+        # ============================================
 
         # Capture both camera/character state
         capture_initial_cam_state(self, context)
@@ -1110,17 +1035,12 @@ class ExpModal(bpy.types.Operator):
             self.physics_controller.cleanup_debug_handlers()
         # ====================================
 
-        # ========== SESSION LOG EXPORT ==========
-        # Restore stdout and export session log if enabled
-        if hasattr(self, '_original_stdout'):
-            sys.stdout = self._original_stdout
-
-        if context.scene.dev_export_session_log and hasattr(self, '_console_buffer'):
-            console_content = self._console_buffer.getvalue()
-            if console_content.strip():  # Only export if there's content
-                export_session_log(console_content)
-            else:
-                print("[SessionLog] No console output to export (buffer empty)")
+        # ========== DIAGNOSTICS LOG EXPORT ==========
+        # Export fast buffer logger diagnostics if enabled
+        from ..developer.dev_logger import export_game_log, clear_log, get_buffer_size
+        if context.scene.dev_export_session_log and get_buffer_size() > 0:
+            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+            clear_log()
         # ====================================
 
         # Restore the cursor modal state

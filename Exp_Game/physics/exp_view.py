@@ -308,7 +308,8 @@ def update_camera_for_operator(context, op):
     if not op or not getattr(op, "target_object", None):
         import bpy
         if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
-            print("[Camera UPDATE SKIP] No operator or target object")
+            from ..developer.dev_logger import log_game
+            log_game("CAMERA", "UPDATE SKIP: No operator or target object")
         return
 
     op_key = id(op)
@@ -410,7 +411,8 @@ def update_camera_for_operator(context, op):
         view["stats_hold"] = view.get("stats_hold", 0) + 1
         # Keep existing "allowed" distance (don't change zoom level)
         if camera_debug_enabled:
-            print(f"[Camera HOLD] ⚠️ No fresh result - keeping allowed={view.get('allowed', 0):.3f}m (SHOULD BE RARE!)")
+            from ..developer.dev_logger import log_game
+            log_game("CAMERA", f"HOLD: No fresh result - keeping allowed={view.get('allowed', 0):.3f}m (SHOULD BE RARE!)")
         _apply_to_viewport(context, op, view)
         return
 
@@ -442,17 +444,17 @@ def update_camera_for_operator(context, op):
     view["allowed"]   = float(final_allowed)
     op._cam_allowed_last = float(final_allowed)
 
-    # --- 10) Debug output (with Hz frequency gating)
-    if should_print_debug("camera_offload"):
+    # --- 10) Debug output (fast buffer logging)
+    if camera_debug_enabled:
+        from ..developer.dev_logger import log_game
         if hit_dist is not None:
             src = "STATIC" if hit_token == _STATIC_TOKEN else "DYNAMIC"
             result_info = f"HIT({src})={hit_dist:.3f}m"
         else:
             result_info = "MISS"
 
-        if camera_debug_enabled:
-            final_info = f"allowed={final_allowed:.3f}m"
-            print(f"[Camera] {result_status}: {result_info} → {final_info}")
+        final_info = f"allowed={final_allowed:.3f}m"
+        log_game("CAMERA", f"{result_status}: {result_info} → {final_info}")
 
     # Print stats summary every 2 seconds (always, regardless of Hz gate)
     now = time.perf_counter()
@@ -467,18 +469,19 @@ def update_camera_for_operator(context, op):
         total_frames = fresh + hold
 
         if total_frames > 0:
+            from ..developer.dev_logger import log_game
             fresh_pct = 100.0 * fresh / total_frames
             hold_pct = 100.0 * hold / total_frames
             timeout_pct = 100.0 * timeout / total_submit if total_submit > 0 else 0.0
 
-            print(f"[Camera STATS] Submit: {total_submit} | Timeout: {timeout} ({timeout_pct:.1f}%) | SkipPending: {skip_pending} | SkipUnchanged: {skip_unchanged}")
-            print(f"[Camera STATS] FRESH: {fresh} ({fresh_pct:.1f}%) | HOLD: {hold} ({hold_pct:.1f}%)")
+            log_game("CAMERA", f"STATS Submit: {total_submit} | Timeout: {timeout} ({timeout_pct:.1f}%) | SkipPending: {skip_pending} | SkipUnchanged: {skip_unchanged}")
+            log_game("CAMERA", f"STATS FRESH: {fresh} ({fresh_pct:.1f}%) | HOLD: {hold} ({hold_pct:.1f}%)")
 
             # Warning if HOLD or timeout is too high
             if hold_pct > 5.0:
-                print(f"[Camera WARNING] ⚠️ HOLD rate {hold_pct:.1f}% is HIGH - engine may be struggling!")
+                log_game("CAMERA", f"WARNING: HOLD rate {hold_pct:.1f}% is HIGH - engine may be struggling!")
             if timeout_pct > 5.0:
-                print(f"[Camera WARNING] ⚠️ Timeout rate {timeout_pct:.1f}% is HIGH - workers taking >3ms!")
+                log_game("CAMERA", f"WARNING: Timeout rate {timeout_pct:.1f}% is HIGH - workers taking >3ms!")
 
     # --- 11) Apply to ONE cached rv3d, skipping redundant writes
     _apply_to_viewport(context, op, view)
@@ -572,14 +575,16 @@ def submit_camera_occlusion_early(op, context):
     if not op or not getattr(op, "target_object", None):
         import bpy
         if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
-            print("[Camera SKIP] No operator or target object")
+            from ..developer.dev_logger import log_game
+            log_game("CAMERA", "SKIP: No operator or target object")
         return None
 
     engine = getattr(op, "engine", None)
     if not engine:
         import bpy
         if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
-            print("[Camera SKIP] No engine available")
+            from ..developer.dev_logger import log_game
+            log_game("CAMERA", "SKIP: No engine available")
         return None
 
     op_key = id(op)
@@ -677,7 +682,8 @@ def submit_camera_occlusion_early(op, context):
     view["stats_submit"] = view.get("stats_submit", 0) + 1
 
     if debug_camera:
-        print(f"[Camera SUBMIT] job={job_id} origin=({anchor.x:.2f},{anchor.y:.2f},{anchor.z:.2f}) dir=({direction.x:.2f},{direction.y:.2f},{direction.z:.2f}) max={desired_max:.2f}m dynamic_objs={dynamic_obj_count} dynamic_tris={len(dynamic_triangles)}")
+        from ..developer.dev_logger import log_game
+        log_game("CAMERA", f"SUBMIT job={job_id} origin=({anchor.x:.2f},{anchor.y:.2f},{anchor.z:.2f}) dir=({direction.x:.2f},{direction.y:.2f},{direction.z:.2f}) max={desired_max:.2f}m dynamic_objs={dynamic_obj_count} dynamic_tris={len(dynamic_triangles)}")
 
     return job_id  # Return job_id for explicit polling
 
@@ -733,13 +739,14 @@ def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
     poll_count = 0
 
     if debug_camera:
-        print(f"[Camera POLL START] Waiting for job={job_id} (timeout={timeout*1000:.1f}ms) [+150µs pre-delay]")
+        from ..developer.dev_logger import log_game
+        log_game("CAMERA", f"POLL START: Waiting for job={job_id} (timeout={timeout*1000:.1f}ms) [+150µs pre-delay]")
 
     while True:
         elapsed = time.perf_counter() - poll_start
         if elapsed >= timeout:
             if debug_camera:
-                print(f"[Camera POLL TIMEOUT] job={job_id} not ready after {elapsed*1000:.1f}ms ({poll_count} polls)")
+                log_game("CAMERA", f"POLL TIMEOUT: job={job_id} not ready after {elapsed*1000:.1f}ms ({poll_count} polls)")
             break
 
         results = engine.poll_results(max_results=20)
@@ -758,15 +765,17 @@ def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
                     poll_time_us = elapsed * 1_000_000
 
                     if debug_camera:
+                        from ..developer.dev_logger import log_game
                         status = f"HIT({hit_source}) dist={hit_distance:.3f}m" if hit else "MISS"
-                        print(f"[Camera POLL SUCCESS] job={job_id} {status} | "
-                              f"worker={calc_time_us:.0f}µs poll={poll_time_us:.0f}µs ({poll_count} polls)")
+                        log_game("CAMERA", f"POLL SUCCESS: job={job_id} {status} | "
+                                          f"worker={calc_time_us:.0f}µs poll={poll_time_us:.0f}µs ({poll_count} polls)")
 
                     result_found = True
                 else:
                     # Job failed
                     if debug_camera:
-                        print(f"[Camera POLL FAILED] job={job_id} error: {result.error}")
+                        from ..developer.dev_logger import log_game
+                        log_game("CAMERA", f"POLL FAILED: job={job_id} error: {result.error}")
                 break
             else:
                 # Cache non-camera results for other systems

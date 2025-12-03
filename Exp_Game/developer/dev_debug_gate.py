@@ -14,7 +14,7 @@ _last_print_times = {}
 
 def should_print_debug(category: str) -> bool:
     """
-    Check if debug output should be printed based on frequency gate.
+    Check if debug output should be printed based on master frequency gate.
 
     Args:
         category: Debug category name (matches scene property, e.g., "engine", "performance", "dynamic_offload")
@@ -24,19 +24,18 @@ def should_print_debug(category: str) -> bool:
     """
     scene = bpy.context.scene
 
-    # Get the enabled flag and frequency for this category
+    # Get the enabled flag for this category
     debug_enabled_prop = f"dev_debug_{category}"
-    debug_freq_prop = f"dev_debug_{category}_hz"
 
     # Check if debug is enabled for this category
     if not hasattr(scene, debug_enabled_prop) or not getattr(scene, debug_enabled_prop):
         return False
 
-    # Get frequency (default to 30Hz if property doesn't exist)
-    if not hasattr(scene, debug_freq_prop):
+    # Get master frequency (default to 30Hz if property doesn't exist)
+    if not hasattr(scene, 'dev_debug_master_hz'):
         frequency = 30
     else:
-        frequency = getattr(scene, debug_freq_prop)
+        frequency = getattr(scene, 'dev_debug_master_hz')
 
     # Special case: 30Hz = every frame (no gating)
     if frequency >= 30:
