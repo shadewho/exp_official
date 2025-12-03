@@ -625,3 +625,57 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "jump_speed")
         row.prop(p, "coyote_time")
         col.prop(p, "jump_buffer")
+
+        # --- Steep Slope Settings ---
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Steep Slope Settings", icon='SURFACE_NCURVE')
+        row = col.row(align=True)
+        row.prop(p, "steep_slide_gain", text="Slide Acceleration")
+        col.prop(p, "steep_min_speed", text="Minimum Slide Speed")
+
+        # --- View / Camera ---
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="View / Camera", icon='HIDE_OFF')
+        col.prop(scene, "view_projection", text="Projection")
+        col.prop(scene, "view_mode", text="View Mode")
+
+        # Always-visible view controls
+        col.prop(scene, "viewport_lens_mm", text="Viewport Lens (mm)")
+        col.prop(scene, "orbit_distance", text="Orbit Distance")
+        col.prop(scene, "zoom_factor", text="Zoom Factor")
+
+        # LOCKED mode settings
+        if scene.view_mode == 'LOCKED':
+            col.separator()
+            col.label(text="Locked View Settings:")
+            col.prop(scene, "view_locked_yaw", text="Yaw")
+            col.prop(scene, "view_locked_pitch", text="Pitch")
+            col.prop(scene, "view_locked_distance", text="Distance")
+
+            # Axis lock + flip
+            if hasattr(scene, "view_locked_move_axis"):
+                col.prop(scene, "view_locked_move_axis", text="Axis Lock (Movement)")
+                row = col.row(align=True)
+                row.enabled = (getattr(scene, "view_locked_move_axis", 'OFF') != 'OFF')
+                row.prop(scene, "view_locked_flip_axis", text="Flip Axis Direction (180°)")
+
+        # THIRD PERSON mode settings
+        if scene.view_mode == 'THIRD':
+            col.separator()
+            row = col.row(align=True)
+            row.prop(scene, "view_obstruction_enabled", text="Enable View Obstruction")
+
+        # FIRST PERSON mode settings
+        if scene.view_mode == 'FIRST':
+            col.separator()
+            col.label(text="First Person Settings:")
+            arm = getattr(scene, "target_armature", None)
+            row = col.row(align=True)
+            if arm and arm.type == 'ARMATURE':
+                row.prop_search(scene, "fpv_view_bone", arm.data, "bones", text="FPV Target Bone")
+            else:
+                row.enabled = False
+                row.label(text="FPV Target Bone: — (set Target Armature)")
+            col.prop(scene, "fpv_invert_pitch", text="Invert FPV Pitch")

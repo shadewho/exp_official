@@ -93,6 +93,16 @@ class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
         description="Initial upward velocity (m/s) applied when a jump starts. Higher values yield higher jumps.",
         default=8.0, min=0.0, max=30.0
     )
+    steep_slide_gain: bpy.props.FloatProperty(
+        name="Steep Slide Acceleration",
+        description="Downward acceleration applied when standing on steep non-walkable slopes. Higher values make sliding faster.",
+        default=18.0, min=0.0, max=50.0
+    )
+    steep_min_speed: bpy.props.FloatProperty(
+        name="Minimum Slide Speed",
+        description="Minimum downward speed when sliding on steep slopes. Ensures slides don't feel too slow.",
+        default=2.5, min=0.0, max=20.0
+    )
     fixed_hz: bpy.props.IntProperty(
         name="Physics Hz",
         description="Fixed physics update frequency (steps per second). Higher values are smoother but cost more CPU.",

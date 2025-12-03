@@ -22,6 +22,9 @@ Main thread is THIN:
 import math
 import mathutils
 from mathutils import Vector
+import bpy
+import gpu
+from gpu_extras.batch import batch_for_shader
 
 # ---- Small helpers ---------------------------------------------------------
 
@@ -29,6 +32,210 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 _UP = Vector((0.0, 0.0, 1.0))
+
+# ---- GPU Visualization (Global Handler) ------------------------------------
+
+_kcc_draw_handler = None
+_kcc_vis_data = None  # Shared visualization data
+
+def _draw_kcc_visual():
+    """GPU draw callback for KCC visualization."""
+    global _kcc_vis_data
+
+    if _kcc_vis_data is None:
+        return
+
+    scene = bpy.context.scene
+    if not getattr(scene, 'dev_debug_kcc_visual', False):
+        return
+
+    # Get toggle states
+    show_capsule = getattr(scene, 'dev_debug_kcc_visual_capsule', True)
+    show_normals = getattr(scene, 'dev_debug_kcc_visual_normals', True)
+    show_ground = getattr(scene, 'dev_debug_kcc_visual_ground', True)
+    show_movement = getattr(scene, 'dev_debug_kcc_visual_movement', True)
+
+    # Enable depth test for 3D objects
+    gpu.state.depth_test_set('LESS_EQUAL')
+    gpu.state.blend_set('ALPHA')
+
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CAPSULE (Two spheres: feet + head)
+    # PERFORMANCE: Single layer, fewer segments, batched drawing
+    # ─────────────────────────────────────────────────────────────────────
+    if show_capsule and 'capsule_spheres' in _kcc_vis_data:
+        capsule_color = _kcc_vis_data.get('capsule_color', (0.0, 1.0, 0.0, 0.3))
+        spheres = _kcc_vis_data['capsule_spheres']
+
+        segments = 16  # REDUCED to 16 for max performance (still smooth)
+
+        # Batch all circles together for fewer shader binds
+        all_verts = []
+
+        for sphere_center, sphere_radius in spheres:
+            # XY circle
+            for i in range(segments + 1):
+                angle = (i / segments) * 2.0 * math.pi
+                x = sphere_center[0] + sphere_radius * math.cos(angle)
+                y = sphere_center[1] + sphere_radius * math.sin(angle)
+                z = sphere_center[2]
+                all_verts.append((x, y, z))
+
+            # XZ circle
+            for i in range(segments + 1):
+                angle = (i / segments) * 2.0 * math.pi
+                x = sphere_center[0] + sphere_radius * math.cos(angle)
+                y = sphere_center[1]
+                z = sphere_center[2] + sphere_radius * math.sin(angle)
+                all_verts.append((x, y, z))
+
+            # YZ circle
+            for i in range(segments + 1):
+                angle = (i / segments) * 2.0 * math.pi
+                x = sphere_center[0]
+                y = sphere_center[1] + sphere_radius * math.cos(angle)
+                z = sphere_center[2] + sphere_radius * math.sin(angle)
+                all_verts.append((x, y, z))
+
+        # Single batched draw call for all circles
+        if all_verts:
+            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": all_verts})
+            shader.bind()
+            shader.uniform_float("color", capsule_color)
+            batch.draw(shader)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # HIT NORMALS (Cyan arrows)
+    # PERFORMANCE: Single line per normal, batched drawing
+    # ─────────────────────────────────────────────────────────────────────
+    if show_normals and 'hit_normals' in _kcc_vis_data:
+        normal_color = (0.0, 1.0, 1.0, 0.9)  # Cyan, more opaque
+        normals = _kcc_vis_data['hit_normals']
+
+        arrow_length = 0.4
+        all_lines = []
+
+        for origin, normal in normals:
+            end = (
+                origin[0] + normal[0] * arrow_length,
+                origin[1] + normal[1] * arrow_length,
+                origin[2] + normal[2] * arrow_length
+            )
+            all_lines.extend([origin, end])
+
+        # Single batched draw call for all normals
+        if all_lines:
+            batch = batch_for_shader(shader, 'LINES', {"pos": all_lines})
+            shader.bind()
+            shader.uniform_float("color", normal_color)
+            batch.draw(shader)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # GROUND RAY (Magenta = hit, Purple = miss)
+    # PERFORMANCE: Simple line, single draw call
+    # ─────────────────────────────────────────────────────────────────────
+    if show_ground and 'ground_ray' in _kcc_vis_data:
+        ray_data = _kcc_vis_data['ground_ray']
+        origin = ray_data['origin']
+        end = ray_data['end']
+        hit = ray_data['hit']
+
+        ray_color = (1.0, 0.0, 1.0, 0.9) if hit else (0.5, 0.0, 0.5, 0.7)  # Magenta/Purple
+
+        # Single line for ray
+        verts = [origin, end]
+        batch = batch_for_shader(shader, 'LINES', {"pos": verts})
+        shader.bind()
+        shader.uniform_float("color", ray_color)
+        batch.draw(shader)
+
+        # Simple circle at hit point if hit
+        if hit and 'hit_point' in ray_data:
+            hit_point = ray_data['hit_point']
+            segments = 12
+            hit_radius = 0.08
+            verts = []
+
+            for i in range(segments + 1):
+                angle = (i / segments) * 2.0 * math.pi
+                x = hit_point[0] + hit_radius * math.cos(angle)
+                y = hit_point[1] + hit_radius * math.sin(angle)
+                z = hit_point[2]
+                verts.append((x, y, z))
+
+            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": verts})
+            shader.bind()
+            shader.uniform_float("color", ray_color)
+            batch.draw(shader)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # MOVEMENT VECTORS (Green = intended, Red = actual)
+    # PERFORMANCE: Simple lines, separate batches by color
+    # ─────────────────────────────────────────────────────────────────────
+    if show_movement and 'movement_vectors' in _kcc_vis_data:
+        vectors = _kcc_vis_data['movement_vectors']
+        origin = vectors.get('origin')
+
+        if origin and 'intended' in vectors:
+            intended = vectors['intended']
+            intended_color = (0.0, 1.0, 0.0, 0.9)  # Green
+            verts = [origin, intended]
+            batch = batch_for_shader(shader, 'LINES', {"pos": verts})
+            shader.bind()
+            shader.uniform_float("color", intended_color)
+            batch.draw(shader)
+
+        if origin and 'actual' in vectors:
+            actual = vectors['actual']
+            actual_color = (1.0, 0.0, 0.0, 0.9)  # Red
+            verts = [origin, actual]
+            batch = batch_for_shader(shader, 'LINES', {"pos": verts})
+            shader.bind()
+            shader.uniform_float("color", actual_color)
+            batch.draw(shader)
+
+    # Reset GPU state
+    gpu.state.depth_test_set('NONE')
+    gpu.state.blend_set('NONE')
+
+def enable_kcc_visualizer():
+    """Register the KCC visualization draw handler."""
+    global _kcc_draw_handler
+
+    if _kcc_draw_handler is None:
+        _kcc_draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_kcc_visual, (), 'WINDOW', 'POST_VIEW'
+        )
+        _tag_all_view3d_for_redraw()
+
+def disable_kcc_visualizer():
+    """Unregister the KCC visualization draw handler."""
+    global _kcc_draw_handler, _kcc_vis_data
+
+    if _kcc_draw_handler is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_kcc_draw_handler, 'WINDOW')
+        except Exception:
+            pass
+        _kcc_draw_handler = None
+
+    _kcc_vis_data = None
+    _tag_all_view3d_for_redraw()
+
+def _tag_all_view3d_for_redraw():
+    """Tag all VIEW_3D areas for redraw."""
+    wm = getattr(bpy.context, "window_manager", None)
+    if not wm:
+        return
+    for win in wm.windows:
+        scr = win.screen
+        if not scr:
+            continue
+        for area in scr.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
 
 # ---- Config ----------------------------------------------------------------
 
@@ -81,6 +288,16 @@ class KinematicCharacterController:
         # Worker result caching (1-frame latency pattern)
         self._cached_physics_result = None
         self._last_physics_job_id = None
+
+        # Visualization cache
+        self._vis_colliding = False
+        self._vis_was_stuck = False
+        self._vis_hit_normals = []
+        self._vis_intended_move = (0.0, 0.0, 0.0)
+        self._vis_actual_move = (0.0, 0.0, 0.0)
+
+        # Frame counter for debug output
+        self._physics_frame = 0
 
     # --------------------
     # Input calculation (main thread - always immediate)
@@ -257,6 +474,11 @@ class KinematicCharacterController:
         coyote = result.get("coyote_remaining", 0.0)
         jump_consumed = result.get("jump_consumed", False)
 
+        # Cache visualization data from debug info
+        debug = result.get("debug", {})
+        self._vis_colliding = debug.get('h_blocked', False)
+        self._vis_was_stuck = debug.get('was_stuck', False)
+
         # Apply state
         if new_pos:
             self.pos = Vector(new_pos)
@@ -312,12 +534,14 @@ class KinematicCharacterController:
                     self.pos.x = platform_center.x + new_x
                     self.pos.y = platform_center.y + new_y
 
-        # Debug output
-        if context:
+        # Debug output (PERFORMANCE: Check flag BEFORE any string formatting)
+        if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
             from ..developer.dev_debug_gate import should_print_debug
             if should_print_debug("kcc_offload"):
+                # Only extract debug data if we're actually printing
                 debug = result.get("debug", {})
-                print(f"[KCC] APPLY pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                # Use efficient string formatting (single f-string, no concatenation)
+                print(f"[KCC F{self._physics_frame:04d}] APPLY pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                       f"ground={on_ground} blocked={debug.get('h_blocked', False)} "
                       f"step={debug.get('did_step_up', False)} | "
                       f"{debug.get('calc_time_us', 0):.0f}us {debug.get('rays_cast', 0)}rays "
@@ -333,6 +557,9 @@ class KinematicCharacterController:
         import math
         if not dynamic_map:
             return
+
+        # Clear hit normals for this frame
+        self._vis_hit_normals = []
 
         r = float(self.cfg.radius)
         h = float(self.cfg.height)
@@ -439,6 +666,12 @@ class KinematicCharacterController:
                     push_dist = min((r - dist) + 0.02, 0.3)  # Max 0.3m push
                     total_push += n * push_dist
                     push_count += 1
+
+                    # Cache hit normal for visualization
+                    self._vis_hit_normals.append((
+                        (hit_co.x, hit_co.y, hit_co.z),
+                        (n.x, n.y, n.z)
+                    ))
 
         # Apply accumulated horizontal push
         if push_count > 0:
@@ -574,8 +807,18 @@ class KinematicCharacterController:
         # ─────────────────────────────────────────────────────────────────────
         # 2. SNAPSHOT current state + input
         # ─────────────────────────────────────────────────────────────────────
+        # Increment frame counter
+        self._physics_frame += 1
+
         wish_dir, is_running = self._input_vector(keys_pressed, prefs, camera_yaw)
         jump_requested = (self._jump_buf > 0.0)
+
+        # Cache intended movement for visualization
+        target_speed = self.cfg.max_run if is_running else self.cfg.max_walk
+        self._vis_intended_move = (wish_dir[0] * target_speed * dt, wish_dir[1] * target_speed * dt, 0.0)
+
+        # Cache position before physics for actual movement calculation
+        pos_before = self.pos.copy()
 
         # Decrement timers
         self._jump_buf = max(0.0, self._jump_buf - dt)
@@ -622,24 +865,23 @@ class KinematicCharacterController:
                 if poll_count >= 3:
                     time.sleep(0.00005)  # 50µs (smaller than before)
 
-            poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
-
-            # Debug output
-            if context:
+            # Debug output (PERFORMANCE: Only compute timing if debug enabled)
+            if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
                 from ..developer.dev_debug_gate import should_print_debug
                 if should_print_debug("kcc_offload"):
+                    poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
                     if result_found:
-                        print(f"[KCC] SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                        print(f"[KCC F{self._physics_frame:04d}] SAME-FRAME pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                               f"poll={poll_time_us:.0f}us")
                     else:
-                        print(f"[KCC] TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
+                        print(f"[KCC F{self._physics_frame:04d}] TIMEOUT pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                               f"poll={poll_time_us:.0f}us - using previous state")
         else:
             # NO ENGINE FALLBACK - Physics requires engine
-            if context:
+            if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
                 from ..developer.dev_debug_gate import should_print_debug
                 if should_print_debug("kcc_offload"):
-                    print("[KCC] WARNING: No engine available - physics step skipped")
+                    print(f"[KCC F{self._physics_frame:04d}] WARNING: No engine available - physics step skipped")
 
         # ─────────────────────────────────────────────────────────────────────
         # 5. Write position to Blender
@@ -647,6 +889,20 @@ class KinematicCharacterController:
         self.obj.location = self.pos
         if abs(rot.z - self.obj.rotation_euler.z) > 1e-9:
             self.obj.rotation_euler = rot
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 6. Update visualization (if enabled)
+        # ─────────────────────────────────────────────────────────────────────
+        # Cache actual movement for visualization
+        self._vis_actual_move = (self.pos.x - pos_before.x, self.pos.y - pos_before.y, self.pos.z - pos_before.z)
+
+        # Enable visualizer if toggle is on
+        if context and getattr(context.scene, 'dev_debug_kcc_visual', False):
+            if _kcc_draw_handler is None:
+                enable_kcc_visualizer()
+            self.update_visualization_data(context)
+        elif _kcc_draw_handler is not None:
+            disable_kcc_visualizer()
 
     def _cache_other_result(self, result):
         """Cache non-KCC results for processing by other handlers."""
@@ -721,10 +977,99 @@ class KinematicCharacterController:
         """
         Clean up GPU debug draw handlers for KCC visualization.
         Called when modal operator exits.
-
-        Note: Currently no GPU handlers are registered, but this method
-        is called by exp_modal.py during cleanup to prepare for future
-        debug visualization features.
         """
-        # No GPU handlers to clean up yet
-        pass
+        disable_kcc_visualizer()
+
+    def update_visualization_data(self, context):
+        """
+        Update visualization data for GPU drawing.
+        Called every frame when dev_debug_kcc_visual is enabled.
+
+        PERFORMANCE: Only updates if position changed significantly.
+        """
+        global _kcc_vis_data
+
+        if not getattr(context.scene, 'dev_debug_kcc_visual', False):
+            return
+
+        # PERFORMANCE: Skip update if position hasn't changed much
+        if hasattr(self, '_last_vis_pos'):
+            pos_delta = (self.pos - self._last_vis_pos).length
+            if pos_delta < 0.01:  # Less than 1cm movement, skip update
+                return
+        self._last_vis_pos = self.pos.copy()
+
+        # Determine capsule color based on state (increased opacity)
+        if hasattr(self, '_vis_was_stuck') and self._vis_was_stuck:
+            capsule_color = (1.0, 0.0, 0.0, 0.8)  # Red = stuck (depenetrating)
+        elif hasattr(self, '_vis_colliding') and self._vis_colliding:
+            capsule_color = (1.0, 1.0, 0.0, 0.8)  # Yellow = colliding
+        elif self.on_ground:
+            capsule_color = (0.0, 1.0, 0.0, 0.8)  # Green = grounded
+        else:
+            capsule_color = (0.0, 0.5, 1.0, 0.8)  # Blue = airborne
+
+        # Build visualization data
+        vis_data = {
+            'capsule_color': capsule_color,
+            'capsule_spheres': [],
+            'hit_normals': [],
+            'ground_ray': None,
+            'movement_vectors': {}
+        }
+
+        # Capsule spheres (feet + head)
+        r = float(self.cfg.radius)
+        h = float(self.cfg.height)
+
+        feet_center = (self.pos.x, self.pos.y, self.pos.z + r)
+        head_center = (self.pos.x, self.pos.y, self.pos.z + h - r)
+
+        vis_data['capsule_spheres'] = [
+            (feet_center, r),
+            (head_center, r)
+        ]
+
+        # Hit normals (from cached collision data)
+        if hasattr(self, '_vis_hit_normals') and self._vis_hit_normals:
+            vis_data['hit_normals'] = self._vis_hit_normals
+
+        # Ground ray
+        ray_origin = (self.pos.x, self.pos.y, self.pos.z + 0.5)
+        ray_end = (self.pos.x, self.pos.y, self.pos.z - self.cfg.snap_down)
+
+        vis_data['ground_ray'] = {
+            'origin': ray_origin,
+            'end': ray_end,
+            'hit': self.on_ground
+        }
+
+        if self.on_ground:
+            vis_data['ground_ray']['hit_point'] = (self.pos.x, self.pos.y, self.pos.z)
+
+        # Movement vectors (from cached velocity data)
+        if hasattr(self, '_vis_intended_move') and self._vis_intended_move:
+            origin = (self.pos.x, self.pos.y, self.pos.z + h * 0.5)
+            vis_data['movement_vectors']['origin'] = origin
+
+            intended = self._vis_intended_move
+            vis_data['movement_vectors']['intended'] = (
+                origin[0] + intended[0],
+                origin[1] + intended[1],
+                origin[2] + intended[2]
+            )
+
+        if hasattr(self, '_vis_actual_move') and self._vis_actual_move:
+            origin = (self.pos.x, self.pos.y, self.pos.z + h * 0.5)
+            if 'origin' not in vis_data['movement_vectors']:
+                vis_data['movement_vectors']['origin'] = origin
+
+            actual = self._vis_actual_move
+            vis_data['movement_vectors']['actual'] = (
+                origin[0] + actual[0],
+                origin[1] + actual[1],
+                origin[2] + actual[2]
+            )
+
+        _kcc_vis_data = vis_data
+        _tag_all_view3d_for_redraw()
