@@ -43,6 +43,7 @@ class EngineResult:
         error: Error message if success=False
         timestamp: When this result was created
         processing_time: How long the job took (seconds)
+        worker_id: ID of the worker that processed this job (for tracking)
     """
     job_id: int
     job_type: str
@@ -51,6 +52,7 @@ class EngineResult:
     error: Optional[str] = None
     timestamp: float = None
     processing_time: float = 0.0
+    worker_id: int = -1  # ID of worker that processed this job
 
     def __post_init__(self):
         if self.timestamp is None:

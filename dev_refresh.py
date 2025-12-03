@@ -261,10 +261,12 @@ class EXP_PT_dev_refresh(bpy.types.Panel):
 # ============================================================================
 # REGISTRATION
 # ============================================================================
+# Note: Panel is now integrated into Developer Tools panel (dev_panel.py)
+# Only register the operator here
 
 classes = (
     EXP_OT_dev_refresh,
-    EXP_PT_dev_refresh,
+    # EXP_PT_dev_refresh,  # Panel removed - button now in Developer Tools
 )
 
 
@@ -272,14 +274,14 @@ def register():
     if ENABLED:
         for cls in classes:
             bpy.utils.register_class(cls)
-        print("[DEV REFRESH] Development refresh panel enabled")
+        print("[DEV REFRESH] Development refresh operator enabled")
 
 
 def unregister():
     if ENABLED:
         for cls in reversed(classes):
             bpy.utils.unregister_class(cls)
-        print("[DEV REFRESH] Development refresh panel disabled")
+        print("[DEV REFRESH] Development refresh operator disabled")
 
 
 if __name__ == "__main__":

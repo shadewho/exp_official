@@ -211,6 +211,12 @@ if not _IS_WORKER_PROCESS:
 
         bpy.types.Scene.comment_text = bpy.props.StringProperty(name="Comment", default="")
 
+        # Login error message (cleared after 5 seconds)
+        bpy.types.Scene.login_error_message = bpy.props.StringProperty(
+            name="Login Error",
+            description="Displays login error messages in the panel",
+            default=""
+        )
 
         #get this out of init and put where it belongs!!
         bpy.types.Scene.download_progress = bpy.props.FloatProperty(
@@ -251,6 +257,8 @@ if not _IS_WORKER_PROCESS:
             del bpy.types.Scene.download_code
         if hasattr(bpy.types.Scene, 'comment_text'):
             del bpy.types.Scene.comment_text
+        if hasattr(bpy.types.Scene, 'login_error_message'):
+            del bpy.types.Scene.login_error_message
         if hasattr(bpy.types.Scene, 'download_progress'):
             del bpy.types.Scene.download_progress
         if hasattr(bpy.types.Scene, 'last_filter_signature'):

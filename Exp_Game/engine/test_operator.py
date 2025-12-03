@@ -9,10 +9,18 @@ from .stress_test import run_stress_test, quick_test
 
 
 class EXP_ENGINE_OT_StressTest(bpy.types.Operator):
-    """Run comprehensive multiprocessing engine stress test with detailed metrics"""
+    """Test ENGINE CORE in isolation - worker performance, job throughput, and readiness checks"""
     bl_idname = "exp_engine.stress_test"
     bl_label = "Engine Stress Test"
-    bl_description = "Stress test the engine with heavy concurrent load and get detailed performance metrics"
+    bl_description = (
+        "Test ENGINE CORE in isolation:\n"
+        "• Worker spawning and readiness\n"
+        "• Job throughput (jobs/sec)\n"
+        "• Latency (round-trip time)\n"
+        "• Queue saturation handling\n"
+        "• Data integrity\n\n"
+        "This tests the engine's raw capabilities, NOT engine+modal integration"
+    )
     bl_options = {'REGISTER'}
 
     intensity: bpy.props.EnumProperty(
@@ -156,10 +164,16 @@ class EXP_ENGINE_OT_StressTest(bpy.types.Operator):
 
 
 class EXP_ENGINE_OT_QuickTest(bpy.types.Operator):
-    """Quick engine sanity check (3 seconds)"""
+    """Quick sanity check - verify engine core can start and process jobs"""
     bl_idname = "exp_engine.quick_test"
     bl_label = "Quick Engine Test"
-    bl_description = "Quick 3-second test to verify engine is working"
+    bl_description = (
+        "Quick 3-second sanity check:\n"
+        "• Spawn workers\n"
+        "• Verify readiness\n"
+        "• Process test job\n\n"
+        "Tests ENGINE CORE only, not modal integration"
+    )
     bl_options = {'REGISTER'}
 
     def execute(self, context):

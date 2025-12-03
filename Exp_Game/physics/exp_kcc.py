@@ -461,9 +461,20 @@ class KinematicCharacterController:
     # Job building
     # --------------------
 
-    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt):
+    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt, context=None):
         """Build KCC_PHYSICS_STEP job data for worker."""
         cfg = self.cfg
+
+        # Extract debug flags from scene (if context available)
+        debug_flags = {}
+        if context and hasattr(context, 'scene'):
+            scene = context.scene
+            debug_flags = {
+                "step_up": getattr(scene, "dev_debug_physics_step_up", False),
+                "ground": getattr(scene, "dev_debug_physics_ground", False),
+                "capsule": getattr(scene, "dev_debug_physics_capsule", False),
+                "enhanced": getattr(scene, "dev_debug_physics_enhanced", False),
+            }
 
         return {
             # Current state
@@ -500,6 +511,9 @@ class KinematicCharacterController:
             # Timers
             "coyote_remaining": self._coyote,
             "jump_buffer_remaining": self._jump_buf,
+
+            # Debug flags
+            "debug_flags": debug_flags,
         }
 
     # ---- Main step ----------------------------------------------------------
@@ -516,6 +530,7 @@ class KinematicCharacterController:
         platform_ang_velocity_map=None,
         engine=None,
         context=None,
+        physics_frame=0,
     ):
         """
         Same-Frame Physics Offload step:
@@ -569,7 +584,7 @@ class KinematicCharacterController:
         # 3. SUBMIT job and 4. POLL for same-frame result
         # ─────────────────────────────────────────────────────────────────────
         if engine:
-            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt)
+            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt, context)
             job_id = engine.submit_job("KCC_PHYSICS_STEP", job_data)
             self._last_physics_job_id = job_id
 
@@ -698,4 +713,18 @@ class KinematicCharacterController:
 
     def cache_forward_sweep_result(self, result_dict):
         """DEPRECATED: Use cache_physics_result instead."""
+        pass
+
+    # ---- Debug visualization cleanup ----------------------------------------
+
+    def cleanup_debug_handlers(self):
+        """
+        Clean up GPU debug draw handlers for KCC visualization.
+        Called when modal operator exits.
+
+        Note: Currently no GPU handlers are registered, but this method
+        is called by exp_modal.py during cleanup to prepare for future
+        debug visualization features.
+        """
+        # No GPU handlers to clean up yet
         pass

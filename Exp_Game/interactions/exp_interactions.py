@@ -419,8 +419,9 @@ class EXPLORATORY_OT_CreateReactionAndLink(bpy.types.Operator):
 ###############################################################################
 def _submit_interaction_worker_jobs(context):
     """
-    Submit PROXIMITY and COLLISION checks to workers.
-    Returns list of interaction data for result matching.
+    Submit PROXIMITY and COLLISION checks to workers WITH state data.
+    Includes throttling to prevent engine flooding.
+    Returns job_id if submitted, None otherwise.
     """
     from ..modal.exp_modal import get_active_modal_operator
 
@@ -432,6 +433,15 @@ def _submit_interaction_worker_jobs(context):
         return None  # No workers available
 
     debug_offload = should_print_debug("interactions")
+
+    # THROTTLING: Check if previous job still pending
+    if hasattr(modal_op, '_pending_interaction_job_id') and modal_op._pending_interaction_job_id is not None:
+        # Previous job not returned yet - skip this frame to prevent flooding
+        if debug_offload:
+            print("[InteractionOffload] Skipping submit - previous job still pending (frame drop protection)")
+        return None
+
+    current_time = get_game_time()
 
     # Snapshot interactions that need worker checking
     interactions_data = []
@@ -455,7 +465,13 @@ def _submit_interaction_worker_jobs(context):
                     "type": "PROXIMITY",
                     "obj_a_pos": (obj_a.location.x, obj_a.location.y, obj_a.location.z),
                     "obj_b_pos": (obj_b.location.x, obj_b.location.y, obj_b.location.z),
-                    "threshold": float(inter.proximity_distance)
+                    "threshold": float(inter.proximity_distance),
+                    # NEW: State data for worker trigger logic
+                    "is_in_zone": inter.is_in_zone,
+                    "has_fired": inter.has_fired,
+                    "last_trigger_time": float(inter.last_trigger_time),
+                    "trigger_mode": inter.trigger_mode,
+                    "trigger_cooldown": float(inter.trigger_cooldown),
                 }
                 interactions_data.append(inter_data)
                 interaction_map.append(inter)
@@ -482,31 +498,134 @@ def _submit_interaction_worker_jobs(context):
                     "type": "COLLISION",
                     "aabb_a": get_aabb(obj_a),
                     "aabb_b": get_aabb(obj_b),
-                    "margin": float(inter.collision_margin)
+                    "margin": float(inter.collision_margin),
+                    # NEW: State data for worker trigger logic
+                    "is_in_zone": inter.is_in_zone,
+                    "has_fired": inter.has_fired,
+                    "last_trigger_time": float(inter.last_trigger_time),
+                    "trigger_mode": inter.trigger_mode,
+                    "trigger_cooldown": float(inter.trigger_cooldown),
                 }
                 interactions_data.append(inter_data)
                 interaction_map.append(inter)
 
     # Submit if we have interactions to check
     if interactions_data:
-        player_loc = scene.target_armature.location if scene.target_armature else (0, 0, 0)
-
         job_data = {
             "interactions": interactions_data,
-            "player_position": (player_loc.x, player_loc.y, player_loc.z)
+            "current_time": current_time,  # NEW: For cooldown checks in worker
         }
 
         job_id = engine.submit_job("INTERACTION_CHECK_BATCH", job_data)
 
-        submit_end = time.perf_counter() if debug_offload else 0.0
+        if job_id is not None:
+            # Track pending job and interaction map for result application
+            modal_op._pending_interaction_job_id = job_id
+            modal_op._interaction_map = interaction_map
 
-        if debug_offload:
-            submit_time_ms = (submit_end - submit_start) * 1000.0
-            print(f"[InteractionOffload] Submitted job {job_id} with {len(interactions_data)} interactions (submit: {submit_time_ms:.3f}ms)")
+            submit_end = time.perf_counter() if debug_offload else 0.0
 
-        return interaction_map
+            if debug_offload:
+                submit_time_ms = (submit_end - submit_start) * 1000.0
+                prox_count = sum(1 for d in interactions_data if d["type"] == "PROXIMITY")
+                coll_count = sum(1 for d in interactions_data if d["type"] == "COLLISION")
+                print(f"[InteractionOffload] Submitted job {job_id} with {len(interactions_data)} interactions "
+                      f"({prox_count} PROXIMITY, {coll_count} COLLISION) (submit: {submit_time_ms:.3f}ms)")
+
+            return job_id
 
     return None
+
+
+def apply_interaction_check_result(engine_result, context):
+    """
+    Apply worker results for offloaded interaction checks.
+    Called from game loop when INTERACTION_CHECK_BATCH job completes.
+
+    This function:
+    1. Extracts worker decisions from result
+    2. Updates interaction states
+    3. Fires reactions for triggered interactions
+    4. Logs all activity for debugging
+    """
+    from ..modal.exp_modal import get_active_modal_operator
+
+    modal_op = get_active_modal_operator()
+    if not modal_op:
+        return
+
+    debug_offload = should_print_debug("interactions")
+
+    # Clear pending job tracking
+    modal_op._pending_interaction_job_id = None
+
+    result_data = engine_result.result
+    triggered_indices = result_data.get("triggered_indices", [])
+    state_updates = result_data.get("state_updates", {})
+    interaction_map = getattr(modal_op, '_interaction_map', [])
+
+    current_time = get_game_time()
+
+    # Log worker performance
+    if debug_offload:
+        calc_time_us = result_data.get("calc_time_us", 0.0)
+        worker_time_ms = engine_result.processing_time * 1000.0
+        count = result_data.get("count", 0)
+        worker_id = getattr(engine_result, 'worker_id', -1)
+        print(f"[InteractionOffload] Worker {worker_id} checked {count} interactions, "
+              f"{len(triggered_indices)} triggered "
+              f"(worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
+
+    # Apply state updates and fire reactions
+    for idx_str, state_update in state_updates.items():
+        idx = int(idx_str)
+        if idx >= len(interaction_map):
+            continue
+
+        inter = interaction_map[idx]
+
+        # Extract worker decisions
+        is_in_zone = state_update["is_in_zone"]
+        should_fire = state_update["should_fire"]
+        transition = state_update["transition"]
+        should_update_time = state_update["should_update_time"]
+
+        # Update zone state from worker
+        inter.is_in_zone = is_in_zone
+
+        # Handle firing reactions
+        if should_fire:
+            if debug_offload:
+                print(f"[InteractionOffload] Triggering '{inter.name}' "
+                      f"(transition: {transition}, mode: {inter.trigger_mode})")
+
+            # Handle trigger_delay scheduling
+            if inter.trigger_delay > 0.0:
+                schedule_trigger(inter, current_time + inter.trigger_delay)
+                if debug_offload:
+                    print(f"[InteractionOffload] '{inter.name}' scheduled with {inter.trigger_delay}s delay")
+            else:
+                # Fire reactions immediately
+                run_reactions(_get_linked_reactions(inter))
+
+            # Update trigger state
+            inter.has_fired = True
+            if should_update_time:
+                inter.last_trigger_time = current_time
+
+        # Handle ENTER_ONLY reset on exit
+        elif transition == "EXITED" and inter.trigger_mode == "ENTER_ONLY":
+            inter.has_fired = False
+            if debug_offload:
+                print(f"[InteractionOffload] '{inter.name}' exited zone (ENTER_ONLY reset)")
+
+        # Log other transitions if in verbose mode
+        elif debug_offload and transition in ("STILL_IN", "STILL_OUT"):
+            # Only log STILL_IN if it's a COOLDOWN that didn't fire (cooldown not ready)
+            if transition == "STILL_IN" and inter.trigger_mode == "COOLDOWN" and not should_fire:
+                time_since = current_time - inter.last_trigger_time
+                remaining = inter.trigger_cooldown - time_since
+                print(f"[InteractionOffload] '{inter.name}' still in zone but cooldown not ready ({remaining:.1f}s remaining)")
 
 
 def check_interactions(context):
@@ -524,20 +643,21 @@ def check_interactions(context):
 
     update_all_objective_timers(context.scene)
 
-    # ========== WORKER OFFLOAD: PROXIMITY & COLLISION CHECKS ==========
-    # Submit proximity/collision checks to workers
-    # Note: We still run handlers on main thread, just pre-filtered by worker results
-    interaction_map = _submit_interaction_worker_jobs(context)
-    # Worker results will be applied via apply_interaction_check_result() in game loop
+    # ========== OFFLOADED: PROXIMITY & COLLISION (handled by workers) ==========
+    # Submit proximity/collision checks to workers (non-blocking, throttled)
+    # Worker results applied in game loop via apply_interaction_check_result()
+    _submit_interaction_worker_jobs(context)
 
+    # ========== MAIN THREAD: NON-OFFLOADABLE TRIGGERS ==========
     for inter in scene.custom_interactions:
         t = inter.trigger_type
 
-        if t == "PROXIMITY":
-            handle_proximity_trigger(inter, current_time)
-        elif t == "COLLISION":
-            handle_collision_trigger(inter, current_time)
-        elif t == "INTERACT":
+        # SKIP offloaded triggers - worker handles them
+        if t in ("PROXIMITY", "COLLISION"):
+            continue
+
+        # Handle non-offloadable triggers (require bpy access or UI)
+        if t == "INTERACT":
             handle_interact_trigger(inter, current_time, pressed_this_frame, context)
         elif t == "ACTION":  #
             handle_action_trigger(inter, current_time, pressed_action)

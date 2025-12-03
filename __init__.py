@@ -44,8 +44,6 @@ _IS_WORKER_PROCESS = (
 if not _IS_WORKER_PROCESS:
     # Safe to import bpy - we're in normal Blender context
     import bpy
-    from .Exp_UI.internet.helpers import is_internet_available
-    from .Exp_UI.version_info import update_latest_version_cache
     from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
 
     # persistence handlers
@@ -65,11 +63,6 @@ if not _IS_WORKER_PROCESS:
     # submodule APIs
     from . import Exp_Game, Exp_UI, Exp_Nodes, dev_refresh
 
-    def version_check_timer():
-        if is_internet_available():
-            update_latest_version_cache()
-        return 900.0  # run again in 15m
-
     def register():
         # 1) register core classes
         for cls in (
@@ -86,12 +79,7 @@ if not _IS_WORKER_PROCESS:
         apply_prefs()
         register_prefs_handlers()
 
-        # 3) version check + background timer
-        if is_internet_available():
-            update_latest_version_cache()
-        bpy.app.timers.register(version_check_timer, first_interval=0.0)
-
-        # 4) register submodules
+        # 3) register submodules
         #    Order matters a bit: Game defines properties/types that node sockets may reference.
         Exp_Game.register()
         Exp_UI.register()
@@ -129,12 +117,6 @@ if not _IS_WORKER_PROCESS:
             ExploratoryAddonPreferences,
         )):
             bpy.utils.unregister_class(cls)
-
-        # 4) stop version timer
-        try:
-            bpy.app.timers.unregister(version_check_timer)
-        except Exception:
-            pass
 
 else:
     # Worker process context - provide stub functions

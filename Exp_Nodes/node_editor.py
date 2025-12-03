@@ -23,6 +23,13 @@ class ExploratoryNodesTree(NodeTree):
     bl_label  = "Exploratory Nodes"
     bl_icon   = "NODE_SOCKET_OBJECT"
 
+    # Scene ownership - each tree belongs to a specific scene
+    scene: bpy.props.PointerProperty(
+        type=bpy.types.Scene,
+        name="Owner Scene",
+        description="Scene this node tree belongs to. Nodes reference scene-specific data (interactions, reactions, objectives)"
+    )
+
     def update(self):
         if not getattr(self, "use_fake_user", False):
             try:
@@ -193,9 +200,11 @@ class NODE_OT_create_exploratory_node_tree(Operator):
             new_tree.use_fake_user = True
         except Exception:
             pass
+        # Bind tree to current scene
+        new_tree.scene = context.scene
         if _in_exploratory_editor(context):
             context.space_data.node_tree = new_tree
-        self.report({'INFO'}, "Created new Exploratory Node Tree")
+        self.report({'INFO'}, f"Created new Exploratory Node Tree for scene '{context.scene.name}'")
         return {'FINISHED'}
 
 
@@ -517,6 +526,22 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
             self.report({'WARNING'}, "Node tree not found")
             return {'CANCELLED'}
 
+        # Remember the scene this tree belongs to for auto-switching later
+        deleted_tree_scene = getattr(nt, "scene", None)
+
+        # Check which node editors are currently showing this tree (so we can auto-switch them)
+        editors_to_update = []
+        try:
+            for window in context.window_manager.windows:
+                for area in window.screen.areas:
+                    if area.type != 'NODE_EDITOR':
+                        continue
+                    for space in area.spaces:
+                        if space.type == 'NODE_EDITOR' and space.node_tree == nt:
+                            editors_to_update.append(space)
+        except Exception:
+            pass
+
         # 1) Collect all Interactions, Reactions, Objectives, and Action Keys referenced by nodes in THIS tree
         inter_indices = set()
         react_indices = set()
@@ -543,6 +568,22 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
         except Exception:
             self.report({'ERROR'}, "Failed to delete node tree.")
             return {'CANCELLED'}
+
+        # 2.5) Auto-switch editors to another tree from the same scene
+        if editors_to_update and deleted_tree_scene:
+            # Find another tree for the same scene
+            replacement_tree = None
+            for other_nt in bpy.data.node_groups:
+                if getattr(other_nt, "bl_idname", "") == EXPL_TREE_ID:
+                    if getattr(other_nt, "scene", None) == deleted_tree_scene:
+                        replacement_tree = other_nt
+                        break
+            # Apply to all editors that were showing the deleted tree
+            for space in editors_to_update:
+                try:
+                    space.node_tree = replacement_tree  # None if no replacement found
+                except Exception:
+                    pass
 
         # 3) Fully delete all referenced Reactions (DESC order avoids index drift)
         for r_idx in sorted(react_indices, reverse=True):
@@ -602,8 +643,27 @@ class NODE_OT_rename_exploratory_node_tree(Operator):
         return {'FINISHED'}
 
 
+class NODE_OT_reassign_exploratory_node_tree(Operator):
+    """Reassign this node tree to the current scene"""
+    bl_idname = "node.reassign_exploratory_node_tree"
+    bl_label  = "Reassign to Current Scene"
+
+    tree_name: StringProperty()
+
+    def execute(self, context):
+        nt = bpy.data.node_groups.get(self.tree_name)
+        if not nt or getattr(nt, "bl_idname", "") != EXPL_TREE_ID:
+            self.report({'WARNING'}, "Node tree not found")
+            return {'CANCELLED'}
+
+        old_scene = nt.scene.name if nt.scene else "None"
+        nt.scene = context.scene
+        self.report({'INFO'}, f"Reassigned tree from '{old_scene}' to '{context.scene.name}'")
+        return {'FINISHED'}
+
+
 # ─────────────────────────────────────────────────────────
-# Sidebar Panel (Node Editor → N-panel → “Exploratory”)
+# Sidebar Panel (Node Editor → N-panel → "Exploratory")
 # ─────────────────────────────────────────────────────────
 class NODE_PT_exploratory_panel(Panel):
     bl_label = "Exploratory Node Editor"
@@ -619,21 +679,64 @@ class NODE_PT_exploratory_panel(Panel):
     def draw(self, context):
         layout = self.layout
         active_tree = getattr(context.space_data, "node_tree", None)
+        current_scene = context.scene
 
+        # ── Scene Warning for Active Tree ──
+        if active_tree:
+            tree_scene = getattr(active_tree, "scene", None)
+            if tree_scene is None:
+                # Legacy tree with no scene assigned
+                box = layout.box()
+                box.alert = True
+                box.label(text="⚠ Tree not assigned to any scene", icon='ERROR')
+                box.operator("node.reassign_exploratory_node_tree", text="Assign to Current Scene", icon='LINKED').tree_name = active_tree.name
+                layout.separator()
+            elif tree_scene != current_scene:
+                # Wrong scene
+                box = layout.box()
+                box.alert = True
+                box.label(text=f"⚠ Tree belongs to: {tree_scene.name}", icon='ERROR')
+                box.label(text=f"Current scene: {current_scene.name}")
+                box.operator("node.reassign_exploratory_node_tree", text="Reassign to Current Scene", icon='FILE_REFRESH').tree_name = active_tree.name
+                layout.separator()
+
+        # ── Create Button ──
         layout.operator("node.create_exploratory_node_tree", icon='NODETREE')
         layout.separator()
-        layout.label(text="Existing Node Trees:")
 
+        # ── Tree List (filtered by scene) ──
+        layout.label(text=f"Trees for '{current_scene.name}':")
         col = layout.column(align=True)
+
+        found_trees = False
         for nt in bpy.data.node_groups:
             if getattr(nt, "bl_idname", "") == EXPL_TREE_ID:
-                row = col.box().row(align=True)
-                icon = 'NODE_SOCKET_OBJECT' if nt == active_tree else 'NONE'
-                op = row.operator("node.select_exploratory_node_tree", text=nt.name, icon=icon)
-                op.tree_name = nt.name
+                tree_scene = getattr(nt, "scene", None)
+                # Show trees for current scene OR unassigned legacy trees
+                if tree_scene == current_scene or tree_scene is None:
+                    found_trees = True
+                    row = col.box().row(align=True)
 
-                # ← rename button (right next to trash)
-                row.operator("node.rename_exploratory_node_tree", text="", icon='GREASEPENCIL').tree_name = nt.name
+                    # Icon: highlight active tree, warn if legacy
+                    if nt == active_tree:
+                        icon = 'NODE_SOCKET_OBJECT'
+                    elif tree_scene is None:
+                        icon = 'ERROR'
+                    else:
+                        icon = 'NONE'
 
-                # delete button
-                row.operator("node.delete_exploratory_node_tree", text="", icon='TRASH').tree_name = nt.name
+                    op = row.operator("node.select_exploratory_node_tree", text=nt.name, icon=icon)
+                    op.tree_name = nt.name
+
+                    # Reassign button (only for legacy trees)
+                    if tree_scene is None:
+                        row.operator("node.reassign_exploratory_node_tree", text="", icon='LINKED').tree_name = nt.name
+
+                    # Rename button
+                    row.operator("node.rename_exploratory_node_tree", text="", icon='GREASEPENCIL').tree_name = nt.name
+
+                    # Delete button
+                    row.operator("node.delete_exploratory_node_tree", text="", icon='TRASH').tree_name = nt.name
+
+        if not found_trees:
+            col.label(text="No trees for this scene", icon='INFO')

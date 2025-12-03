@@ -460,6 +460,13 @@ def process_job(job) -> dict:
 
             floor_cos = math.cos(math.radians(slope_limit_deg))
 
+            # Debug flags
+            debug_flags = job.data.get("debug_flags", {})
+            debug_step_up = debug_flags.get("step_up", False)
+            debug_ground = debug_flags.get("ground", False)
+            debug_capsule = debug_flags.get("capsule", False)
+            debug_enhanced = debug_flags.get("enhanced", False)
+
             # Convert to mutable lists for computation
             px, py, pz = pos
             vx, vy, vz = vel
@@ -762,6 +769,13 @@ def process_job(job) -> dict:
                             vx -= bn_x * vn
                             vy -= bn_y * vn
 
+                    # Debug logging
+                    if debug_capsule:
+                        if best_n is not None:
+                            print(f"[PHYS-CAPSULE] blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=({best_n[0]:.2f},{best_n[1]:.2f},{best_n[2]:.2f}) | {total_rays}rays {total_tris}tris")
+                        else:
+                            print(f"[PHYS-CAPSULE] blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=None | {total_rays}rays {total_tris}tris")
+
                     # ─────────────────────────────────────────────────────────
                     # 5a. STEP-UP (if only feet ray hit)
                     # ─────────────────────────────────────────────────────────
@@ -774,6 +788,8 @@ def process_job(job) -> dict:
                         # Check if it's a steep face (step-able)
                         bn_x, bn_y, bn_z = best_n
                         if bn_z < floor_cos:  # Steep face
+                            if debug_step_up:
+                                print(f"[PHYS-STEP] attempting step-up | pos=({px:.2f},{py:.2f},{pz:.2f}) face_nz={bn_z:.3f}")
                             # Try step-up: raise, forward, drop
                             test_z = pz + step_height
                             test_ox = px
@@ -866,6 +882,8 @@ def process_job(job) -> dict:
                                             # Check if walkable
                                             gn_check = step_ground_n[2]
                                             if gn_check >= floor_cos:
+                                                if debug_step_up:
+                                                    print(f"[PHYS-STEP] SUCCESS | drop_pos=({drop_ox:.2f},{drop_oy:.2f},{step_ground_z:.2f}) gn_z={gn_check:.3f}")
                                                 px = drop_ox
                                                 py = drop_oy
                                                 pz = step_ground_z
@@ -974,6 +992,8 @@ def process_job(job) -> dict:
                     # No collision - full movement
                     px += move_x
                     py += move_y
+                    if debug_capsule and move_len > 1e-9:
+                        print(f"[PHYS-CAPSULE] clear move={move_len:.3f}m | {total_rays}rays {total_tris}tris")
 
             elif move_len > 1e-9:
                 # No grid cached - just move (will be handled by dynamic check on main thread)
@@ -1111,13 +1131,20 @@ def process_job(job) -> dict:
                         gn_x, gn_y, gn_z = ground_hit_n
                         on_walkable = gn_z >= floor_cos
                     coyote_remaining = coyote_time
+                    if debug_ground:
+                        print(f"[PHYS-GROUND] ON_GROUND snap | dist={abs(ground_hit_z - pz):.3f}m gn_z={gn_z:.3f} walkable={on_walkable}")
                 elif ground_hit_z is None and was_grounded:
                     # Was grounded but no ground found - walked off a ledge!
                     on_ground = False
                     on_walkable = False
                     coyote_remaining = coyote_time  # Grant coyote time
+                    if debug_ground:
+                        print(f"[PHYS-GROUND] airborne | walked_off_ledge coyote={coyote_time:.2f}s")
                 elif not on_ground and was_grounded:
                     coyote_remaining = coyote_time
+
+                if debug_ground and ground_hit_z is not None and not on_ground:
+                    print(f"[PHYS-GROUND] airborne | dist={abs(ground_hit_z - pz):.3f}m too_far | {total_tris}tris")
             else:
                 # No grid - just apply vertical movement
                 pz += dz
@@ -1191,6 +1218,10 @@ def process_job(job) -> dict:
             # BUILD RESULT
             # ─────────────────────────────────────────────────────────────────
             calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+            # Summary debug log
+            if debug_enhanced:
+                print(f"[KCC] COMPLETE pos=({px:.2f},{py:.2f},{pz:.2f}) vel=({vx:.2f},{vy:.2f},{vz:.2f}) ground={on_ground} walkable={on_walkable} blocked={h_blocked} step={did_step_up} slide={did_slide} | {calc_time_us:.0f}us {total_rays}rays {total_tris}tris")
 
             result_data = {
                 "pos": (px, py, pz),
@@ -1614,6 +1645,9 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
                 # Process the job
                 result = process_job(job)
 
+                # Add worker_id to result before sending (CRITICAL for grid cache verification)
+                result["worker_id"] = worker_id
+
                 # Send result back
                 result_queue.put(result)
 
@@ -1636,3 +1670,4 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
     finally:
         if DEBUG_ENGINE:
             print(f"[Engine Worker {worker_id}] Shutting down (processed {jobs_processed} jobs)")
+            

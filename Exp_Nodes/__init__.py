@@ -40,6 +40,7 @@ from .node_editor import (
     NODE_OT_select_exploratory_node_tree,
     NODE_OT_delete_exploratory_node_tree,
     NODE_OT_rename_exploratory_node_tree,
+    NODE_OT_reassign_exploratory_node_tree,
     NODE_PT_exploratory_panel,
 
     # menus (native Add → Exploratory → …)
@@ -88,6 +89,7 @@ from .reaction_nodes import (
     ReactionActionKeysNode,
     UtilityDelayNode,
     ReactionParentingNode,
+    ReactionTrackingNode,
 )
 
 from .trig_react_obj_lists import(
@@ -150,6 +152,7 @@ classes = [
     ReactionHitscanNode,
     ReactionActionKeysNode,
     ReactionParentingNode,
+    ReactionTrackingNode,
 
 
     # objective
@@ -163,6 +166,7 @@ classes = [
     NODE_OT_select_exploratory_node_tree,
     NODE_OT_delete_exploratory_node_tree,
     NODE_OT_rename_exploratory_node_tree,
+    NODE_OT_reassign_exploratory_node_tree,
     NODE_PT_exploratory_panel,
 
     # menus

@@ -23,6 +23,14 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
 
         # — Top button (normal full-width, no box) —
         if not token:
+            # Display error message if present
+            error_msg = context.scene.login_error_message
+            if error_msg:
+                error_box = layout.box()
+                for line in error_msg.split('\n'):
+                    error_box.label(text=line, icon='INFO')
+                layout.separator()
+
             layout.operator("webapp.login", text="Log In", icon='URL')
             layout.separator()
             layout.label(text="Log in to explore user creations!", icon='INFO')

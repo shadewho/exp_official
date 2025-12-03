@@ -10,6 +10,7 @@ from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
 from ..systems.exp_performance import rearm_performance_after_reset
 from ..reactions.exp_crosshairs import disable_crosshairs
+from ..reactions.exp_tracking import clear as clear_tracking_tasks
 
 def capture_scene_state(self, context):
     """
@@ -239,6 +240,7 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
             reset_all_interactions(context.scene)
             reset_all_tasks()
+            clear_tracking_tasks()
             reset_all_objectives(context.scene)
             reset_property_reactions(context.scene)
 

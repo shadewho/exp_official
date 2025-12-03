@@ -3,6 +3,8 @@ import bpy
 import math
 import time
 import random
+import sys
+import io
 
 from ..physics.exp_raycastutils import create_bvh_tree
 from ..startup_and_reset.exp_spawn import spawn_user
@@ -36,6 +38,64 @@ from ..startup_and_reset.exp_fullscreen import exit_fullscreen_once
 from .exp_loop import GameLoop
 from ..physics.exp_view_fpv import reset_fpv_rot_scale
 from ..engine import EngineCore
+
+def export_session_log(console_buffer_content):
+    """
+    Export session log to Desktop with rotation (latest → previous).
+    Safe: All operations wrapped in try/except, won't crash game on failure.
+
+    Args:
+        console_buffer_content: String containing all console output from session
+    """
+    import os
+    import shutil
+    from datetime import datetime
+
+    try:
+        # 1. Setup paths (hardcoded as requested)
+        folder = "C:/Users/spenc/Desktop/engine_output_files"
+        latest_path = os.path.join(folder, "kcc_latest.txt")
+        previous_path = os.path.join(folder, "kcc_previous.txt")
+
+        # 2. Create folder if doesn't exist
+        os.makedirs(folder, exist_ok=True)
+
+        # 3. Rotate: latest → previous (safe copy, not move)
+        if os.path.exists(latest_path):
+            try:
+                # Copy first (safer than rename - if copy fails, latest still exists)
+                shutil.copy2(latest_path, previous_path)
+            except Exception as e:
+                print(f"[SessionLog] Warning: Could not backup previous session: {e}")
+                # Continue anyway - not critical
+
+        # 4. Write new session (atomic write - write to temp, then rename)
+        temp_path = os.path.join(folder, "kcc_latest.tmp")
+
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write("=" * 60 + "\n")
+            f.write("KCC Physics Session Log\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(console_buffer_content)
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write("Session ended successfully\n")
+
+        # 5. Atomic rename (ensures file is never partial/corrupted)
+        if os.path.exists(latest_path):
+            os.remove(latest_path)
+        os.rename(temp_path, latest_path)
+
+        print(f"[SessionLog] ✓ Exported to: {latest_path}")
+
+    except PermissionError:
+        print(f"[SessionLog] ✗ Error: No write permission to Desktop/engine_output_files/")
+        print(f"[SessionLog] Check folder permissions or choose different location")
+    except OSError as e:
+        print(f"[SessionLog] ✗ Error: Disk full or path invalid: {e}")
+    except Exception as e:
+        print(f"[SessionLog] ✗ Unexpected error: {e}")
+        # Don't crash - game cleanup continues
 
 def _first_view3d_r3d():
     """
@@ -569,13 +629,35 @@ class ExpModal(bpy.types.Operator):
             self._force_hide_names.clear()
         # --------------------------------------------------------------------------------
 
+        # ========== CONSOLE BUFFER SETUP ==========
+        # Initialize console buffer for session log export
+        self._console_buffer = io.StringIO()
+        self._original_stdout = sys.stdout
+
+        # Create a tee that writes to both console and buffer
+        class ConsoleTee:
+            def __init__(self, original, buffer):
+                self.original = original
+                self.buffer = buffer
+
+            def write(self, text):
+                self.original.write(text)
+                self.buffer.write(text)
+
+            def flush(self):
+                self.original.flush()
+
+        # Only redirect if export is enabled (reduces overhead if disabled)
+        if context.scene.dev_export_session_log:
+            sys.stdout = ConsoleTee(self._original_stdout, self._console_buffer)
+        # ==========================================
 
         # Capture both camera/character state
         capture_initial_cam_state(self, context)
 
         #clear UI if any
         try:
-            # EXEC_DEFAULT so it doesn’t pop up a dialog
+            # EXEC_DEFAULT so it doesn't pop up a dialog
             bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
         except Exception as e:
             print(f"[WARN] remove_package_display failed: {e}")
@@ -761,8 +843,8 @@ class ExpModal(bpy.types.Operator):
             print_geometry_report(self.static_triangles, context)
 
             # Phase 2: Build spatial acceleration grid
-            # Cell size 2.0m is a good balance for typical game scenes
-            self.spatial_grid = build_uniform_grid(self.static_triangles, cell_size=2.0, context=context)
+            # Cell size 0.5m for dense mesh support (was 2.0m - too coarse for dense geometry)
+            self.spatial_grid = build_uniform_grid(self.static_triangles, cell_size=0.5, context=context)
         else:
             self.static_triangles = []
             self.spatial_grid = None
@@ -792,20 +874,66 @@ class ExpModal(bpy.types.Operator):
         self._axis_last = {'x': None, 'y': None}
         self._axis_candidates = {'x': {}, 'y': {}}
 
-        # ========== ENGINE INITIALIZATION ==========
-        # Start multiprocessing engine for offloading heavy computations
+        # ═══════════════════════════════════════════════════════════════════
+        # ENGINE INITIALIZATION - CRITICAL GATE
+        # ═══════════════════════════════════════════════════════════════════
+        # Engine must be 100% ready before modal starts.
+        # Philosophy: Engine = orchestrator, Modal = puppet
+        # If engine fails, game cannot start. Period.
+        # ═══════════════════════════════════════════════════════════════════
+
+        startup_logs = context.scene.dev_startup_logs
+
+        if startup_logs:
+            print("\n" + "="*70)
+            print("  GAME STARTUP SEQUENCE - ENGINE FIRST")
+            print("="*70)
+
+        # ─── STEP 1: Spawn Engine ───
+        if startup_logs:
+            print("\n[STARTUP 1/5] Spawning engine workers...")
+
         if not hasattr(self, 'engine'):
             self.engine = EngineCore()
 
         self.engine.start()
 
+        if startup_logs:
+            stats = self.engine.get_stats()
+            print(f"[STARTUP 1/5] ✓ Engine started")
+            print(f"              Workers: {stats['workers_alive']}/{stats['workers_total']} spawned")
+
+        # ─── STEP 2: Verify Workers Alive ───
+        if startup_logs:
+            print(f"\n[STARTUP 2/5] Verifying workers alive...")
+
         if not self.engine.is_alive():
-            self.report({'WARNING'}, "Multiprocessing engine failed to start - continuing without engine")
-            if context.scene.dev_debug_engine:
-                print("[ExpModal] WARNING: Engine failed to start")
-        else:
-            if context.scene.dev_debug_engine:
-                print("[ExpModal] Multiprocessing engine started successfully")
+            error_msg = "Engine workers failed to spawn"
+            if startup_logs:
+                print(f"[STARTUP 2/5] ✗ FAILED: {error_msg}")
+                print("="*70 + "\n")
+            self.report({'ERROR'}, f"{error_msg} - aborting game")
+            self.engine.shutdown()
+            return {'CANCELLED'}
+
+        if startup_logs:
+            print(f"[STARTUP 2/5] ✓ All workers alive and running")
+
+        # ─── STEP 3: PING Verification (Comprehensive Readiness) ───
+        if startup_logs:
+            print(f"\n[STARTUP 3/5] Verifying worker responsiveness (PING check)...")
+
+        if not self.engine.wait_for_readiness(timeout=5.0):
+            error_msg = "Engine workers not responding to PING"
+            if startup_logs:
+                print(f"[STARTUP 3/5] ✗ FAILED: {error_msg}")
+                print("="*70 + "\n")
+            self.report({'ERROR'}, f"{error_msg} - aborting game")
+            self.engine.shutdown()
+            return {'CANCELLED'}
+
+        if startup_logs:
+            print(f"[STARTUP 3/5] ✓ All workers responding to PING")
 
         # Initialize engine sync tracking
         self._physics_frame = 0
@@ -816,19 +944,17 @@ class ExpModal(bpy.types.Operator):
         self._sync_time_latencies = []
         self._sync_last_report_frame = 0
 
-        # Initialize comprehensive test manager if debug flag enabled
-        if context.scene.dev_run_sync_test:
-            self._test_manager = EngineSyncTestManager()
+        # Note: EngineSyncTestManager removed - use standalone stress test operators instead
+        # (Developer Tools → Manual Stress Tests)
+        # Those test the ENGINE CORE in isolation, not engine+modal integration
 
-        # ========== KCC PHYSICS: CACHE GRID IN WORKERS ==========
-        # Send grid ONCE to all workers for KCC_PHYSICS_STEP collision detection
+        # ─── STEP 4: Cache Spatial Grid (Physics Requirement) ───
+        if startup_logs:
+            print(f"\n[STARTUP 4/5] Caching spatial grid in workers...")
+
         if self.spatial_grid and self.engine and self.engine.is_alive():
-            debug_kcc = context.scene.dev_debug_kcc_offload
             import pickle
             import time as time_module
-
-            if debug_kcc:
-                print(f"\n[KCC] ========== CACHING GRID IN WORKERS ==========")
 
             # Measure grid serialization (one-time cost)
             pickle_start = time_module.perf_counter()
@@ -836,18 +962,80 @@ class ExpModal(bpy.types.Operator):
             pickle_time = (time_module.perf_counter() - pickle_start) * 1000
             pickle_size_kb = len(pickled) / 1024
 
-            if debug_kcc:
-                print(f"[KCC] Grid size: {pickle_size_kb:.1f} KB, serialize time: {pickle_time:.1f}ms")
+            if startup_logs:
+                print(f"[STARTUP 4/5] Grid size: {pickle_size_kb:.1f} KB")
+                print(f"              Serialization time: {pickle_time:.1f}ms")
 
-            # Send CACHE_GRID to all 4 workers
-            # Each worker needs its own copy since they're separate processes
-            for i in range(4):
+            # Send CACHE_GRID jobs to ensure all workers receive the cache
+            # Submit 8 jobs (2x worker count) to increase probability each worker gets one
+            # Workers share a job queue, so we need extra jobs to ensure coverage
+            # Duplicate cache jobs are safe - workers just overwrite _cached_grid
+            for i in range(8):
                 self.engine.submit_job("CACHE_GRID", {"grid": self.spatial_grid})
 
-            if debug_kcc:
-                print(f"[KCC] Sent CACHE_GRID to 4 workers")
-                print(f"[KCC] ================================================\n")
-        # ===========================================
+            if startup_logs:
+                print(f"[STARTUP 4/5] Grid jobs submitted, waiting for all workers to confirm...")
+
+            # CRITICAL: Wait for all unique workers to confirm grid receipt
+            # This now tracks which workers confirmed, not just result count
+            if not self.engine.verify_grid_cache(timeout=5.0):
+                error_msg = "Not all workers cached spatial grid (see console for details)"
+                if startup_logs:
+                    print(f"[STARTUP 4/5] ✗ FAILED: {error_msg}")
+                    print("="*70 + "\n")
+                self.report({'ERROR'}, f"{error_msg} - aborting game")
+                self.engine.shutdown()
+                return {'CANCELLED'}
+
+            if startup_logs:
+                print(f"[STARTUP 4/5] ✓ Grid successfully cached in all workers")
+        else:
+            if startup_logs:
+                print(f"[STARTUP 4/5] ⊘ No spatial grid (skipped)")
+
+        # ─── STEP 5: Final Readiness Confirmation (Lock-Step Gate) ───
+        if startup_logs:
+            print(f"\n[STARTUP 5/5] Final readiness check (lock-step synchronization)...")
+
+        final_status = self.engine.get_full_readiness_status(grid_required=bool(self.spatial_grid))
+
+        if not final_status["ready"]:
+            error_msg = final_status["message"]
+            if startup_logs:
+                print(f"[STARTUP 5/5] ✗ FAILED: {error_msg}")
+                print(f"\n              Checks:")
+                for check_name, passed in final_status["checks"].items():
+                    status = "✓" if passed else "✗"
+                    print(f"              {status} {check_name}")
+                if final_status["details"]["critical"]:
+                    print(f"\n              Critical Issues:")
+                    for issue in final_status["details"]["critical"]:
+                        print(f"              • {issue}")
+                if final_status["details"]["warnings"]:
+                    print(f"\n              Warnings:")
+                    for warning in final_status["details"]["warnings"]:
+                        print(f"              • {warning}")
+                print("="*70 + "\n")
+            self.report({'ERROR'}, f"Engine not ready: {error_msg} - aborting game")
+            self.engine.shutdown()
+            return {'CANCELLED'}
+
+        if startup_logs:
+            print(f"[STARTUP 5/5] ✓ {final_status['message']}")
+            print(f"\n              All Checks Passed:")
+            for check_name, passed in final_status["checks"].items():
+                print(f"              ✓ {check_name}")
+            print(f"\n" + "="*70)
+            print(f"  ENGINE READY - MODAL STARTING")
+            print("="*70 + "\n")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ENGINE CONFIRMED READY - MODAL CAN NOW INITIALIZE
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Initialize interaction offload tracking
+        self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job
+        self._interaction_map = []  # Maps worker indices to scene interactions
 
         #game loop initialization
         self._loop = GameLoop(self)
@@ -905,8 +1093,7 @@ class ExpModal(bpy.types.Operator):
                 print("[ExpModal] Shutting down multiprocessing engine...")
 
             # Print comprehensive test report if test manager is active
-            if hasattr(self, '_test_manager') and self._test_manager:
-                self._test_manager.print_final_report()
+            # Test manager removed - use standalone stress test operators
             elif context.scene.dev_debug_engine:
                 # Only print sync report if engine debug is enabled
                 self._print_sync_report()
@@ -915,6 +1102,25 @@ class ExpModal(bpy.types.Operator):
             self.engine = None
             if context.scene.dev_debug_engine:
                 print("[ExpModal] Engine shutdown complete")
+        # ====================================
+
+        # ========== KCC VISUALIZATION CLEANUP ==========
+        # Remove GPU draw handlers for KCC visualization
+        if hasattr(self, 'physics_controller') and self.physics_controller:
+            self.physics_controller.cleanup_debug_handlers()
+        # ====================================
+
+        # ========== SESSION LOG EXPORT ==========
+        # Restore stdout and export session log if enabled
+        if hasattr(self, '_original_stdout'):
+            sys.stdout = self._original_stdout
+
+        if context.scene.dev_export_session_log and hasattr(self, '_console_buffer'):
+            console_content = self._console_buffer.getvalue()
+            if console_content.strip():  # Only export if there's content
+                export_session_log(console_content)
+            else:
+                print("[SessionLog] No console output to export (buffer empty)")
         # ====================================
 
         # Restore the cursor modal state
@@ -1037,19 +1243,6 @@ class ExpModal(bpy.types.Operator):
         if not self.target_object or steps <= 0:
             return
 
-        # ========== ENGINE SYNC: INCREMENT FRAME COUNTER ==========
-        # Track physics frame number for engine synchronization
-        self._physics_frame += steps
-
-        # Submit sync test jobs via test manager if debug enabled
-        if hasattr(self, '_test_manager') and self._test_manager:
-            # Submit jobs for each physics step, passing step count for catchup tracking
-            for i in range(steps):
-                frame_num = self._physics_frame - steps + i + 1
-                # Pass physics_steps count to track catchup events
-                self._test_manager.generate_jobs_for_frame(frame_num, self, physics_steps=steps)
-        # ==========================================================
-
         if getattr(scene, "view_mode", 'THIRD') == 'LOCKED':
             from ..physics.exp_locked_view import run_locked_view
             run_locked_view(self, context, steps)
@@ -1073,8 +1266,16 @@ class ExpModal(bpy.types.Operator):
         # Resolve movement keys once for this batch
         resolved_keys = _resolved_move_keys(self)
 
+        # CATCHUP DEBUG: Track when multiple physics steps happen in one frame
+        from ..developer.dev_debug_gate import should_print_debug
+        if should_print_debug("physics_catchup") and steps > 1:
+            print(f"[PHYS-CATCH] ⚠️ {steps} physics steps in ONE frame (catchup active)")
+
         # Fixed 30 Hz steps
         for _ in range(int(steps)):
+            # Increment physics frame counter (for logging correlation)
+            self._physics_frame += 1
+
             pc.try_consume_jump()
 
             pc.step(
@@ -1088,6 +1289,7 @@ class ExpModal(bpy.types.Operator):
                 platform_ang_velocity_map=v_ang_map,
                 engine=getattr(self, 'engine', None),  # Pass engine for offloading
                 context=context,  # Pass context for debug output
+                physics_frame=self._physics_frame,  # Pass frame number for correlation
             )
 
             # Keep existing flags for animations/audio
@@ -1212,8 +1414,7 @@ class ExpModal(bpy.types.Operator):
         self._sync_results_received += 1
 
         # Track metrics in test manager (per-scenario)
-        if hasattr(self, '_test_manager') and self._test_manager:
-            self._test_manager.record_result(result, frame_latency, time_latency_ms)
+        # Test manager removed - use standalone stress test operators
 
         # Clean up
         del self._pending_jobs[result.job_id]

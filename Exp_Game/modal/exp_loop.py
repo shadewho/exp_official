@@ -8,11 +8,13 @@ from ..animations.exp_animations import nla_is_locked
 from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_tasks
 from ..reactions.exp_transforms import update_transform_tasks
+from ..reactions.exp_tracking import update_tracking_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_result
 from ..physics.exp_dynamic import update_dynamic_meshes, apply_dynamic_activation_result
 from ..physics.exp_view import (
     update_camera_for_operator,
     submit_camera_occlusion_early,
+    poll_camera_result_with_timeout,
     cache_camera_worker_result,
 )
 from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result
@@ -53,10 +55,6 @@ class GameLoop:
         op.update_time()        # scaled per-frame dt (UI / interpolation)
         _ = update_real_time()  # wall-clock (kept for diagnostics/overlays)
 
-        # A2) Submit camera occlusion job EARLY (same-frame pattern)
-        # Workers process this during physics (~1-5ms), result ready by camera update
-        submit_camera_occlusion_early(op, context)
-
         # B) Decide how many 30 Hz physics steps are due (bounded catch-up)
         steps = op._physics_steps_due()
         op._perf_last_physics_steps = steps
@@ -78,6 +76,7 @@ class GameLoop:
                 update_property_tasks()
                 update_projectile_tasks(dt_sim)
                 update_hitscan_tasks()
+                update_tracking_tasks(dt_sim)
 
             # B2) Dynamic proxies + platform v/ω (heavy): once per frame
             update_dynamic_meshes(op)
@@ -110,10 +109,21 @@ class GameLoop:
         # D) Physics integration (execute exactly 'steps' iterations at 30 Hz)
         op.update_movement_and_gravity(context, steps)
 
-        # D2) Poll engine results BEFORE camera (camera needs its result same-frame)
+        # D2) Poll engine results (apply non-camera results)
         self._poll_and_apply_engine_results()
 
-        # E) Camera update (uses cached worker result for static geometry)
+        # D3) CRITICAL: Submit camera job AFTER physics so it uses final character position
+        # This prevents one-frame lag where camera clips through walls on collision
+        # Previous approach: submitted early (before physics) → used stale position → one frame of clipping
+        # New approach: submit after physics → use final position → zero-frame latency
+        camera_job_id = submit_camera_occlusion_early(op, context)
+
+        # D4) Explicit camera sync - poll with timeout immediately after submission
+        # Worker completes in ~200µs, polling adds ~300µs total (0.9% of 33ms frame budget)
+        if camera_job_id is not None:
+            poll_camera_result_with_timeout(op, context, camera_job_id, timeout=0.003)
+
+        # E) Camera update (uses cached worker result with FINAL physics position)
         update_camera_for_operator(context, op)
 
         # F) Interactions/UI/SFX (only if sim actually advanced)
@@ -161,25 +171,10 @@ class GameLoop:
         for _ in results:
             stats.record_engine_job_completed()
 
-        # Engine summary output
-        scene = bpy.context.scene
-        engine_enabled = getattr(scene, "dev_debug_engine", False)
-        engine_hz = getattr(scene, "dev_debug_engine_hz", 1)
-
-        if engine_enabled and results:
-            now = time.perf_counter()
-            interval = 1.0 / engine_hz
-            if (now - self._last_engine_summary) >= interval:
-                self._last_engine_summary = now
-                summary = stats.get_engine_summary()
-                engine_stats = engine.get_stats() if hasattr(engine, 'get_stats') else {}
-                workers = engine_stats.get('workers_alive', 4)
-                queue_size = engine_stats.get('pending_jobs', 0)
-
-                print(f"[Engine] {summary['jobs_per_sec']:.0f} jobs/sec | "
-                      f"workers: {workers}/4 | "
-                      f"queue: {queue_size} | "
-                      f"completed: {summary['jobs_completed']}")
+        # Phase 1: Engine visibility - output worker load distribution and job type stats
+        # This calls the engine's own debug output method which tracks per-worker and per-job-type stats
+        if hasattr(engine, 'output_debug_stats'):
+            engine.output_debug_stats()  # Gets context from bpy.context internally
 
         for result in results:
             # Process result and track latency metrics
@@ -257,11 +252,16 @@ class GameLoop:
                     except Exception as e:
                         print(f"[GameLoop] Error applying dynamic mesh activation result: {e}")
                 elif result.job_type == "INTERACTION_CHECK_BATCH":
-                    # Apply interaction check result (diagnostic only in Sprint 1.2)
+                    # Apply interaction check result (full offload with state management)
                     try:
-                        apply_interaction_check_result(result)
+                        apply_interaction_check_result(result, bpy.context)
                     except Exception as e:
                         print(f"[GameLoop] Error applying interaction check result: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # CRITICAL: Clear pending job on error to prevent infinite loop
+                        if hasattr(op, '_pending_interaction_job_id'):
+                            op._pending_interaction_job_id = None
                 elif result.job_type == "COMPUTE_HEAVY":
                     # Stress test - no action needed
                     pass

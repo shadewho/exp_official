@@ -40,12 +40,20 @@ def fetch_latest_version() -> str | None:
     """
     try:
         resp = requests.get(f"{BASE_URL}/api/addon_version", timeout=5)
+
+        # Explicit rate limit detection
+        if resp.status_code == 429:
+            print("⚠️  Rate limited when checking addon version. Please wait before trying again.")
+            return None
+
         resp.raise_for_status()
         data = resp.json()
         if data.get("success"):
             return data["version_string"]
+    except requests.exceptions.RequestException as e:
+        print(f"Could not fetch latest version: {e}")
     except Exception as e:
-        print("Could not fetch latest version:", e)
+        print(f"Unexpected error fetching version: {e}")
     return None
 
 def update_latest_version_cache() -> None:

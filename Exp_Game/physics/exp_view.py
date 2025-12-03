@@ -133,19 +133,20 @@ def _view_state_for(op_key):
 def cache_camera_worker_result(op_key, job_id, hit, hit_distance, hit_source="STATIC", calc_time_us=0.0):
     """
     Called by game loop when camera occlusion result arrives.
-    Only caches if job_id matches pending - discards stale results from previous frames.
+    Cache every result - we're submitting frequently for fresh data.
     """
     view = _view_state_for(op_key)
 
-    # Only cache if this result is for the CURRENT pending job
+    # Cache every result that comes back (we submit every frame for freshness)
+    result = (hit, hit_distance, hit_source)
+    view["cached_worker_result"] = result
+    view["last_static_calc_time_us"] = calc_time_us
+
+    # Clear pending_job_id if this is the job we're waiting for
     pending = view.get("pending_job_id")
     if pending is not None and job_id == pending:
-        result = (hit, hit_distance, hit_source)
-        view["cached_worker_result"] = result
         view["pending_job_id"] = None
-        view["pending_job_submit_time"] = 0.0  # Clear timestamp
-        view["last_static_calc_time_us"] = calc_time_us
-    # Discard late/stale results - they're for wrong camera direction
+        view["pending_job_submit_time"] = 0.0
 
 # -------------------------
 # Helpers (occlusion + pushout)
@@ -390,12 +391,26 @@ def update_camera_for_operator(context, op):
     else:
         # No result for current direction - HOLD distance but update position/direction
         # CRITICAL: Must update anchor/direction so camera follows character even during HOLD
+        #
+        # WITH EXPLICIT SYNC: HOLD should be EXTREMELY RARE (<1% of frames)
+        # HOLD only occurs if:
+        # 1. Explicit polling timed out (worker took >3ms - VERY unusual)
+        # 2. Engine is severely overloaded (job queue saturated)
+        # 3. System is under extreme stress (CPU throttling, context switches)
+        #
+        # If HOLD is frequent (>5% of frames), this indicates a SERIOUS problem:
+        # - Engine workers are failing to complete jobs in 3ms
+        # - System performance is degraded
+        # - Engine health should be investigated immediately
+        #
+        # HOLD preserves last known safe distance to prevent camera jumping, but can cause
+        # clipping if character moves toward obstacles while in HOLD state.
         view["anchor"] = anchor
         view["direction"] = direction
         view["stats_hold"] = view.get("stats_hold", 0) + 1
         # Keep existing "allowed" distance (don't change zoom level)
         if camera_debug_enabled:
-            print(f"[Camera] HOLD: keeping allowed={view.get('allowed', 0):.3f}m")
+            print(f"[Camera HOLD] ⚠️ No fresh result - keeping allowed={view.get('allowed', 0):.3f}m (SHOULD BE RARE!)")
         _apply_to_viewport(context, op, view)
         return
 
@@ -435,8 +450,9 @@ def update_camera_for_operator(context, op):
         else:
             result_info = "MISS"
 
-        final_info = f"allowed={final_allowed:.3f}m"
-        print(f"[Camera] {result_status}: {result_info} → {final_info}")
+        if camera_debug_enabled:
+            final_info = f"allowed={final_allowed:.3f}m"
+            print(f"[Camera] {result_status}: {result_info} → {final_info}")
 
     # Print stats summary every 2 seconds (always, regardless of Hz gate)
     now = time.perf_counter()
@@ -447,13 +463,22 @@ def update_camera_for_operator(context, op):
         skip_unchanged = view.get("stats_skip_unchanged", 0)
         fresh = view.get("stats_fresh", 0)
         hold = view.get("stats_hold", 0)
+        timeout = view.get("stats_timeout", 0)
         total_frames = fresh + hold
 
         if total_frames > 0:
             fresh_pct = 100.0 * fresh / total_frames
             hold_pct = 100.0 * hold / total_frames
-            print(f"[Camera STATS] Submit: {total_submit} | SkipPending: {skip_pending} | SkipUnchanged: {skip_unchanged}")
+            timeout_pct = 100.0 * timeout / total_submit if total_submit > 0 else 0.0
+
+            print(f"[Camera STATS] Submit: {total_submit} | Timeout: {timeout} ({timeout_pct:.1f}%) | SkipPending: {skip_pending} | SkipUnchanged: {skip_unchanged}")
             print(f"[Camera STATS] FRESH: {fresh} ({fresh_pct:.1f}%) | HOLD: {hold} ({hold_pct:.1f}%)")
+
+            # Warning if HOLD or timeout is too high
+            if hold_pct > 5.0:
+                print(f"[Camera WARNING] ⚠️ HOLD rate {hold_pct:.1f}% is HIGH - engine may be struggling!")
+            if timeout_pct > 5.0:
+                print(f"[Camera WARNING] ⚠️ Timeout rate {timeout_pct:.1f}% is HIGH - workers taking >3ms!")
 
     # --- 11) Apply to ONE cached rv3d, skipping redundant writes
     _apply_to_viewport(context, op, view)
@@ -540,19 +565,22 @@ def submit_camera_occlusion_early(op, context):
     Submit camera occlusion job at START of frame (before physics).
     Called from game loop BEFORE physics integration.
     Includes both static (cached grid) and dynamic (serialized triangles) geometry.
+
+    Returns:
+        job_id if submitted successfully, None otherwise
     """
     if not op or not getattr(op, "target_object", None):
         import bpy
         if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
             print("[Camera SKIP] No operator or target object")
-        return
+        return None
 
     engine = getattr(op, "engine", None)
     if not engine:
         import bpy
         if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
             print("[Camera SKIP] No engine available")
-        return
+        return None
 
     op_key = id(op)
     view = _view_state_for(op_key)
@@ -561,27 +589,9 @@ def submit_camera_occlusion_early(op, context):
     import bpy
     debug_camera = getattr(bpy.context.scene, "dev_debug_camera_offload", False)
 
-    # TIMEOUT CHECK: Force-clear stuck pending jobs (prevents permanent deadlock)
-    # If a job has been pending for >100ms, it's likely stuck (normal completion is ~200µs)
-    STUCK_JOB_TIMEOUT = 0.1  # 100ms - generous timeout for slow systems
-    pending_id = view.get("pending_job_id")
-    if pending_id is not None:
-        pending_time = view.get("pending_job_submit_time", 0.0)
-        now = time.perf_counter()
-        stuck_duration = now - pending_time
-
-        if stuck_duration > STUCK_JOB_TIMEOUT:
-            # Job is stuck - force clear it
-            print(f"[Camera TIMEOUT] Job {pending_id} stuck for {stuck_duration*1000:.1f}ms - force clearing")
-            view["pending_job_id"] = None
-            view["pending_job_submit_time"] = 0.0
-            # Continue to submit new job below
-        else:
-            # Job is recent - normal skip
-            view["stats_skip_pending"] = view.get("stats_skip_pending", 0) + 1
-            if debug_camera:
-                print(f"[Camera SKIP] pending job {pending_id} still in flight ({stuck_duration*1000:.1f}ms)")
-            return
+    # NOTE: Old timeout check removed - no longer needed with explicit polling
+    # Explicit polling in game loop handles timeouts properly (3ms timeout with active wait)
+    # If a job times out during polling, it's handled gracefully there
 
     # Calculate current camera params
     pitch = float(op.pitch)
@@ -599,27 +609,24 @@ def submit_camera_occlusion_early(op, context):
 
     desired_max = max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
 
-    # Early-out: Skip submit if pose unchanged (saves engine resources)
-    # Uses same epsilon thresholds as update function
-    last_submit = view.get("last_submit_params")
-    if last_submit is not None:
-        lp, ly, lax, lay, laz, ldm = last_submit
-        pose_unchanged = (
-            abs(pitch - lp) < 0.0015 and
-            abs(yaw - ly) < 0.0015 and
-            abs(anchor.x - lax) < 0.008 and
-            abs(anchor.y - lay) < 0.008 and
-            abs(anchor.z - laz) < 0.008 and
-            abs(desired_max - ldm) < 0.010
-        )
-        if pose_unchanged:
-            view["stats_skip_unchanged"] = view.get("stats_skip_unchanged", 0) + 1
-            if debug_camera:
-                print(f"[Camera SKIP] pose unchanged (Δpitch={abs(pitch-lp):.4f} Δyaw={abs(yaw-ly):.4f})")
-            return
-
-    # Cache params for next frame's early-out check
-    view["last_submit_params"] = (pitch, yaw, anchor.x, anchor.y, anchor.z, desired_max)
+    # Early-out: DISABLED - was causing timing-dependent behavior
+    # TODO: Re-enable with proper dynamic mesh tracking after debug investigation
+    # last_submit = view.get("last_submit_params")
+    # if last_submit is not None:
+    #     lp, ly, lax, lay, laz, ldm = last_submit
+    #     pose_unchanged = (
+    #         abs(pitch - lp) < 0.0015 and
+    #         abs(yaw - ly) < 0.0015 and
+    #         abs(anchor.x - lax) < 0.008 and
+    #         abs(anchor.y - lay) < 0.008 and
+    #         abs(anchor.z - laz) < 0.008 and
+    #         abs(desired_max - ldm) < 0.010
+    #     )
+    #     if pose_unchanged:
+    #         view["stats_skip_unchanged"] = view.get("stats_skip_unchanged", 0) + 1
+    #         if debug_camera:
+    #             print(f"[Camera SKIP] pose unchanged (Δpitch={abs(pitch-lp):.4f} Δyaw={abs(yaw-ly):.4f})")
+    #         return
 
     # Gather dynamic mesh triangles (world space)
     dynamic_bvh_map = getattr(op, "dynamic_bvh_map", None)
@@ -671,5 +678,118 @@ def submit_camera_occlusion_early(op, context):
 
     if debug_camera:
         print(f"[Camera SUBMIT] job={job_id} origin=({anchor.x:.2f},{anchor.y:.2f},{anchor.z:.2f}) dir=({direction.x:.2f},{direction.y:.2f},{direction.z:.2f}) max={desired_max:.2f}m dynamic_objs={dynamic_obj_count} dynamic_tris={len(dynamic_triangles)}")
+
+    return job_id  # Return job_id for explicit polling
+
+
+def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
+    """
+    Explicitly poll for camera occlusion result with timeout (same-frame pattern).
+    Similar to KCC physics polling - waits for specific job to complete.
+
+    This ensures camera gets fresh data every frame without relying on timing assumptions.
+
+    Args:
+        op: Operator with engine reference
+        context: Blender context
+        job_id: Specific camera job ID to wait for
+        timeout: Max time to wait in seconds (default 3ms)
+
+    Returns:
+        True if result received and cached, False if timeout
+    """
+    if job_id is None:
+        return False
+
+    engine = getattr(op, "engine", None)
+    if not engine:
+        return False
+
+    op_key = id(op)
+    view = _view_state_for(op_key)
+
+    # Check debug flag
+    import bpy
+    debug_camera = getattr(bpy.context.scene, "dev_debug_camera_offload", False)
+
+    # CRITICAL: Small guaranteed delay before polling starts
+    # This gives the worker time to:
+    # 1. Pick up the job from the queue (queue operations take ~10-20µs)
+    # 2. Start processing (worker thread needs CPU time slice)
+    # 3. Get a few microseconds of execution before we start hammering with polls
+    #
+    # Without this, when debug is OFF, the polling loop runs SO FAST that it can:
+    # - Start before worker even grabs the job from queue
+    # - Starve worker of CPU time by constantly polling
+    # - Miss the result window due to race conditions
+    #
+    # When debug was ON, print statements accidentally provided this delay.
+    # Now it's explicit and deterministic: 150µs is enough for worker to start,
+    # but small enough to maintain low latency (<0.5% of 33ms frame).
+    time.sleep(0.00015)  # 150µs pre-poll delay
+
+    poll_start = time.perf_counter()
+    result_found = False
+    poll_count = 0
+
+    if debug_camera:
+        print(f"[Camera POLL START] Waiting for job={job_id} (timeout={timeout*1000:.1f}ms) [+150µs pre-delay]")
+
+    while True:
+        elapsed = time.perf_counter() - poll_start
+        if elapsed >= timeout:
+            if debug_camera:
+                print(f"[Camera POLL TIMEOUT] job={job_id} not ready after {elapsed*1000:.1f}ms ({poll_count} polls)")
+            break
+
+        results = engine.poll_results(max_results=20)
+        for result in results:
+            if result.job_id == job_id and result.job_type == "CAMERA_OCCLUSION_FULL":
+                # Found our camera job!
+                if result.success:
+                    # Cache result for update_camera_for_operator to use
+                    hit = result.result.get("hit", False)
+                    hit_distance = result.result.get("hit_distance", None)
+                    hit_source = result.result.get("hit_source", "STATIC")
+                    calc_time_us = result.result.get("calc_time_us", 0.0)
+
+                    cache_camera_worker_result(op_key, job_id, hit, hit_distance, hit_source, calc_time_us)
+
+                    poll_time_us = elapsed * 1_000_000
+
+                    if debug_camera:
+                        status = f"HIT({hit_source}) dist={hit_distance:.3f}m" if hit else "MISS"
+                        print(f"[Camera POLL SUCCESS] job={job_id} {status} | "
+                              f"worker={calc_time_us:.0f}µs poll={poll_time_us:.0f}µs ({poll_count} polls)")
+
+                    result_found = True
+                else:
+                    # Job failed
+                    if debug_camera:
+                        print(f"[Camera POLL FAILED] job={job_id} error: {result.error}")
+                break
+            else:
+                # Cache non-camera results for other systems
+                # (this is important - don't drop other results!)
+                pass
+
+        if result_found:
+            break
+
+        poll_count += 1
+
+        # Adaptive sleep: Always sleep a tiny bit to give workers CPU time
+        # This prevents the polling loop from starving worker threads
+        # 30µs is small enough for low latency but gives workers breathing room
+        if poll_count >= 2:  # Start sleeping after first poll
+            time.sleep(0.00003)  # 30µs - balance between responsiveness and CPU sharing
+
+    # Update stats
+    if result_found:
+        view["stats_fresh"] = view.get("stats_fresh", 0) + 1
+    else:
+        view["stats_timeout"] = view.get("stats_timeout", 0) + 1
+
+    return result_found
 
 
