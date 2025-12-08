@@ -165,6 +165,9 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         # 8. Enhanced Diagnostics
         col.prop(scene, "dev_debug_physics_enhanced", text="Enhanced Diagnostics")
 
+        # 9. Body Integrity Ray
+        col.prop(scene, "dev_debug_physics_body_integrity", text="Body Integrity Ray")
+
         # ═══════════════════════════════════════════════════════════════
         # KCC VISUAL DEBUG (3D Viewport Overlay)
         # ═══════════════════════════════════════════════════════════════

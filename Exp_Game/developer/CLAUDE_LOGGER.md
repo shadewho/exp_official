@@ -80,6 +80,7 @@ Each log has a category that maps to a debug toggle:
 | `PHYS-SLIDE` | `physics_slide` | Multi-plane wall sliding |
 | `PHYS-VERTICAL` | `physics_vertical` | Jumping, gravity, ceiling hits |
 | `PHYS-ENHANCED` | `physics_enhanced` | Enhanced diagnostic details |
+| `PHYS-BODY` | `physics_body_integrity` | Vertical ray mesh embedding detection |
 | `CULLING` | `performance` | Distance-based object culling |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |

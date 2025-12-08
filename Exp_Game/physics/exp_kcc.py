@@ -71,7 +71,7 @@ def _draw_kcc_visual():
     all_colors = []
 
     # ─────────────────────────────────────────────────────────────────────
-    # CAPSULE (Two spheres: feet + head)
+    # CAPSULE (Three spheres: feet + mid + head)
     # ─────────────────────────────────────────────────────────────────────
     if show_capsule and 'capsule_spheres' in _kcc_vis_data:
         capsule_color = _kcc_vis_data.get('capsule_color', (0.0, 1.0, 0.0, 0.5))
@@ -106,20 +106,22 @@ def _draw_kcc_visual():
                 all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
                 all_colors.extend([capsule_color, capsule_color])
 
-        # Add vertical lines connecting the two spheres
-        if len(spheres) == 2:
-            foot_center, foot_radius = spheres[0]
-            head_center, head_radius = spheres[1]
+        # Add vertical lines connecting the spheres (feet→mid→head)
+        if len(spheres) >= 2:
+            # Connect adjacent spheres
+            for i in range(len(spheres) - 1):
+                lower_center, lower_radius = spheres[i]
+                upper_center, upper_radius = spheres[i + 1]
 
-            for angle in [0, math.pi/2, math.pi, 3*math.pi/2]:
-                x1 = foot_center[0] + foot_radius * math.cos(angle)
-                y1 = foot_center[1] + foot_radius * math.sin(angle)
-                z1 = foot_center[2]
-                x2 = head_center[0] + head_radius * math.cos(angle)
-                y2 = head_center[1] + head_radius * math.sin(angle)
-                z2 = head_center[2]
-                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
-                all_colors.extend([capsule_color, capsule_color])
+                for angle in [0, math.pi/2, math.pi, 3*math.pi/2]:
+                    x1 = lower_center[0] + lower_radius * math.cos(angle)
+                    y1 = lower_center[1] + lower_radius * math.sin(angle)
+                    z1 = lower_center[2]
+                    x2 = upper_center[0] + upper_radius * math.cos(angle)
+                    y2 = upper_center[1] + upper_radius * math.sin(angle)
+                    z2 = upper_center[2]
+                    all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                    all_colors.extend([capsule_color, capsule_color])
 
     # ─────────────────────────────────────────────────────────────────────
     # HIT NORMALS (Cyan arrows)
@@ -212,6 +214,64 @@ def _draw_kcc_visual():
             all_verts.extend([origin, scaled_end])
             all_colors.extend([actual_color, actual_color])
 
+    # ─────────────────────────────────────────────────────────────────────
+    # VERTICAL BODY INTEGRITY RAY (Orange = clear, Red = EMBEDDED!)
+    # ─────────────────────────────────────────────────────────────────────
+    if 'vertical_ray' in _kcc_vis_data and _kcc_vis_data['vertical_ray']:
+        v_ray = _kcc_vis_data['vertical_ray']
+        origin = v_ray['origin']
+        end = v_ray['end']
+        blocked = v_ray.get('blocked', False)
+
+        # IMPORTANT: Bright red when embedded, bright orange when clear
+        ray_color = (1.0, 0.0, 0.0, 1.0) if blocked else (1.0, 0.6, 0.0, 1.0)  # Red/Orange
+
+        # Draw THICK vertical line (multiple parallel lines for thickness)
+        thickness_offset = 0.02
+        offsets = [
+            (0.0, 0.0),           # Center
+            (thickness_offset, 0.0),   # +X
+            (-thickness_offset, 0.0),  # -X
+            (0.0, thickness_offset),   # +Y
+            (0.0, -thickness_offset),  # -Y
+        ]
+
+        for ox, oy in offsets:
+            origin_offset = (origin[0] + ox, origin[1] + oy, origin[2])
+            end_offset = (end[0] + ox, end[1] + oy, end[2])
+            all_verts.extend([origin_offset, end_offset])
+            all_colors.extend([ray_color, ray_color])
+
+        # Add LARGE visible markers at origin and end (circles)
+        marker_size = 0.15  # Much larger
+        segments = 12  # More segments for smoother circle
+        for marker_pos in [origin, end]:
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = marker_pos[0] + marker_size * math.cos(angle1)
+                y1 = marker_pos[1] + marker_size * math.sin(angle1)
+                x2 = marker_pos[0] + marker_size * math.cos(angle2)
+                y2 = marker_pos[1] + marker_size * math.sin(angle2)
+                all_verts.extend([(x1, y1, marker_pos[2]), (x2, y2, marker_pos[2])])
+                all_colors.extend([ray_color, ray_color])
+
+        # Add crosshair at both ends for extra visibility
+        cross_size = 0.10
+        for marker_pos in [origin, end]:
+            # Horizontal line
+            all_verts.extend([
+                (marker_pos[0] - cross_size, marker_pos[1], marker_pos[2]),
+                (marker_pos[0] + cross_size, marker_pos[1], marker_pos[2])
+            ])
+            all_colors.extend([ray_color, ray_color])
+            # Vertical line
+            all_verts.extend([
+                (marker_pos[0], marker_pos[1] - cross_size, marker_pos[2]),
+                (marker_pos[0], marker_pos[1] + cross_size, marker_pos[2])
+            ])
+            all_colors.extend([ray_color, ray_color])
+
     # ═════════════════════════════════════════════════════════════════════
     # SINGLE BATCHED DRAW CALL (PERFORMANCE OPTIMIZED)
     # ═════════════════════════════════════════════════════════════════════
@@ -288,7 +348,7 @@ class KinematicCharacterController:
     """
     Full Physics Offload KCC:
     - Worker computes entire physics step (no prediction needed)
-    - Main thread only applies results and handles dynamic movers
+    - Main thread applies results and platform carry
     - 1-frame latency is acceptable (33ms at 30Hz)
     """
 
@@ -320,6 +380,7 @@ class KinematicCharacterController:
         self._vis_hit_normals = []
         self._vis_intended_move = (0.0, 0.0, 0.0)
         self._vis_actual_move = (0.0, 0.0, 0.0)
+        self._vis_vertical_ray = None  # Vertical body integrity ray
 
         # Frame counter for debug output
         self._physics_frame = 0
@@ -503,6 +564,7 @@ class KinematicCharacterController:
         debug = result.get("debug", {})
         self._vis_colliding = debug.get('h_blocked', False)
         self._vis_was_stuck = debug.get('was_stuck', False)
+        self._vis_vertical_ray = debug.get('vertical_ray', None)
 
         # Apply state
         if new_pos:
@@ -519,8 +581,8 @@ class KinematicCharacterController:
             self._jump_buf = 0.0
 
         # ─────────────────────────────────────────────────────────────────────
-        # DYNAMIC MESH COLLISION CHECK (main thread, after worker result)
-        # Worker only checks static grid - dynamic meshes need separate check
+        # DYNAMIC MESH COLLISION CHECK (temporary main thread implementation)
+        # TODO: Move dynamic mesh physics to worker for full parity with static
         # ─────────────────────────────────────────────────────────────────────
         if dynamic_map:
             self._check_dynamic_collision(dynamic_map)
@@ -752,6 +814,7 @@ class KinematicCharacterController:
                 "slopes": getattr(scene, "dev_debug_physics_slopes", False),
                 "slide": getattr(scene, "dev_debug_physics_slide", False),
                 "enhanced": getattr(scene, "dev_debug_physics_enhanced", False),
+                "body_integrity": getattr(scene, "dev_debug_physics_body_integrity", False),
             }
 
         return {
@@ -834,9 +897,9 @@ class KinematicCharacterController:
         self._pending_dt = dt
 
         # ─────────────────────────────────────────────────────────────────────
-        # 1. Handle dynamic movers on main thread (push-out only, carry after physics)
+        # 1. Handle dynamic movers (temporary main thread, TODO: move to worker)
         # ─────────────────────────────────────────────────────────────────────
-        # Note: Platform carry is now applied AFTER physics result to prevent stutter
+        # Note: Platform carry is applied AFTER physics result to prevent stutter
         if dynamic_map:
             # Push-out from nearby dynamic movers (no velocity carry here)
             v_extra, p_out, _ = self._handle_dynamic_movers(
@@ -1065,7 +1128,8 @@ class KinematicCharacterController:
             'capsule_spheres': [],
             'hit_normals': [],
             'ground_ray': None,
-            'movement_vectors': {}
+            'movement_vectors': {},
+            'vertical_ray': None
         }
 
         # Capsule spheres (feet + head)
@@ -1073,10 +1137,12 @@ class KinematicCharacterController:
         h = float(self.cfg.height)
 
         feet_center = (self.pos.x, self.pos.y, self.pos.z + r)
+        mid_center = (self.pos.x, self.pos.y, self.pos.z + min(h * 0.5, h - r))  # Mid-height collision sphere
         head_center = (self.pos.x, self.pos.y, self.pos.z + h - r)
 
         vis_data['capsule_spheres'] = [
             (feet_center, r),
+            (mid_center, r),
             (head_center, r)
         ]
 
@@ -1096,6 +1162,10 @@ class KinematicCharacterController:
 
         if self.on_ground:
             vis_data['ground_ray']['hit_point'] = (self.pos.x, self.pos.y, self.pos.z)
+
+        # Vertical body integrity ray (from worker)
+        if self._vis_vertical_ray:
+            vis_data['vertical_ray'] = self._vis_vertical_ray
 
         # Movement vectors (from cached velocity data)
         if hasattr(self, '_vis_intended_move') and self._vis_intended_move:

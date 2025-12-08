@@ -182,6 +182,22 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_physics_body_integrity = bpy.props.BoolProperty(
+        name="Body Integrity Ray",
+        description=(
+            "Vertical ray from feet to head (embedding detection):\n"
+            "• Ray origin (feet capsule center)\n"
+            "• Ray end (head capsule center)\n"
+            "• Body height being checked\n"
+            "• EMBEDDED status (if ray blocked by mesh)\n"
+            "• Penetration depth if blocked\n"
+            "• Relationship to capsule spheres\n"
+            "\n"
+            "Use to diagnose: Sinking into meshes, mid-height penetration"
+        ),
+        default=False
+    )
+
     bpy.types.Scene.dev_debug_physics_ground = bpy.props.BoolProperty(
         name="Ground Detection",
         description=(

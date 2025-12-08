@@ -24,6 +24,322 @@ All physics computation MUST happen in worker (`engine_worker_entry.py`). Main t
 
 ---
 
+## 🔥 CRITICAL PROJECT: DYNAMIC BVH OFFLOAD TO WORKER
+
+**Status:** PLANNED - Ready to implement
+**Goal:** Unify static and dynamic mesh physics in worker thread
+**Impact:** Full physics parity + main thread freed from dynamic collision
+
+### The Problem
+
+**Current Architecture (Asymmetric):**
+- Static geometry: Full physics in worker (capsule sweep, step-up, wall slide, body ray, ceiling, ground, slopes)
+- Dynamic geometry: Partial physics on main thread (ground + horizontal push-out ONLY)
+- **Result:** Dynamic meshes missing body integrity ray, step-up, wall slide, ceiling check, steep slopes
+
+**Why This Matters:**
+- Character can embed in dynamic platforms (no body ray)
+- Can't step up on dynamic objects (no step-up logic)
+- Slides through dynamic walls (no wall slide)
+- Main thread doing physics work it shouldn't
+- Two separate physics implementations = maintenance nightmare
+
+### The Solution: Cache Local Geometry, Send Transforms
+
+**Key Insight:** Dynamic meshes are RIGID BODIES (no deformation). We cache triangles in LOCAL SPACE once, send only transform matrices per frame.
+
+**Architecture:**
+
+```
+PHASE 1: One-Time Cache (Startup/Registration)
+─────────────────────────────────────────────────
+New Job: CACHE_DYNAMIC_MESH
+Input: obj_id, triangles (local space), radius
+Worker stores: _cached_dynamic_meshes[obj_id] = {
+    triangles: [(v0, v1, v2), ...],  # Local coordinates
+    radius: float,
+    spatial_cells: {}  # Optional mini-grid if >100 tris
+}
+Sent: ONCE per object (like CACHE_GRID for static)
+Cost: One-time, negligible
+
+PHASE 2: Per-Frame Transform Update (Lightweight!)
+─────────────────────────────────────────────────
+Modified KCC_PHYSICS_STEP job adds:
+dynamic_transforms = {
+    obj_id: matrix_4x4  # 16 floats = 64 bytes
+}
+
+Data size: 10 meshes = 640 bytes/frame
+          20 meshes = 1,280 bytes/frame
+          (vs 3MB if sending full triangles!)
+
+PHASE 3: Worker Unified Physics
+─────────────────────────────────────────────────
+# Transform dynamic triangles ONCE per frame
+for obj_id, matrix in dynamic_transforms.items():
+    local_tris = _cached_dynamic_meshes[obj_id]['triangles']
+    world_tris[obj_id] = [transform_tri(t, matrix) for t in local_tris]
+    # Cost: 3 vertices × matrix multiply × N tris
+    # 50 triangles = ~2.5µs
+
+# ALL physics checks test BOTH static AND dynamic
+Body integrity ray: test static grid + dynamic tris
+Capsule sweep: test static grid + dynamic tris
+Ground detection: test static grid + dynamic tris
+Ceiling check: test static grid + dynamic tris
+Step-up: test static grid + dynamic tris
+Wall slide: test static grid + dynamic tris
+Steep slopes: test static grid + dynamic tris
+
+Result: IDENTICAL PHYSICS DNA
+```
+
+### Performance Budget
+
+**Per-Frame Overhead (10 dynamic meshes × 50 tris each):**
+- Transform triangles: ~7.5µs (3 vertices × 16 floats × 50 tris × 10 meshes)
+- Serialize matrices: ~5µs (640 bytes)
+- Test during collision: ~10-20µs (already testing nearby geometry)
+- **Total added: <30µs to 100-200µs baseline = 15% increase**
+- **Target: Stay under 300µs total worker time**
+
+**Memory in Worker:**
+- 10 dynamic meshes × 50 triangles = 18 KB triangle data
+- Spatial grids (optional): ~50 KB per large mesh
+- **Total: <1 MB for typical scenes**
+
+**Activation Gating (Already Implemented):**
+- Only send transforms for ACTIVE meshes (distance-gated with hysteresis)
+- Typical: 3-5 active meshes near player
+- Far meshes: Zero cost (not sent, not tested)
+
+### Synchronization Requirements (CRITICAL)
+
+**Same-Frame Polling (Already Working):**
+- Main thread submits KCC_PHYSICS_STEP with dynamic transforms
+- Worker computes full physics (static + dynamic unified)
+- Main thread polls with 3ms timeout (~200µs typical)
+- **Zero frame offset** - result applied same frame
+- Platform carry applied AFTER worker result (velocity application)
+
+**No 1-Frame Latency:**
+- Dynamic transforms sent WITH physics job (not separate)
+- Worker sees current-frame positions
+- Result returned same frame
+- Critical for smooth platform riding
+
+**Frame Budget Enforcement:**
+- Worker execution MUST stay <500µs to maintain smoothness
+- If worker exceeds budget: reduce active dynamic mesh count or simplify geometry
+- Main thread waits max 3ms (prevents frame drops)
+
+### Developer System & Logging (CRITICAL)
+
+**New Debug Categories (Add to dev_properties.py):**
+
+1. **`dev_debug_dynamic_cache`** - Dynamic mesh caching
+   - Logs: CACHE_DYNAMIC_MESH job (one-time per object)
+   - Format: `[DYN-CACHE] obj={name} tris={count} radius={r:.2f}m cached`
+   - Shows: Object registered, triangle count, bounding radius
+   - Hz: N/A (one-time events)
+
+2. **`dev_debug_dynamic_transform`** - Per-frame transform updates
+   - Logs: Transform matrix submission to worker
+   - Format: `[DYN-XFORM] active={count} bytes={size} objects=[id1,id2,...]`
+   - Shows: How many active, data size, which objects
+   - Hz: 1-30 Hz (default 1 Hz to avoid spam)
+
+3. **`dev_debug_dynamic_physics`** - Dynamic collision results
+   - Logs: Worker-side dynamic mesh collision tests
+   - Format: `[DYN-PHYS] obj={name} hit={bool} dist={d:.3f}m normal=({x},{y},{z})`
+   - Shows: Which dynamic mesh was tested, hit result, distance, normal
+   - Hz: 1-30 Hz (default 5 Hz)
+
+4. **`dev_debug_physics_unified`** - Combined static+dynamic stats
+   - Logs: Per-frame summary of ALL collision tests
+   - Format: `[PHYS-UNIFIED] static_tris={n} dynamic_tris={m} total_tests={k} time={t}µs`
+   - Shows: Triangle counts tested, performance breakdown
+   - Hz: 1-30 Hz (default 5 Hz)
+
+**Enhanced Existing Categories:**
+
+5. **`dev_debug_physics_body_integrity`** (ENHANCE)
+   - ADD: Dynamic mesh embedding detection
+   - Format: `[PHYS-BODY] EMBEDDED obj={name} type={static|dynamic} dist={d:.3f}m`
+   - Shows: Whether embedding is from static or dynamic mesh
+   - Differentiates: Static vs dynamic collision sources
+
+6. **`dev_debug_kcc_offload`** (ENHANCE)
+   - ADD: Dynamic mesh count to main summary line
+   - Format: `[KCC F0042] GROUND🟢 pos=(x,y,z) | {time}µs static_grid={bool} dynamic_active={count}`
+   - Shows: How many dynamic meshes active this frame
+
+**Performance Logging:**
+
+7. **`dev_debug_dynamic_performance`** - Detailed timing breakdown
+   - Logs: Transform time, test time, per-mesh breakdown
+   - Format: `[DYN-PERF] transform={t1}µs test_body={t2}µs test_capsule={t3}µs obj_breakdown=[...]`
+   - Shows: Exactly where time is spent
+   - Hz: 1-30 Hz (default 1 Hz)
+
+**Output to diagnostics_latest.txt:**
+- All categories respect Master Hz control
+- Fast buffer logger (1000x faster than print)
+- Zero gameplay impact when enabled
+- Export after session for analysis
+
+### Shared Physics DNA - Implementation Strategy
+
+**Core Principle:** Static and dynamic are IDENTICAL except for transform source.
+
+**Unified Collision Function:**
+```python
+def test_collision_unified(ray_origin, ray_dir, max_dist):
+    """Test ray against ALL geometry (static + dynamic)."""
+    best_hit = None
+    best_dist = max_dist
+    best_source = None  # "static" or dynamic obj_id
+
+    # Test static grid (DDA traversal)
+    for tri in static_grid_cells:
+        hit, dist, normal = ray_triangle_intersect(ray_origin, ray_dir, tri)
+        if hit and dist < best_dist:
+            best_hit = (dist, normal, tri)
+            best_dist = dist
+            best_source = "static"
+
+    # Test dynamic meshes (transformed triangles)
+    for obj_id, tris in transformed_dynamic_tris.items():
+        for tri in tris:
+            hit, dist, normal = ray_triangle_intersect(ray_origin, ray_dir, tri)
+            if hit and dist < best_dist:
+                best_hit = (dist, normal, tri)
+                best_dist = dist
+                best_source = obj_id  # Dynamic mesh ID
+
+    return best_hit, best_source
+```
+
+**Apply to ALL Physics Checks:**
+- Body integrity ray: `test_collision_unified(feet_pos, up_dir, body_height)`
+- Horizontal collision: `test_collision_unified(capsule_pos, fwd_dir, move_len)`
+- Ground detection: `test_collision_unified(feet_pos, down_dir, snap_down)`
+- Ceiling check: `test_collision_unified(head_pos, up_dir, move_z)`
+- Step-up: `test_collision_unified(elevated_pos, fwd_dir, step_dist)`
+
+**Result:** Every physics feature automatically works on both static and dynamic.
+
+### Optimization Strategies
+
+**1. Selective Transformation (Lazy Eval):**
+```python
+# Only transform dynamic meshes that are:
+# - Active (distance-gated)
+# - Moving this frame (delta_matrix != identity)
+# - Near collision test (within capsule radius + mesh radius)
+```
+
+**2. Spatial Acceleration for Large Meshes:**
+```python
+# Build mini-grid for dynamic meshes with >100 triangles
+if len(triangles) > 100:
+    build_spatial_cells(triangles)  # Once at cache time
+    # Per-frame: only transform cells near test point
+```
+
+**3. Early Distance Rejection:**
+```python
+# Before transforming triangles, check bounding sphere
+mesh_center = transform_point(local_center, matrix)
+if distance(test_point, mesh_center) > mesh_radius + test_radius:
+    continue  # Skip entire mesh
+```
+
+**4. Activation Hysteresis (Already Working):**
+```python
+# Worker updates activation with 10% margin
+# Prevents thrashing when player at boundary
+# Typical: 3-5 active meshes instead of 10-20
+```
+
+### Success Metrics
+
+**Physics Parity (Goal: 100%):**
+- ✅ Body integrity ray works on dynamic
+- ✅ Step-up works on dynamic platforms
+- ✅ Wall slide works on dynamic walls
+- ✅ Ceiling check works on dynamic ceilings
+- ✅ Steep slopes work on dynamic ramps
+- ✅ All collision feels identical to static
+
+**Performance (Goal: <300µs total):**
+- ✅ Worker execution stays under 300µs with 5 active dynamic meshes
+- ✅ Main thread overhead stays under 50µs
+- ✅ 30 Hz locked, zero stuttering
+- ✅ Smooth platform riding (no jitter)
+
+**Code Quality (Goal: Single Implementation):**
+- ✅ Delete `_check_dynamic_collision()` from main thread (redundant)
+- ✅ Single unified collision test function
+- ✅ Static and dynamic use same code paths
+- ✅ Maintenance burden reduced by 50%
+
+**Logging & Visibility (Goal: Complete Transparency):**
+- ✅ Every dynamic mesh interaction logged with source type
+- ✅ Frame-by-frame timeline shows static vs dynamic collisions
+- ✅ Performance breakdown shows transform + test times
+- ✅ Embedding detection reports static vs dynamic source
+- ✅ Diagnostics export shows full picture for Claude analysis
+
+### Implementation Checklist
+
+**Phase 1: Worker Infrastructure**
+- [ ] Add `_cached_dynamic_meshes` global dict
+- [ ] Implement `CACHE_DYNAMIC_MESH` job handler
+- [ ] Add triangle transform helper function
+- [ ] Add dynamic mesh activation filtering
+
+**Phase 2: Job Data Extension**
+- [ ] Modify `KCC_PHYSICS_STEP` to accept `dynamic_transforms`
+- [ ] Serialize transform matrices in job submission
+- [ ] Add activation gating (only send active meshes)
+
+**Phase 3: Unified Collision Testing**
+- [ ] Create `test_collision_unified()` helper
+- [ ] Extend body integrity ray to test dynamic
+- [ ] Extend horizontal collision to test dynamic
+- [ ] Extend ground detection to test dynamic
+- [ ] Extend ceiling check to test dynamic
+- [ ] Extend step-up to test dynamic
+
+**Phase 4: Developer System**
+- [ ] Add 4 new debug properties (cache, transform, physics, unified)
+- [ ] Enhance 2 existing properties (body, kcc_offload)
+- [ ] Add performance timing property
+- [ ] Add all logging categories to `_CATEGORY_MAP`
+- [ ] Test Master Hz gating on all categories
+
+**Phase 5: Main Thread Cleanup**
+- [ ] Delete `_check_dynamic_collision()` method
+- [ ] Remove dynamic collision call from `_apply_physics_result()`
+- [ ] Keep platform carry application (velocity, not collision)
+- [ ] Update comments to reflect new architecture
+
+**Phase 6: Testing & Validation**
+- [ ] Test body ray on dynamic platform (should detect embedding)
+- [ ] Test step-up on dynamic stairs (should climb)
+- [ ] Test wall slide on dynamic wall (should slide)
+- [ ] Test ceiling on dynamic moving platform (should block)
+- [ ] Profile worker time (<300µs target)
+- [ ] Export diagnostics, verify unified logging
+- [ ] Verify zero frame offset (smooth platform riding)
+
+**Philosophy:**
+Dynamic and static share the same physics DNA. The ONLY difference is where triangles come from (cached grid vs transformed cache). Everything else is IDENTICAL. One implementation, one maintenance burden, full parity.
+
+---
+
 ## 🚨 ACTIVE ISSUES (Priority Order)
 
 ### 1. Mid-Height Collision Resolution
@@ -31,10 +347,17 @@ All physics computation MUST happen in worker (`engine_worker_entry.py`). Main t
 **Impact:** Character passes through or clips into geometry at torso level
 **Root Cause:** Only 2 sphere sweeps (feet + head), no coverage in middle third of capsule
 
+**Current Work:** Vertical body integrity ray implemented (feet→head detection)
+- ✅ Detects mesh embedding between capsule spheres
+- ✅ Visualizer: Orange=clear, Red=embedded (thick beam with markers)
+- ✅ Logging: `[EMBEDDED] hit=X.XXm pct=XX.X%` with penetration depth
+- ❌ **Next:** Use ray to assist collision resolution for midpoint contacts
+- ❌ **Next:** Handle dynamic meshes crossing between spheres
+- **Philosophy:** Ray bridges the gap - helps main spheres handle what they missed
+
 ### 2. Dynamic BVH Character Rotation
 **Problem:** Dynamic BVHs don't rotate the character when platforms rotate
 **Impact:** Character slides off rotating platforms instead of rotating with them
-**Location:** Main thread dynamic mesh handling (requires bpy)
 
 ### 3. Dynamic BVH Speed & Falling
 **Problem:** Dynamic BVHs fail when:
@@ -42,17 +365,12 @@ All physics computation MUST happen in worker (`engine_worker_entry.py`). Main t
 - Platform applies speed/acceleration to character
 **Impact:** Character falls through or gets stuck in moving platforms
 
-### 4. Sliding Jitter
-**Problem:** Wall sliding and slope sliding feel jittery/stuttery
-**Impact:** Poor gameplay feel, especially on slopes
-**Likely Cause:** Frame-to-frame velocity resolution inconsistency
-
-### 5. Slope Limits Ineffective
+### 4. Slope Limits Ineffective
 **Problem:** Slope angle limits don't prevent uphill movement on steep surfaces
 **Impact:** Character can climb walls they shouldn't be able to
 **Expected:** `steep_slide_gain` and `steep_min_speed` should force sliding, not allow climbing
 
-### 6. Capsule Strength Inconsistency
+### 5. Capsule Strength Inconsistency
 **Problem:** Overall collision strength varies by contact height (mid/head especially weak)
 **Impact:** Unpredictable collision response, character squeezes through tight spaces
 **Related:** Issue #1 (mid-height coverage)
@@ -116,8 +434,9 @@ Main Thread (exp_kcc.py)               Worker (engine_worker_entry.py)
 │ Poll (3ms timeout)      │           │ Step-up detection            │
 │ Apply result to Blender │<──────────│ Ground detection             │
 │ GPU visualization       │           │ Slope handling               │
-│ Dynamic mesh (BVH)      │           │ Wall slide                   │
-│ Platform carry          │           │ Spatial grid (DDA)           │
+│ Platform carry          │           │ Wall slide                   │
+│                         │           │ Spatial grid (DDA)           │
+│                         │           │ Dynamic mesh physics         │
 └─────────────────────────┘           └──────────────────────────────┘
 ```
 
@@ -177,22 +496,14 @@ Main Thread (exp_kcc.py)               Worker (engine_worker_entry.py)
 - Must prevent uphill velocity, not just add downward force
 
 **When fixing dynamic BVH issues:**
-- Platform rotation = angular velocity applied to character
-- Platform carry happens AFTER worker result (main thread)
+- Dynamic mesh physics computation happens in worker (same as static geometry)
+- Platform carry application happens AFTER worker result (main thread)
+- Platform rotation = angular velocity applied to character position
 - Falling collision = need predictive check, not reactive
 - Speed application = velocity delta, not position offset
 
 ---
 
-## 🎯 Next Steps
-
-**Immediate priorities:**
-
-1. **Mid-height collision** - Add third sphere sweep at capsule center.... maybe!! ask me about this later... is the third nessesary? or could we just bridge with a ray or something between foot and head capsules? i need performance and i need to make sure we are always optimally setting up high performance systems. is there a smart way to approach a stronger mid/head collisions? feet collisions work great **ask me about this next session!
-2. **Slope limits** - Fix uphill blocking logic in worker
-3. **Sliding jitter** - Investigate velocity resolution smoothing
-4. **Dynamic BVH rotation** - Add angular carry in platform system
-5. **Dynamic BVH falling** - Add predictive collision before position update
 
 **For each fix:**
 - Profile worker execution time (should stay <500µs)
@@ -215,13 +526,6 @@ Main Thread (exp_kcc.py)               Worker (engine_worker_entry.py)
 - ✅ Engine output export system
 - ✅ Smooth gameplay when prints disabled
 
-**What Needs Work:**
-- ❌ Mid-height collision coverage
-- ❌ Dynamic platform rotation carry
-- ❌ Dynamic platform falling collision
-- ❌ Slope limit enforcement
-- ❌ Sliding smoothness
-- ❌ Collision strength consistency
 
 **Philosophy:**
 Data-driven development. Visualize everything. Never guess. Test methodically. Respect the engine.

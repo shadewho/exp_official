@@ -187,10 +187,7 @@ class GameLoop:
 
             # Route result to appropriate handler based on job type
             if result.success:
-                if result.job_type == "FRAME_SYNC_TEST":
-                    # Sync test - no action needed, metrics already tracked
-                    pass
-                elif result.job_type == "ECHO":
+                if result.job_type == "ECHO":
                     # Echo test - no action needed
                     pass
                 elif result.job_type == "CULL_BATCH":

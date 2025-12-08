@@ -44,6 +44,7 @@ _CATEGORY_MAP = {
     'PHYS-CONSISTENCY': 'physics_consistency',
     'PHYS-CAPSULE': 'physics_capsule',
     'PHYS-DEPENETRATION': 'physics_depenetration',
+    'PHYS-BODY': 'physics_body_integrity',
     'PHYS-GROUND': 'physics_ground',
     'PHYS-STEP': 'physics_step_up',
     'PHYS-SLOPES': 'physics_slopes',
