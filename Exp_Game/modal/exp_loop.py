@@ -229,9 +229,9 @@ class GameLoop:
                                 # Verbose mode: per-frame output
                                 method = result.result.get("method", "CAMERA_FULL")
                                 if hit:
-                                    print(f"[Camera] job={job_id} HIT({hit_source}) dist={hit_distance:.3f}m | tris={static_tris} cells={static_cells} dyn={dynamic_tris} | {calc_time_us:.0f}us")
+                                    print(f"[Camera] job={job_id} HIT({hit_source}) dist={hit_distance:.3f}m | tris={static_tris} cells={static_cells} | {calc_time_us:.0f}us")
                                 else:
-                                    print(f"[Camera] job={job_id} MISS | tris={static_tris} cells={static_cells} dyn={dynamic_tris} | {calc_time_us:.0f}us")
+                                    print(f"[Camera] job={job_id} MISS | tris={static_tris} cells={static_cells} | {calc_time_us:.0f}us")
                             else:
                                 # Summary mode: print at configured Hz
                                 now = time.perf_counter()
@@ -251,7 +251,7 @@ class GameLoop:
                     try:
                         apply_dynamic_activation_result(op, result)
                     except Exception as e:
-                        print(f"[GameLoop] Error applying dynamic mesh activation result: {e}")
+                        pass  # Silent error handling for dynamic mesh activation
                 elif result.job_type == "INTERACTION_CHECK_BATCH":
                     # Apply interaction check result (full offload with state management)
                     try:
@@ -292,6 +292,15 @@ class GameLoop:
                             ceiling=hit_ceiling
                         )
 
+                        # Engine health logging
+                        from ..developer.dev_logger import log_game
+                        dynamic_active = debug.get("dynamic_meshes_active", 0)
+                        dynamic_xform_time = debug.get("dynamic_transform_time_us", 0.0)
+                        if dynamic_active > 0:
+                            log_game("ENGINE",
+                                f"MAIN: worker_time={calc_time:.0f}µs (xform={dynamic_xform_time:.0f}µs) "
+                                f"rays={rays} tris={tris} dyn={dynamic_active}")
+
                         # Debug output - check Hz setting for mode
                         scene = bpy.context.scene
                         kcc_enabled = getattr(scene, "dev_debug_kcc_offload", False)
@@ -319,16 +328,8 @@ class GameLoop:
                                     self._last_kcc_summary = now
                                     summary = stats.get_kcc_summary()
 
-                                    events = []
-                                    if summary["blocked_count"]: events.append(f"blocked:{summary['blocked_count']}")
-                                    if summary["step_up_count"]: events.append(f"step:{summary['step_up_count']}")
-                                    if summary["slide_count"]: events.append(f"slide:{summary['slide_count']}")
-                                    if summary["ceiling_count"]: events.append(f"ceiling:{summary['ceiling_count']}")
-                                    event_str = " ".join(events) if events else "clear"
-
-                                    print(f"[KCC] {summary['steps_per_sec']:.0f} steps/sec | "
-                                          f"avg: {summary['avg_calc_us']:.0f}us {summary['avg_rays']:.0f}rays {summary['avg_tris']:.0f}tris | "
-                                          f"{event_str}")
+                                    # All KCC logs go to diagnostics file via fast buffer logger
+                                    # NO console prints during gameplay (per user request)
 
                     except Exception as e:
                         print(f"[GameLoop] Error processing KCC stats: {e}")
@@ -343,6 +344,15 @@ class GameLoop:
                             print(f"[KCC] Grid cached: {tris:,} triangles, {cells:,} cells")
                         else:
                             print(f"[KCC] Grid cache ERROR: {result.result.get('error', 'Unknown error')}")
+
+                elif result.job_type == "CACHE_DYNAMIC_MESH":
+                    # Dynamic mesh caching confirmation
+                    # Process worker logs (cache events)
+                    if result.result.get("success"):
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
 
                 # TODO: Add handlers for other game logic job types
                 # elif result.job_type == "AI_PATHFIND":

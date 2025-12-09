@@ -29,6 +29,15 @@ DEBUG_ENGINE = False
 
 _cached_grid = None  # Will hold the spatial grid data after CACHE_GRID job
 
+# ============================================================================
+# WORKER-SIDE DYNAMIC MESH CACHE
+# ============================================================================
+# Dynamic meshes are cached in LOCAL space once, then transformed per frame.
+# Key: obj_id (integer from id(obj) in main thread)
+# Value: {"triangles": [(v0, v1, v2), ...], "radius": float}
+
+_cached_dynamic_meshes = {}  # Will hold dynamic mesh data after CACHE_DYNAMIC_MESH jobs
+
 
 # ============================================================================
 # RAY-TRIANGLE INTERSECTION (Möller-Trumbore Algorithm)
@@ -165,6 +174,61 @@ def compute_triangle_normal(v0, v1, v2):
     return (nx, ny, nz)
 
 
+# ============================================================================
+# DYNAMIC MESH TRANSFORM HELPERS
+# ============================================================================
+
+def transform_point(point, matrix_4x4):
+    """
+    Transform a point from local to world space using 4x4 matrix.
+
+    Args:
+        point: (x, y, z) point in local space
+        matrix_4x4: 16-element tuple representing row-major 4x4 matrix:
+                   (m00, m01, m02, m03,
+                    m10, m11, m12, m13,
+                    m20, m21, m22, m23,
+                    m30, m31, m32, m33)
+
+    Returns:
+        (x, y, z) point in world space
+    """
+    px, py, pz = point
+
+    # Extract matrix elements (row-major)
+    m00, m01, m02, m03 = matrix_4x4[0:4]
+    m10, m11, m12, m13 = matrix_4x4[4:8]
+    m20, m21, m22, m23 = matrix_4x4[8:12]
+    # m30, m31, m32, m33 = matrix_4x4[12:16]  # Not needed for point transform
+
+    # Apply transformation (assumes w=1 for points)
+    wx = m00 * px + m01 * py + m02 * pz + m03
+    wy = m10 * px + m11 * py + m12 * pz + m13
+    wz = m20 * px + m21 * py + m22 * pz + m23
+
+    return (wx, wy, wz)
+
+
+def transform_triangle(tri_local, matrix_4x4):
+    """
+    Transform a triangle from local to world space.
+
+    Args:
+        tri_local: (v0, v1, v2) triangle in local space
+        matrix_4x4: 16-element tuple (row-major 4x4 matrix)
+
+    Returns:
+        (v0_world, v1_world, v2_world) triangle in world space
+    """
+    v0_local, v1_local, v2_local = tri_local
+
+    v0_world = transform_point(v0_local, matrix_4x4)
+    v1_world = transform_point(v1_local, matrix_4x4)
+    v2_world = transform_point(v2_local, matrix_4x4)
+
+    return (v0_world, v1_world, v2_world)
+
+
 def process_job(job) -> dict:
     """
     Process a single job and return result as a plain dict (pickle-safe).
@@ -203,8 +267,6 @@ def process_job(job) -> dict:
                 _cached_grid = grid
                 tri_count = len(grid.get("triangles", []))
                 cell_count = len(grid.get("cells", {}))
-                if DEBUG_ENGINE:
-                    print(f"[Worker] Grid cached: {tri_count:,} triangles, {cell_count:,} cells")
                 result_data = {
                     "success": True,
                     "triangles": tri_count,
@@ -215,6 +277,48 @@ def process_job(job) -> dict:
                 result_data = {
                     "success": False,
                     "error": "No grid data provided"
+                }
+
+        elif job.job_type == "CACHE_DYNAMIC_MESH":
+            # Cache dynamic mesh triangles in LOCAL space
+            # This is sent ONCE per dynamic mesh (or when mesh changes)
+            # Per-frame, only transform matrices are sent (64 bytes vs 3MB!)
+            global _cached_dynamic_meshes
+
+            obj_id = job.data.get("obj_id")
+            triangles = job.data.get("triangles", [])
+            radius = job.data.get("radius", 1.0)
+
+            if obj_id is not None and triangles:
+                # DIAGNOSTIC: Check if already cached (potential duplicate caching)
+                was_cached = obj_id in _cached_dynamic_meshes
+
+                _cached_dynamic_meshes[obj_id] = {
+                    "triangles": triangles,  # List of (v0, v1, v2) tuples in local space
+                    "radius": radius         # Bounding sphere radius for quick rejection
+                }
+                tri_count = len(triangles)
+                if DEBUG_ENGINE:
+                    print(f"[Worker] Dynamic mesh cached: obj_id={obj_id} tris={tri_count:,} radius={radius:.2f}m")
+
+                # Log to diagnostics (one-time cache event)
+                status = "RE-CACHED" if was_cached else "CACHED"
+                total_cached = len(_cached_dynamic_meshes)
+                cache_log = ("DYN-CACHE", f"{status} obj_id={obj_id} tris={tri_count} radius={radius:.2f}m total_cache={total_cached}")
+                logs = [cache_log]
+
+                result_data = {
+                    "success": True,
+                    "obj_id": obj_id,
+                    "triangle_count": tri_count,
+                    "radius": radius,
+                    "message": "Dynamic mesh cached successfully",
+                    "logs": logs  # Return all logs to main thread
+                }
+            else:
+                result_data = {
+                    "success": False,
+                    "error": "Missing obj_id or triangles data"
                 }
 
         elif job.job_type == "COMPUTE_HEAVY":
@@ -488,6 +592,52 @@ def process_job(job) -> dict:
             jump_consumed = False
 
             # ─────────────────────────────────────────────────────────────────
+            # TRANSFORM DYNAMIC MESHES (Once per frame)
+            # ─────────────────────────────────────────────────────────────────
+            # Transform all active dynamic meshes from local to world space
+            # Uses cached triangles + per-frame transform matrices (64 bytes each)
+
+            dynamic_transforms = job.data.get("dynamic_transforms", {})
+            transformed_dynamic_meshes = {}  # {obj_id: [(v0, v1, v2), ...]}
+            dynamic_transform_time_us = 0.0
+
+            # CACHE DIAGNOSTICS - Log cache state before transform
+            if debug_flags.get("engine", False):
+                cached_count = len(_cached_dynamic_meshes)
+                transform_count = len(dynamic_transforms)
+                worker_logs.append(("ENGINE",
+                    f"CACHE: cached_meshes={cached_count} transforms_received={transform_count}"))
+
+            if dynamic_transforms and _cached_dynamic_meshes:
+                transform_start = time.perf_counter()
+
+                for obj_id, matrix_4x4 in dynamic_transforms.items():
+                    # Get cached local-space triangles
+                    cached = _cached_dynamic_meshes.get(obj_id)
+                    if cached is None:
+                        continue
+
+                    local_triangles = cached["triangles"]
+                    world_triangles = []
+
+                    # Transform each triangle to world space
+                    for tri_local in local_triangles:
+                        tri_world = transform_triangle(tri_local, matrix_4x4)
+                        world_triangles.append(tri_world)
+
+                    transformed_dynamic_meshes[obj_id] = world_triangles
+
+                transform_end = time.perf_counter()
+                dynamic_transform_time_us = (transform_end - transform_start) * 1_000_000
+
+                # Log transform operation
+                if debug_flags.get("dynamic_mesh", False):
+                    mesh_count = len(transformed_dynamic_meshes)
+                    total_tris = sum(len(tris) for tris in transformed_dynamic_meshes.values())
+                    worker_logs.append(("DYN-MESH",
+                        f"TRANSFORM active={mesh_count} tris={total_tris} time={dynamic_transform_time_us:.1f}µs"))
+
+            # ─────────────────────────────────────────────────────────────────
             # 1. TIMERS
             # ─────────────────────────────────────────────────────────────────
             coyote_remaining = max(0.0, coyote_remaining - dt)
@@ -609,6 +759,10 @@ def process_job(job) -> dict:
             max_step_len = radius * 0.8  # Max movement per substep
             num_substeps = max(1, int(math.ceil(move_len / max_step_len)))
             substep_len = move_len / num_substeps if num_substeps > 0 else 0
+
+            # DIAGNOSTIC: Check grid state
+            if move_len > 1e-9 and _cached_grid is None:
+                worker_logs.append(("ENGINE", f"COLLISION SKIPPED: _cached_grid is None! move_len={move_len:.3f}m"))
 
             if move_len > 1e-9 and _cached_grid is not None:
                 # Normalize movement direction
@@ -890,7 +1044,51 @@ def process_job(job) -> dict:
                                             best_d = horiz_dist
                                             best_n = tri_n
 
-                # Apply horizontal collision result
+                # ─────────────────────────────────────────────────────────────────
+                # DYNAMIC MESH HORIZONTAL COLLISION (Unified Physics)
+                # ─────────────────────────────────────────────────────────────────
+                # DON'T apply collision response yet - test dynamic meshes first!
+                debug_dynamic_horiz = debug_flags.get("dynamic_horizontal", False)
+                horiz_hit_source = "static" if best_d is not None else None
+
+                if transformed_dynamic_meshes and move_len > 1e-9:
+                    import time as perf_time
+                    test_start = perf_time.perf_counter()
+                    dynamic_tris_tested = 0  # Local counter for just dynamic meshes
+
+                    # Test same 3 ray heights as static geometry
+                    for ray_z in ray_heights:
+                        ox, oy, oz = px, py, pz + ray_z
+                        ray_dir = (fwd_x, fwd_y, 0)  # Horizontal only
+
+                        for obj_id, world_tris in transformed_dynamic_meshes.items():
+                            for tri in world_tris:
+                                total_tris += 1
+                                dynamic_tris_tested += 1  # Count dynamic tests separately
+                                hit, dist, _ = ray_triangle_intersect(
+                                    (ox, oy, oz), ray_dir,
+                                    tri[0], tri[1], tri[2]
+                                )
+
+                                # Hit must be within ray length AND closer than current best
+                                if hit and dist < ray_len:
+                                    if best_d is None or dist < best_d:
+                                        best_d = dist
+                                        best_n = compute_triangle_normal(tri[0], tri[1], tri[2])
+                                        h_blocked = True
+                                        horiz_hit_source = f"dynamic_{obj_id}"
+
+                    test_duration = (perf_time.perf_counter() - test_start) * 1_000_000
+
+                    # Log summary (only if toggle enabled)
+                    if debug_dynamic_horiz:
+                        status = "BLOCKED" if (horiz_hit_source and "dynamic" in horiz_hit_source) else "CLEAR"
+                        best_d_str = f"{best_d:.3f}m" if best_d else "None"
+                        worker_logs.append(("DYN-HORIZ",
+                            f"[{status}] source={horiz_hit_source} dist={best_d_str} "
+                            f"rays={len(ray_heights)} dyn_tris={dynamic_tris_tested} time={test_duration:.1f}µs"))
+
+                # Apply horizontal collision result (static OR dynamic - whichever is closer)
                 if best_d is not None:
                     h_blocked = True
                     allowed = max(0.0, best_d - radius)
@@ -1181,7 +1379,7 @@ def process_job(job) -> dict:
                         worker_logs.append(("PHYS-CAPSULE", f"clear move={move_len:.3f}m | {total_rays}rays {total_tris}tris"))
 
             elif move_len > 1e-9:
-                # No grid cached - just move (TODO: add dynamic mesh cache to worker)
+                # No grid cached - just move
                 px += move_x
                 py += move_y
 
@@ -1272,6 +1470,51 @@ def process_job(job) -> dict:
                 if debug_body:
                     status = "EMBEDDED" if body_embedded else "CLEAR"
                     worker_logs.append(("PHYS-BODY", f"[{status}] feet=({feet_pos[0]:.2f},{feet_pos[1]:.2f},{feet_pos[2]:.2f}) head=({head_pos[0]:.2f},{head_pos[1]:.2f},{head_pos[2]:.2f}) h={body_height:.2f}m"))
+
+                # ─────────────────────────────────────────────────────────────────
+                # DYNAMIC MESH BODY INTEGRITY RAY (Unified Physics)
+                # ─────────────────────────────────────────────────────────────────
+                # Test vertical ray against dynamic meshes to detect embedding
+                debug_dynamic_body = debug_flags.get("dynamic_body_ray", False)
+                body_hit_source = "static" if body_embedded else None
+
+                if transformed_dynamic_meshes:
+                    import time as perf_time
+                    test_start = perf_time.perf_counter()
+
+                    for obj_id, world_tris in transformed_dynamic_meshes.items():
+                        for tri in world_tris:
+                            total_tris += 1
+                            hit, dist, _ = ray_triangle_intersect(
+                                feet_pos, (0, 0, 1),
+                                tri[0], tri[1], tri[2]
+                            )
+
+                            # Hit must be within body height AND closer than current embed
+                            if hit and dist < body_height:
+                                # Check if this is closer than current embedding
+                                if embed_distance is None or dist < embed_distance:
+                                    body_embedded = True
+                                    embed_distance = dist
+                                    body_hit_source = f"dynamic_{obj_id}"
+
+                                    if debug_dynamic_body:
+                                        penetration_pct = (dist / body_height) * 100.0
+                                        from_feet = dist
+                                        to_head = body_height - dist
+                                        worker_logs.append(("DYN-BODY",
+                                            f"EMBEDDED! obj={obj_id} hit={dist:.3f}m pct={penetration_pct:.1f}% "
+                                            f"feet={from_feet:.3f}m head={to_head:.3f}m"))
+
+                    test_duration = (perf_time.perf_counter() - test_start) * 1_000_000  # Convert to microseconds
+
+                    # Log summary (only if toggle enabled)
+                    if debug_dynamic_body:
+                        status = "EMBEDDED" if (body_hit_source and "dynamic" in body_hit_source) else "CLEAR"
+                        embed_str = f"{embed_distance:.3f}m" if embed_distance else "None"
+                        worker_logs.append(("DYN-BODY",
+                            f"[{status}] source={body_hit_source} embed={embed_str} "
+                            f"h={body_height:.2f}m tris={total_tris} time={test_duration:.1f}µs"))
 
             # ─────────────────────────────────────────────────────────────────
             # 5.6 EMBEDDING RESOLUTION (Prevention + Correction)
@@ -1463,6 +1706,33 @@ def process_job(job) -> dict:
 
                     if ground_hit_z is not None:
                         break
+
+                # ═══════════════════════════════════════════════════════════
+                # DYNAMIC MESH GROUND TESTING (Unified Physics)
+                # ═══════════════════════════════════════════════════════════
+                # Test transformed dynamic meshes with same ground raycast
+                ground_hit_source = "static" if ground_hit_z is not None else None
+                debug_collision = debug_flags.get("dynamic_collision", False)
+
+                if transformed_dynamic_meshes:
+                    for obj_id, world_tris in transformed_dynamic_meshes.items():
+                        for tri in world_tris:
+                            total_tris += 1
+                            hit, dist, hp = ray_triangle_intersect(
+                                (px, py, ray_start_z), (0, 0, -1),
+                                tri[0], tri[1], tri[2]
+                            )
+                            if hit and dist < ray_max:
+                                hit_z = ray_start_z - dist
+                                if ground_hit_z is None or hit_z > ground_hit_z:
+                                    ground_hit_z = hit_z
+                                    ground_hit_n = compute_triangle_normal(tri[0], tri[1], tri[2])
+                                    ground_hit_source = f"dynamic_{obj_id}"
+
+                # Log collision source
+                if debug_collision and ground_hit_z is not None:
+                    if ground_hit_source and "dynamic" in ground_hit_source:
+                        worker_logs.append(("DYN-COLLISION", f"GROUND hit_source={ground_hit_source} z={ground_hit_z:.2f}m normal=({ground_hit_n[0]:.2f},{ground_hit_n[1]:.2f},{ground_hit_n[2]:.2f})"))
 
                 # Apply vertical movement and ground snap
                 if dz < 0.0:  # Falling
@@ -1686,6 +1956,26 @@ def process_job(job) -> dict:
             if debug_enhanced:
                 worker_logs.append(("KCC", f"COMPLETE pos=({px:.2f},{py:.2f},{pz:.2f}) vel=({vx:.2f},{vy:.2f},{vz:.2f}) ground={on_ground} walkable={on_walkable} blocked={h_blocked} step={did_step_up} slide={did_slide} | {calc_time_us:.0f}us {total_rays}rays {total_tris}tris"))
 
+            # VALIDATION: Overall stress summary
+            # ═════════════════════════════════════════════════════════════════
+            # PERFORMANCE DIAGNOSTICS - Detailed Timing Breakdown
+            # ═════════════════════════════════════════════════════════════════
+            if debug_flags.get("engine", False) and len(transformed_dynamic_meshes) > 0:
+                # Calculate approximate breakdown
+                transform_time = dynamic_transform_time_us
+                total_time = calc_time_us
+                physics_time = total_time - transform_time
+
+                # Cache state
+                cached_mesh_count = len(_cached_dynamic_meshes)
+                active_mesh_count = len(transformed_dynamic_meshes)
+
+                # Log detailed breakdown
+                worker_logs.append(("ENGINE",
+                    f"TIMING: total={total_time:.0f}µs xform={transform_time:.0f}µs "
+                    f"phys={physics_time:.0f}µs | rays={total_rays} tris={total_tris} "
+                    f"cells={total_cells} | cache={cached_mesh_count} active={active_mesh_count}"))
+
             result_data = {
                 "pos": (px, py, pz),
                 "vel": (vx, vy, vz),
@@ -1700,6 +1990,8 @@ def process_job(job) -> dict:
                     "triangles_tested": total_tris,
                     "cells_traversed": total_cells,
                     "calc_time_us": calc_time_us,
+                    "dynamic_meshes_active": len(transformed_dynamic_meshes),
+                    "dynamic_transform_time_us": dynamic_transform_time_us,
                     "h_blocked": h_blocked,
                     "did_step_up": did_step_up,
                     "did_slide": did_slide,

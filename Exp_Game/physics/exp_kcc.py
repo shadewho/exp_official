@@ -799,7 +799,7 @@ class KinematicCharacterController:
     # Job building
     # --------------------
 
-    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt, context=None):
+    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt, context=None, dynamic_map=None):
         """Build KCC_PHYSICS_STEP job data for worker."""
         cfg = self.cfg
 
@@ -815,7 +815,28 @@ class KinematicCharacterController:
                 "slide": getattr(scene, "dev_debug_physics_slide", False),
                 "enhanced": getattr(scene, "dev_debug_physics_enhanced", False),
                 "body_integrity": getattr(scene, "dev_debug_physics_body_integrity", False),
+                "dynamic_mesh": getattr(scene, "dev_debug_dynamic_mesh", False),
+                "dynamic_collision": getattr(scene, "dev_debug_dynamic_collision", False),
+                "dynamic_body_ray": getattr(scene, "dev_debug_dynamic_body_ray", False),
+                "dynamic_horizontal": getattr(scene, "dev_debug_dynamic_horizontal", False),
             }
+
+        # Serialize dynamic mesh transforms (64 bytes per mesh)
+        dynamic_transforms = {}
+        if dynamic_map:
+            for dyn_obj in dynamic_map.keys():
+                try:
+                    matrix = dyn_obj.matrix_world
+                    obj_id = id(dyn_obj)
+                    # Serialize as 16-element tuple (row-major)
+                    dynamic_transforms[obj_id] = (
+                        matrix[0][0], matrix[0][1], matrix[0][2], matrix[0][3],
+                        matrix[1][0], matrix[1][1], matrix[1][2], matrix[1][3],
+                        matrix[2][0], matrix[2][1], matrix[2][2], matrix[2][3],
+                        matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3],
+                    )
+                except Exception:
+                    continue
 
         return {
             # Current state
@@ -855,6 +876,9 @@ class KinematicCharacterController:
 
             # Debug flags
             "debug_flags": debug_flags,
+
+            # Dynamic mesh transforms (per-frame, lightweight)
+            "dynamic_transforms": dynamic_transforms,
         }
 
     # ---- Main step ----------------------------------------------------------
@@ -942,7 +966,7 @@ class KinematicCharacterController:
         # 3. SUBMIT job and 4. POLL for same-frame result
         # ─────────────────────────────────────────────────────────────────────
         if engine:
-            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt, context)
+            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt, context, dynamic_map)
             job_id = engine.submit_job("KCC_PHYSICS_STEP", job_data)
             self._last_physics_job_id = job_id
 

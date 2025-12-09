@@ -113,8 +113,23 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         # Performance Culling
         col.prop(scene, "dev_debug_performance", text="Performance Culling")
 
-        # Dynamic Mesh
-        col.prop(scene, "dev_debug_dynamic_offload", text="Dynamic Mesh")
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
+        # Dynamic Mesh Physics (Unified Offload System)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Dynamic Mesh Physics", icon='MESH_DATA')
+
+        col = box.column(align=True)
+        col.prop(scene, "dev_debug_dynamic_cache", text="Cache Operations")
+        col.prop(scene, "dev_debug_dynamic_mesh", text="Transform & Collision")
+        col.prop(scene, "dev_debug_dynamic_collision", text="Collision Results")
+
+        col.separator()
+        col.label(text="Collision Types (Step-by-Step):", icon='PHYSICS')
+        col.prop(scene, "dev_debug_dynamic_body_ray", text="Body Ray (Embedding)")
+        col.prop(scene, "dev_debug_dynamic_horizontal", text="Horizontal (Walls)")
 
         layout.separator()
 

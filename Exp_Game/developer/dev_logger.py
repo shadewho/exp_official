@@ -34,9 +34,14 @@ _logs_per_category: Dict[str, int] = {}
 
 # Category name mapping (log category -> debug property name)
 _CATEGORY_MAP = {
+    'ENGINE': 'engine',
     'KCC': 'kcc_offload',
     'CAMERA': 'camera_offload',
-    'DYNAMIC': 'dynamic_offload',
+    'DYN-MESH': 'dynamic_mesh',
+    'DYN-CACHE': 'dynamic_cache',
+    'DYN-COLLISION': 'dynamic_collision',
+    'DYN-BODY': 'dynamic_body_ray',
+    'DYN-HORIZ': 'dynamic_horizontal',
     'FRAME': 'frame_numbers',
     'PHYS-TIMING': 'physics_timing',
     'PHYS-CATCHUP': 'physics_catchup',

@@ -683,7 +683,7 @@ def submit_camera_occlusion_early(op, context):
 
     if debug_camera:
         from ..developer.dev_logger import log_game
-        log_game("CAMERA", f"SUBMIT job={job_id} origin=({anchor.x:.2f},{anchor.y:.2f},{anchor.z:.2f}) dir=({direction.x:.2f},{direction.y:.2f},{direction.z:.2f}) max={desired_max:.2f}m dynamic_objs={dynamic_obj_count} dynamic_tris={len(dynamic_triangles)}")
+        log_game("CAMERA", f"SUBMIT job={job_id} origin=({anchor.x:.2f},{anchor.y:.2f},{anchor.z:.2f}) dir=({direction.x:.2f},{direction.y:.2f},{direction.z:.2f}) max={desired_max:.2f}m")
 
     return job_id  # Return job_id for explicit polling
 

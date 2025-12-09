@@ -413,14 +413,78 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_dynamic_offload = bpy.props.BoolProperty(
-        name="Dynamic Mesh",
+    # ══════════════════════════════════════════════════════════════════════════
+    # DYNAMIC MESH PHYSICS (Unified Offload System)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_dynamic_mesh = bpy.props.BoolProperty(
+        name="Dynamic Mesh Physics",
         description=(
-            "Dynamic mesh activation offload:\n"
-            "• Distance-based activation checks\n"
-            "• BVH rebuild triggers\n"
-            "• Platform velocity tracking\n"
-            "• Activation state transitions"
+            "Dynamic mesh physics offload system:\n"
+            "• Transform updates (per-frame matrix serialization, 64 bytes per mesh)\n"
+            "• Performance timing (transform time, collision time breakdowns)\n"
+            "• Collision results (unified static+dynamic testing)\n"
+            "\n"
+            "Shows worker-side dynamic mesh processing for unified physics"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_dynamic_cache = bpy.props.BoolProperty(
+        name="Dynamic Mesh Cache",
+        description=(
+            "Dynamic mesh caching operations:\n"
+            "• One-time triangle caching in local space\n"
+            "• Cache registration on first activation\n"
+            "• Shows which meshes are cached and their triangle counts\n"
+            "\n"
+            "Use this to verify dynamic meshes are being cached to worker"
+        ),
+        default=False
+    )
+
+
+    bpy.types.Scene.dev_debug_dynamic_collision = bpy.props.BoolProperty(
+        name="Dynamic Mesh Collision",
+        description=(
+            "Collision detection with dynamic meshes:\n"
+            "• Ground detection (raycast down hits dynamic platform)\n"
+            "• Body integrity ray (embedding detection)\n"
+            "• Horizontal collision (capsule sweep)\n"
+            "• Ceiling detection (upward blocking)\n"
+            "• Step-up detection (climbing dynamic stairs)\n"
+            "• Wall slide (sliding along dynamic walls)\n"
+            "\n"
+            "Shows which physics tests hit dynamic vs static geometry"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_dynamic_body_ray = bpy.props.BoolProperty(
+        name="Dynamic Body Ray",
+        description=(
+            "Body integrity ray collision with dynamic meshes:\n"
+            "• Vertical ray from feet to head\n"
+            "• Detects embedding/penetration in dynamic meshes\n"
+            "• Shows penetration depth, percentage, and which mesh\n"
+            "• Performance timing per test\n"
+            "\n"
+            "CRITICAL: Prevents player getting stuck inside dynamic walls"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_dynamic_horizontal = bpy.props.BoolProperty(
+        name="Dynamic Horizontal",
+        description=(
+            "Horizontal collision with dynamic meshes:\n"
+            "• Capsule sweep at 3 heights (feet, mid, shoulder)\n"
+            "• Detects walls, obstacles, and blockages\n"
+            "• Shows hit distance, normal, and which mesh\n"
+            "• Wall slide calculation and effectiveness\n"
+            "• Performance timing per test\n"
+            "\n"
+            "CRITICAL: Prevents walking through dynamic walls"
         ),
         default=False
     )
@@ -522,7 +586,9 @@ def unregister_properties():
     # Offload Systems
     for prop in ('dev_debug_kcc_offload', 'dev_debug_frame_numbers',
                  'dev_debug_camera_offload', 'dev_debug_performance',
-                 'dev_debug_dynamic_offload'):
+                 'dev_debug_dynamic_mesh', 'dev_debug_dynamic_cache',
+                 'dev_debug_dynamic_collision',
+                 'dev_debug_dynamic_body_ray', 'dev_debug_dynamic_horizontal'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 

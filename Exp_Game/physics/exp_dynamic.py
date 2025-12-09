@@ -2,7 +2,6 @@ import bpy
 import mathutils
 import time
 from .exp_bvh_local import LocalBVH
-from ..developer.dev_debug_gate import should_print_debug
 
 
 def apply_dynamic_activation_result(modal_op, engine_result):
@@ -15,14 +14,11 @@ def apply_dynamic_activation_result(modal_op, engine_result):
         engine_result: EngineResult object with result.result containing activation_decisions
     """
     scene = bpy.context.scene
-    debug_offload = should_print_debug("dynamic_offload")
 
     result_data = engine_result.result
     activation_decisions = result_data.get("activation_decisions", [])
     if not activation_decisions:
         return
-
-    apply_start = time.perf_counter() if debug_offload else 0.0
 
     # Apply activation states
     transitions = []
@@ -38,19 +34,6 @@ def apply_dynamic_activation_result(modal_op, engine_result):
         # Track transitions for debug output
         if prev_active != should_activate:
             transitions.append((obj_name, prev_active, should_activate))
-
-    apply_end = time.perf_counter() if debug_offload else 0.0
-
-    if debug_offload:
-        from ..developer.dev_logger import log_game
-        apply_time_ms = (apply_end - apply_start) * 1000.0
-        worker_time_ms = engine_result.processing_time * 1000.0
-        calc_time_us = result_data.get("calc_time_us", 0.0)
-        log_game("DYNAMIC", f"Applied {len(activation_decisions)} activation decisions (apply: {apply_time_ms:.3f}ms, worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
-        if transitions:
-            for obj_name, prev_active, new_active in transitions:
-                state_change = "ACTIVATED" if new_active else "DEACTIVATED"
-                log_game("DYNAMIC", f"  {obj_name}: {state_change}")
 
 
 def update_dynamic_meshes(modal_op):
@@ -124,15 +107,12 @@ def update_dynamic_meshes(modal_op):
     # Worker results will update activation states for NEXT frame
     engine = getattr(modal_op, "engine", None)
     use_workers = engine is not None and engine.is_alive()
-    debug_offload = should_print_debug("dynamic_offload")
 
     if use_workers and player_loc is not None:
         # Snapshot mesh data for worker
         mesh_positions = []
         mesh_objects = []  # (obj_name, prev_active)
         base_distances = []
-
-        submit_start = time.perf_counter() if debug_offload else 0.0
 
         for pm in scene.proxy_meshes:
             dyn_obj = pm.mesh_object
@@ -161,14 +141,6 @@ def update_dynamic_meshes(modal_op):
             }
 
             job_id = engine.submit_job("DYNAMIC_MESH_ACTIVATION", job_data)
-
-            submit_end = time.perf_counter() if debug_offload else 0.0
-
-            if debug_offload:
-                from ..developer.dev_logger import log_game
-                submit_time_ms = (submit_end - submit_start) * 1000.0
-                log_game("DYNAMIC", f"Submitted job {job_id} with {len(mesh_positions)} meshes (submit time: {submit_time_ms:.3f}ms)")
-                log_game("DYNAMIC", "Continuing with main thread BVH/velocity calculations using current activation states")
 
     # ========== Main Thread: BVH & Velocity Calculations ==========
     # Use current activation states (updated by worker results from previous frame)
@@ -200,6 +172,46 @@ def update_dynamic_meshes(modal_op):
         if lbvh is None:
             lbvh = LocalBVH(dyn_obj)
             modal_op.cached_local_bvhs[dyn_obj] = lbvh
+
+            # Cache triangles in worker (one-time per mesh)
+            if use_workers and engine:
+                # Check if already cached
+                obj_id = id(dyn_obj)
+                if not hasattr(modal_op, '_cached_dynamic_mesh_ids'):
+                    modal_op._cached_dynamic_mesh_ids = set()
+
+                if obj_id not in modal_op._cached_dynamic_mesh_ids:
+                    # Extract triangles in LOCAL space
+                    mesh = dyn_obj.data
+                    mesh.calc_loop_triangles()
+
+                    triangles = []
+                    for tri in mesh.loop_triangles:
+                        v0 = tuple(mesh.vertices[tri.vertices[0]].co)
+                        v1 = tuple(mesh.vertices[tri.vertices[1]].co)
+                        v2 = tuple(mesh.vertices[tri.vertices[2]].co)
+                        triangles.append((v0, v1, v2))
+
+                    # Get radius (already computed below, but we need it now)
+                    if dyn_obj not in modal_op._cached_dyn_radius:
+                        bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
+                        center_world = sum(bbox_world, mathutils.Vector()) / 8.0
+                        rad_center = max((p - center_world).length for p in bbox_world)
+                        origin_world = dyn_obj.matrix_world.translation
+                        center_offset = (center_world - origin_world).length
+                        modal_op._cached_dyn_radius[dyn_obj] = rad_center + center_offset
+
+                    radius = modal_op._cached_dyn_radius.get(dyn_obj, 1.0)
+
+                    # Send to worker
+                    job_data = {
+                        "obj_id": obj_id,
+                        "triangles": triangles,
+                        "radius": radius,
+                    }
+
+                    cache_job_id = engine.submit_job("CACHE_DYNAMIC_MESH", job_data)
+                    modal_op._cached_dynamic_mesh_ids.add(obj_id)
 
         # NEW: cache inverse transforms once this frame
         lbvh.update_xform(cur_M)

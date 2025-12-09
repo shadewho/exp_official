@@ -704,21 +704,21 @@ class EngineCore:
         if not engine_enabled:
             return
 
-        # Check if it's time to output based on Hz
+        # Import logger (frequency gating handled by logger system via master Hz)
+        try:
+            from ..developer.dev_logger import log_game
+        except:
+            return  # Logger not available
+
+        # Get current time for uptime calculation
         now = time.time()
-        interval = 1.0 / engine_hz if engine_hz > 0 else 1.0
-
-        if now - self._last_debug_output < interval:
-            return
-
-        self._last_debug_output = now
 
         # Calculate worker load distribution
         total_jobs = sum(stats["jobs_processed"] for stats in self._worker_stats.values())
 
         if total_jobs == 0:
             # No jobs processed yet
-            print("[Engine] No jobs processed yet")
+            log_game("ENGINE", "No jobs processed yet")
             return
 
         worker_loads = []
@@ -734,7 +734,7 @@ class EngineCore:
         jobs_per_sec = total_jobs / uptime if uptime > 0 else 0
 
         # Output summary (worker distribution only - individual systems show their own job stats)
-        print(f"[Engine] Worker load: {worker_load_str} | {jobs_per_sec:.0f} jobs/sec")
+        log_game("ENGINE", f"Worker load: {worker_load_str} | {jobs_per_sec:.0f} jobs/sec")
 
     def send_heartbeat(self):
         """
