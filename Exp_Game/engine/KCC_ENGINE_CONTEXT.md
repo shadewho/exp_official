@@ -5,6 +5,11 @@
 **Session Logs:** `C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt`
 
 ---
+## ⚠️ CRITICAL: Development Workflow
+
+**ALWAYS MAKE CHANGES TO:** `C:\Users\spenc\Desktop\Exploratory\addons\Exploratory`
+
+**NEVER EDIT:** `C:\Users\spenc\AppData\Roaming\Blender Foundation\Blender\5.0\scripts\addons\Exploratory`
 
 ## 🎯 PRIMARY MANDATE
 

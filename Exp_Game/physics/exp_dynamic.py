@@ -240,3 +240,4 @@ def update_dynamic_meshes(modal_op):
             axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
         omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
         modal_op.platform_ang_velocity_map[dyn_obj] = omega
+    

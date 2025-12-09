@@ -67,7 +67,6 @@ Each log has a category that maps to a debug toggle:
 |----------|---------------|-------------|
 | `KCC` | `kcc_offload` | KCC physics step results |
 | `CAMERA` | `camera_offload` | Camera occlusion raycasts |
-| `DYNAMIC` | `dynamic_offload` | Dynamic mesh activation |
 | `FRAME` | `frame_numbers` | Frame numbers with timestamps |
 | `PHYS-CAPSULE` | `physics_capsule` | Capsule sweep collision testing |
 | `PHYS-GROUND` | `physics_ground` | Ground detection raycasts |
