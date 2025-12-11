@@ -14,7 +14,6 @@ Worker does the ENTIRE physics step:
 
 Main thread is THIN:
   - Apply previous frame's worker result
-  - Handle dynamic movers (frame-perfect)
   - Snapshot state + input
   - Submit KCC_PHYSICS_STEP job
   - Write position to Blender
@@ -429,97 +428,6 @@ class KinematicCharacterController:
     # Dynamic mover handling (main thread - frame-perfect)
     # --------------------
 
-    def _handle_dynamic_movers(self, dynamic_map, v_lin_map, v_ang_map, pos, dt):
-        """
-        Handle dynamic platform carry on main thread (frame-perfect accuracy).
-        Returns (velocity_add, push_out, rotation_delta_z).
-        """
-        if not dynamic_map:
-            return Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0)), 0.0
-
-        r = float(self.cfg.radius)
-        h = float(self.cfg.height)
-        up = self._up
-
-        # Capsule mid sample
-        mid_z = max(r, min(h - r, h * 0.5))
-        sample_mid = pos + Vector((0.0, 0.0, mid_z))
-
-        # Bounding sphere for quick gate
-        cap_center = pos + Vector((0.0, 0.0, h * 0.5))
-        cap_bs_rad = (h * 0.5 + r)
-
-        # Find nearby movers
-        candidates = []
-        for obj, (_lbvh, approx_rad) in dynamic_map.items():
-            if obj is None or _lbvh is None:
-                continue
-            if self.ground_obj is not None and obj == self.ground_obj:
-                continue  # Skip ground object (handled separately)
-            try:
-                c = obj.matrix_world.translation
-            except Exception:
-                continue
-            if (c - cap_center).length <= (float(approx_rad) + cap_bs_rad + 0.4):
-                candidates.append((obj, (c - cap_center).length_squared))
-
-        if not candidates:
-            return Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0)), 0.0
-
-        candidates.sort(key=lambda t: t[1])
-        movers = [t[0] for t in candidates[:3]]
-
-        vel_add = Vector((0.0, 0.0, 0.0))
-        push_out = Vector((0.0, 0.0, 0.0))
-        rot_delta_z = 0.0
-        carry_cap = max(0.001, 0.5 * r)
-
-        for obj in movers:
-            lbvh, _ = dynamic_map.get(obj, (None, None))
-            if lbvh is None:
-                continue
-
-            try:
-                hit_co, hit_n, _idx, dist = lbvh.find_nearest(sample_mid, distance=r + 0.20)
-            except Exception:
-                continue
-            if hit_co is None or hit_n is None:
-                continue
-
-            n = hit_n.normalized()
-            if (sample_mid - hit_co).dot(n) < 0.0:
-                n = -n
-
-            # Push-out if overlapping
-            if dist < r:
-                push_out += n * min((r - dist), 0.20)
-
-            # Linear carry
-            v_lin = v_lin_map.get(obj, Vector((0.0, 0.0, 0.0))) if v_lin_map else Vector((0.0, 0.0, 0.0))
-            if v_lin.length_squared <= 1.0e-12:
-                continue
-
-            n_up = n.dot(up)
-            v_xy = Vector((v_lin.x, v_lin.y, 0.0))
-
-            if n_up >= 0.6:
-                v_add = Vector((v_xy.x, v_xy.y, 0.0))
-            elif n_up >= 0.0:
-                vn = v_xy.dot(n)
-                if vn > 0.0:
-                    v_xy = v_xy - n * vn
-                v_add = Vector((v_xy.x, v_xy.y, 0.0))
-            else:
-                v_add = Vector((0.0, 0.0, 0.0))
-
-            v_add.x = clamp(v_add.x, -carry_cap, carry_cap)
-            v_add.y = clamp(v_add.y, -carry_cap, carry_cap)
-            v_add.z = 0.0
-
-            vel_add += v_add
-
-        return vel_add, push_out, rot_delta_z
-
     def _get_platform_carry(self, platform_linear_velocity_map, platform_ang_velocity_map, pos, rot, dt):
         """Get velocity carry from ground platform (main thread, frame-perfect)."""
         carry = Vector((0.0, 0.0, 0.0))
@@ -581,14 +489,25 @@ class KinematicCharacterController:
             self._jump_buf = 0.0
 
         # ─────────────────────────────────────────────────────────────────────
-        # DYNAMIC MESH COLLISION CHECK (temporary main thread implementation)
-        # TODO: Move dynamic mesh physics to worker for full parity with static
+        # UNIFIED PHYSICS: Ground source from worker (static or dynamic)
+        # Worker now handles ALL collision detection (static grid + dynamic meshes)
+        # We just need to extract which object we're standing on for platform carry
         # ─────────────────────────────────────────────────────────────────────
-        if dynamic_map:
-            self._check_dynamic_collision(dynamic_map)
+        ground_hit_source = result.get("ground_hit_source")  # "static", "dynamic_ObjectName", or None
+        self.ground_obj = None  # Default to no ground object
+
+        if ground_hit_source and ground_hit_source.startswith("dynamic_"):
+            # Extract object name from "dynamic_ObjectName" format
+            obj_name = ground_hit_source[8:]  # Remove "dynamic_" prefix
+            # Look up object in dynamic_map by name
+            if dynamic_map:
+                for obj in dynamic_map.keys():
+                    if obj and obj.name == obj_name:
+                        self.ground_obj = obj
+                        break
 
         # ─────────────────────────────────────────────────────────────────────
-        # PLATFORM CARRY (after dynamic collision sets ground_obj)
+        # PLATFORM CARRY (uses ground_obj set from worker's ground_hit_source)
         # This must happen AFTER physics to avoid stutter - we ADD platform
         # motion to the physics result rather than baking it into velocity
         # ─────────────────────────────────────────────────────────────────────
@@ -651,149 +570,6 @@ class KinematicCharacterController:
                             f"step={debug.get('did_step_up', False)} | "
                             f"{debug.get('calc_time_us', 0):.0f}us {debug.get('rays_cast', 0)}rays "
                             f"{debug.get('triangles_tested', 0)}tris")
-
-    def _check_dynamic_collision(self, dynamic_map):
-        """
-        Check collision against dynamic meshes:
-        1. Ground detection (raycast down) - allows standing on dynamic meshes
-        2. Horizontal collision (push out) - prevents walking through
-        Called after applying worker physics result.
-        """
-        import math
-        if not dynamic_map:
-            return
-
-        # Clear hit normals for this frame
-        self._vis_hit_normals = []
-
-        r = float(self.cfg.radius)
-        h = float(self.cfg.height)
-        snap_down = float(self.cfg.snap_down)
-
-        # Bounding sphere for quick gate
-        cap_center = self.pos + Vector((0.0, 0.0, h * 0.5))
-        cap_bs_rad = (h * 0.5 + r)
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 1. GROUND DETECTION ON DYNAMIC MESHES
-        # ─────────────────────────────────────────────────────────────────────
-        # Raycast down from feet to find dynamic ground
-        best_ground_z = None
-        best_ground_n = None
-        best_ground_obj = None
-
-        ray_origin = self.pos + Vector((0.0, 0.0, 0.5))  # Start slightly above feet
-        ray_max = snap_down + 0.5 + 0.1  # How far down to check
-
-        for obj, (lbvh, approx_rad) in dynamic_map.items():
-            if obj is None or lbvh is None:
-                continue
-
-            try:
-                c = obj.matrix_world.translation
-            except Exception:
-                continue
-
-            # Quick distance gate (generous for ground check)
-            if (c - cap_center).length > (float(approx_rad) + cap_bs_rad + 2.0):
-                continue
-
-            # Raycast down using BVH
-            try:
-                hit_co, hit_n, _idx, dist = lbvh.ray_cast(ray_origin, Vector((0.0, 0.0, -1.0)), ray_max)
-            except Exception:
-                continue
-
-            if hit_co is not None and hit_n is not None:
-                hit_z = hit_co.z
-                # Check if this is a valid ground (normal pointing up enough)
-                if hit_n.z >= self._floor_cos:
-                    if best_ground_z is None or hit_z > best_ground_z:
-                        best_ground_z = hit_z
-                        best_ground_n = hit_n.copy()
-                        best_ground_obj = obj
-
-        # Apply dynamic ground if found and within snap distance
-        if best_ground_z is not None:
-            ground_diff = best_ground_z - self.pos.z
-            # If we're close enough to ground OR falling onto it
-            if abs(ground_diff) <= snap_down or (self.vel.z <= 0 and ground_diff >= -0.1):
-                self.pos.z = best_ground_z
-                self.on_ground = True
-                self.on_walkable = True
-                self.ground_norm = best_ground_n
-                self.ground_obj = best_ground_obj
-                self.vel.z = max(0.0, self.vel.z)
-                self._coyote = self.cfg.coyote_time
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 2. HORIZONTAL COLLISION (push out from sides)
-        # ─────────────────────────────────────────────────────────────────────
-        sample_heights = [r, h * 0.5, h - r]
-
-        total_push = Vector((0.0, 0.0, 0.0))
-        push_count = 0
-
-        for obj, (lbvh, approx_rad) in dynamic_map.items():
-            if obj is None or lbvh is None:
-                continue
-            # Skip our current ground object for horizontal checks
-            if best_ground_obj is not None and obj == best_ground_obj:
-                continue
-
-            try:
-                c = obj.matrix_world.translation
-            except Exception:
-                continue
-
-            # Quick distance gate
-            if (c - cap_center).length > (float(approx_rad) + cap_bs_rad + 0.5):
-                continue
-
-            # Check collision at multiple heights
-            for sample_z in sample_heights:
-                sample_pt = self.pos + Vector((0.0, 0.0, sample_z))
-
-                try:
-                    hit_co, hit_n, _idx, dist = lbvh.find_nearest(sample_pt, distance=r + 0.15)
-                except Exception:
-                    continue
-
-                if hit_co is None or hit_n is None:
-                    continue
-
-                # Push out if overlapping
-                if dist < r:
-                    n = hit_n.normalized()
-                    # Make sure normal points away from mesh
-                    if (sample_pt - hit_co).dot(n) < 0.0:
-                        n = -n
-                    push_dist = min((r - dist) + 0.02, 0.3)  # Max 0.3m push
-                    total_push += n * push_dist
-                    push_count += 1
-
-                    # Cache hit normal for visualization
-                    self._vis_hit_normals.append((
-                        (hit_co.x, hit_co.y, hit_co.z),
-                        (n.x, n.y, n.z)
-                    ))
-
-        # Apply accumulated horizontal push
-        if push_count > 0:
-            # Average the push if multiple hits
-            total_push /= push_count
-            # Only apply horizontal component (Z push handled by ground detection)
-            self.pos.x += total_push.x
-            self.pos.y += total_push.y
-
-            # Remove velocity component into the push
-            push_xy = Vector((total_push.x, total_push.y, 0.0))
-            if push_xy.length > 0.01:
-                push_n = push_xy.normalized()
-                vn = self.vel.x * push_n.x + self.vel.y * push_n.y
-                if vn < 0.0:  # Moving into the obstacle
-                    self.vel.x -= push_n.x * vn
-                    self.vel.y -= push_n.y * vn
 
     # --------------------
     # Job building
@@ -920,24 +696,13 @@ class KinematicCharacterController:
         self._pending_platform_ang_map = platform_ang_velocity_map
         self._pending_dt = dt
 
-        # ─────────────────────────────────────────────────────────────────────
-        # 1. Handle dynamic movers (temporary main thread, TODO: move to worker)
-        # ─────────────────────────────────────────────────────────────────────
-        # Note: Platform carry is applied AFTER physics result to prevent stutter
-        if dynamic_map:
-            # Push-out from nearby dynamic movers (no velocity carry here)
-            v_extra, p_out, _ = self._handle_dynamic_movers(
-                dynamic_map,
-                None,  # Don't apply velocity here - do it after physics
-                None,
-                self.pos,
-                dt
-            )
-            if p_out.length_squared > 0.0:
-                self.pos += p_out
+        # ═══════════════════════════════════════════════════════════════════
+        # UNIFIED PHYSICS: All collision (including push-out) handled in worker
+        # No main thread collision detection needed
+        # ═══════════════════════════════════════════════════════════════════
 
         # ─────────────────────────────────────────────────────────────────────
-        # 2. SNAPSHOT current state + input
+        # 1. SNAPSHOT current state + input
         # ─────────────────────────────────────────────────────────────────────
         # Increment frame counter
         self._physics_frame += 1

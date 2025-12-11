@@ -30,12 +30,8 @@ DEBUG_ENGINE = False
 _cached_grid = None  # Will hold the spatial grid data after CACHE_GRID job
 
 # ============================================================================
-# WORKER-SIDE DYNAMIC MESH CACHE
+# WORKER-SIDE DYNAMIC MESH 
 # ============================================================================
-# Dynamic meshes are cached in LOCAL space once, then transformed per frame.
-# Key: obj_id (integer from id(obj) in main thread)
-# Value: {"triangles": [(v0, v1, v2), ...], "radius": float}
-
 _cached_dynamic_meshes = {}  # Will hold dynamic mesh data after CACHE_DYNAMIC_MESH jobs
 
 
@@ -172,6 +168,399 @@ def compute_triangle_normal(v0, v1, v2):
         nz /= length
 
     return (nx, ny, nz)
+
+
+# ============================================================================
+# BOUNDING SPHERE INTERSECTION (for quick dynamic mesh rejection)
+# ============================================================================
+
+def ray_sphere_intersect(ray_origin, ray_direction, sphere_center, sphere_radius, max_dist):
+    """
+    Quick test if a ray might hit a sphere (conservative - may return true for near misses).
+    Used for early rejection of dynamic meshes that are clearly not in the ray's path.
+
+    Args:
+        ray_origin: (x, y, z) ray starting point
+        ray_direction: (x, y, z) ray direction (should be normalized)
+        sphere_center: (x, y, z) center of bounding sphere
+        sphere_radius: radius of bounding sphere
+        max_dist: maximum ray distance to check
+
+    Returns:
+        True if ray might hit sphere, False if definitely misses
+    """
+    # Vector from ray origin to sphere center
+    ox, oy, oz = ray_origin
+    cx, cy, cz = sphere_center
+    dx, dy, dz = ray_direction
+
+    # Vector from origin to center
+    ocx = cx - ox
+    ocy = cy - oy
+    ocz = cz - oz
+
+    # Project center onto ray
+    t_closest = ocx * dx + ocy * dy + ocz * dz
+
+    # If sphere is behind ray and ray doesn't start inside sphere
+    oc_len_sq = ocx*ocx + ocy*ocy + ocz*ocz
+    if t_closest < 0:
+        # Check if ray origin is inside sphere
+        return oc_len_sq <= sphere_radius * sphere_radius
+
+    # Check if closest approach is beyond max distance
+    if t_closest > max_dist + sphere_radius:
+        return False
+
+    # Find closest point on ray to sphere center
+    closest_x = ox + dx * t_closest
+    closest_y = oy + dy * t_closest
+    closest_z = oz + dz * t_closest
+
+    # Distance from closest point to sphere center
+    dist_sq = (closest_x - cx)**2 + (closest_y - cy)**2 + (closest_z - cz)**2
+
+    # Hit if distance is less than radius (with small margin for numerical safety)
+    return dist_sq <= (sphere_radius + 0.1) ** 2
+
+
+def compute_bounding_sphere(triangles):
+    """
+    Compute a simple bounding sphere for a list of triangles (world space).
+    Uses centroid + max distance method (not optimal but fast).
+
+    Args:
+        triangles: list of ((x,y,z), (x,y,z), (x,y,z)) triangles
+
+    Returns:
+        (center, radius) where center is (x,y,z) and radius is float
+    """
+    import math
+
+    if not triangles:
+        return ((0, 0, 0), 0.0)
+
+    # Collect all vertices
+    sum_x = sum_y = sum_z = 0.0
+    count = 0
+
+    all_verts = []
+    for v0, v1, v2 in triangles:
+        for v in (v0, v1, v2):
+            sum_x += v[0]
+            sum_y += v[1]
+            sum_z += v[2]
+            count += 1
+            all_verts.append(v)
+
+    # Centroid
+    if count == 0:
+        return ((0, 0, 0), 0.0)
+
+    cx = sum_x / count
+    cy = sum_y / count
+    cz = sum_z / count
+
+    # Max distance from centroid
+    max_dist_sq = 0.0
+    for v in all_verts:
+        dx = v[0] - cx
+        dy = v[1] - cy
+        dz = v[2] - cz
+        dist_sq = dx*dx + dy*dy + dz*dz
+        if dist_sq > max_dist_sq:
+            max_dist_sq = dist_sq
+
+    radius = math.sqrt(max_dist_sq)
+
+    return ((cx, cy, cz), radius)
+
+
+# ============================================================================
+# UNIFIED RAYCAST - Tests both static grid and dynamic meshes
+# ============================================================================
+
+def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_meshes,
+                    debug_logs=None, debug_category=None):
+    """
+    Test ray against ALL geometry (static grid + dynamic meshes).
+    Returns closest hit with source metadata.
+
+    This is the core of the unified physics system - same code path for all geometry.
+
+    Args:
+        ray_origin: (x, y, z) ray starting point
+        ray_direction: (x, y, z) ray direction (should be normalized for best results)
+        max_dist: maximum ray distance
+        grid_data: dict with cached static grid data (or None)
+                   Expected keys: cells, triangles, bounds_min, bounds_max, cell_size, grid_dims
+        dynamic_meshes: list of dicts with transformed dynamic mesh data
+                       Each: {"obj_id": id, "triangles": [...], "bounding_sphere": ((cx,cy,cz), radius)}
+        debug_logs: optional list to append debug messages
+        debug_category: category name for debug logs (e.g., "UNIFIED-RAY")
+
+    Returns:
+        dict with:
+            "hit": True/False
+            "dist": float (distance to hit)
+            "normal": (nx, ny, nz) surface normal
+            "pos": (x, y, z) hit position
+            "source": "static" or "dynamic"
+            "obj_id": object ID if dynamic hit (None for static)
+            "tris_tested": int (number of triangles tested)
+            "cells_traversed": int (number of grid cells checked)
+    """
+    import math
+
+    best_hit = None
+    best_dist = max_dist
+    total_tris = 0
+    total_cells = 0
+
+    ox, oy, oz = ray_origin
+    dx, dy, dz = ray_direction
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 1: Test Static Grid (3D DDA traversal - efficient)
+    # ─────────────────────────────────────────────────────────────────────────
+    if grid_data is not None:
+        cells = grid_data.get("cells", {})
+        triangles = grid_data.get("triangles", [])
+        bounds_min = grid_data.get("bounds_min", (0, 0, 0))
+        bounds_max = grid_data.get("bounds_max", (0, 0, 0))
+        cell_size = grid_data.get("cell_size", 1.0)
+        grid_dims = grid_data.get("grid_dims", (1, 1, 1))
+
+        min_x, min_y, min_z = bounds_min
+        max_x, max_y, max_z = bounds_max
+        nx_grid, ny_grid, nz_grid = grid_dims
+
+        # Clamp start position to grid bounds
+        start_x = max(min_x, min(max_x - 0.001, ox))
+        start_y = max(min_y, min(max_y - 0.001, oy))
+        start_z = max(min_z, min(max_z - 0.001, oz))
+
+        ix = int((start_x - min_x) / cell_size)
+        iy = int((start_y - min_y) / cell_size)
+        iz = int((start_z - min_z) / cell_size)
+
+        ix = max(0, min(nx_grid - 1, ix))
+        iy = max(0, min(ny_grid - 1, iy))
+        iz = max(0, min(nz_grid - 1, iz))
+
+        # DDA setup
+        step_x = 1 if dx >= 0 else -1
+        step_y = 1 if dy >= 0 else -1
+        step_z = 1 if dz >= 0 else -1
+
+        INF = float('inf')
+
+        if abs(dx) > 1e-12:
+            if dx > 0:
+                t_max_x = ((min_x + (ix + 1) * cell_size) - ox) / dx
+            else:
+                t_max_x = ((min_x + ix * cell_size) - ox) / dx
+            t_delta_x = abs(cell_size / dx)
+        else:
+            t_max_x = INF
+            t_delta_x = INF
+
+        if abs(dy) > 1e-12:
+            if dy > 0:
+                t_max_y = ((min_y + (iy + 1) * cell_size) - oy) / dy
+            else:
+                t_max_y = ((min_y + iy * cell_size) - oy) / dy
+            t_delta_y = abs(cell_size / dy)
+        else:
+            t_max_y = INF
+            t_delta_y = INF
+
+        if abs(dz) > 1e-12:
+            if dz > 0:
+                t_max_z = ((min_z + (iz + 1) * cell_size) - oz) / dz
+            else:
+                t_max_z = ((min_z + iz * cell_size) - oz) / dz
+            t_delta_z = abs(cell_size / dz)
+        else:
+            t_max_z = INF
+            t_delta_z = INF
+
+        tested_triangles = set()
+        cells_traversed = 0
+        max_cells = nx_grid + ny_grid + nz_grid + 20
+        t_current = 0.0
+
+        while cells_traversed < max_cells:
+            cells_traversed += 1
+            total_cells += 1
+
+            if t_current > best_dist:
+                break
+            if ix < 0 or ix >= nx_grid or iy < 0 or iy >= ny_grid or iz < 0 or iz >= nz_grid:
+                break
+
+            cell_key = (ix, iy, iz)
+            if cell_key in cells:
+                for tri_idx in cells[cell_key]:
+                    if tri_idx in tested_triangles:
+                        continue
+                    tested_triangles.add(tri_idx)
+                    total_tris += 1
+
+                    tri = triangles[tri_idx]
+                    hit, dist, hit_pos = ray_triangle_intersect(
+                        ray_origin, ray_direction, tri[0], tri[1], tri[2]
+                    )
+
+                    if hit and dist < best_dist:
+                        best_dist = dist
+                        normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                        best_hit = {
+                            "hit": True,
+                            "dist": dist,
+                            "normal": normal,
+                            "pos": hit_pos,
+                            "source": "static",
+                            "obj_id": None
+                        }
+
+            # Find next cell
+            t_next = min(t_max_x, t_max_y, t_max_z)
+
+            # Early out if we found a hit closer than next cell
+            if best_hit is not None and best_dist <= t_next:
+                break
+
+            if t_max_x <= t_max_y and t_max_x <= t_max_z:
+                ix += step_x
+                t_current = t_max_x
+                t_max_x += t_delta_x
+            elif t_max_y <= t_max_z:
+                iy += step_y
+                t_current = t_max_y
+                t_max_y += t_delta_y
+            else:
+                iz += step_z
+                t_current = t_max_z
+                t_max_z += t_delta_z
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 2: Test Dynamic Meshes (with bounding sphere culling)
+    # ─────────────────────────────────────────────────────────────────────────
+    if dynamic_meshes:
+        for dyn_mesh in dynamic_meshes:
+            obj_id = dyn_mesh.get("obj_id")
+            world_tris = dyn_mesh.get("triangles", [])
+            bounding_sphere = dyn_mesh.get("bounding_sphere")
+
+            # Quick sphere rejection (skip entire mesh if ray misses sphere)
+            if bounding_sphere:
+                sphere_center, sphere_radius = bounding_sphere
+                if not ray_sphere_intersect(ray_origin, ray_direction,
+                                           sphere_center, sphere_radius, best_dist):
+                    continue  # Skip ALL triangles in this mesh!
+
+            # Test triangles
+            for tri in world_tris:
+                total_tris += 1
+                hit, dist, hit_pos = ray_triangle_intersect(
+                    ray_origin, ray_direction, tri[0], tri[1], tri[2]
+                )
+
+                if hit and dist < best_dist:
+                    best_dist = dist
+                    normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                    best_hit = {
+                        "hit": True,
+                        "dist": dist,
+                        "normal": normal,
+                        "pos": hit_pos,
+                        "source": "dynamic",
+                        "obj_id": obj_id
+                    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Build result
+    # ─────────────────────────────────────────────────────────────────────────
+    if best_hit is None:
+        result = {
+            "hit": False,
+            "dist": None,
+            "normal": None,
+            "pos": None,
+            "source": None,
+            "obj_id": None,
+            "tris_tested": total_tris,
+            "cells_traversed": total_cells
+        }
+    else:
+        best_hit["tris_tested"] = total_tris
+        best_hit["cells_traversed"] = total_cells
+        result = best_hit
+
+    # Debug logging
+    if debug_logs is not None and debug_category:
+        if result["hit"]:
+            debug_logs.append((debug_category,
+                f"HIT source={result['source']} dist={result['dist']:.3f}m "
+                f"tris={total_tris} cells={total_cells}"))
+        else:
+            debug_logs.append((debug_category,
+                f"MISS tris={total_tris} cells={total_cells}"))
+
+    return result
+
+
+# ============================================================================
+# SIMPLE DYNAMIC MESH RAY HELPER (for integration with existing ray loops)
+# ============================================================================
+
+def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes, tris_tested_counter=None):
+    """
+    Test a single ray against dynamic meshes with bounding sphere culling.
+    Used to integrate dynamic mesh testing into existing ray loops.
+
+    Args:
+        ray_origin: (x, y, z) ray starting point
+        ray_direction: (x, y, z) ray direction (should be normalized)
+        max_dist: maximum ray distance
+        dynamic_meshes: list of dicts with {"obj_id", "triangles", "bounding_sphere"}
+        tris_tested_counter: optional list [count] to increment for tracking
+
+    Returns:
+        (dist, normal, obj_id) if hit, None if no hit
+    """
+    best_dist = max_dist
+    best_normal = None
+    best_obj_id = None
+
+    for dyn_mesh in dynamic_meshes:
+        obj_id = dyn_mesh.get("obj_id")
+        triangles = dyn_mesh.get("triangles", [])
+        bounding_sphere = dyn_mesh.get("bounding_sphere")
+
+        # Quick sphere rejection (skip entire mesh if ray misses sphere)
+        if bounding_sphere:
+            center, radius = bounding_sphere
+            if not ray_sphere_intersect(ray_origin, ray_direction, center, radius, best_dist):
+                continue  # Skip ALL triangles in this mesh!
+
+        # Test triangles
+        for tri in triangles:
+            if tris_tested_counter is not None:
+                tris_tested_counter[0] += 1
+
+            hit, dist, _ = ray_triangle_intersect(
+                ray_origin, ray_direction, tri[0], tri[1], tri[2]
+            )
+            if hit and dist < best_dist:
+                best_dist = dist
+                best_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                best_obj_id = obj_id
+
+    if best_normal is not None:
+        return (best_dist, best_normal, best_obj_id)
+    return None
 
 
 # ============================================================================
@@ -598,8 +987,14 @@ def process_job(job) -> dict:
             # Uses cached triangles + per-frame transform matrices (64 bytes each)
 
             dynamic_transforms = job.data.get("dynamic_transforms", {})
-            transformed_dynamic_meshes = {}  # {obj_id: [(v0, v1, v2), ...]}
             dynamic_transform_time_us = 0.0
+
+            # ═══════════════════════════════════════════════════════════════════
+            # UNIFIED DYNAMIC MESH FORMAT
+            # ═══════════════════════════════════════════════════════════════════
+            # List of dicts ready for unified_raycast:
+            # [{"obj_id": id, "triangles": [...], "bounding_sphere": (center, radius)}, ...]
+            unified_dynamic_meshes = []
 
             # CACHE DIAGNOSTICS - Log cache state before transform
             if debug_flags.get("engine", False):
@@ -625,17 +1020,25 @@ def process_job(job) -> dict:
                         tri_world = transform_triangle(tri_local, matrix_4x4)
                         world_triangles.append(tri_world)
 
-                    transformed_dynamic_meshes[obj_id] = world_triangles
+                    # Compute bounding sphere for quick rejection in unified_raycast
+                    bounding_sphere = compute_bounding_sphere(world_triangles)
+
+                    # Add to unified format
+                    unified_dynamic_meshes.append({
+                        "obj_id": obj_id,
+                        "triangles": world_triangles,
+                        "bounding_sphere": bounding_sphere
+                    })
 
                 transform_end = time.perf_counter()
                 dynamic_transform_time_us = (transform_end - transform_start) * 1_000_000
 
                 # Log transform operation
                 if debug_flags.get("dynamic_mesh", False):
-                    mesh_count = len(transformed_dynamic_meshes)
-                    total_tris = sum(len(tris) for tris in transformed_dynamic_meshes.values())
+                    mesh_count = len(unified_dynamic_meshes)
+                    total_dyn_tris = sum(len(m["triangles"]) for m in unified_dynamic_meshes)
                     worker_logs.append(("DYN-MESH",
-                        f"TRANSFORM active={mesh_count} tris={total_tris} time={dynamic_transform_time_us:.1f}µs"))
+                        f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}µs"))
 
             # ─────────────────────────────────────────────────────────────────
             # 1. TIMERS
@@ -725,6 +1128,7 @@ def process_job(job) -> dict:
             # 4.9. EXTRACT GRID DATA ONCE (performance optimization)
             # ─────────────────────────────────────────────────────────────────
             # Cache grid data to avoid repeated dictionary lookups (4x per frame)
+            # Also create grid_data dict for unified_raycast
             grid_bounds_min = None
             grid_bounds_max = None
             grid_cell_size = None
@@ -734,6 +1138,7 @@ def process_job(job) -> dict:
             grid_min_x = grid_min_y = grid_min_z = 0.0
             grid_max_x = grid_max_y = grid_max_z = 0.0
             grid_nx = grid_ny = grid_nz = 0
+            grid_data = None  # For unified_raycast
 
             if _cached_grid is not None:
                 grid_bounds_min = _cached_grid["bounds_min"]
@@ -746,6 +1151,16 @@ def process_job(job) -> dict:
                 grid_min_x, grid_min_y, grid_min_z = grid_bounds_min
                 grid_max_x, grid_max_y, grid_max_z = grid_bounds_max
                 grid_nx, grid_ny, grid_nz = grid_dims
+
+                # Create grid_data dict for unified_raycast
+                grid_data = {
+                    "cells": grid_cells,
+                    "triangles": grid_triangles,
+                    "bounds_min": grid_bounds_min,
+                    "bounds_max": grid_bounds_max,
+                    "cell_size": grid_cell_size,
+                    "grid_dims": grid_dims
+                }
 
             # ─────────────────────────────────────────────────────────────────
             # 5. HORIZONTAL COLLISION (3D DDA on cached grid)
@@ -905,12 +1320,34 @@ def process_job(job) -> dict:
                             t_current = t_max_y
                             t_max_y += t_delta_y
 
-                    # Track per-ray hits
-                    if ray_closest_tri is not None:
-                        per_ray_hits.append(ray_closest_dist)
-                        if best_d is None or ray_closest_dist < best_d:
-                            best_d = ray_closest_dist
-                            best_n = compute_triangle_normal(ray_closest_tri[0], ray_closest_tri[1], ray_closest_tri[2])
+                    # ═══════════════════════════════════════════════════════════
+                    # UNIFIED: Also test dynamic meshes for this ray (with sphere culling)
+                    # ═══════════════════════════════════════════════════════════
+                    ray_best_dist = ray_closest_dist if ray_closest_tri else ray_len
+                    ray_best_normal = compute_triangle_normal(ray_closest_tri[0], ray_closest_tri[1], ray_closest_tri[2]) if ray_closest_tri else None
+                    ray_hit = ray_closest_tri is not None
+
+                    if unified_dynamic_meshes:
+                        tris_counter = [0]
+                        dyn_result = test_dynamic_meshes_ray(
+                            (ox, oy, oz), (fwd_x, fwd_y, 0), ray_best_dist,
+                            unified_dynamic_meshes, tris_counter
+                        )
+                        total_tris += tris_counter[0]
+
+                        if dyn_result:
+                            dyn_dist, dyn_normal, dyn_obj_id = dyn_result
+                            if dyn_dist < ray_best_dist:
+                                ray_best_dist = dyn_dist
+                                ray_best_normal = dyn_normal
+                                ray_hit = True
+
+                    # Track per-ray hits (for step-up detection)
+                    if ray_hit and ray_best_normal is not None:
+                        per_ray_hits.append(ray_best_dist)
+                        if best_d is None or ray_best_dist < best_d:
+                            best_d = ray_best_dist
+                            best_n = ray_best_normal
                     else:
                         per_ray_hits.append(None)
 
@@ -968,6 +1405,22 @@ def process_job(job) -> dict:
                                     if width_hit_dist is None or dist < width_hit_dist:
                                         width_hit_dist = dist
                                         width_hit_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+
+                    # UNIFIED: Also test dynamic meshes for width ray
+                    if unified_dynamic_meshes:
+                        tris_counter = [0]
+                        dyn_result = test_dynamic_meshes_ray(
+                            (ox, oy, oz), (fwd_x, fwd_y, 0),
+                            width_hit_dist if width_hit_dist else ray_len,
+                            unified_dynamic_meshes, tris_counter
+                        )
+                        total_tris += tris_counter[0]
+
+                        if dyn_result:
+                            dyn_dist, dyn_normal, dyn_obj_id = dyn_result
+                            if width_hit_dist is None or dyn_dist < width_hit_dist:
+                                width_hit_dist = dyn_dist
+                                width_hit_normal = dyn_normal
 
                     width_hits.append((width_hit_dist, width_hit_normal))
 
@@ -1044,49 +1497,30 @@ def process_job(job) -> dict:
                                             best_d = horiz_dist
                                             best_n = tri_n
 
-                # ─────────────────────────────────────────────────────────────────
-                # DYNAMIC MESH HORIZONTAL COLLISION (Unified Physics)
-                # ─────────────────────────────────────────────────────────────────
-                # DON'T apply collision response yet - test dynamic meshes first!
-                debug_dynamic_horiz = debug_flags.get("dynamic_horizontal", False)
-                horiz_hit_source = "static" if best_d is not None else None
+                    # UNIFIED: Also test dynamic meshes for slope ray
+                    if unified_dynamic_meshes:
+                        tris_counter = [0]
+                        dyn_result = test_dynamic_meshes_ray(
+                            (ox, oy, oz), (ray_dx, ray_dy, ray_dz),
+                            ray_len, unified_dynamic_meshes, tris_counter
+                        )
+                        total_tris += tris_counter[0]
 
-                if transformed_dynamic_meshes and move_len > 1e-9:
-                    import time as perf_time
-                    test_start = perf_time.perf_counter()
-                    dynamic_tris_tested = 0  # Local counter for just dynamic meshes
+                        if dyn_result:
+                            dyn_dist, dyn_normal, dyn_obj_id = dyn_result
+                            # Only count steep slopes (not floors)
+                            if dyn_normal[2] < floor_cos and dyn_normal[2] > 0.1:
+                                horiz_dist = dyn_dist * slope_fwd_mult
+                                if best_d is None or horiz_dist < best_d:
+                                    best_d = horiz_dist
+                                    best_n = dyn_normal
 
-                    # Test same 3 ray heights as static geometry
-                    for ray_z in ray_heights:
-                        ox, oy, oz = px, py, pz + ray_z
-                        ray_dir = (fwd_x, fwd_y, 0)  # Horizontal only
-
-                        for obj_id, world_tris in transformed_dynamic_meshes.items():
-                            for tri in world_tris:
-                                total_tris += 1
-                                dynamic_tris_tested += 1  # Count dynamic tests separately
-                                hit, dist, _ = ray_triangle_intersect(
-                                    (ox, oy, oz), ray_dir,
-                                    tri[0], tri[1], tri[2]
-                                )
-
-                                # Hit must be within ray length AND closer than current best
-                                if hit and dist < ray_len:
-                                    if best_d is None or dist < best_d:
-                                        best_d = dist
-                                        best_n = compute_triangle_normal(tri[0], tri[1], tri[2])
-                                        h_blocked = True
-                                        horiz_hit_source = f"dynamic_{obj_id}"
-
-                    test_duration = (perf_time.perf_counter() - test_start) * 1_000_000
-
-                    # Log summary (only if toggle enabled)
-                    if debug_dynamic_horiz:
-                        status = "BLOCKED" if (horiz_hit_source and "dynamic" in horiz_hit_source) else "CLEAR"
-                        best_d_str = f"{best_d:.3f}m" if best_d else "None"
-                        worker_logs.append(("DYN-HORIZ",
-                            f"[{status}] source={horiz_hit_source} dist={best_d_str} "
-                            f"rays={len(ray_heights)} dyn_tris={dynamic_tris_tested} time={test_duration:.1f}µs"))
+                # ═══════════════════════════════════════════════════════════════════
+                # NOTE: Dynamic mesh testing now happens INLINE with each ray above
+                # (horizontal rays, width rays, slope rays all test dynamic meshes)
+                # The old separate dynamic mesh collision loop has been REMOVED.
+                # This is the UNIFIED physics architecture - same code path for all geometry.
+                # ═══════════════════════════════════════════════════════════════════
 
                 # Apply horizontal collision result (static OR dynamic - whichever is closer)
                 if best_d is not None:
@@ -1466,55 +1900,32 @@ def process_job(job) -> dict:
                     t_current = t_max_z
                     t_max_z += t_delta_z
 
+                # ═══════════════════════════════════════════════════════════
+                # UNIFIED: Also test dynamic meshes for body integrity ray
+                # ═══════════════════════════════════════════════════════════
+                if unified_dynamic_meshes:
+                    tris_counter = [0]
+                    dyn_result = test_dynamic_meshes_ray(
+                        feet_pos, (0, 0, 1),
+                        embed_distance if embed_distance else body_height,
+                        unified_dynamic_meshes, tris_counter
+                    )
+                    total_tris += tris_counter[0]
+
+                    if dyn_result:
+                        dyn_dist, dyn_normal, dyn_obj_id = dyn_result
+                        if embed_distance is None or dyn_dist < embed_distance:
+                            body_embedded = True
+                            embed_distance = dyn_dist
+                            if debug_body:
+                                penetration_pct = (dyn_dist / body_height) * 100.0
+                                worker_logs.append(("PHYS-BODY",
+                                    f"EMBEDDED (dynamic:{dyn_obj_id}) hit={dyn_dist:.3f}m pct={penetration_pct:.1f}%"))
+
                 # Single combined log after all checks (avoids frequency gating split)
                 if debug_body:
                     status = "EMBEDDED" if body_embedded else "CLEAR"
                     worker_logs.append(("PHYS-BODY", f"[{status}] feet=({feet_pos[0]:.2f},{feet_pos[1]:.2f},{feet_pos[2]:.2f}) head=({head_pos[0]:.2f},{head_pos[1]:.2f},{head_pos[2]:.2f}) h={body_height:.2f}m"))
-
-                # ─────────────────────────────────────────────────────────────────
-                # DYNAMIC MESH BODY INTEGRITY RAY (Unified Physics)
-                # ─────────────────────────────────────────────────────────────────
-                # Test vertical ray against dynamic meshes to detect embedding
-                debug_dynamic_body = debug_flags.get("dynamic_body_ray", False)
-                body_hit_source = "static" if body_embedded else None
-
-                if transformed_dynamic_meshes:
-                    import time as perf_time
-                    test_start = perf_time.perf_counter()
-
-                    for obj_id, world_tris in transformed_dynamic_meshes.items():
-                        for tri in world_tris:
-                            total_tris += 1
-                            hit, dist, _ = ray_triangle_intersect(
-                                feet_pos, (0, 0, 1),
-                                tri[0], tri[1], tri[2]
-                            )
-
-                            # Hit must be within body height AND closer than current embed
-                            if hit and dist < body_height:
-                                # Check if this is closer than current embedding
-                                if embed_distance is None or dist < embed_distance:
-                                    body_embedded = True
-                                    embed_distance = dist
-                                    body_hit_source = f"dynamic_{obj_id}"
-
-                                    if debug_dynamic_body:
-                                        penetration_pct = (dist / body_height) * 100.0
-                                        from_feet = dist
-                                        to_head = body_height - dist
-                                        worker_logs.append(("DYN-BODY",
-                                            f"EMBEDDED! obj={obj_id} hit={dist:.3f}m pct={penetration_pct:.1f}% "
-                                            f"feet={from_feet:.3f}m head={to_head:.3f}m"))
-
-                    test_duration = (perf_time.perf_counter() - test_start) * 1_000_000  # Convert to microseconds
-
-                    # Log summary (only if toggle enabled)
-                    if debug_dynamic_body:
-                        status = "EMBEDDED" if (body_hit_source and "dynamic" in body_hit_source) else "CLEAR"
-                        embed_str = f"{embed_distance:.3f}m" if embed_distance else "None"
-                        worker_logs.append(("DYN-BODY",
-                            f"[{status}] source={body_hit_source} embed={embed_str} "
-                            f"h={body_height:.2f}m tris={total_tris} time={test_duration:.1f}µs"))
 
             # ─────────────────────────────────────────────────────────────────
             # 5.6 EMBEDDING RESOLUTION (Prevention + Correction)
@@ -1630,11 +2041,30 @@ def process_job(job) -> dict:
                     t_current = t_max_z
                     t_max_z += t_delta_z
 
+                # ═══════════════════════════════════════════════════════════
+                # UNIFIED: Also test dynamic meshes for ceiling check
+                # ═══════════════════════════════════════════════════════════
+                if not ceiling_hit and unified_dynamic_meshes:
+                    tris_counter = [0]
+                    dyn_result = test_dynamic_meshes_ray(
+                        ray_origin, (0, 0, 1), up_dist,
+                        unified_dynamic_meshes, tris_counter
+                    )
+                    total_tris += tris_counter[0]
+
+                    if dyn_result:
+                        dyn_dist, dyn_normal, dyn_obj_id = dyn_result
+                        if dyn_dist < up_dist:
+                            pz = head_z + dyn_dist - height
+                            vz = 0.0
+                            hit_ceiling = True
+
             # ─────────────────────────────────────────────────────────────────
             # 7. VERTICAL MOVEMENT + GROUND DETECTION
             # ─────────────────────────────────────────────────────────────────
             dz = vz * dt
             was_grounded = on_ground
+            ground_hit_source = None  # Track if standing on static or dynamic mesh
 
             if _cached_grid is not None:
                 # Use pre-extracted grid data (performance optimization)
@@ -1708,26 +2138,27 @@ def process_job(job) -> dict:
                         break
 
                 # ═══════════════════════════════════════════════════════════
-                # DYNAMIC MESH GROUND TESTING (Unified Physics)
+                # UNIFIED: Also test dynamic meshes for ground detection
                 # ═══════════════════════════════════════════════════════════
-                # Test transformed dynamic meshes with same ground raycast
                 ground_hit_source = "static" if ground_hit_z is not None else None
                 debug_collision = debug_flags.get("dynamic_collision", False)
 
-                if transformed_dynamic_meshes:
-                    for obj_id, world_tris in transformed_dynamic_meshes.items():
-                        for tri in world_tris:
-                            total_tris += 1
-                            hit, dist, hp = ray_triangle_intersect(
-                                (px, py, ray_start_z), (0, 0, -1),
-                                tri[0], tri[1], tri[2]
-                            )
-                            if hit and dist < ray_max:
-                                hit_z = ray_start_z - dist
-                                if ground_hit_z is None or hit_z > ground_hit_z:
-                                    ground_hit_z = hit_z
-                                    ground_hit_n = compute_triangle_normal(tri[0], tri[1], tri[2])
-                                    ground_hit_source = f"dynamic_{obj_id}"
+                if unified_dynamic_meshes:
+                    tris_counter = [0]
+                    dyn_result = test_dynamic_meshes_ray(
+                        (px, py, ray_start_z), (0, 0, -1), ray_max,
+                        unified_dynamic_meshes, tris_counter
+                    )
+                    total_tris += tris_counter[0]
+
+                    if dyn_result:
+                        dyn_dist, dyn_normal, dyn_obj_id = dyn_result
+                        if dyn_dist < ray_max:
+                            hit_z = ray_start_z - dyn_dist
+                            if ground_hit_z is None or hit_z > ground_hit_z:
+                                ground_hit_z = hit_z
+                                ground_hit_n = dyn_normal
+                                ground_hit_source = f"dynamic_{dyn_obj_id}"
 
                 # Log collision source
                 if debug_collision and ground_hit_z is not None:
@@ -1956,25 +2387,32 @@ def process_job(job) -> dict:
             if debug_enhanced:
                 worker_logs.append(("KCC", f"COMPLETE pos=({px:.2f},{py:.2f},{pz:.2f}) vel=({vx:.2f},{vy:.2f},{vz:.2f}) ground={on_ground} walkable={on_walkable} blocked={h_blocked} step={did_step_up} slide={did_slide} | {calc_time_us:.0f}us {total_rays}rays {total_tris}tris"))
 
-            # VALIDATION: Overall stress summary
             # ═════════════════════════════════════════════════════════════════
-            # PERFORMANCE DIAGNOSTICS - Detailed Timing Breakdown
+            # UNIFIED PHYSICS DIAGNOSTICS
             # ═════════════════════════════════════════════════════════════════
-            if debug_flags.get("engine", False) and len(transformed_dynamic_meshes) > 0:
-                # Calculate approximate breakdown
+            # Log unified physics system status (static + dynamic in single path)
+            if debug_flags.get("engine", False):
                 transform_time = dynamic_transform_time_us
                 total_time = calc_time_us
                 physics_time = total_time - transform_time
 
                 # Cache state
                 cached_mesh_count = len(_cached_dynamic_meshes)
-                active_mesh_count = len(transformed_dynamic_meshes)
+                active_mesh_count = len(unified_dynamic_meshes)
 
-                # Log detailed breakdown
-                worker_logs.append(("ENGINE",
-                    f"TIMING: total={total_time:.0f}µs xform={transform_time:.0f}µs "
-                    f"phys={physics_time:.0f}µs | rays={total_rays} tris={total_tris} "
-                    f"cells={total_cells} | cache={cached_mesh_count} active={active_mesh_count}"))
+                # Unified physics summary
+                ground_src = ground_hit_source if ground_hit_source else "none"
+                worker_logs.append(("UNIFIED",
+                    f"PHYSICS: total={total_time:.0f}µs | "
+                    f"static_grid=YES dynamic={active_mesh_count} | "
+                    f"rays={total_rays} tris={total_tris} cells={total_cells} | "
+                    f"ground={ground_src}"))
+
+                # Detailed timing if dynamic meshes are active
+                if active_mesh_count > 0:
+                    worker_logs.append(("UNIFIED",
+                        f"TIMING: xform={transform_time:.0f}µs phys={physics_time:.0f}µs | "
+                        f"sphere_cull=ENABLED cache={cached_mesh_count}"))
 
             result_data = {
                 "pos": (px, py, pz),
@@ -1982,6 +2420,7 @@ def process_job(job) -> dict:
                 "on_ground": on_ground,
                 "on_walkable": on_walkable,
                 "ground_normal": (gn_x, gn_y, gn_z),
+                "ground_hit_source": ground_hit_source,  # "static", "dynamic_ObjectName", or None
                 "coyote_remaining": coyote_remaining,
                 "jump_consumed": jump_consumed,
                 "logs": worker_logs,  # Fast buffer logs (sent to main thread)
@@ -1990,7 +2429,7 @@ def process_job(job) -> dict:
                     "triangles_tested": total_tris,
                     "cells_traversed": total_cells,
                     "calc_time_us": calc_time_us,
-                    "dynamic_meshes_active": len(transformed_dynamic_meshes),
+                    "dynamic_meshes_active": len(unified_dynamic_meshes),
                     "dynamic_transform_time_us": dynamic_transform_time_us,
                     "h_blocked": h_blocked,
                     "did_step_up": did_step_up,

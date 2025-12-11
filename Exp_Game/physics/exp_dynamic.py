@@ -3,6 +3,13 @@ import mathutils
 import time
 from .exp_bvh_local import LocalBVH
 
+# ═══════════════════════════════════════════════════════════════════════════
+# UNIFIED PHYSICS NOTE:
+# - KCC character physics: Handled entirely in worker (no main thread BVH)
+# - Camera/Projectiles/Tracking: Still use LocalBVH on main thread (fast for LoS)
+# LocalBVH is kept for non-KCC systems that need quick raycasts
+# ═══════════════════════════════════════════════════════════════════════════
+
 
 def apply_dynamic_activation_result(modal_op, engine_result):
     """
@@ -38,18 +45,22 @@ def apply_dynamic_activation_result(modal_op, engine_result):
 
 def update_dynamic_meshes(modal_op):
     """
-    Distance-gated dynamic proxies with minimal depsgraph traffic:
+    Distance-gated dynamic proxies with minimal main thread work:
       • Distance gate runs BEFORE any evaluated_get().
-      • Active movers only: contribute LocalBVH + velocities/ω.
-      • Caches: LocalBVH per object and a bounding-sphere radius.
+      • Active movers only: contribute transforms + velocities.
+      • Caches: LocalBVH per object (for camera/projectiles), bounding-sphere radius.
       • Adds small hysteresis around register_distance to avoid flapping.
       • Reuses dicts (no per-tick reallocation).
+
+    UNIFIED PHYSICS:
+      • KCC character physics: Fully offloaded to worker (uses triangles, not BVH)
+      • Camera/Projectiles/Tracking: Use LocalBVH on main thread (fast for LoS)
     """
     scene = bpy.context.scene
 
     # --- Caches / state (create once) ---
     if not hasattr(modal_op, "cached_local_bvhs"):
-        modal_op.cached_local_bvhs = {}
+        modal_op.cached_local_bvhs = {}  # For camera/projectiles (NOT KCC)
     if not hasattr(modal_op, "_dyn_active_state"):
         modal_op._dyn_active_state = {}
     if not hasattr(modal_op, "platform_prev_positions"):
@@ -60,10 +71,17 @@ def update_dynamic_meshes(modal_op):
         modal_op._cached_dyn_radius = {}
 
     # --- Outputs (reuse dicts to avoid churn) ---
+    # dynamic_bvh_map: Used by camera/projectiles/tracking (LocalBVH)
     if not hasattr(modal_op, "dynamic_bvh_map"):
         modal_op.dynamic_bvh_map = {}
     else:
         modal_op.dynamic_bvh_map.clear()
+
+    # dynamic_objects_map: Simpler map for KCC platform carry lookup
+    if not hasattr(modal_op, "dynamic_objects_map"):
+        modal_op.dynamic_objects_map = {}
+    else:
+        modal_op.dynamic_objects_map.clear()
 
     if not hasattr(modal_op, "platform_motion_map"):
         modal_op.platform_motion_map = {}
@@ -167,21 +185,25 @@ def update_dynamic_meshes(modal_op):
         # -------- 2) ACTIVE path ----------
         cur_M = cur_M_quick.copy()
 
-        # Build or fetch LocalBVH once (rigid motion => no rebuilds)
+        # ═══════════════════════════════════════════════════════════════════
+        # Build LocalBVH for camera/projectiles (NOT used by KCC - KCC uses worker)
+        # ═══════════════════════════════════════════════════════════════════
         lbvh = modal_op.cached_local_bvhs.get(dyn_obj)
         if lbvh is None:
             lbvh = LocalBVH(dyn_obj)
             modal_op.cached_local_bvhs[dyn_obj] = lbvh
 
-            # Cache triangles in worker (one-time per mesh)
+            # ═══════════════════════════════════════════════════════════════
+            # UNIFIED PHYSICS: Cache triangles in worker (one-time per mesh)
+            # Worker uses these for KCC collision (faster than main thread BVH)
+            # ═══════════════════════════════════════════════════════════════
             if use_workers and engine:
-                # Check if already cached
                 obj_id = id(dyn_obj)
                 if not hasattr(modal_op, '_cached_dynamic_mesh_ids'):
                     modal_op._cached_dynamic_mesh_ids = set()
 
                 if obj_id not in modal_op._cached_dynamic_mesh_ids:
-                    # Extract triangles in LOCAL space
+                    # Extract triangles in LOCAL space (sent once to worker)
                     mesh = dyn_obj.data
                     mesh.calc_loop_triangles()
 
@@ -192,7 +214,7 @@ def update_dynamic_meshes(modal_op):
                         v2 = tuple(mesh.vertices[tri.vertices[2]].co)
                         triangles.append((v0, v1, v2))
 
-                    # Get radius (already computed below, but we need it now)
+                    # Compute radius for bounding sphere
                     if dyn_obj not in modal_op._cached_dyn_radius:
                         bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
                         center_world = sum(bbox_world, mathutils.Vector()) / 8.0
@@ -203,20 +225,19 @@ def update_dynamic_meshes(modal_op):
 
                     radius = modal_op._cached_dyn_radius.get(dyn_obj, 1.0)
 
-                    # Send to worker
+                    # Send triangles to worker (one-time cache)
                     job_data = {
                         "obj_id": obj_id,
                         "triangles": triangles,
                         "radius": radius,
                     }
-
-                    cache_job_id = engine.submit_job("CACHE_DYNAMIC_MESH", job_data)
+                    engine.submit_job("CACHE_DYNAMIC_MESH", job_data)
                     modal_op._cached_dynamic_mesh_ids.add(obj_id)
 
-        # NEW: cache inverse transforms once this frame
+        # Update LocalBVH transform for camera/projectiles
         lbvh.update_xform(cur_M)
 
-        # Compute & cache a conservative world-space radius referenced at the OBJECT ORIGIN.
+        # Compute & cache radius if not already done
         if dyn_obj not in modal_op._cached_dyn_radius:
             bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
             center_world = sum(bbox_world, mathutils.Vector()) / 8.0
@@ -226,7 +247,12 @@ def update_dynamic_meshes(modal_op):
             modal_op._cached_dyn_radius[dyn_obj] = rad_center + center_offset
 
         rad = modal_op._cached_dyn_radius.get(dyn_obj, 0.0)
+
+        # Store in both maps:
+        # - dynamic_bvh_map: For camera/projectiles/tracking (with LocalBVH)
+        # - dynamic_objects_map: For KCC platform carry lookup (just radius)
         modal_op.dynamic_bvh_map[dyn_obj] = (lbvh, rad)
+        modal_op.dynamic_objects_map[dyn_obj] = rad
 
         # Linear motion / velocity
         prev_pos = modal_op.platform_prev_positions.get(dyn_obj)
