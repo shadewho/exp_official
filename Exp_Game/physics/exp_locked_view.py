@@ -20,7 +20,7 @@ def run_locked_view(modal_op, context, steps: int) -> None:
     prefs = getattr(modal_op, "_prefs", None) or context.preferences.addons["Exploratory"].preferences
     dt = float(getattr(modal_op, "physics_dt", 1.0 / 30.0))
     static_bvh = getattr(modal_op, "bvh_tree", None)
-    dyn_map    = getattr(modal_op, "dynamic_bvh_map", None)
+    dyn_objects_map = getattr(modal_op, "dynamic_objects_map", None)
     v_lin_map  = getattr(modal_op, "platform_linear_velocity_map", {}) or {}
     v_ang_map  = getattr(modal_op, "platform_ang_velocity_map", {}) or {}
 
@@ -41,7 +41,7 @@ def run_locked_view(modal_op, context, steps: int) -> None:
             keys_pressed=keys,
             camera_yaw=yaw_for_move,
             static_bvh=static_bvh,
-            dynamic_map=dyn_map,
+            dynamic_map=dyn_objects_map,
             platform_linear_velocity_map=v_lin_map,
             platform_ang_velocity_map=v_ang_map,
         )

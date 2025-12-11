@@ -77,7 +77,6 @@ def clear_old_dynamic_references(self):
     so we can start fresh when we invoke the modal again.
     """
     self.moving_meshes = []
-    self.dynamic_bvh_map = {}
     self.platform_prev_positions = {}
     self.platform_prev_matrices = {}
     if hasattr(self, "platform_motion_map"):

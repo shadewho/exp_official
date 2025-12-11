@@ -1,18 +1,16 @@
 # Exploratory/Exp_Game/physics/exp_view.py
 #
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  NO MAIN THREAD FALLBACK - PURE ENGINE OFFLOAD                               ║
+# ║  PURE ENGINE OFFLOAD - NO MAIN THREAD RAYCASTING                             ║
 # ║                                                                              ║
 # ║  Camera raycasting is 100% offloaded to the multiprocessing engine.          ║
-# ║  DO NOT add main-thread raycast fallbacks, hybrid modes, or legacy code.     ║
+# ║  Worker uses cached static grid + cached dynamic meshes (same as KCC).       ║
 # ║  If no engine result is available, HOLD the current camera position.         ║
-# ║  Work through issues with pure engine - no safety nets.                      ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
 import math
 import time
 from mathutils import Vector
-from .exp_raycastutils import raycast_closest_any
 from ..developer.dev_debug_gate import should_print_debug
 
 # ===========================
@@ -24,9 +22,6 @@ _NEARCLIP_TO_RADIUS_K    = 0.60            # camera radius ~60% of near clip
 _R_CAM_FLOOR             = 0.008           # 8 mm minimum camera thickness
 _EXTRA_PULL_METERS       = 0.25            # post-hit inward safety pull
 _EXTRA_PULL_R_K          = 2.0             # + K * r_cam inward
-_LOS_STEPS               = 1               # binary-search steps for clear LoS
-_PUSHOUT_ITERS           = 1               # tiny nearest-point pushout
-_LOS_EPS                 = 1.0e-3
 
 # -------------------------
 # Lightweight temporal filters
@@ -149,153 +144,9 @@ def cache_camera_worker_result(op_key, job_id, hit, hit_distance, hit_source="ST
         view["pending_job_submit_time"] = 0.0
 
 # -------------------------
-# Helpers (occlusion + pushout)
+# Constants
 # -------------------------
 _STATIC_TOKEN = "__STATIC__"
-
-def _multi_ray_min_hit(static_bvh, dynamic_bvh_map, origin, direction, max_dist, r_cam,
-                       debug_timing=False):
-    """
-    Center ray only: treat camera like a point (then subtract r_cam).
-    Returns (nearest_hit_distance, hit_obj_token, static_time_us, dynamic_time_us) or (None, None, 0, 0).
-    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
-
-    NOTE: Camera occlusion uses main thread for both static and dynamic.
-    1-frame latency causes jumpiness because camera direction changes unpredictably with mouse input.
-    """
-    if direction.length <= 1e-9 or max_dist <= 1e-9:
-        return (None, None, 0.0, 0.0)
-    dnorm = direction.normalized()
-
-    best = (None, None)
-    static_time_us = 0.0
-    dynamic_time_us = 0.0
-
-    # Static geometry (main thread - camera needs instant feedback)
-    if static_bvh:
-        t0 = time.perf_counter() if debug_timing else 0
-        hit = static_bvh.ray_cast(origin, dnorm, max_dist)
-        if debug_timing:
-            static_time_us = (time.perf_counter() - t0) * 1_000_000
-        if hit and hit[0] is not None:
-            best = (hit[3], _STATIC_TOKEN)
-
-    # Dynamic movers (always main thread - need Blender's BVHTree)
-    if dynamic_bvh_map:
-        t0 = time.perf_counter() if debug_timing else 0
-        # small prefilter radius for movers
-        pf_pad = 0.05 + r_cam
-        for obj, (bvh_like, approx_rad) in dynamic_bvh_map.items():
-            try:
-                # quick sphere segment test (center ray)
-                center = obj.matrix_world.translation
-                oc = center - origin
-                t = oc.dot(dnorm)
-                if t < -approx_rad or t > max_dist + approx_rad:
-                    pass
-                else:
-                    # distance from segment to center
-                    if t < 0.0:
-                        closest = oc
-                    elif t > max_dist:
-                        closest = oc - dnorm * max_dist
-                    else:
-                        closest = oc - dnorm * t
-                    if closest.length_squared <= (approx_rad + pf_pad) * (approx_rad + pf_pad):
-                        h = bvh_like.ray_cast(origin, dnorm, max_dist)
-                        if h and h[0] is not None:
-                            d = h[3]
-                            if best[0] is None or d < best[0]:
-                                best = (d, obj)
-            except Exception:
-                # any bad obj/bvh should not tank the frame
-                continue
-        if debug_timing:
-            dynamic_time_us = (time.perf_counter() - t0) * 1_000_000
-
-    if best[0] is not None:
-        return (best[0], best[1], static_time_us, dynamic_time_us)
-    return (None, None, static_time_us, dynamic_time_us)
-
-
-def _los_blocked(static_bvh, dynamic_bvh_map, a: Vector, b: Vector):
-    """
-    True if anything blocks the line segment a→b.
-    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
-    """
-    d = b - a
-    dist = d.length
-    if dist <= 1e-9:
-        return False
-    dnorm = d / dist
-
-    # Static
-    if static_bvh:
-        h = static_bvh.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
-        if h and h[0] is not None:
-            return True
-
-    # Dynamic
-    if dynamic_bvh_map:
-        for _obj, (bvh_like, _r) in dynamic_bvh_map.items():
-            try:
-                h = bvh_like.ray_cast(a, dnorm, max(0.0, dist - _LOS_EPS))
-                if h and h[0] is not None:
-                    return True
-            except Exception:
-                continue
-
-    return False
-
-
-def _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction, low, high, steps):
-    """
-    Find the nearest distance along 'direction' from 'anchor' that has clear LoS.
-    dynamic_bvh_map: dict {obj: (bvh_like, approx_radius)}
-    """
-    lo, hi = low, high
-    for _ in range(max(1, int(steps))):
-        mid = 0.5 * (lo + hi)
-        cam = anchor + direction * mid
-        if _los_blocked(static_bvh, dynamic_bvh_map, anchor, cam):
-            hi = mid
-        else:
-            lo = mid
-    return lo
-
-
-def _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, pos, radius, max_iters=_PUSHOUT_ITERS):
-    """Tiny nearest-point pushout vs static + all active dynamic BVHs."""
-    if radius <= 1.0e-6:
-        return pos
-
-    def push_once_bvh(bvh_like, p):
-        try:
-            res = bvh_like.find_nearest(p)
-        except Exception:
-            return p, False
-        if not res or res[0] is None or res[1] is None:
-            return p, False
-        hit_co, hit_n, _idx, dist = res
-        n = hit_n
-        if (p - hit_co).dot(n) < 0.0:
-            n = -n
-        if dist < radius:
-            return p + n * ((radius - dist) + 1.0e-4), True
-        return p, False
-
-    p = pos
-    moved = True
-    it = 0
-    while moved and it < max(1, int(max_iters)):
-        moved = False
-        if static_bvh:
-            p, m = push_once_bvh(static_bvh, p); moved = moved or m
-        if dynamic_bvh_map:
-            for _obj, (bvh_like, _r) in dynamic_bvh_map.items():
-                p, m = push_once_bvh(bvh_like, p); moved = moved or m
-        it += 1
-    return p
 
 # -------------------------
 # Public, single entrypoint
@@ -363,10 +214,8 @@ def update_camera_for_operator(context, op):
     view["last_params"] = params
     view["last_time"]   = now
 
-    # --- 6) Obstruction solve - ALL IN ENGINE (no main thread raycasting)
-    # Still need BVH refs for LoS checks and pushout (these are quick operations)
-    static_bvh = getattr(op, "bvh_tree", None)
-    dynamic_bvh_map = getattr(op, "dynamic_bvh_map", None)
+    # --- 6) Obstruction solve - 100% IN ENGINE (no main thread raycasting)
+    # Worker handles both static grid and dynamic cached meshes
 
     # Check for fresh result this frame (must match current pending job)
     cached_result = view.get("cached_worker_result")
@@ -416,26 +265,16 @@ def update_camera_for_operator(context, op):
         _apply_to_viewport(context, op, view)
         return
 
-    # Calculate base allowed distance from primary raycast
+    # Calculate allowed distance from worker raycast result
+    # Worker already tested static grid + dynamic cached meshes
     if hit_dist is not None:
         base_allowed = max(min_cam, min(desired_max, hit_dist - r_cam))
         allowed = max(min_cam, base_allowed - (_EXTRA_PULL_METERS + _EXTRA_PULL_R_K * r_cam))
     else:
         allowed = desired_max
 
-    # --- LoS check (main thread - Blender BVH is fast)
-    candidate = anchor + direction * allowed
-    if _los_blocked(static_bvh, dynamic_bvh_map, anchor, candidate):
-        allowed = _binary_search_clear_los(static_bvh, dynamic_bvh_map, anchor, direction,
-                                           low=min_cam, high=allowed, steps=_LOS_STEPS)
-        candidate = anchor + direction * allowed
-
-    # --- Pushout (main thread - Blender BVH is fast)
-    candidate = _camera_sphere_pushout_any(static_bvh, dynamic_bvh_map, candidate, r_cam, max_iters=_PUSHOUT_ITERS)
-    allowed_after_push = (candidate - anchor).length
-
-    # --- 9) Latch + smoothing
-    latched = _latch_for(op_key).filter(hit_token, max(min_cam, min(allowed_after_push, desired_max)), r_cam)
+    # --- Latch + smoothing (no LoS/Pushout - worker raycast is sufficient)
+    latched = _latch_for(op_key).filter(hit_token, max(min_cam, min(allowed, desired_max)), r_cam)
     final_allowed = _smooth_for(op_key).filter(latched)
 
     # Cache for apply and for external readbacks if needed
@@ -633,48 +472,39 @@ def submit_camera_occlusion_early(op, context):
     #             print(f"[Camera SKIP] pose unchanged (Δpitch={abs(pitch-lp):.4f} Δyaw={abs(yaw-ly):.4f})")
     #         return
 
-    # Gather dynamic mesh triangles (world space)
-    dynamic_bvh_map = getattr(op, "dynamic_bvh_map", None)
-    dynamic_triangles = []
-    dynamic_obj_count = 0
+    # Gather dynamic mesh transforms (worker uses cached triangles)
+    # Uses dynamic_objects_map which has same objects as worker cache
+    dynamic_objects_map = getattr(op, "dynamic_objects_map", None)
+    dynamic_transforms = {}
 
-    if dynamic_bvh_map:
-        for obj, (bvh_like, approx_rad) in dynamic_bvh_map.items():
-            dynamic_obj_count += 1
+    if dynamic_objects_map:
+        for obj, approx_rad in dynamic_objects_map.items():
             try:
-                # Quick sphere check - skip if object too far
+                # Quick sphere check - skip if object too far from camera ray
                 center = obj.matrix_world.translation
                 to_obj = center - anchor
                 along_ray = to_obj.dot(direction)
                 if along_ray < -approx_rad or along_ray > desired_max + approx_rad:
                     continue
 
-                # Get mesh and transform to world space
-                mesh = obj.data
-                matrix = obj.matrix_world
-                verts = [matrix @ v.co for v in mesh.vertices]
-
-                for poly in mesh.polygons:
-                    if len(poly.vertices) >= 3:
-                        # Triangulate faces
-                        v0 = verts[poly.vertices[0]]
-                        for i in range(1, len(poly.vertices) - 1):
-                            v1 = verts[poly.vertices[i]]
-                            v2 = verts[poly.vertices[i + 1]]
-                            dynamic_triangles.append((
-                                (v0.x, v0.y, v0.z),
-                                (v1.x, v1.y, v1.z),
-                                (v2.x, v2.y, v2.z)
-                            ))
+                # Send transform matrix (worker will use cached triangles)
+                obj_id = id(obj)
+                M = obj.matrix_world
+                dynamic_transforms[obj_id] = (
+                    (M[0][0], M[0][1], M[0][2], M[0][3]),
+                    (M[1][0], M[1][1], M[1][2], M[1][3]),
+                    (M[2][0], M[2][1], M[2][2], M[2][3]),
+                    (M[3][0], M[3][1], M[3][2], M[3][3]),
+                )
             except Exception:
                 continue
 
-    # Submit job with static and dynamic data (LoS+Pushout done on main thread)
+    # Submit job with static (cached grid) and dynamic (transforms only)
     job_data = {
         "ray_origin": (anchor.x, anchor.y, anchor.z),
         "ray_direction": (direction.x, direction.y, direction.z),
         "max_distance": float(desired_max),
-        "dynamic_triangles": dynamic_triangles,
+        "dynamic_transforms": dynamic_transforms,
     }
     job_id = engine.submit_job("CAMERA_OCCLUSION_FULL", job_data)
     view["pending_job_id"] = job_id

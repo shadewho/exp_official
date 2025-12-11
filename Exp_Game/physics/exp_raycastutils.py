@@ -62,26 +62,3 @@ def raycast_to_ground(bvh_tree, origin, direction=Vector((0, 0, -2.0))):
         return hit_location
     return None
 
-def raycast_closest_any(static_bvh, dynamic_bvh_map, origin, direction, max_distance):
-    """
-    Unified ray that returns the closest hit across static BVH and dynamic LocalBVHs.
-    Returns: (hit_loc, hit_normal, hit_obj, hit_dist) or (None,None,None,None)
-    """
-    if not isinstance(direction, Vector) or direction.length <= 1e-9 or max_distance <= 1e-9:
-        return (None, None, None, None)
-
-    dnorm = direction.normalized()
-    best = (None, None, None, 1e9)
-
-    if static_bvh:
-        hit = static_bvh.ray_cast(origin, dnorm, max_distance)
-        if hit and hit[0] is not None and hit[3] < best[3]:
-            best = (hit[0], hit[1], None, hit[3])
-
-    if dynamic_bvh_map:
-        for obj, (bvh_like, _) in dynamic_bvh_map.items():
-            h = bvh_like.ray_cast(origin, dnorm, max_distance)
-            if h and h[0] is not None and h[3] < best[3]:
-                best = (h[0], h[1], obj, h[3])
-
-    return best if best[0] is not None else (None, None, None, None)

@@ -213,10 +213,6 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
                 apply_hide_during_game(modal_op, context)
 
             # ---- Reset dynamic platform state so no stale deltas apply after reset ----
-            # Clear BVH caches so they rebuild against the restored transforms
-            modal_op.cached_dynamic_bvhs = {}
-            modal_op.dynamic_bvh_map = {}
-
             # Drop any notion of being "on a platform"
             modal_op.grounded_platform = None
 

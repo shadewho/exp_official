@@ -4,7 +4,16 @@ import math
 from mathutils import Vector, Matrix
 from ..props_and_utils.exp_time import get_game_time
 from ..audio import exp_globals  # ACTIVE_MODAL_OP
-from ..physics.exp_raycastutils import raycast_closest_any
+
+
+def _raycast_static(bvh, origin, direction, max_dist):
+    """Simple raycast against static BVH only."""
+    if not bvh or direction.length < 1e-9 or max_dist <= 1e-9:
+        return (None, None, None, None)
+    hit = bvh.ray_cast(origin, direction.normalized(), max_dist)
+    if hit and hit[0] is not None:
+        return (hit[0], hit[1], None, hit[3])
+    return (None, None, None, None)
 
 # ─────────────────────────────────────────────────────────
 # Lightweight tracking system
@@ -120,8 +129,7 @@ class _TrackTask:
         step_len = min(self.speed * dt, dist)
         fwd = to_vec.normalized()
 
-        static_bvh  = op.bvh_tree if (self.respect_proxy and op) else None
-        dynamic_map = op.dynamic_bvh_map if (self.respect_proxy and op) else None
+        static_bvh = op.bvh_tree if (self.respect_proxy and op) else None
 
         # Character-like capsule dimensions (borrow from scene)
         try:
@@ -136,7 +144,7 @@ class _TrackTask:
         best_n = None
         for z in (r, max(r, min(h - r, 0.5 * h)), h - r):
             o = pos + Vector((0, 0, z))
-            hit_loc, hit_n, _obj, d = raycast_closest_any(static_bvh, dynamic_map, o, fwd, ray_len)
+            hit_loc, hit_n, _obj, d = _raycast_static(static_bvh, o, fwd, ray_len)
             if hit_loc is not None and (best_d is None or d < best_d):
                 best_d, best_n = d, hit_n.normalized()
 
@@ -159,7 +167,7 @@ class _TrackTask:
                     best_d2 = None
                     for z in (r, max(r, min(h - r, 0.5 * h)), h - r):
                         o2 = moved_pos + Vector((0, 0, z))
-                        h2, n2, _o, d2 = raycast_closest_any(static_bvh, dynamic_map, o2, slide, remain + r)
+                        h2, n2, _o, d2 = _raycast_static(static_bvh, o2, slide, remain + r)
                         if h2 is not None and (best_d2 is None or d2 < best_d2):
                             best_d2 = d2
                     allow2 = remain if best_d2 is None else max(0.0, best_d2 - r)
@@ -167,7 +175,7 @@ class _TrackTask:
 
         # gravity / snap to ground (optional)
         if self.use_gravity:
-            down = raycast_closest_any(static_bvh, dynamic_map, moved_pos, Vector((0, 0, -1)), max(0.0, 0.6))
+            down = _raycast_static(static_bvh, moved_pos, Vector((0, 0, -1)), max(0.0, 0.6))
             if down[0] is not None:
                 moved_pos.z = down[0].z
 

@@ -6,7 +6,6 @@ from bpy_extras import view3d_utils
 
 from ..props_and_utils.exp_time import get_game_time
 from ..audio import exp_globals  # for ACTIVE_MODAL_OP
-from ..physics.exp_raycastutils import raycast_closest_any
 
 # ─────────────────────────────────────────────────────────
 # Lightweight, demand-driven projectile manager (O(1) idle)
@@ -364,20 +363,22 @@ def _resolve_origin(r):
 
 def _raycast_any(op, origin: Vector, direction: Vector, max_dist: float):
     """
-    Unified ray against STATIC BVH + DYNAMIC LocalBVHs.
+    Ray against STATIC BVH only.
+    Dynamic mesh collision handled by worker (KCC physics).
     Returns (hit:bool, loc:Vector|None, normal:Vector|None, hit_obj:bpy.types.Object|None, dist:float|None)
     """
     if not op or max_dist <= 1e-9 or direction.length <= 1e-9:
         return (False, None, None, None, None)
 
     static_bvh = getattr(op, "bvh_tree", None)
-    dynamic_map = getattr(op, "dynamic_bvh_map", None)
+    if not static_bvh:
+        return (False, None, None, None, None)
 
     dnorm = direction.normalized()
-    loc, nor, obj, dist = raycast_closest_any(static_bvh, dynamic_map, origin, dnorm, max_dist)
-    if loc is None:
-        return (False, None, None, None, None)
-    return (True, loc, nor, obj, dist)
+    hit = static_bvh.ray_cast(origin, dnorm, max_dist)
+    if hit and hit[0] is not None:
+        return (True, hit[0], hit[1], None, hit[3])
+    return (False, None, None, None, None)
 
 
 def _resolve_direction(r, origin):

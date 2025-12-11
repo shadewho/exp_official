@@ -1,14 +1,12 @@
 # Dynamic Mesh System - Development Guide
 
-**Status**: WORK IN PROGRESS - Partially offloaded, needs optimization
+**Status**: WORK IN PROGRESS - Core caching bug FIXED (2025-12-11)
 
 ---
 
 ## Goal
 
 Fully offload dynamic mesh physics to the worker engine. Unify static and dynamic collision systems so we don't maintain two separate physics codepaths. Dynamic meshes should eventually be a simplified rigid body system that interacts with the character in any way (platforms, pushers, elevators, doors, etc.).
-
-**We are NOT there yet.**
 
 ---
 ---
@@ -18,17 +16,37 @@ read CLAUDE_GAME and CLAUDE_ENGINE CONTEXT
 ## Current State
 
 ### What Works
-- Triangle caching to worker (one-time per mesh)
+- **Triangle caching to worker (FIXED)** - All meshes now broadcast in single job
 - Transform matrices sent per-frame for active meshes
 - Ground detection on dynamic meshes
 - Platform carry (player moves with platform)
 - AABB-based activation gating
 - "Standing on" override to prevent deactivation while on platform
 
-### What Doesn't Work Well
+### Recent Fix: Worker Cache Race Condition (2025-12-11)
+
+**BUG FOUND:** Workers had incomplete/random subsets of dynamic mesh caches!
+
+**Root Cause:**
+- `broadcast_job("CACHE_DYNAMIC_MESH")` submitted W copies of each mesh to shared queue
+- With multiple meshes, workers grabbed random jobs from queue
+- Example: 2 meshes, 4 workers → some workers only cached mesh A, others only mesh B
+- KCC physics on a worker without mesh B's cache = mesh B invisible to physics!
+
+**FIX:**
+- New job type: `CACHE_ALL_DYNAMIC_MESHES`
+- Bundles ALL dynamic meshes into ONE broadcast
+- Each worker receives the complete set in a single job
+- No race condition - every worker has identical cache
+
+**Files Changed:**
+- `physics/exp_dynamic.py` - Uses `CACHE_ALL_DYNAMIC_MESHES` instead of per-mesh broadcasts
+- `engine/engine_worker_entry.py` - New handler for batch caching
+- `modal/exp_loop.py` - Result handler for new job type
+
+### What Might Still Need Work
 - **Bouncing/instability** - Player falls into mesh, gets caught, bounces back up
 - **Frame latency issues** - Suspected timing problems between main thread and worker
-- **Inconsistent ground detection** - Works some frames, fails others
 - **Edge cases** - AABB boundaries cause activation flapping
 
 ---

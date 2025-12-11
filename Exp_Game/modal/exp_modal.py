@@ -1179,7 +1179,7 @@ class ExpModal(bpy.types.Operator):
         dt = self.physics_dt
         yaw = self.yaw
         static_bvh = self.bvh_tree
-        dyn_map = getattr(self, "dynamic_bvh_map", None)
+        dyn_objects_map = getattr(self, "dynamic_objects_map", None)
         v_lin_map = getattr(self, "platform_linear_velocity_map", {})
         v_ang_map = getattr(self, "platform_ang_velocity_map", {})
 
@@ -1199,7 +1199,7 @@ class ExpModal(bpy.types.Operator):
                 keys_pressed=resolved_keys,
                 camera_yaw=yaw,
                 static_bvh=static_bvh,
-                dynamic_map=dyn_map,
+                dynamic_map=dyn_objects_map,
                 platform_linear_velocity_map=v_lin_map,
                 platform_ang_velocity_map=v_ang_map,
                 engine=getattr(self, 'engine', None),  # Pass engine for offloading

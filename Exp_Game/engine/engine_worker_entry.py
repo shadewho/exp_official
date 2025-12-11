@@ -2143,6 +2143,7 @@ def process_job(job) -> dict:
                                     try:
                                         slide_applied = slide_allowed if slide_allowed > 0.01 else 0.0
                                         slide_requested = slide_dist
+                                        slide_blocked = slide_result is not None
                                         effectiveness = (slide_applied / slide_requested * 100.0) if slide_requested > 0.001 else 0.0
                                         worker_logs.append(("SLIDE",
                                             f"applied={slide_applied:.3f}m requested={slide_requested:.3f}m eff={effectiveness:.0f}% "
@@ -2575,8 +2576,8 @@ def process_job(job) -> dict:
         # Now using unified KCC_PHYSICS_STEP handler above
 
         elif job.job_type == "CAMERA_OCCLUSION_FULL":
-            # Full camera occlusion: static grid + dynamic triangles
-            # Returns closest hit - LoS+Pushout done on main thread (Blender BVH is faster)
+            # Full camera occlusion: static grid + cached dynamic meshes
+            # Uses same cached dynamic data as KCC physics (no main thread extraction!)
             import math
 
             calc_start = time.perf_counter()
@@ -2585,7 +2586,7 @@ def process_job(job) -> dict:
             ray_origin = job.data.get("ray_origin", (0.0, 0.0, 0.0))
             ray_direction = job.data.get("ray_direction", (0.0, 0.0, -1.0))
             max_distance = job.data.get("max_distance", 10.0)
-            dynamic_triangles = job.data.get("dynamic_triangles", [])
+            dynamic_transforms = job.data.get("dynamic_transforms", {})
 
             ox, oy, oz = ray_origin
             dx, dy, dz = ray_direction
@@ -2716,15 +2717,48 @@ def process_job(job) -> dict:
                             t_current = t_max_z
                             t_max_z += t_delta_z
 
-            # === DYNAMIC GEOMETRY (brute force on provided triangles) ===
-            for tri in dynamic_triangles:
-                dynamic_tris_tested += 1
-                v0, v1, v2 = tri
-                hit, dist, _ = ray_triangle_intersect(ray_origin, (dx, dy, dz), v0, v1, v2)
-                if hit and dist < closest_dist:
-                    closest_dist = dist
-                    hit_found = True
-                    hit_source = "DYNAMIC"
+            # === DYNAMIC GEOMETRY (use cached meshes with transforms - same as KCC) ===
+            if dynamic_transforms and _cached_dynamic_meshes:
+                for obj_id, matrix_4x4 in dynamic_transforms.items():
+                    cached = _cached_dynamic_meshes.get(obj_id)
+                    if cached is None:
+                        continue
+
+                    local_triangles = cached["triangles"]
+                    local_aabb = cached.get("local_aabb")
+
+                    # Quick AABB rejection using transformed bounds
+                    if local_aabb:
+                        world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4)
+                        if world_aabb:
+                            aabb_min, aabb_max = world_aabb
+                            # Simple ray-AABB intersection test
+                            if (ox < aabb_min[0] - max_distance and dx <= 0) or \
+                               (ox > aabb_max[0] + max_distance and dx >= 0) or \
+                               (oy < aabb_min[1] - max_distance and dy <= 0) or \
+                               (oy > aabb_max[1] + max_distance and dy >= 0) or \
+                               (oz < aabb_min[2] - max_distance and dz <= 0) or \
+                               (oz > aabb_max[2] + max_distance and dz >= 0):
+                                continue
+
+                    # Transform ray to local space and test triangles
+                    inv_matrix = invert_matrix_4x4(matrix_4x4)
+                    local_origin = transform_point(ray_origin, inv_matrix)
+                    local_dir = transform_direction((dx, dy, dz), inv_matrix)
+
+                    # Normalize local direction
+                    ld_len = math.sqrt(local_dir[0]**2 + local_dir[1]**2 + local_dir[2]**2)
+                    if ld_len > 1e-12:
+                        local_dir = (local_dir[0]/ld_len, local_dir[1]/ld_len, local_dir[2]/ld_len)
+
+                    # Test triangles in local space
+                    for tri in local_triangles:
+                        dynamic_tris_tested += 1
+                        hit, dist, _ = ray_triangle_intersect(local_origin, local_dir, tri[0], tri[1], tri[2])
+                        if hit and dist < closest_dist:
+                            closest_dist = dist
+                            hit_found = True
+                            hit_source = "DYNAMIC"
 
             calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
