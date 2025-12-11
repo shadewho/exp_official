@@ -1,12 +1,14 @@
 import bpy
 from .auth.helpers import load_token
 from .version_info import CURRENT_VERSION, get_cached_latest_version
-from .main_config import PROFILE_URL
+from .main_config import PROFILE_URL, WORLD_URL, SHOP_URL, EVENTS_URL
+
+
 # ─────────────────────────────────────────────────────────────
-# Explore / Log in/ Logout
+# Exploratory Main Panel - Unified Explore + Account
 # ─────────────────────────────────────────────────────────────
 class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
-    bl_label = "Explore / Log In"
+    bl_label = "Exploratory"
     bl_idname = "VIEW3D_PT_explore_by_code"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -14,16 +16,14 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # Only show when the EXPLORE tab is active
         return getattr(context.scene, "main_category", 'EXPLORE') == 'EXPLORE'
 
     def draw(self, context):
         layout = self.layout
         token = load_token()
 
-        # — Top button (normal full-width, no box) —
+        # ─── Not logged in ───
         if not token:
-            # Display error message if present
             error_msg = context.scene.login_error_message
             if error_msg:
                 error_box = layout.box()
@@ -35,60 +35,89 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
             layout.separator()
             layout.label(text="Log in to explore user creations!", icon='INFO')
             return
-        else:
-            layout.operator("webapp.logout", text="Log Out", icon='URL')
-            layout.separator()
 
+        # ─── Logged in ───
+        addon_data = context.scene.my_addon_data
+
+        # Log Out button
+        layout.operator("webapp.logout", text="Log Out", icon='URL')
         layout.separator()
 
-        # Download Code (boxed) — REPLACE THIS WHOLE BLOCK
+        # ─── Explore Section ───
         code_box = layout.box()
-        code_box.label(icon="INFO", text="Explore user creations below!")
-        code_box.label(icon="INFO", text="Download code required.")
+        code_box.label(text="Explore", icon='VIEWZOOM')
         code_box.separator()
         code_box.label(text="Download Code:")
 
-        # Row 1: code field + Search (icon button)
-        row = code_box.split(factor=0.9, align=True)  # tweak factor to give the button more space
+        # Code field + Search button
+        row = code_box.split(factor=0.9, align=True)
         row.prop(context.scene, "download_code", text="")
         btns = row.row(align=True)
-        btns.operator("webapp.show_detail_by_code", text="", icon='VIEWZOOM')  # Search
+        btns.operator("webapp.show_detail_by_code", text="", icon='VIEWZOOM')
 
         code_box.label(text="Or:")
-        # Row 2: full-width Paste & Search button (separate line, same box)
         paste = code_box.column(align=True)
         paste.operator("webapp.paste_and_search", text="Paste & Search", icon='PASTEDOWN')
 
-        code_box.separator()
+        layout.separator()
+
+        # ─── Browse Section ───
+        browse_box = layout.box()
+        browse_box.label(text="Browse", icon='WORLD')
+        row = browse_box.row(align=True)
+        op_world = row.operator("webapp.open_url", text="World", icon='WORLD')
+        op_world.url = WORLD_URL
+        op_shop = row.operator("webapp.open_url", text="Shop", icon='FUND')
+        op_shop.url = SHOP_URL
+        op_events = row.operator("webapp.open_url", text="Events", icon='OUTLINER_OB_LIGHT')
+        op_events.url = EVENTS_URL
+
+        layout.separator()
+
+        # ─── Account Section ───
+        account_box = layout.box()
+        account_box.label(text="Account", icon='USER')
+
+        # Username / Profile link
+        username = addon_data.username or "Profile"
+        row = account_box.row(align=True)
+        op = row.operator("webapp.open_url", text=username, icon='URL')
+        op.url = PROFILE_URL
+
+        account_box.separator()
+
+        # Subscription tier
+        account_box.label(text=f"Tier: {addon_data.subscription_tier or 'Unknown'}")
+
+        # Downloads
+        downloads_scope_label = addon_data.downloads_scope.capitalize() if addon_data.downloads_scope else "Daily"
+        account_box.label(text=f"Downloads ({downloads_scope_label}): {addon_data.downloads_used} / {addon_data.downloads_limit}")
+
+        # Uploads
+        account_box.label(text=f"Uploads: {addon_data.uploads_used} / {addon_data.uploads_limit}")
+
+        account_box.separator()
+
+        # Refresh button
+        account_box.operator("webapp.refresh_usage", text="Refresh", icon='FILE_REFRESH')
 
 
-# ─────────────────────────────────────────────────────────────
-# Profile / Account — link only (no usage)
-# ─────────────────────────────────────────────────────────────
+# Keep this for backwards compatibility but it's now empty/hidden
 class VIEW3D_PT_ProfileAccount(bpy.types.Panel):
     bl_label = "Profile / Account"
     bl_idname = "VIEW3D_PT_profile_account"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = {'HIDE_HEADER'}
 
     @classmethod
     def poll(cls, context):
-        # Keep this category gate if you use it elsewhere
-        return getattr(context.scene, "main_category", 'EXPLORE') == 'EXPLORE'
+        # Always return False to hide this panel
+        return False
 
     def draw(self, context):
-        layout = self.layout
-        token = load_token()
-        if not token:
-            layout.label(text="Please log in to access your account", icon='ERROR')
-            return
-
-        username = getattr(context.scene.my_addon_data, "username", "") or "Profile"
-        row = layout.row(align=True)
-        op = row.operator("webapp.open_url", text=username, icon='URL')
-        op.url = PROFILE_URL
+        pass
 
 
 

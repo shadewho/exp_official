@@ -123,6 +123,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
 
         col = box.column(align=True)
         col.prop(scene, "dev_debug_dynamic_cache", text="Cache Operations")
+        col.prop(scene, "dev_debug_dynamic_activation", text="Activation State (AABB)")
         col.prop(scene, "dev_debug_dynamic_mesh", text="Transform & Collision")
         col.prop(scene, "dev_debug_dynamic_collision", text="Collision Results")
 

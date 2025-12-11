@@ -50,6 +50,13 @@ SHOP_BASE_URL = {
 }
 SHOP_URL = SHOP_BASE_URL.get(ENVIRONMENT, SHOP_BASE_URL['production'])
 
+# --- WORLD browse link ---
+WORLD_BASE_URL = {
+    'development': 'http://127.0.0.1:5000/',
+    'production':  'https://exploratory.online/'
+}
+WORLD_URL = WORLD_BASE_URL.get(ENVIRONMENT, WORLD_BASE_URL['production'])
+
 # DOCS URL
 DOCS_BASE_URL = {
     'development': 'http://127.0.0.1:5000/docs/',

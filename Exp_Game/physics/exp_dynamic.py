@@ -139,11 +139,18 @@ def update_dynamic_meshes(modal_op):
 
     # Debug logging setup
     debug_dyn_mesh = getattr(scene, 'dev_debug_dynamic_mesh', False)
+    debug_activation = getattr(scene, 'dev_debug_dynamic_activation', False)
 
     # Get current ground object from KCC (if player is standing on a dynamic mesh)
     # This mesh MUST stay active regardless of AABB to prevent bouncing
     kcc = getattr(modal_op, 'physics_controller', None)
     standing_on_mesh = getattr(kcc, 'ground_obj', None) if kcc else None
+
+    # Track activation counts for summary logging
+    total_dynamic_meshes = 0
+    active_count = 0
+    inactive_count = 0
+    standing_override_count = 0
 
     # ========== PHASE 1: Cache ALL dynamic meshes to worker (one-time) ==========
     # This must happen REGARDLESS of activation state so meshes are ready when needed
@@ -178,13 +185,13 @@ def update_dynamic_meshes(modal_op):
                 radius = rad_center + center_offset
                 modal_op._cached_dyn_radius[dyn_obj] = radius
 
-                # Send triangles to worker (one-time cache)
+                # Send triangles to ALL workers (broadcast ensures every worker has the cache)
                 job_data = {
                     "obj_id": obj_id,
                     "triangles": triangles,
                     "radius": radius,
                 }
-                engine.submit_job("CACHE_DYNAMIC_MESH", job_data)
+                engine.broadcast_job("CACHE_DYNAMIC_MESH", job_data)
                 modal_op._cached_dynamic_mesh_ids.add(obj_id)
 
     # ========== PHASE 2: AABB Activation + BVH + Velocity ==========
@@ -194,33 +201,99 @@ def update_dynamic_meshes(modal_op):
         if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
             continue
 
+        total_dynamic_meshes += 1
+
         # -------- 1) AABB-based activation (zero latency) ----------
         cur_M_quick = dyn_obj.matrix_world
         cur_pos_quick = cur_M_quick.translation
+
+        # Always compute AABB for logging purposes
+        aabb_min, aabb_max = compute_world_aabb(dyn_obj)
+        prev_active = modal_op._dyn_active_state.get(dyn_obj)
+        activation_reason = ""
 
         # CRITICAL: If player is STANDING on this mesh, ALWAYS keep it active
         # This prevents bouncing when moving platforms shift the AABB away from player
         if standing_on_mesh is not None and standing_on_mesh == dyn_obj:
             active = True
-            if debug_dyn_mesh:
-                prev_active = modal_op._dyn_active_state.get(dyn_obj)
-                if prev_active is not None and not prev_active:
-                    from ..developer.dev_logger import log_game
-                    log_game("DYN-MESH", f"STANDING_ON: {dyn_obj.name} (forced active)")
+            standing_override_count += 1
+            activation_reason = "STANDING_ON_OVERRIDE"
         elif player_loc is not None:
-            # Compute world AABB and check player proximity
-            aabb_min, aabb_max = compute_world_aabb(dyn_obj)
+            # Check player proximity to AABB with margin
             active = player_near_aabb(player_loc, aabb_min, aabb_max)
-
-            # Track transitions for debug logging
-            prev_active = modal_op._dyn_active_state.get(dyn_obj)
-            if debug_dyn_mesh and prev_active is not None and prev_active != active:
-                from ..developer.dev_logger import log_game
-                state_str = "ACTIVATED" if active else "DEACTIVATED"
-                log_game("DYN-MESH", f"AABB {state_str}: {dyn_obj.name} bounds=[{aabb_min}->{aabb_max}]")
+            activation_reason = "AABB_NEAR" if active else "AABB_FAR"
         else:
             # No player = always active (fallback)
             active = True
+            activation_reason = "NO_PLAYER_FALLBACK"
+
+        # Count active/inactive
+        if active:
+            active_count += 1
+        else:
+            inactive_count += 1
+
+        # ═══════════════════════════════════════════════════════════════════
+        # COMPREHENSIVE ACTIVATION LOGGING
+        # ═══════════════════════════════════════════════════════════════════
+        if debug_activation and player_loc is not None:
+            from ..developer.dev_logger import log_game
+
+            # Calculate distances to each AABB face (negative = inside, positive = outside)
+            px, py, pz = player_loc.x, player_loc.y, player_loc.z
+            margin = AABB_ACTIVATION_MARGIN
+
+            # Distance to each face (with margin applied)
+            dist_x_min = px - (aabb_min[0] - margin)  # + = inside margin, - = outside
+            dist_x_max = (aabb_max[0] + margin) - px
+            dist_y_min = py - (aabb_min[1] - margin)
+            dist_y_max = (aabb_max[1] + margin) - py
+            dist_z_min = pz - (aabb_min[2] - margin)
+            dist_z_max = (aabb_max[2] + margin) - pz
+
+            # Find the smallest margin (closest to exiting the activation zone)
+            min_margin_dist = min(dist_x_min, dist_x_max, dist_y_min, dist_y_max, dist_z_min, dist_z_max)
+
+            # Determine which axis is closest to boundary
+            margin_breakdown = []
+            if dist_x_min == min_margin_dist:
+                margin_breakdown.append(f"X_MIN:{dist_x_min:.2f}")
+            if dist_x_max == min_margin_dist:
+                margin_breakdown.append(f"X_MAX:{dist_x_max:.2f}")
+            if dist_y_min == min_margin_dist:
+                margin_breakdown.append(f"Y_MIN:{dist_y_min:.2f}")
+            if dist_y_max == min_margin_dist:
+                margin_breakdown.append(f"Y_MAX:{dist_y_max:.2f}")
+            if dist_z_min == min_margin_dist:
+                margin_breakdown.append(f"Z_MIN:{dist_z_min:.2f}")
+            if dist_z_max == min_margin_dist:
+                margin_breakdown.append(f"Z_MAX:{dist_z_max:.2f}")
+
+            closest_axis = margin_breakdown[0] if margin_breakdown else "NONE"
+
+            # State transition detection
+            state_changed = prev_active is not None and prev_active != active
+            state_str = "→ACTIVE" if active else "→INACTIVE"
+            if state_changed:
+                state_str = f"CHANGED {state_str}"
+
+            # Log every frame with full context
+            log_game("DYN-ACTIVATE",
+                f"{dyn_obj.name} {state_str} reason={activation_reason} | "
+                f"player=({px:.2f},{py:.2f},{pz:.2f}) | "
+                f"aabb=[({aabb_min[0]:.2f},{aabb_min[1]:.2f},{aabb_min[2]:.2f})->({aabb_max[0]:.2f},{aabb_max[1]:.2f},{aabb_max[2]:.2f})] | "
+                f"margin={margin:.1f}m closest={closest_axis} min_dist={min_margin_dist:.2f}m")
+
+            # Additional warning if very close to deactivation boundary
+            if active and min_margin_dist < 0.5:
+                log_game("DYN-ACTIVATE",
+                    f"⚠ {dyn_obj.name} NEAR_BOUNDARY min_dist={min_margin_dist:.2f}m < 0.5m (may flicker)")
+
+        # Log state transitions to DYN-MESH as well for backwards compatibility
+        if debug_dyn_mesh and prev_active is not None and prev_active != active:
+            from ..developer.dev_logger import log_game
+            state_str = "ACTIVATED" if active else "DEACTIVATED"
+            log_game("DYN-MESH", f"AABB {state_str}: {dyn_obj.name} reason={activation_reason}")
 
         modal_op._dyn_active_state[dyn_obj] = active
 
@@ -285,4 +358,12 @@ def update_dynamic_meshes(modal_op):
             axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
         omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
         modal_op.platform_ang_velocity_map[dyn_obj] = omega
-    
+
+    # ========== PHASE 3: Summary Logging ==========
+    # Log overall activation state summary
+    if debug_activation and total_dynamic_meshes > 0:
+        from ..developer.dev_logger import log_game
+        log_game("DYN-ACTIVATE",
+            f"SUMMARY: total={total_dynamic_meshes} active={active_count} inactive={inactive_count} "
+            f"standing_override={standing_override_count} | "
+            f"transforms_to_send={len(modal_op.dynamic_objects_map)}")

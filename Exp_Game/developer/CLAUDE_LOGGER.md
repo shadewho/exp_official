@@ -75,6 +75,12 @@ Each log has a category that maps to a debug toggle:
 | `PHYS-SLOPES` | `physics_slopes` | Slope handling |
 | `PHYS-SLIDE` | `physics_slide` | Multi-plane wall sliding |
 | `PHYS-BODY` | `physics_body_integrity` | Vertical ray mesh embedding detection |
+| `DYN-MESH` | `dynamic_mesh` | Dynamic mesh transform & collision timing |
+| `DYN-CACHE` | `dynamic_cache` | Dynamic mesh caching operations |
+| `DYN-COLLISION` | `dynamic_collision` | Dynamic mesh collision results (ground/wall hits) |
+| `DYN-ACTIVATE` | `dynamic_activation` | AABB activation state (player pos vs mesh bounds) |
+| `DYN-BODY` | `dynamic_body_ray` | Body integrity ray vs dynamic meshes |
+| `DYN-HORIZ` | `dynamic_horizontal` | Horizontal collision vs dynamic meshes |
 | `CULLING` | `performance` | Distance-based object culling |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |

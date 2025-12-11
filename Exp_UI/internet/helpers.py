@@ -65,6 +65,24 @@ def ensure_internet_connection(context):
 # Callback Server
 # -----------------------------------------------------------------------------
 
+def fetch_usage_on_login():
+    """Timer callback to fetch usage data after login"""
+    from ..auth.helpers import get_usage_data
+    try:
+        data = get_usage_data()
+        addon_data = bpy.context.scene.my_addon_data
+        addon_data.subscription_tier = data.get("subscription_tier", "Unknown")
+        addon_data.downloads_used = data.get("downloads_used", 0)
+        addon_data.downloads_limit = data.get("downloads_limit", 0)
+        addon_data.downloads_scope = data.get("downloads_scope", "daily")
+        addon_data.uploads_used = data.get("uploads_used", 0)
+        addon_data.uploads_limit = data.get("uploads_limit", 0)
+        addon_data.username = data.get("username", "")
+        print("Info: Usage data automatically fetched after login")
+    except Exception as e:
+        print(f"Warning: Failed to auto-fetch usage data: {e}")
+    return None  # Don't repeat timer
+
 class CallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
@@ -75,6 +93,8 @@ class CallbackHandler(BaseHTTPRequestHandler):
             if token:
                 print(f"Received token: {token}")
                 save_token(token)
+                # Schedule usage data fetch in main thread after 1 second
+                bpy.app.timers.register(fetch_usage_on_login, first_interval=1.0)
                 self.send_response(302)
                 self.send_header("Location", BLENDER_LOGIN_SUCCESS_ENDPOINT)
                 self.send_header("Connection", "close")

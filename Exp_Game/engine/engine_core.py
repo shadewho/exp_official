@@ -597,6 +597,35 @@ class EngineCore:
                 print(f"[Engine Core] Failed to submit job: {e}")
             return None
 
+    def broadcast_job(self, job_type: str, data: any) -> int:
+        """
+        Broadcast a job to ALL workers (submits once per worker).
+
+        Use for one-time setup jobs like CACHE_DYNAMIC_MESH that need to reach
+        every worker's local memory. Workers pulling from the shared queue will
+        each get one copy.
+
+        Args:
+            job_type: String identifier for the job type
+            data: Job data (must be picklable)
+
+        Returns:
+            Number of jobs successfully submitted
+        """
+        if not self._running:
+            return 0
+
+        submitted = 0
+        for _ in range(self._worker_count):
+            job_id = self.submit_job(job_type, data, check_overload=False)
+            if job_id is not None:
+                submitted += 1
+
+        if DEBUG_ENGINE:
+            print(f"[Engine Core] Broadcast {job_type} to {submitted}/{self._worker_count} workers")
+
+        return submitted
+
     def poll_results(self, max_results: int = 16) -> List[EngineResult]:
         """
         Poll for completed results from workers (non-blocking).

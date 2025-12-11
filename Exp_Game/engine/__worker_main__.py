@@ -5,8 +5,6 @@ This file is executed as __main__ by multiprocessing and has NO addon imports.
 """
 
 if __name__ == '__main__':
-    import sys
-    import os
     import time
     import traceback
     from queue import Empty

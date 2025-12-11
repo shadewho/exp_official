@@ -96,3 +96,33 @@ class OPEN_DOCS_OT(bpy.types.Operator):
     def execute(self, context):
         webbrowser.open(self.url)
         return {'FINISHED'}
+
+
+class REFRESH_USAGE_OT(bpy.types.Operator):
+    bl_idname = "webapp.refresh_usage"
+    bl_label = "Refresh Usage Data"
+    bl_description = "Fetch current usage data from the server"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        from ..auth.helpers import get_usage_data
+
+        try:
+            data = get_usage_data()
+
+            # Update scene properties with usage data
+            addon_data = context.scene.my_addon_data
+            addon_data.subscription_tier = data.get("subscription_tier", "Unknown")
+            addon_data.downloads_used = data.get("downloads_used", 0)
+            addon_data.downloads_limit = data.get("downloads_limit", 0)
+            addon_data.downloads_scope = data.get("downloads_scope", "daily")
+            addon_data.uploads_used = data.get("uploads_used", 0)
+            addon_data.uploads_limit = data.get("uploads_limit", 0)
+            addon_data.username = data.get("username", "")
+
+            self.report({'INFO'}, "Usage data refreshed successfully")
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to fetch usage data: {str(e)}")
+            return {'CANCELLED'}

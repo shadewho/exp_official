@@ -42,6 +42,7 @@ _CATEGORY_MAP = {
     'DYN-COLLISION': 'dynamic_collision',
     'DYN-BODY': 'dynamic_body_ray',
     'DYN-HORIZ': 'dynamic_horizontal',
+    'DYN-ACTIVATE': 'dynamic_activation',  # AABB activation state changes
     'FRAME': 'frame_numbers',
     'UNIFIED': 'unified_physics',
     'PHYS-CAPSULE': 'physics_capsule',

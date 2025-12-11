@@ -111,6 +111,11 @@ class PackageProps(PropertyGroup):
         name="Uploads Used",
         default=0
     )
+    uploads_limit: IntProperty(
+        name="Uploads Limit",
+        description="Maximum uploads allowed by subscription tier",
+        default=0
+    )
     download_count: IntProperty(
         name="Download Count",
         description="Total number of downloads",

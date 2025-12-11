@@ -311,6 +311,414 @@ def compute_aabb(triangles):
     return ((min_x, min_y, min_z), (max_x, max_y, max_z))
 
 
+# ============================================================================
+# SPATIAL ACCELERATION: Grid for fast ray-triangle culling
+# ============================================================================
+
+GRID_RESOLUTION = 8  # 8x8x8 = 512 cells - good balance of overhead vs culling
+
+def build_triangle_grid(triangles, aabb):
+    """
+    Build a uniform 3D grid for spatial acceleration of ray-triangle tests.
+    Each cell contains indices of triangles that overlap it.
+
+    Built ONCE during caching - O(N) build, O(cells_traversed) query.
+
+    Args:
+        triangles: list of ((x,y,z), (x,y,z), (x,y,z)) triangles
+        aabb: ((min_x, min_y, min_z), (max_x, max_y, max_z))
+
+    Returns:
+        dict with grid data for fast ray traversal
+    """
+    if not triangles or not aabb:
+        return None
+
+    aabb_min, aabb_max = aabb
+    min_x, min_y, min_z = aabb_min
+    max_x, max_y, max_z = aabb_max
+
+    # Grid dimensions with small epsilon to avoid edge cases
+    eps = 0.001
+    size_x = max(max_x - min_x, eps)
+    size_y = max(max_y - min_y, eps)
+    size_z = max(max_z - min_z, eps)
+
+    cell_size_x = size_x / GRID_RESOLUTION
+    cell_size_y = size_y / GRID_RESOLUTION
+    cell_size_z = size_z / GRID_RESOLUTION
+
+    # Grid cells: dict of (ix, iy, iz) -> list of triangle indices
+    cells = {}
+
+    for tri_idx, tri in enumerate(triangles):
+        # Find AABB of this triangle
+        v0, v1, v2 = tri
+        tri_min_x = min(v0[0], v1[0], v2[0])
+        tri_max_x = max(v0[0], v1[0], v2[0])
+        tri_min_y = min(v0[1], v1[1], v2[1])
+        tri_max_y = max(v0[1], v1[1], v2[1])
+        tri_min_z = min(v0[2], v1[2], v2[2])
+        tri_max_z = max(v0[2], v1[2], v2[2])
+
+        # Find cell range this triangle overlaps
+        ix_min = max(0, int((tri_min_x - min_x) / cell_size_x))
+        ix_max = min(GRID_RESOLUTION - 1, int((tri_max_x - min_x) / cell_size_x))
+        iy_min = max(0, int((tri_min_y - min_y) / cell_size_y))
+        iy_max = min(GRID_RESOLUTION - 1, int((tri_max_y - min_y) / cell_size_y))
+        iz_min = max(0, int((tri_min_z - min_z) / cell_size_z))
+        iz_max = min(GRID_RESOLUTION - 1, int((tri_max_z - min_z) / cell_size_z))
+
+        # Add triangle to all overlapping cells
+        for ix in range(ix_min, ix_max + 1):
+            for iy in range(iy_min, iy_max + 1):
+                for iz in range(iz_min, iz_max + 1):
+                    key = (ix, iy, iz)
+                    if key not in cells:
+                        cells[key] = []
+                    cells[key].append(tri_idx)
+
+    return {
+        "cells": cells,
+        "aabb_min": aabb_min,
+        "aabb_max": aabb_max,
+        "cell_size": (cell_size_x, cell_size_y, cell_size_z),
+        "resolution": GRID_RESOLUTION
+    }
+
+
+def ray_grid_traverse(ray_origin, ray_direction, max_dist, grid, triangles, tris_tested_counter=None):
+    """
+    Traverse grid cells along ray path and test only triangles in those cells.
+    Uses 3D-DDA algorithm for efficient grid traversal.
+
+    Args:
+        ray_origin: (x, y, z) in LOCAL space
+        ray_direction: (x, y, z) normalized direction in LOCAL space
+        max_dist: maximum ray distance
+        grid: grid data from build_triangle_grid
+        triangles: list of triangles (for actual intersection test)
+        tris_tested_counter: optional [count] to track tests
+
+    Returns:
+        (dist, tri_idx) if hit, None if no hit
+    """
+    if not grid:
+        return None
+
+    cells = grid["cells"]
+    aabb_min = grid["aabb_min"]
+    aabb_max = grid["aabb_max"]
+    cell_size_x, cell_size_y, cell_size_z = grid["cell_size"]
+    resolution = grid["resolution"]
+
+    ox, oy, oz = ray_origin
+    dx, dy, dz = ray_direction
+
+    # Check if ray intersects grid AABB at all
+    if not ray_aabb_intersect(ray_origin, ray_direction, aabb_min, aabb_max, max_dist):
+        return None
+
+    # Find entry point into grid
+    min_x, min_y, min_z = aabb_min
+    max_x, max_y, max_z = aabb_max
+
+    # Clamp ray origin to grid bounds for starting cell
+    t_start = 0.0
+
+    # If origin is outside AABB, find entry point
+    if ox < min_x or ox > max_x or oy < min_y or oy > max_y or oz < min_z or oz > max_z:
+        # Use AABB intersection to find entry t
+        EPSILON = 1e-8
+        t_min = 0.0
+        t_max = max_dist
+
+        for i, (o, d, lo, hi) in enumerate([(ox, dx, min_x, max_x),
+                                             (oy, dy, min_y, max_y),
+                                             (oz, dz, min_z, max_z)]):
+            if abs(d) < EPSILON:
+                if o < lo or o > hi:
+                    return None  # Parallel and outside
+            else:
+                t1 = (lo - o) / d
+                t2 = (hi - o) / d
+                if t1 > t2:
+                    t1, t2 = t2, t1
+                t_min = max(t_min, t1)
+                t_max = min(t_max, t2)
+                if t_min > t_max:
+                    return None
+
+        t_start = t_min + 0.001  # Small offset to be inside
+
+    # Starting point in grid
+    start_x = ox + dx * t_start
+    start_y = oy + dy * t_start
+    start_z = oz + dz * t_start
+
+    # Current cell
+    ix = int((start_x - min_x) / cell_size_x)
+    iy = int((start_y - min_y) / cell_size_y)
+    iz = int((start_z - min_z) / cell_size_z)
+
+    # Clamp to valid range
+    ix = max(0, min(resolution - 1, ix))
+    iy = max(0, min(resolution - 1, iy))
+    iz = max(0, min(resolution - 1, iz))
+
+    # Step direction
+    step_x = 1 if dx >= 0 else -1
+    step_y = 1 if dy >= 0 else -1
+    step_z = 1 if dz >= 0 else -1
+
+    # Distance to next cell boundary
+    EPSILON = 1e-8
+    if abs(dx) < EPSILON:
+        t_delta_x = float('inf')
+        t_max_x = float('inf')
+    else:
+        t_delta_x = abs(cell_size_x / dx)
+        if dx > 0:
+            next_x = min_x + (ix + 1) * cell_size_x
+        else:
+            next_x = min_x + ix * cell_size_x
+        t_max_x = abs((next_x - start_x) / dx)
+
+    if abs(dy) < EPSILON:
+        t_delta_y = float('inf')
+        t_max_y = float('inf')
+    else:
+        t_delta_y = abs(cell_size_y / dy)
+        if dy > 0:
+            next_y = min_y + (iy + 1) * cell_size_y
+        else:
+            next_y = min_y + iy * cell_size_y
+        t_max_y = abs((next_y - start_y) / dy)
+
+    if abs(dz) < EPSILON:
+        t_delta_z = float('inf')
+        t_max_z = float('inf')
+    else:
+        t_delta_z = abs(cell_size_z / dz)
+        if dz > 0:
+            next_z = min_z + (iz + 1) * cell_size_z
+        else:
+            next_z = min_z + iz * cell_size_z
+        t_max_z = abs((next_z - start_z) / dz)
+
+    # Track tested triangles to avoid duplicates
+    tested = set()
+    best_dist = max_dist
+    best_tri_idx = None
+
+    # Traverse grid (limit iterations to prevent infinite loops)
+    max_steps = resolution * 3
+    for _ in range(max_steps):
+        # Check if we're still in grid
+        if ix < 0 or ix >= resolution or iy < 0 or iy >= resolution or iz < 0 or iz >= resolution:
+            break
+
+        # Test triangles in current cell
+        cell_key = (ix, iy, iz)
+        if cell_key in cells:
+            for tri_idx in cells[cell_key]:
+                if tri_idx in tested:
+                    continue
+                tested.add(tri_idx)
+
+                if tris_tested_counter is not None:
+                    tris_tested_counter[0] += 1
+
+                tri = triangles[tri_idx]
+                hit, dist, _ = ray_triangle_intersect(
+                    ray_origin, ray_direction, tri[0], tri[1], tri[2]
+                )
+                if hit and dist < best_dist and dist > 0:
+                    best_dist = dist
+                    best_tri_idx = tri_idx
+
+        # If we found a hit, check if it's in current cell (early exit)
+        if best_tri_idx is not None:
+            # Calculate t where we exit this cell
+            t_exit = min(t_max_x, t_max_y, t_max_z)
+            if best_dist < t_start + t_exit:
+                # Hit is in a cell we've already checked
+                break
+
+        # Move to next cell
+        if t_max_x < t_max_y:
+            if t_max_x < t_max_z:
+                ix += step_x
+                t_max_x += t_delta_x
+            else:
+                iz += step_z
+                t_max_z += t_delta_z
+        else:
+            if t_max_y < t_max_z:
+                iy += step_y
+                t_max_y += t_delta_y
+            else:
+                iz += step_z
+                t_max_z += t_delta_z
+
+    if best_tri_idx is not None:
+        return (best_dist, best_tri_idx)
+    return None
+
+
+def transform_aabb_by_matrix(local_aabb, matrix_4x4):
+    """
+    Transform a local-space AABB to world space by transforming its 8 corners.
+    O(8) operations instead of O(N) for all vertices.
+
+    Args:
+        local_aabb: ((min_x, min_y, min_z), (max_x, max_y, max_z))
+        matrix_4x4: 4x4 transform matrix as flat 16-element tuple/list
+
+    Returns:
+        ((min_x, min_y, min_z), (max_x, max_y, max_z)) world-space AABB
+    """
+    if local_aabb is None:
+        return None
+
+    aabb_min, aabb_max = local_aabb
+    min_x, min_y, min_z = aabb_min
+    max_x, max_y, max_z = aabb_max
+
+    # Generate 8 corners
+    corners = [
+        (min_x, min_y, min_z),
+        (max_x, min_y, min_z),
+        (min_x, max_y, min_z),
+        (max_x, max_y, min_z),
+        (min_x, min_y, max_z),
+        (max_x, min_y, max_z),
+        (min_x, max_y, max_z),
+        (max_x, max_y, max_z),
+    ]
+
+    # Transform corners and find new AABB
+    m = matrix_4x4
+    first = True
+    for cx, cy, cz in corners:
+        # Transform point: M @ [x, y, z, 1]
+        wx = m[0]*cx + m[1]*cy + m[2]*cz + m[3]
+        wy = m[4]*cx + m[5]*cy + m[6]*cz + m[7]
+        wz = m[8]*cx + m[9]*cy + m[10]*cz + m[11]
+
+        if first:
+            new_min_x = new_max_x = wx
+            new_min_y = new_max_y = wy
+            new_min_z = new_max_z = wz
+            first = False
+        else:
+            if wx < new_min_x: new_min_x = wx
+            if wx > new_max_x: new_max_x = wx
+            if wy < new_min_y: new_min_y = wy
+            if wy > new_max_y: new_max_y = wy
+            if wz < new_min_z: new_min_z = wz
+            if wz > new_max_z: new_max_z = wz
+
+    return ((new_min_x, new_min_y, new_min_z), (new_max_x, new_max_y, new_max_z))
+
+
+def invert_matrix_4x4(m):
+    """
+    Invert a 4x4 transformation matrix.
+    Used to transform rays into local space for collision testing.
+
+    Args:
+        m: 16-element flat tuple/list (row-major 4x4 matrix)
+
+    Returns:
+        16-element tuple (inverted matrix) or None if singular
+    """
+    # For typical rigid transforms (rotation + translation + uniform scale),
+    # we can use a faster method, but for safety we use the general inverse.
+
+    # Compute 2x2 minors
+    s0 = m[0]*m[5] - m[1]*m[4]
+    s1 = m[0]*m[6] - m[2]*m[4]
+    s2 = m[0]*m[7] - m[3]*m[4]
+    s3 = m[1]*m[6] - m[2]*m[5]
+    s4 = m[1]*m[7] - m[3]*m[5]
+    s5 = m[2]*m[7] - m[3]*m[6]
+
+    c5 = m[10]*m[15] - m[11]*m[14]
+    c4 = m[9]*m[15] - m[11]*m[13]
+    c3 = m[9]*m[14] - m[10]*m[13]
+    c2 = m[8]*m[15] - m[11]*m[12]
+    c1 = m[8]*m[14] - m[10]*m[12]
+    c0 = m[8]*m[13] - m[9]*m[12]
+
+    # Determinant
+    det = s0*c5 - s1*c4 + s2*c3 + s3*c2 - s4*c1 + s5*c0
+    if abs(det) < 1e-10:
+        return None  # Singular matrix
+
+    inv_det = 1.0 / det
+
+    # Compute adjugate and multiply by 1/det
+    return (
+        ( m[5]*c5 - m[6]*c4 + m[7]*c3) * inv_det,
+        (-m[1]*c5 + m[2]*c4 - m[3]*c3) * inv_det,
+        ( m[13]*s5 - m[14]*s4 + m[15]*s3) * inv_det,
+        (-m[9]*s5 + m[10]*s4 - m[11]*s3) * inv_det,
+
+        (-m[4]*c5 + m[6]*c2 - m[7]*c1) * inv_det,
+        ( m[0]*c5 - m[2]*c2 + m[3]*c1) * inv_det,
+        (-m[12]*s5 + m[14]*s2 - m[15]*s1) * inv_det,
+        ( m[8]*s5 - m[10]*s2 + m[11]*s1) * inv_det,
+
+        ( m[4]*c4 - m[5]*c2 + m[7]*c0) * inv_det,
+        (-m[0]*c4 + m[1]*c2 - m[3]*c0) * inv_det,
+        ( m[12]*s4 - m[13]*s2 + m[15]*s0) * inv_det,
+        (-m[8]*s4 + m[9]*s2 - m[11]*s0) * inv_det,
+
+        (-m[4]*c3 + m[5]*c1 - m[6]*c0) * inv_det,
+        ( m[0]*c3 - m[1]*c1 + m[2]*c0) * inv_det,
+        (-m[12]*s3 + m[13]*s1 - m[14]*s0) * inv_det,
+        ( m[8]*s3 - m[9]*s1 + m[10]*s0) * inv_det,
+    )
+
+
+def transform_ray_to_local(ray_origin, ray_direction, inv_matrix):
+    """
+    Transform a world-space ray into local (object) space using inverse matrix.
+
+    Args:
+        ray_origin: (x, y, z) world-space origin
+        ray_direction: (x, y, z) world-space direction (should be normalized)
+        inv_matrix: 16-element inverted 4x4 matrix
+
+    Returns:
+        (local_origin, local_direction) - direction is re-normalized
+    """
+    m = inv_matrix
+    ox, oy, oz = ray_origin
+    dx, dy, dz = ray_direction
+
+    # Transform origin (point): M^-1 @ [ox, oy, oz, 1]
+    lox = m[0]*ox + m[1]*oy + m[2]*oz + m[3]
+    loy = m[4]*ox + m[5]*oy + m[6]*oz + m[7]
+    loz = m[8]*ox + m[9]*oy + m[10]*oz + m[11]
+
+    # Transform direction (vector, no translation): M^-1 @ [dx, dy, dz, 0]
+    ldx = m[0]*dx + m[1]*dy + m[2]*dz
+    ldy = m[4]*dx + m[5]*dy + m[6]*dz
+    ldz = m[8]*dx + m[9]*dy + m[10]*dz
+
+    # Re-normalize direction (may be scaled by non-uniform matrix)
+    import math
+    dir_len = math.sqrt(ldx*ldx + ldy*ldy + ldz*ldz)
+    if dir_len > 1e-10:
+        ldx /= dir_len
+        ldy /= dir_len
+        ldz /= dir_len
+
+    return ((lox, loy, loz), (ldx, ldy, ldz))
+
+
 def ray_aabb_intersect(ray_origin, ray_dir, aabb_min, aabb_max, max_dist):
     """
     Fast ray-AABB intersection test (slab method).
@@ -629,13 +1037,17 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
 def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes, tris_tested_counter=None, debug_log=None):
     """
     Test a single ray against dynamic meshes with AABB + sphere culling.
-    Used to integrate dynamic mesh testing into existing ray loops.
+    Uses LOCAL-SPACE ray testing for O(1) transform cost per mesh regardless of tri count.
+
+    OPTIMIZATION: Triangles are stored in LOCAL space. We transform the ray into
+    local space (O(1)) instead of transforming all triangles to world space (O(N)).
+    This makes performance independent of mesh complexity.
 
     Args:
-        ray_origin: (x, y, z) ray starting point
-        ray_direction: (x, y, z) ray direction (should be normalized)
+        ray_origin: (x, y, z) ray starting point (WORLD space)
+        ray_direction: (x, y, z) ray direction (WORLD space, should be normalized)
         max_dist: maximum ray distance
-        dynamic_meshes: list of dicts with {"obj_id", "triangles", "bounding_sphere", "aabb"}
+        dynamic_meshes: list of dicts with {"obj_id", "triangles", "inv_matrix", "matrix", "aabb"}
         tris_tested_counter: optional list [count] to increment for tracking
         debug_log: optional list to append debug info for diagnosis
 
@@ -651,8 +1063,10 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
         triangles = dyn_mesh.get("triangles", [])
         aabb = dyn_mesh.get("aabb")
         bounding_sphere = dyn_mesh.get("bounding_sphere")
+        inv_matrix = dyn_mesh.get("inv_matrix")
+        matrix = dyn_mesh.get("matrix")
 
-        # AABB rejection first (tighter than sphere for elongated meshes)
+        # AABB rejection first (world-space AABB, world-space ray)
         if aabb:
             aabb_min, aabb_max = aabb
             if not ray_aabb_intersect(ray_origin, ray_direction, aabb_min, aabb_max, best_dist):
@@ -665,18 +1079,71 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
             if not ray_sphere_intersect(ray_origin, ray_direction, center, radius, best_dist):
                 continue  # Skip ALL triangles in this mesh!
 
-        # Test triangles
-        for tri in triangles:
-            if tris_tested_counter is not None:
-                tris_tested_counter[0] += 1
+        # ═══════════════════════════════════════════════════════════════════
+        # OPTIMIZED: Transform ray to LOCAL space (O(1) per mesh)
+        # Instead of transforming N triangles to world space (O(N))
+        # ═══════════════════════════════════════════════════════════════════
+        if inv_matrix is None:
+            # No inverse matrix - skip (shouldn't happen with new caches)
+            continue
 
-            hit, dist, _ = ray_triangle_intersect(
-                ray_origin, ray_direction, tri[0], tri[1], tri[2]
+        local_origin, local_direction = transform_ray_to_local(ray_origin, ray_direction, inv_matrix)
+
+        # Get spatial grid if available
+        grid = dyn_mesh.get("grid")
+
+        hit_dist = None
+        hit_tri_idx = None
+
+        # ═══════════════════════════════════════════════════════════════════
+        # GRID-ACCELERATED: Use 3D-DDA if grid available (O(cells) vs O(N))
+        # ═══════════════════════════════════════════════════════════════════
+        if grid:
+            grid_result = ray_grid_traverse(
+                local_origin, local_direction, best_dist, grid, triangles, tris_tested_counter
             )
-            if hit and dist < best_dist:
-                best_dist = dist
-                best_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
-                best_obj_id = obj_id
+            if grid_result:
+                hit_dist, hit_tri_idx = grid_result
+        else:
+            # Fallback: brute-force test all triangles (for meshes without grid)
+            for tri_idx, tri in enumerate(triangles):
+                if tris_tested_counter is not None:
+                    tris_tested_counter[0] += 1
+
+                hit, dist, _ = ray_triangle_intersect(
+                    local_origin, local_direction, tri[0], tri[1], tri[2]
+                )
+                if hit and dist < best_dist:
+                    hit_dist = dist
+                    hit_tri_idx = tri_idx
+
+        # Process hit result
+        if hit_dist is not None and hit_tri_idx is not None and hit_dist < best_dist:
+            best_dist = hit_dist
+            tri = triangles[hit_tri_idx]
+            # Compute normal in local space
+            local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+            # Transform normal to world space (use matrix, not inv_matrix)
+            # Normal transform: N_world = (M^-T) @ N_local = transpose(inv(M)) @ N
+            # For orthonormal matrices, this is just M @ N (ignoring translation)
+            if matrix:
+                m = matrix
+                nx, ny, nz = local_normal
+                # Transform direction (no translation)
+                wnx = m[0]*nx + m[1]*ny + m[2]*nz
+                wny = m[4]*nx + m[5]*ny + m[6]*nz
+                wnz = m[8]*nx + m[9]*ny + m[10]*nz
+                # Normalize
+                import math
+                n_len = math.sqrt(wnx*wnx + wny*wny + wnz*wnz)
+                if n_len > 1e-10:
+                    wnx /= n_len
+                    wny /= n_len
+                    wnz /= n_len
+                best_normal = (wnx, wny, wnz)
+            else:
+                best_normal = local_normal
+            best_obj_id = obj_id
 
     if best_normal is not None:
         return (best_dist, best_normal, best_obj_id)
@@ -792,6 +1259,9 @@ def process_job(job) -> dict:
             # Cache dynamic mesh triangles in LOCAL space
             # This is sent ONCE per dynamic mesh (or when mesh changes)
             # Per-frame, only transform matrices are sent (64 bytes vs 3MB!)
+            #
+            # OPTIMIZATION: Pre-compute local AABB once here.
+            # Per-frame we only transform 8 AABB corners instead of N*3 vertices.
             global _cached_dynamic_meshes
 
             obj_id = job.data.get("obj_id")
@@ -802,18 +1272,28 @@ def process_job(job) -> dict:
                 # DIAGNOSTIC: Check if already cached (potential duplicate caching)
                 was_cached = obj_id in _cached_dynamic_meshes
 
+                # Compute local-space AABB ONCE (O(N) here, O(8) per frame)
+                local_aabb = compute_aabb(triangles)
+
+                # Build spatial grid for O(cells) ray testing instead of O(N)
+                # This is the key optimization for high-poly meshes!
+                tri_grid = build_triangle_grid(triangles, local_aabb)
+                grid_cells = len(tri_grid["cells"]) if tri_grid else 0
+
                 _cached_dynamic_meshes[obj_id] = {
-                    "triangles": triangles,  # List of (v0, v1, v2) tuples in local space
-                    "radius": radius         # Bounding sphere radius for quick rejection
+                    "triangles": triangles,   # List of (v0, v1, v2) tuples in local space
+                    "local_aabb": local_aabb, # Pre-computed local AABB for fast world transform
+                    "radius": radius,         # Bounding sphere radius for quick rejection
+                    "grid": tri_grid          # Spatial grid for fast ray-triangle culling
                 }
                 tri_count = len(triangles)
                 if DEBUG_ENGINE:
-                    print(f"[Worker] Dynamic mesh cached: obj_id={obj_id} tris={tri_count:,} radius={radius:.2f}m")
+                    print(f"[Worker] Dynamic mesh cached: obj_id={obj_id} tris={tri_count:,} radius={radius:.2f}m grid_cells={grid_cells}")
 
                 # Log to diagnostics (one-time cache event)
                 status = "RE-CACHED" if was_cached else "CACHED"
                 total_cached = len(_cached_dynamic_meshes)
-                cache_log = ("DYN-CACHE", f"{status} obj_id={obj_id} tris={tri_count} radius={radius:.2f}m total_cache={total_cached}")
+                cache_log = ("DYN-CACHE", f"{status} obj_id={obj_id} tris={tri_count} grid_cells={grid_cells} radius={radius:.2f}m total_cache={total_cached}")
                 logs = [cache_log]
 
                 result_data = {
@@ -1077,30 +1557,58 @@ def process_job(job) -> dict:
                 transform_start = time.perf_counter()
 
                 for obj_id, matrix_4x4 in dynamic_transforms.items():
-                    # Get cached local-space triangles
+                    # Get cached local-space data
                     cached = _cached_dynamic_meshes.get(obj_id)
                     if cached is None:
                         continue
 
                     local_triangles = cached["triangles"]
-                    world_triangles = []
+                    local_aabb = cached.get("local_aabb")
 
-                    # Transform each triangle to world space
-                    for tri_local in local_triangles:
-                        tri_world = transform_triangle(tri_local, matrix_4x4)
-                        world_triangles.append(tri_world)
+                    # ═══════════════════════════════════════════════════════════
+                    # OPTIMIZED: Transform only 8 AABB corners, not N*3 vertices
+                    # O(8) operations instead of O(N*3) - 300x faster for 1000 tris
+                    # ═══════════════════════════════════════════════════════════
 
-                    # Compute bounding volumes for quick rejection in unified_raycast
-                    # AABB is tighter than sphere for elongated meshes (better culling)
-                    bounding_sphere = compute_bounding_sphere(world_triangles)
-                    aabb = compute_aabb(world_triangles)
+                    # Transform local AABB to world space (8 corner transforms)
+                    if local_aabb:
+                        world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4)
+                    else:
+                        # Fallback: compute from scratch (shouldn't happen for new caches)
+                        world_aabb = None
 
-                    # Add to unified format
+                    # Compute inverse matrix for local-space ray testing
+                    inv_matrix = invert_matrix_4x4(matrix_4x4)
+
+                    # Compute bounding sphere center from AABB (fast approximation)
+                    if world_aabb:
+                        aabb_min, aabb_max = world_aabb
+                        center = (
+                            (aabb_min[0] + aabb_max[0]) * 0.5,
+                            (aabb_min[1] + aabb_max[1]) * 0.5,
+                            (aabb_min[2] + aabb_max[2]) * 0.5
+                        )
+                        # Radius is half-diagonal of AABB (conservative bound)
+                        import math
+                        half_diag = math.sqrt(
+                            (aabb_max[0] - aabb_min[0])**2 +
+                            (aabb_max[1] - aabb_min[1])**2 +
+                            (aabb_max[2] - aabb_min[2])**2
+                        ) * 0.5
+                        bounding_sphere = (center, half_diag)
+                    else:
+                        bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
+
+                    # Add to unified format - triangles stay in LOCAL space!
+                    # Rays will be transformed to local space for testing
                     unified_dynamic_meshes.append({
                         "obj_id": obj_id,
-                        "triangles": world_triangles,
+                        "triangles": local_triangles,  # LOCAL space (no transform!)
+                        "matrix": matrix_4x4,          # World transform (for hit point conversion)
+                        "inv_matrix": inv_matrix,      # Inverse (for ray-to-local transform)
                         "bounding_sphere": bounding_sphere,
-                        "aabb": aabb
+                        "aabb": world_aabb,            # World-space AABB (for culling)
+                        "grid": cached.get("grid")     # Spatial grid for fast ray-triangle culling
                     })
 
                 transform_end = time.perf_counter()
@@ -1111,14 +1619,28 @@ def process_job(job) -> dict:
                     mesh_count = len(unified_dynamic_meshes)
                     total_dyn_tris = sum(len(m["triangles"]) for m in unified_dynamic_meshes)
                     worker_logs.append(("DYN-MESH",
-                        f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}µs"))
-                    # Log AABB bounds for first mesh (helps diagnose collision issues)
-                    if mesh_count > 0 and unified_dynamic_meshes[0].get("aabb"):
-                        aabb = unified_dynamic_meshes[0]["aabb"]
-                        aabb_min, aabb_max = aabb
+                        f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}µs "
+                        f"player=({px:.2f},{py:.2f},{pz:.2f})"))
+                    # Log AABB bounds for each mesh (helps diagnose collision issues)
+                    for i, mesh_data in enumerate(unified_dynamic_meshes):
+                        if mesh_data.get("aabb"):
+                            aabb = mesh_data["aabb"]
+                            aabb_min, aabb_max = aabb
+                            obj_id = mesh_data.get("obj_id", "?")
+                            worker_logs.append(("DYN-MESH",
+                                f"MESH[{i}] id={obj_id} tris={len(mesh_data['triangles'])} "
+                                f"aabb=[({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f})->({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})]"))
+            else:
+                # No dynamic transforms received - log this state
+                if debug_flags.get("dynamic_mesh", False):
+                    cached_count = len(_cached_dynamic_meshes)
+                    transform_count = len(dynamic_transforms)
+                    if cached_count > 0 and transform_count == 0:
                         worker_logs.append(("DYN-MESH",
-                            f"AABB[0] min=({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f}) "
-                            f"max=({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})"))
+                            f"TRANSFORM active=0 tris=0 (cached={cached_count} but no transforms sent)"))
+                    elif cached_count == 0:
+                        worker_logs.append(("DYN-MESH",
+                            f"TRANSFORM active=0 tris=0 (no cached meshes)"))
 
             # ─────────────────────────────────────────────────────────────────
             # 1. TIMERS
@@ -2225,6 +2747,7 @@ def process_job(job) -> dict:
                 # ═══════════════════════════════════════════════════════════
                 # UNIFIED: Also test dynamic meshes for ground detection
                 # ═══════════════════════════════════════════════════════════
+                static_ground_z = ground_hit_z  # Save static result for comparison logging
                 ground_hit_source = "static" if ground_hit_z is not None else None
                 debug_collision = debug_flags.get("dynamic_collision", False)
 
@@ -2259,12 +2782,26 @@ def process_job(job) -> dict:
                                 worker_logs.append(("DYN-COLLISION", f"GROUND_ABOVE_REJECT z={hit_z:.2f} > pz={pz:.2f}"))
                     elif debug_collision and tris_counter[0] > 0:
                         # Ray passed AABB but no triangle hit
-                        worker_logs.append(("DYN-COLLISION", f"GROUND_MISS tris_tested={tris_counter[0]} no_hit"))
+                        worker_logs.append(("DYN-COLLISION", f"GROUND_MISS tris_tested={tris_counter[0]} no_hit ray_origin=({px:.2f},{py:.2f},{ray_start_z:.2f})"))
+                    elif debug_collision and tris_counter[0] == 0:
+                        # AABB rejection - log the mesh count for context
+                        mesh_count = len(unified_dynamic_meshes)
+                        worker_logs.append(("DYN-COLLISION", f"GROUND_AABB_SKIP all {mesh_count} meshes rejected ray=({px:.2f},{py:.2f},{ray_start_z:.2f})"))
 
-                # Log collision source
-                if debug_collision and ground_hit_z is not None:
-                    if ground_hit_source and "dynamic" in ground_hit_source:
-                        worker_logs.append(("DYN-COLLISION", f"GROUND hit_source={ground_hit_source} z={ground_hit_z:.2f}m normal=({ground_hit_n[0]:.2f},{ground_hit_n[1]:.2f},{ground_hit_n[2]:.2f})"))
+                # Log comprehensive ground detection result
+                if debug_collision:
+                    if ground_hit_z is not None:
+                        if ground_hit_source and "dynamic" in ground_hit_source:
+                            # Dynamic mesh was closest
+                            static_info = f"static_z={static_ground_z:.2f}" if static_ground_z is not None else "static=none"
+                            worker_logs.append(("DYN-COLLISION",
+                                f"GROUND hit_source={ground_hit_source} z={ground_hit_z:.2f}m "
+                                f"normal=({ground_hit_n[0]:.2f},{ground_hit_n[1]:.2f},{ground_hit_n[2]:.2f}) | "
+                                f"player_z={pz:.2f} dist={pz - ground_hit_z:.2f}m {static_info}"))
+                        elif static_ground_z is not None and unified_dynamic_meshes:
+                            # Static was used (dynamic either missed or was farther)
+                            worker_logs.append(("DYN-COLLISION",
+                                f"GROUND_STATIC_CHOSEN z={ground_hit_z:.2f}m (dynamic missed or farther)"))
 
                 # Apply vertical movement and ground snap
                 if dz < 0.0:  # Falling

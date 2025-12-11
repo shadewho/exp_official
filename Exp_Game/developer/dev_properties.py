@@ -367,6 +367,23 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_dynamic_activation = bpy.props.BoolProperty(
+        name="Dynamic Activation State",
+        description=(
+            "AABB-based activation system diagnostics:\n"
+            "• Player position vs mesh AABB bounds\n"
+            "• Distance to AABB edges (X, Y, Z)\n"
+            "• Activation margin and buffer status\n"
+            "• State transitions (ACTIVATED/DEACTIVATED)\n"
+            "• Standing-on override status\n"
+            "• Per-frame activation decisions\n"
+            "\n"
+            "CRITICAL for diagnosing flickering issues.\n"
+            "Shows exactly why a mesh activates or deactivates."
+        ),
+        default=False
+    )
+
     bpy.types.Scene.dev_debug_dynamic_body_ray = bpy.props.BoolProperty(
         name="Dynamic Body Ray",
         description=(
@@ -494,7 +511,7 @@ def unregister_properties():
     for prop in ('dev_debug_kcc_offload', 'dev_debug_frame_numbers',
                  'dev_debug_camera_offload', 'dev_debug_performance',
                  'dev_debug_dynamic_mesh', 'dev_debug_dynamic_cache',
-                 'dev_debug_dynamic_collision',
+                 'dev_debug_dynamic_collision', 'dev_debug_dynamic_activation',
                  'dev_debug_dynamic_body_ray', 'dev_debug_dynamic_horizontal'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
