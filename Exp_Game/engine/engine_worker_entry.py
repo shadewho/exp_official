@@ -84,7 +84,8 @@ def ray_triangle_intersect(ray_origin, ray_direction, v0, v1, v2):
     # Dot product: e1 · h
     a = e1x * hx + e1y * hy + e1z * hz
 
-    # Ray parallel to triangle
+    # Ray parallel to triangle (test both front and back faces for proper collision)
+    # NOTE: Backface culling (a < EPSILON) breaks body integrity ray which shoots upward
     if abs(a) < EPSILON:
         return (False, None, None)
 
@@ -276,6 +277,109 @@ def compute_bounding_sphere(triangles):
     return ((cx, cy, cz), radius)
 
 
+def compute_aabb(triangles):
+    """
+    Compute axis-aligned bounding box for triangles.
+    AABB is tighter than sphere for elongated meshes.
+
+    Args:
+        triangles: list of ((x,y,z), (x,y,z), (x,y,z)) triangles
+
+    Returns:
+        ((min_x, min_y, min_z), (max_x, max_y, max_z)) or None if empty
+    """
+    if not triangles:
+        return None
+
+    # Initialize with first vertex
+    v = triangles[0][0]
+    min_x = max_x = v[0]
+    min_y = max_y = v[1]
+    min_z = max_z = v[2]
+
+    # Expand to fit all vertices
+    for tri in triangles:
+        for v in tri:
+            x, y, z = v
+            if x < min_x: min_x = x
+            if x > max_x: max_x = x
+            if y < min_y: min_y = y
+            if y > max_y: max_y = y
+            if z < min_z: min_z = z
+            if z > max_z: max_z = z
+
+    return ((min_x, min_y, min_z), (max_x, max_y, max_z))
+
+
+def ray_aabb_intersect(ray_origin, ray_dir, aabb_min, aabb_max, max_dist):
+    """
+    Fast ray-AABB intersection test (slab method).
+
+    Args:
+        ray_origin: (x, y, z) ray starting point
+        ray_dir: (x, y, z) ray direction (should be normalized)
+        aabb_min: (x, y, z) AABB minimum corner
+        aabb_max: (x, y, z) AABB maximum corner
+        max_dist: maximum ray distance
+
+    Returns:
+        True if ray intersects AABB within max_dist
+    """
+    EPSILON = 1e-8
+    ox, oy, oz = ray_origin
+    dx, dy, dz = ray_dir
+
+    t_min = 0.0
+    t_max = max_dist
+
+    # X slab
+    if abs(dx) > EPSILON:
+        inv_d = 1.0 / dx
+        t1 = (aabb_min[0] - ox) * inv_d
+        t2 = (aabb_max[0] - ox) * inv_d
+        if t1 > t2:
+            t1, t2 = t2, t1
+        t_min = max(t_min, t1)
+        t_max = min(t_max, t2)
+        if t_min > t_max:
+            return False
+    else:
+        if ox < aabb_min[0] or ox > aabb_max[0]:
+            return False
+
+    # Y slab
+    if abs(dy) > EPSILON:
+        inv_d = 1.0 / dy
+        t1 = (aabb_min[1] - oy) * inv_d
+        t2 = (aabb_max[1] - oy) * inv_d
+        if t1 > t2:
+            t1, t2 = t2, t1
+        t_min = max(t_min, t1)
+        t_max = min(t_max, t2)
+        if t_min > t_max:
+            return False
+    else:
+        if oy < aabb_min[1] or oy > aabb_max[1]:
+            return False
+
+    # Z slab
+    if abs(dz) > EPSILON:
+        inv_d = 1.0 / dz
+        t1 = (aabb_min[2] - oz) * inv_d
+        t2 = (aabb_max[2] - oz) * inv_d
+        if t1 > t2:
+            t1, t2 = t2, t1
+        t_min = max(t_min, t1)
+        t_max = min(t_max, t2)
+        if t_min > t_max:
+            return False
+    else:
+        if oz < aabb_min[2] or oz > aabb_max[2]:
+            return False
+
+    return True
+
+
 # ============================================================================
 # UNIFIED RAYCAST - Tests both static grid and dynamic meshes
 # ============================================================================
@@ -445,16 +549,23 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                 t_max_z += t_delta_z
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 2: Test Dynamic Meshes (with bounding sphere culling)
+    # PHASE 2: Test Dynamic Meshes (with AABB + sphere culling)
     # ─────────────────────────────────────────────────────────────────────────
     if dynamic_meshes:
         for dyn_mesh in dynamic_meshes:
             obj_id = dyn_mesh.get("obj_id")
             world_tris = dyn_mesh.get("triangles", [])
+            aabb = dyn_mesh.get("aabb")
             bounding_sphere = dyn_mesh.get("bounding_sphere")
 
-            # Quick sphere rejection (skip entire mesh if ray misses sphere)
-            if bounding_sphere:
+            # AABB rejection first (tighter than sphere for elongated meshes)
+            if aabb:
+                aabb_min, aabb_max = aabb
+                if not ray_aabb_intersect(ray_origin, ray_direction,
+                                          aabb_min, aabb_max, best_dist):
+                    continue  # Skip ALL triangles in this mesh!
+            # Fallback to sphere if no AABB
+            elif bounding_sphere:
                 sphere_center, sphere_radius = bounding_sphere
                 if not ray_sphere_intersect(ray_origin, ray_direction,
                                            sphere_center, sphere_radius, best_dist):
@@ -515,17 +626,18 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
 # SIMPLE DYNAMIC MESH RAY HELPER (for integration with existing ray loops)
 # ============================================================================
 
-def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes, tris_tested_counter=None):
+def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes, tris_tested_counter=None, debug_log=None):
     """
-    Test a single ray against dynamic meshes with bounding sphere culling.
+    Test a single ray against dynamic meshes with AABB + sphere culling.
     Used to integrate dynamic mesh testing into existing ray loops.
 
     Args:
         ray_origin: (x, y, z) ray starting point
         ray_direction: (x, y, z) ray direction (should be normalized)
         max_dist: maximum ray distance
-        dynamic_meshes: list of dicts with {"obj_id", "triangles", "bounding_sphere"}
+        dynamic_meshes: list of dicts with {"obj_id", "triangles", "bounding_sphere", "aabb"}
         tris_tested_counter: optional list [count] to increment for tracking
+        debug_log: optional list to append debug info for diagnosis
 
     Returns:
         (dist, normal, obj_id) if hit, None if no hit
@@ -537,10 +649,18 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
     for dyn_mesh in dynamic_meshes:
         obj_id = dyn_mesh.get("obj_id")
         triangles = dyn_mesh.get("triangles", [])
+        aabb = dyn_mesh.get("aabb")
         bounding_sphere = dyn_mesh.get("bounding_sphere")
 
-        # Quick sphere rejection (skip entire mesh if ray misses sphere)
-        if bounding_sphere:
+        # AABB rejection first (tighter than sphere for elongated meshes)
+        if aabb:
+            aabb_min, aabb_max = aabb
+            if not ray_aabb_intersect(ray_origin, ray_direction, aabb_min, aabb_max, best_dist):
+                if debug_log is not None:
+                    debug_log.append(f"AABB_REJECT ray=({ray_origin[0]:.1f},{ray_origin[1]:.1f},{ray_origin[2]:.1f}) dir=({ray_direction[0]:.2f},{ray_direction[1]:.2f},{ray_direction[2]:.2f}) aabb=[({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f})->({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})]")
+                continue  # Skip ALL triangles in this mesh!
+        # Fallback to sphere if no AABB
+        elif bounding_sphere:
             center, radius = bounding_sphere
             if not ray_sphere_intersect(ray_origin, ray_direction, center, radius, best_dist):
                 continue  # Skip ALL triangles in this mesh!
@@ -779,56 +899,6 @@ def process_job(job) -> dict:
 
                 result_data = {"entry_ptr": entry_ptr, "next_idx": idx, "changes": changes}
 
-        elif job.job_type == "DYNAMIC_MESH_ACTIVATION":
-            # Track worker execution for verification
-            calc_start = time.perf_counter()
-            # Dynamic mesh proximity checks - distance-based activation gating
-            # Pure math (NO bpy access) - determines which meshes should be active
-            mesh_positions = job.data.get("mesh_positions", [])
-            mesh_objects = job.data.get("mesh_objects", [])  # List of (obj, prev_active) tuples
-            player_position = job.data.get("player_position", (0, 0, 0))
-            base_distances = job.data.get("base_distances", [])
-
-            px, py, pz = player_position
-            activation_decisions = []
-
-            for i, (mesh_pos, (obj_name, prev_active), base_dist) in enumerate(zip(mesh_positions, mesh_objects, base_distances)):
-                # Special case: base_dist = 0 means NO distance gating (always active)
-                if base_dist <= 0.0:
-                    activation_decisions.append((obj_name, True, prev_active))
-                    continue
-
-                mx, my, mz = mesh_pos
-
-                # Calculate squared distance (avoid sqrt)
-                dx = mx - px
-                dy = my - py
-                dz = mz - pz
-                dist_squared = dx*dx + dy*dy + dz*dz
-
-                # Hysteresis: avoid activation flapping
-                # If previously active, add 10% margin before deactivating
-                # If previously inactive, subtract 10% margin before activating
-                margin = base_dist * 0.10
-                if prev_active:
-                    threshold = base_dist + margin
-                else:
-                    threshold = max(0.0, base_dist - margin)
-
-                # Compare squared distances (no sqrt needed)
-                should_activate = (dist_squared <= (threshold * threshold))
-
-                activation_decisions.append((obj_name, should_activate, prev_active))
-
-            calc_end = time.perf_counter()
-            calc_time_us = (calc_end - calc_start) * 1_000_000  # microseconds
-
-            result_data = {
-                "activation_decisions": activation_decisions,
-                "count": len(activation_decisions),
-                "calc_time_us": calc_time_us  # Prove worker did the work
-            }
-
         elif job.job_type == "INTERACTION_CHECK_BATCH":
             # Interaction proximity & collision checks
             # Pure math (NO bpy access) - determines which interactions are triggered
@@ -953,12 +1023,12 @@ def process_job(job) -> dict:
 
             # Debug flags
             debug_flags = job.data.get("debug_flags", {})
+            debug_unified_physics = debug_flags.get("unified_physics", False)
             debug_step_up = debug_flags.get("step_up", False)
             debug_ground = debug_flags.get("ground", False)
             debug_capsule = debug_flags.get("capsule", False)
             debug_slopes = debug_flags.get("slopes", False)
             debug_slide = debug_flags.get("slide", False)
-            debug_enhanced = debug_flags.get("enhanced", False)
             debug_body = debug_flags.get("body_integrity", False)
 
             # Worker log buffer (collected during computation, returned to main thread)
@@ -1020,14 +1090,17 @@ def process_job(job) -> dict:
                         tri_world = transform_triangle(tri_local, matrix_4x4)
                         world_triangles.append(tri_world)
 
-                    # Compute bounding sphere for quick rejection in unified_raycast
+                    # Compute bounding volumes for quick rejection in unified_raycast
+                    # AABB is tighter than sphere for elongated meshes (better culling)
                     bounding_sphere = compute_bounding_sphere(world_triangles)
+                    aabb = compute_aabb(world_triangles)
 
                     # Add to unified format
                     unified_dynamic_meshes.append({
                         "obj_id": obj_id,
                         "triangles": world_triangles,
-                        "bounding_sphere": bounding_sphere
+                        "bounding_sphere": bounding_sphere,
+                        "aabb": aabb
                     })
 
                 transform_end = time.perf_counter()
@@ -1039,6 +1112,13 @@ def process_job(job) -> dict:
                     total_dyn_tris = sum(len(m["triangles"]) for m in unified_dynamic_meshes)
                     worker_logs.append(("DYN-MESH",
                         f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}µs"))
+                    # Log AABB bounds for first mesh (helps diagnose collision issues)
+                    if mesh_count > 0 and unified_dynamic_meshes[0].get("aabb"):
+                        aabb = unified_dynamic_meshes[0]["aabb"]
+                        aabb_min, aabb_max = aabb
+                        worker_logs.append(("DYN-MESH",
+                            f"AABB[0] min=({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f}) "
+                            f"max=({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})"))
 
             # ─────────────────────────────────────────────────────────────────
             # 1. TIMERS
@@ -1329,11 +1409,16 @@ def process_job(job) -> dict:
 
                     if unified_dynamic_meshes:
                         tris_counter = [0]
+                        horiz_debug = [] if debug_capsule else None
                         dyn_result = test_dynamic_meshes_ray(
                             (ox, oy, oz), (fwd_x, fwd_y, 0), ray_best_dist,
-                            unified_dynamic_meshes, tris_counter
+                            unified_dynamic_meshes, tris_counter, horiz_debug
                         )
                         total_tris += tris_counter[0]
+
+                        # Log AABB rejection for first horizontal ray (diagnose why player enters mesh)
+                        if horiz_debug and len(horiz_debug) > 0 and ray_z == ray_heights[0]:
+                            worker_logs.append(("PHYS-CAPSULE", f"DYN_SKIP {horiz_debug[0]}"))
 
                         if dyn_result:
                             dyn_dist, dyn_normal, dyn_obj_id = dyn_result
@@ -2145,20 +2230,36 @@ def process_job(job) -> dict:
 
                 if unified_dynamic_meshes:
                     tris_counter = [0]
+                    aabb_debug = [] if debug_collision else None
                     dyn_result = test_dynamic_meshes_ray(
                         (px, py, ray_start_z), (0, 0, -1), ray_max,
-                        unified_dynamic_meshes, tris_counter
+                        unified_dynamic_meshes, tris_counter, aabb_debug
                     )
                     total_tris += tris_counter[0]
 
+                    # Log AABB rejections for diagnosis
+                    if aabb_debug and debug_collision:
+                        for msg in aabb_debug:
+                            worker_logs.append(("DYN-COLLISION", msg))
+
                     if dyn_result:
                         dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                        if dyn_dist < ray_max:
+                        # CRITICAL: Only accept hits that are BELOW the player (positive distance)
+                        # A hit at distance > 0 means the surface is below ray_start_z
+                        # If dyn_dist <= 0, the hit is above us (invalid for ground detection)
+                        if dyn_dist > 0 and dyn_dist < ray_max:
                             hit_z = ray_start_z - dyn_dist
-                            if ground_hit_z is None or hit_z > ground_hit_z:
-                                ground_hit_z = hit_z
-                                ground_hit_n = dyn_normal
-                                ground_hit_source = f"dynamic_{dyn_obj_id}"
+                            # Also verify hit_z is below player feet (sanity check)
+                            if hit_z <= pz + 0.1:  # Allow small tolerance
+                                if ground_hit_z is None or hit_z > ground_hit_z:
+                                    ground_hit_z = hit_z
+                                    ground_hit_n = dyn_normal
+                                    ground_hit_source = f"dynamic_{dyn_obj_id}"
+                            elif debug_collision:
+                                worker_logs.append(("DYN-COLLISION", f"GROUND_ABOVE_REJECT z={hit_z:.2f} > pz={pz:.2f}"))
+                    elif debug_collision and tris_counter[0] > 0:
+                        # Ray passed AABB but no triangle hit
+                        worker_logs.append(("DYN-COLLISION", f"GROUND_MISS tris_tested={tris_counter[0]} no_hit"))
 
                 # Log collision source
                 if debug_collision and ground_hit_z is not None:
@@ -2383,15 +2484,11 @@ def process_job(job) -> dict:
             # ─────────────────────────────────────────────────────────────────
             calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
-            # Summary debug log
-            if debug_enhanced:
-                worker_logs.append(("KCC", f"COMPLETE pos=({px:.2f},{py:.2f},{pz:.2f}) vel=({vx:.2f},{vy:.2f},{vz:.2f}) ground={on_ground} walkable={on_walkable} blocked={h_blocked} step={did_step_up} slide={did_slide} | {calc_time_us:.0f}us {total_rays}rays {total_tris}tris"))
-
             # ═════════════════════════════════════════════════════════════════
             # UNIFIED PHYSICS DIAGNOSTICS
             # ═════════════════════════════════════════════════════════════════
             # Log unified physics system status (static + dynamic in single path)
-            if debug_flags.get("engine", False):
+            if debug_unified_physics:
                 transform_time = dynamic_transform_time_us
                 total_time = calc_time_us
                 physics_time = total_time - transform_time
@@ -2400,19 +2497,22 @@ def process_job(job) -> dict:
                 cached_mesh_count = len(_cached_dynamic_meshes)
                 active_mesh_count = len(unified_dynamic_meshes)
 
-                # Unified physics summary
+                # Unified physics summary (single log with all info)
                 ground_src = ground_hit_source if ground_hit_source else "none"
-                worker_logs.append(("UNIFIED",
-                    f"PHYSICS: total={total_time:.0f}µs | "
-                    f"static_grid=YES dynamic={active_mesh_count} | "
-                    f"rays={total_rays} tris={total_tris} cells={total_cells} | "
-                    f"ground={ground_src}"))
 
-                # Detailed timing if dynamic meshes are active
                 if active_mesh_count > 0:
+                    # With dynamic meshes: show timing breakdown
                     worker_logs.append(("UNIFIED",
-                        f"TIMING: xform={transform_time:.0f}µs phys={physics_time:.0f}µs | "
-                        f"sphere_cull=ENABLED cache={cached_mesh_count}"))
+                        f"total={total_time:.0f}µs (xform={transform_time:.0f}µs) | "
+                        f"static+dynamic={active_mesh_count} | "
+                        f"rays={total_rays} tris={total_tris} | "
+                        f"ground={ground_src}"))
+                else:
+                    # Static only: simpler log
+                    worker_logs.append(("UNIFIED",
+                        f"total={total_time:.0f}µs | static_only | "
+                        f"rays={total_rays} tris={total_tris} | "
+                        f"ground={ground_src}"))
 
             result_data = {
                 "pos": (px, py, pz),

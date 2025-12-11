@@ -345,13 +345,8 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
             if entry.is_moving:
                 dyn_box = box.box()
                 warn_grp = dyn_box.column(align=True)
-                warn_grp.label(text="⚠ Mesh rebuild every frame!")
-                warn_grp.label(text="Optimize mesh and use Register Distance")
-                warn_grp.label(text="Very expensive calculations for complex geometry!")
-                dyn_box.separator()
-                dist_grp = dyn_box.column(align=True)
-                dist_grp.prop(entry, "register_distance", text="Register Distance")
-                dist_grp.label(text="Distance at which dynamic mesh updates.")
+                warn_grp.label(text="Dynamic mesh: AABB-gated automatically")
+                warn_grp.label(text="Only transforms when player nearby")
             box.prop(entry, "hide_during_game", text="Hide During Game")
 
         # Spawn Object section in its own box

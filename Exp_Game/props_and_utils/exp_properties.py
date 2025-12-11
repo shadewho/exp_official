@@ -131,16 +131,9 @@ class ProxyMeshEntry(bpy.types.PropertyGroup):
     is_moving: bpy.props.BoolProperty(
         name="Is Moving",
         default=False,
-        description="If True, this mesh may move each frame and we’ll handle it differently."
+        description="If True, this mesh may move each frame and we'll handle it differently."
     )
 
-    register_distance: bpy.props.FloatProperty(
-        name="Register Distance",
-        default=0.0,
-        min=0.0,
-        description="Distance from the player at which this dynamic mesh is active. 0 = always active."
-    )
-    
     hide_during_game: bpy.props.BoolProperty(
         name="Hide During Game",
         default=False,

@@ -493,18 +493,25 @@ class KinematicCharacterController:
         # Worker now handles ALL collision detection (static grid + dynamic meshes)
         # We just need to extract which object we're standing on for platform carry
         # ─────────────────────────────────────────────────────────────────────
-        ground_hit_source = result.get("ground_hit_source")  # "static", "dynamic_ObjectName", or None
+        ground_hit_source = result.get("ground_hit_source")  # "static", "dynamic_{obj_id}", or None
         self.ground_obj = None  # Default to no ground object
 
         if ground_hit_source and ground_hit_source.startswith("dynamic_"):
-            # Extract object name from "dynamic_ObjectName" format
-            obj_name = ground_hit_source[8:]  # Remove "dynamic_" prefix
-            # Look up object in dynamic_map by name
-            if dynamic_map:
-                for obj in dynamic_map.keys():
-                    if obj and obj.name == obj_name:
-                        self.ground_obj = obj
+            # Extract object ID from "dynamic_{obj_id}" format (worker uses id(obj))
+            try:
+                obj_id = int(ground_hit_source[8:])  # Remove "dynamic_" prefix, convert to int
+                # CRITICAL: Look up in ALL proxy meshes, not just active ones!
+                # If we only check dynamic_map, edge cases where AABB fails cause lookup
+                # to fail, breaking the "standing_on" override in update_dynamic_meshes
+                import bpy
+                scene = bpy.context.scene
+                for pm in scene.proxy_meshes:
+                    dyn_obj = pm.mesh_object
+                    if dyn_obj and pm.is_moving and id(dyn_obj) == obj_id:
+                        self.ground_obj = dyn_obj
                         break
+            except (ValueError, TypeError):
+                pass  # Invalid ID format, ground_obj stays None
 
         # ─────────────────────────────────────────────────────────────────────
         # PLATFORM CARRY (uses ground_obj set from worker's ground_hit_source)
@@ -584,12 +591,12 @@ class KinematicCharacterController:
         if context and hasattr(context, 'scene'):
             scene = context.scene
             debug_flags = {
+                "unified_physics": getattr(scene, "dev_debug_unified_physics", False),
                 "step_up": getattr(scene, "dev_debug_physics_step_up", False),
                 "ground": getattr(scene, "dev_debug_physics_ground", False),
                 "capsule": getattr(scene, "dev_debug_physics_capsule", False),
                 "slopes": getattr(scene, "dev_debug_physics_slopes", False),
                 "slide": getattr(scene, "dev_debug_physics_slide", False),
-                "enhanced": getattr(scene, "dev_debug_physics_enhanced", False),
                 "body_integrity": getattr(scene, "dev_debug_physics_body_integrity", False),
                 "dynamic_mesh": getattr(scene, "dev_debug_dynamic_mesh", False),
                 "dynamic_collision": getattr(scene, "dev_debug_dynamic_collision", False),
@@ -736,10 +743,10 @@ class KinematicCharacterController:
             self._last_physics_job_id = job_id
 
             # Same-frame polling: wait for our result
-            # Worker computes in ~100-200µs typically, so this should succeed quickly
+            # Worker computes in ~100-200µs typically, but dynamic mesh transforms can add 1-2ms
             # Using adaptive polling: busy-poll first, then sleep if needed
             poll_start = time.perf_counter()
-            poll_timeout = 0.003  # 3ms max wait (plenty for ~200µs worker)
+            poll_timeout = 0.005  # 5ms max wait (dynamic mesh adds latency)
             result_found = False
             poll_count = 0
 

@@ -1186,11 +1186,6 @@ class ExpModal(bpy.types.Operator):
         # Resolve movement keys once for this batch
         resolved_keys = _resolved_move_keys(self)
 
-        # CATCHUP DEBUG: Track when multiple physics steps happen in one frame
-        from ..developer.dev_debug_gate import should_print_debug
-        if should_print_debug("physics_catchup") and steps > 1:
-            print(f"[PHYS-CATCH] ⚠️ {steps} physics steps in ONE frame (catchup active)")
-
         # Fixed 30 Hz steps
         for _ in range(int(steps)):
             # Increment physics frame counter (for logging correlation)

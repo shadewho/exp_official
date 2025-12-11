@@ -76,7 +76,7 @@ Main Thread (Modal - 30Hz)          Workers (4 cores)
 - `KCC_PHYSICS_STEP` - Full character physics
 - `CAMERA_OCCLUSION_FULL` - Camera raycast occlusion
 - `CULL_BATCH` - Performance culling (1000+ objects)
-- `DYNAMIC_MESH_ACTIVATION` - Distance-based mesh gating
+- `CACHE_DYNAMIC_MESH` - One-time triangle caching for dynamic meshes
 - `INTERACTION_CHECK_BATCH` - Proximity checks
 
 **Golden Rule:** Don't overwhelm the engine. Game runs at 30Hz - don't submit more jobs than workers can handle.

@@ -1,14 +1,14 @@
 # Dynamic Mesh Physics Offload - Development Guide
 
-**Last Updated**: 2025-12-10
-**Status**: FULLY UNIFIED - Zero main thread collision, complete worker offload
+**Last Updated**: 2025-12-11
+**Status**: FULLY UNIFIED - Zero main thread collision, AABB-gated activation
 
 ---
 
 ## Mission Statement
 
 **Goal**: Unify static and dynamic mesh physics into a single, high-performance system running entirely in the worker engine. Free the main thread from ALL physics computation. The only difference between static and dynamic meshes should be:
-1. **Proximity activation** - Dynamic meshes activate based on distance gating
+1. **AABB activation** - Dynamic meshes activate when player within bounding box + margin
 2. **Physical influence** - Dynamic meshes can push/carry the character
 
 Everything else (collision detection, ray testing, step-up, ground detection) uses **identical physics code** for both static and dynamic.
@@ -77,10 +77,13 @@ MAIN THREAD:
 ### **Worker Engine**
 - `engine_worker_entry.py` - All worker physics computation
   - `ray_sphere_intersect()` - Quick sphere rejection test
+  - `ray_aabb_intersect()` - AABB rejection (tighter than sphere)
   - `compute_bounding_sphere()` - Sphere calculation
+  - `compute_aabb()` - AABB calculation
+  - `ray_triangle_intersect()` - With backface culling (~50% speedup)
   - `unified_raycast()` - Full unified raycast
-  - `test_dynamic_meshes_ray()` - Simple ray helper
-  - Transform + sphere computation (`unified_dynamic_meshes`)
+  - `test_dynamic_meshes_ray()` - Simple ray helper (uses AABB + sphere)
+  - Transform + bounds computation (`unified_dynamic_meshes`)
   - Horizontal rays with inline dynamic testing
   - Body integrity ray with dynamic testing
   - Ceiling check with dynamic testing
@@ -94,7 +97,7 @@ MAIN THREAD:
   - **NO collision detection methods** (all deleted)
 
 - `exp_dynamic.py` - Dynamic mesh management
-  - Distance-gated activation (via worker)
+  - AABB-gated activation (zero-latency, main thread)
   - Triangle caching triggers (one-time per mesh)
   - Velocity calculation for platform carry
   - LocalBVH creation (for camera/projectiles ONLY)
@@ -111,9 +114,9 @@ MAIN THREAD:
 
 | Category | Debug Property | What It Shows |
 |----------|---------------|---------------|
-| `UNIFIED` | `engine` | Unified physics status (static+dynamic) |
+| `UNIFIED` | `unified_physics` | Unified physics status (static+dynamic) |
 | `DYN-CACHE` | `dynamic_cache` | One-time mesh caching events |
-| `DYN-MESH` | `dynamic_mesh` | Transform + sphere timing per frame |
+| `DYN-MESH` | `dynamic_mesh` | Transform timing + activation state |
 | `DYN-COLLISION` | `dynamic_collision` | Ground collision sources |
 | `PHYS-BODY` | `body_ray` | Body integrity ray |
 | `ENGINE` | `engine` | Worker timing breakdown |
@@ -121,8 +124,9 @@ MAIN THREAD:
 
 ### **Expected Log Output (with unified physics):**
 ```
-[UNIFIED] PHYSICS: total=1234us | static_grid=YES dynamic=2 | rays=12 tris=450 cells=89 | ground=dynamic_Platform
-[UNIFIED] TIMING: xform=280us phys=954us | sphere_cull=ENABLED cache=3
+[UNIFIED] total=1234µs (xform=280µs) | static+dynamic=2 | rays=12 tris=450 | ground=dynamic_Platform
+[DYN-MESH] TRANSFORM active=2 tris=536 time=280.5µs
+[DYN-MESH] AABB ACTIVATED: Platform1 bounds=[(5.0,3.0,0.0)->(8.0,6.0,2.0)]
 [KCC] GROUND pos=(5.23,3.12,1.00) step=False | 1234us 12rays 450tris
 ```
 
@@ -134,23 +138,37 @@ MAIN THREAD:
 |--------|----------------|-----------------|
 | **Code paths** | 2 (static + dynamic) | 1 (unified) |
 | **Main thread collision** | BVH raycasts per mesh | NONE (zero) |
-| **Dynamic testing** | Brute force ALL tris | Sphere cull skip 80-95% |
+| **Dynamic testing** | Brute force ALL tris | AABB cull + backface cull |
 | **Collision response** | Ran twice (bug!) | Single response per check |
 | **Maintenance** | Fix bugs in 2 places | Fix bugs once |
 | **Push-out logic** | Separate method | Handled by horizontal rays |
+| **Backface culling** | None | ~50% fewer triangle tests |
+| **AABB culling** | Only sphere | Tight box rejection |
 
 ---
 
 ## Performance Profile
 
-**Expected (with bounding sphere culling):**
+**Expected (with AABB + backface culling):**
 
 ```
-Transform + Sphere:  ~300us for 268 triangles
-Dynamic Ray Tests:   Skip 80-95% of meshes via sphere rejection
+Transform + Bounds:  ~300us for 268 triangles (computes AABB + sphere)
+Dynamic Ray Tests:   AABB culling for ray-mesh rejection
+Triangle Tests:      Backface culling skips ~50% of triangles
 Worker Total:        ~1500us per frame (5% of 30Hz budget)
 Main Thread:         Apply result only (~50us)
+Poll Timeout:        5ms (allows for dynamic mesh overhead)
 ```
+
+**Optimizations Applied (2025-12-10):**
+1. **AABB Culling** - Tighter than sphere for elongated meshes
+2. **5ms Timeout** - Increased from 3ms to accommodate transform overhead
+
+**Bug Fixes Applied (2025-12-11):**
+1. **Ground Detection Fix** - Only accept hits BELOW player (prevents teleport-up to ceilings)
+2. **Backface Culling Reverted** - Was breaking body integrity ray (shoots upward)
+3. **AABB Debug Logging** - Shows mesh bounds and ray rejection reasons
+4. **AABB Activation Fix** - Zero-latency main thread AABB check replaces worker-based distance gating (had 1-frame latency bug causing bouncing)
 
 ---
 
@@ -185,6 +203,7 @@ Main Thread                     Worker Process
     |                               |
     +- Update dynamic meshes -----> |
     |   (exp_dynamic.py)            |
+    |   - AABB check (zero latency) |
     |   - Calc velocities           |
     |   - Send transforms           |
     |                               |

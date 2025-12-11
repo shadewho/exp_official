@@ -10,7 +10,7 @@ from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_
 from ..reactions.exp_transforms import update_transform_tasks
 from ..reactions.exp_tracking import update_tracking_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_result
-from ..physics.exp_dynamic import update_dynamic_meshes, apply_dynamic_activation_result
+from ..physics.exp_dynamic import update_dynamic_meshes
 from ..physics.exp_view import (
     update_camera_for_operator,
     submit_camera_occlusion_early,
@@ -246,12 +246,6 @@ class GameLoop:
 
                     except Exception as e:
                         print(f"[GameLoop] Error caching camera occlusion result: {e}")
-                elif result.job_type == "DYNAMIC_MESH_ACTIVATION":
-                    # Apply dynamic mesh activation result
-                    try:
-                        apply_dynamic_activation_result(op, result)
-                    except Exception as e:
-                        pass  # Silent error handling for dynamic mesh activation
                 elif result.job_type == "INTERACTION_CHECK_BATCH":
                     # Apply interaction check result (full offload with state management)
                     try:

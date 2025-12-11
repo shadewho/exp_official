@@ -141,47 +141,29 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
 
         col = box.column(align=True)
 
-        # Physics Timing
-        col.prop(scene, "dev_debug_physics_timing", text="Physics Timing")
-
-        # Physics Catchup
-        col.prop(scene, "dev_debug_physics_catchup", text="Physics Catchup")
-
-        # Platform Carry
-        col.prop(scene, "dev_debug_physics_platform", text="Platform Carry")
-
-        # Physics Consistency
-        col.prop(scene, "dev_debug_physics_consistency", text="Physics Consistency")
+        # Unified Physics (confirms static + dynamic use same code path)
+        col.prop(scene, "dev_debug_unified_physics", text="Unified Physics")
 
         col.separator()
         col.label(text="Granular Physics:", icon='ALIGN_JUSTIFY')
 
-        # 1. Capsule Collision
+        # Capsule Collision
         col.prop(scene, "dev_debug_physics_capsule", text="Capsule Collision")
 
-        # 2. Depenetration
-        col.prop(scene, "dev_debug_physics_depenetration", text="Depenetration")
+        # Body Integrity Ray
+        col.prop(scene, "dev_debug_physics_body_integrity", text="Body Integrity Ray")
 
-        # 3. Ground Detection
+        # Ground Detection
         col.prop(scene, "dev_debug_physics_ground", text="Ground Detection")
 
-        # 4. Step-Up
+        # Step-Up
         col.prop(scene, "dev_debug_physics_step_up", text="Step-Up")
 
-        # 5. Slopes
+        # Slopes
         col.prop(scene, "dev_debug_physics_slopes", text="Slopes")
 
-        # 6. Wall Slide
+        # Wall Slide
         col.prop(scene, "dev_debug_physics_slide", text="Wall Slide")
-
-        # 7. Vertical Movement
-        col.prop(scene, "dev_debug_physics_vertical", text="Vertical Movement")
-
-        # 8. Enhanced Diagnostics
-        col.prop(scene, "dev_debug_physics_enhanced", text="Enhanced Diagnostics")
-
-        # 9. Body Integrity Ray
-        col.prop(scene, "dev_debug_physics_body_integrity", text="Body Integrity Ray")
 
         # ═══════════════════════════════════════════════════════════════
         # KCC VISUAL DEBUG (3D Viewport Overlay)

@@ -8,49 +8,62 @@ from .exp_bvh_local import LocalBVH
 # - KCC character physics: Handled entirely in worker (no main thread BVH)
 # - Camera/Projectiles/Tracking: Still use LocalBVH on main thread (fast for LoS)
 # LocalBVH is kept for non-KCC systems that need quick raycasts
+#
+# AABB-BASED ACTIVATION (2025-12-11):
+# - Main thread checks player vs world AABB each frame (zero latency)
+# - 2m margin around AABB for ~6 frames buffer at max player speed
+# - Replaces old worker-based register_distance system (had 1-frame latency bug)
 # ═══════════════════════════════════════════════════════════════════════════
 
+AABB_ACTIVATION_MARGIN = 2.0  # meters around AABB for activation buffer
 
-def apply_dynamic_activation_result(modal_op, engine_result):
+
+def compute_world_aabb(dyn_obj):
     """
-    Apply worker result for dynamic mesh activation decisions.
-    Called from game loop when DYNAMIC_MESH_ACTIVATION job completes.
+    Compute world-space AABB from Blender's bound_box.
+    Returns (min_pt, max_pt) as tuples.
+
+    Fast: Uses Blender's pre-computed bound_box, just transforms 8 corners.
+    """
+    M = dyn_obj.matrix_world
+    corners = [M @ mathutils.Vector(c) for c in dyn_obj.bound_box]
+
+    min_x = min(c.x for c in corners)
+    min_y = min(c.y for c in corners)
+    min_z = min(c.z for c in corners)
+    max_x = max(c.x for c in corners)
+    max_y = max(c.y for c in corners)
+    max_z = max(c.z for c in corners)
+
+    return (min_x, min_y, min_z), (max_x, max_y, max_z)
+
+
+def player_near_aabb(player_pos, aabb_min, aabb_max, margin=AABB_ACTIVATION_MARGIN):
+    """
+    Check if player is within AABB + margin. Zero-latency activation check.
 
     Args:
-        modal_op: The modal operator
-        engine_result: EngineResult object with result.result containing activation_decisions
+        player_pos: mathutils.Vector or tuple (x, y, z)
+        aabb_min: (min_x, min_y, min_z)
+        aabb_max: (max_x, max_y, max_z)
+        margin: Extra buffer around AABB (default 2m = ~6 frames at max speed)
+
+    Returns:
+        bool: True if player is within expanded AABB
     """
-    scene = bpy.context.scene
-
-    result_data = engine_result.result
-    activation_decisions = result_data.get("activation_decisions", [])
-    if not activation_decisions:
-        return
-
-    # Apply activation states
-    transitions = []
-    for obj_name, should_activate, prev_active in activation_decisions:
-        # Find the object by name
-        dyn_obj = scene.objects.get(obj_name)
-        if dyn_obj is None:
-            continue
-
-        # Update activation state
-        modal_op._dyn_active_state[dyn_obj] = should_activate
-
-        # Track transitions for debug output
-        if prev_active != should_activate:
-            transitions.append((obj_name, prev_active, should_activate))
+    px, py, pz = player_pos.x, player_pos.y, player_pos.z
+    return (aabb_min[0] - margin <= px <= aabb_max[0] + margin and
+            aabb_min[1] - margin <= py <= aabb_max[1] + margin and
+            aabb_min[2] - margin <= pz <= aabb_max[2] + margin)
 
 
 def update_dynamic_meshes(modal_op):
     """
-    Distance-gated dynamic proxies with minimal main thread work:
-      • Distance gate runs BEFORE any evaluated_get().
-      • Active movers only: contribute transforms + velocities.
-      • Caches: LocalBVH per object (for camera/projectiles), bounding-sphere radius.
-      • Adds small hysteresis around register_distance to avoid flapping.
-      • Reuses dicts (no per-tick reallocation).
+    AABB-gated dynamic proxies with zero-latency activation:
+      • Main thread AABB check: player vs mesh bounds (6 comparisons, ~10µs/100 meshes)
+      • Zero latency: activation happens same frame (no 1-frame worker delay)
+      • Active movers only: contribute transforms + velocities to worker
+      • Caches: LocalBVH per object (for camera/projectiles), bounding-sphere radius
 
     UNIFIED PHYSICS:
       • KCC character physics: Fully offloaded to worker (uses triangles, not BVH)
@@ -120,64 +133,99 @@ def update_dynamic_meshes(modal_op):
     if getattr(modal_op, "target_object", None):
         player_loc = modal_op.target_object.matrix_world.translation
 
-    # ========== WORKER OFFLOAD: Dynamic Mesh Proximity Checks ==========
-    # Submit worker job for distance calculations (1-frame latency acceptable)
-    # Worker results will update activation states for NEXT frame
+    # Engine reference for worker jobs
     engine = getattr(modal_op, "engine", None)
     use_workers = engine is not None and engine.is_alive()
 
-    if use_workers and player_loc is not None:
-        # Snapshot mesh data for worker
-        mesh_positions = []
-        mesh_objects = []  # (obj_name, prev_active)
-        base_distances = []
+    # Debug logging setup
+    debug_dyn_mesh = getattr(scene, 'dev_debug_dynamic_mesh', False)
+
+    # Get current ground object from KCC (if player is standing on a dynamic mesh)
+    # This mesh MUST stay active regardless of AABB to prevent bouncing
+    kcc = getattr(modal_op, 'physics_controller', None)
+    standing_on_mesh = getattr(kcc, 'ground_obj', None) if kcc else None
+
+    # ========== PHASE 1: Cache ALL dynamic meshes to worker (one-time) ==========
+    # This must happen REGARDLESS of activation state so meshes are ready when needed
+    if use_workers and engine:
+        if not hasattr(modal_op, '_cached_dynamic_mesh_ids'):
+            modal_op._cached_dynamic_mesh_ids = set()
 
         for pm in scene.proxy_meshes:
             dyn_obj = pm.mesh_object
             if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
                 continue
 
-            if pm.register_distance > 0.0:
-                cur_pos = dyn_obj.matrix_world.translation
-                mesh_positions.append((cur_pos.x, cur_pos.y, cur_pos.z))
-                prev_active = modal_op._dyn_active_state.get(dyn_obj)
-                mesh_objects.append((dyn_obj.name, prev_active if prev_active is not None else True))
-                base_distances.append(float(pm.register_distance))
-            else:
-                # No distance gating, always active
-                mesh_positions.append((0, 0, 0))  # Dummy position
-                mesh_objects.append((dyn_obj.name, True))
-                base_distances.append(0.0)  # Zero distance = always active
+            obj_id = id(dyn_obj)
+            if obj_id not in modal_op._cached_dynamic_mesh_ids:
+                # Extract triangles in LOCAL space (sent once to worker)
+                mesh = dyn_obj.data
+                mesh.calc_loop_triangles()
 
-        # Submit job to workers if we have meshes to check
-        if mesh_positions:
-            job_data = {
-                "mesh_positions": mesh_positions,
-                "mesh_objects": mesh_objects,
-                "player_position": (player_loc.x, player_loc.y, player_loc.z),
-                "base_distances": base_distances,
-            }
+                triangles = []
+                for tri in mesh.loop_triangles:
+                    v0 = tuple(mesh.vertices[tri.vertices[0]].co)
+                    v1 = tuple(mesh.vertices[tri.vertices[1]].co)
+                    v2 = tuple(mesh.vertices[tri.vertices[2]].co)
+                    triangles.append((v0, v1, v2))
 
-            job_id = engine.submit_job("DYNAMIC_MESH_ACTIVATION", job_data)
+                # Compute radius for bounding sphere
+                bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
+                center_world = sum(bbox_world, mathutils.Vector()) / 8.0
+                rad_center = max((p - center_world).length for p in bbox_world)
+                origin_world = dyn_obj.matrix_world.translation
+                center_offset = (center_world - origin_world).length
+                radius = rad_center + center_offset
+                modal_op._cached_dyn_radius[dyn_obj] = radius
 
-    # ========== Main Thread: BVH & Velocity Calculations ==========
-    # Use current activation states (updated by worker results from previous frame)
-    # This has 1-frame latency, which is acceptable for performance gating
-    # CRITICAL: Do NOT return early - BVH data is needed for collision!
+                # Send triangles to worker (one-time cache)
+                job_data = {
+                    "obj_id": obj_id,
+                    "triangles": triangles,
+                    "radius": radius,
+                }
+                engine.submit_job("CACHE_DYNAMIC_MESH", job_data)
+                modal_op._cached_dynamic_mesh_ids.add(obj_id)
+
+    # ========== PHASE 2: AABB Activation + BVH + Velocity ==========
+    # AABB check: Zero-latency activation (no 1-frame worker delay)
     for pm in scene.proxy_meshes:
         dyn_obj = pm.mesh_object
         if not dyn_obj or dyn_obj.type != 'MESH' or not pm.is_moving:
             continue
 
-        # -------- 1) Check activation state (updated by worker or fallback) ----------
+        # -------- 1) AABB-based activation (zero latency) ----------
         cur_M_quick = dyn_obj.matrix_world
         cur_pos_quick = cur_M_quick.translation
 
-        # Get activation state (set by worker results or defaults to True)
-        active = modal_op._dyn_active_state.get(dyn_obj, True)
+        # CRITICAL: If player is STANDING on this mesh, ALWAYS keep it active
+        # This prevents bouncing when moving platforms shift the AABB away from player
+        if standing_on_mesh is not None and standing_on_mesh == dyn_obj:
+            active = True
+            if debug_dyn_mesh:
+                prev_active = modal_op._dyn_active_state.get(dyn_obj)
+                if prev_active is not None and not prev_active:
+                    from ..developer.dev_logger import log_game
+                    log_game("DYN-MESH", f"STANDING_ON: {dyn_obj.name} (forced active)")
+        elif player_loc is not None:
+            # Compute world AABB and check player proximity
+            aabb_min, aabb_max = compute_world_aabb(dyn_obj)
+            active = player_near_aabb(player_loc, aabb_min, aabb_max)
+
+            # Track transitions for debug logging
+            prev_active = modal_op._dyn_active_state.get(dyn_obj)
+            if debug_dyn_mesh and prev_active is not None and prev_active != active:
+                from ..developer.dev_logger import log_game
+                state_str = "ACTIVATED" if active else "DEACTIVATED"
+                log_game("DYN-MESH", f"AABB {state_str}: {dyn_obj.name} bounds=[{aabb_min}->{aabb_max}]")
+        else:
+            # No player = always active (fallback)
+            active = True
+
+        modal_op._dyn_active_state[dyn_obj] = active
 
         if not active:
-            # Keep “previous” pose updated cheaply, then skip heavy work
+            # Keep "previous" pose updated cheaply, then skip heavy work
             modal_op.platform_prev_positions[dyn_obj] = cur_pos_quick.copy()
             modal_op.platform_prev_matrices[dyn_obj] = cur_M_quick.copy()
             continue
@@ -192,47 +240,6 @@ def update_dynamic_meshes(modal_op):
         if lbvh is None:
             lbvh = LocalBVH(dyn_obj)
             modal_op.cached_local_bvhs[dyn_obj] = lbvh
-
-            # ═══════════════════════════════════════════════════════════════
-            # UNIFIED PHYSICS: Cache triangles in worker (one-time per mesh)
-            # Worker uses these for KCC collision (faster than main thread BVH)
-            # ═══════════════════════════════════════════════════════════════
-            if use_workers and engine:
-                obj_id = id(dyn_obj)
-                if not hasattr(modal_op, '_cached_dynamic_mesh_ids'):
-                    modal_op._cached_dynamic_mesh_ids = set()
-
-                if obj_id not in modal_op._cached_dynamic_mesh_ids:
-                    # Extract triangles in LOCAL space (sent once to worker)
-                    mesh = dyn_obj.data
-                    mesh.calc_loop_triangles()
-
-                    triangles = []
-                    for tri in mesh.loop_triangles:
-                        v0 = tuple(mesh.vertices[tri.vertices[0]].co)
-                        v1 = tuple(mesh.vertices[tri.vertices[1]].co)
-                        v2 = tuple(mesh.vertices[tri.vertices[2]].co)
-                        triangles.append((v0, v1, v2))
-
-                    # Compute radius for bounding sphere
-                    if dyn_obj not in modal_op._cached_dyn_radius:
-                        bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
-                        center_world = sum(bbox_world, mathutils.Vector()) / 8.0
-                        rad_center = max((p - center_world).length for p in bbox_world)
-                        origin_world = dyn_obj.matrix_world.translation
-                        center_offset = (center_world - origin_world).length
-                        modal_op._cached_dyn_radius[dyn_obj] = rad_center + center_offset
-
-                    radius = modal_op._cached_dyn_radius.get(dyn_obj, 1.0)
-
-                    # Send triangles to worker (one-time cache)
-                    job_data = {
-                        "obj_id": obj_id,
-                        "triangles": triangles,
-                        "radius": radius,
-                    }
-                    engine.submit_job("CACHE_DYNAMIC_MESH", job_data)
-                    modal_op._cached_dynamic_mesh_ids.add(obj_id)
 
         # Update LocalBVH transform for camera/projectiles
         lbvh.update_xform(cur_M)

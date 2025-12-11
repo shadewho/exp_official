@@ -86,64 +86,21 @@ def register_properties():
     )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PHYSICS DIAGNOSTICS (Multiple toggles for deep physics debugging)
+    # UNIFIED PHYSICS (Confirms static + dynamic use same physics path)
     # ──────────────────────────────────────────────────────────────────────────
 
-    bpy.types.Scene.dev_debug_physics_timing = bpy.props.BoolProperty(
-        name="Physics Timing",
+    bpy.types.Scene.dev_debug_unified_physics = bpy.props.BoolProperty(
+        name="Unified Physics",
         description=(
-            "Detailed physics timing breakdown:\n"
-            "• Total step time (ms)\n"
-            "• Worker computation time (µs)\n"
-            "• Poll time (µs)\n"
-            "• Timeout occurrences\n"
-            "• Poll attempt count\n"
-            "• Same-frame vs timeout ratio\n"
+            "Unified physics system confirmation logs:\n"
+            "• Static grid + dynamic mesh status per frame\n"
+            "• Total computation time (µs)\n"
+            "• Ray count and triangle count\n"
+            "• Ground source (static vs dynamic_ObjectName)\n"
+            "• Transform time vs physics time breakdown\n"
+            "• Bounding sphere culling status\n"
             "\n"
-            "Helps identify if worker is slow or polling is taking too long"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_catchup = bpy.props.BoolProperty(
-        name="Physics Catchup",
-        description=(
-            "Track frame catchup (multiple physics steps per frame):\n"
-            "• When 2+ physics steps run in one timer tick\n"
-            "• Catchup frequency\n"
-            "• Max catchup steps observed\n"
-            "• Impact on frame timing\n"
-            "\n"
-            "Frequent catchup (>10%) indicates modal timer drift"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_platform = bpy.props.BoolProperty(
-        name="Platform Carry",
-        description=(
-            "Platform carry application timing:\n"
-            "• When platform motion applied\n"
-            "• Platform velocity magnitude\n"
-            "• Position delta from platform\n"
-            "• Rotation carry (Z-axis)\n"
-            "\n"
-            "Shows if platform carry is causing stutter"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_consistency = bpy.props.BoolProperty(
-        name="Physics Consistency",
-        description=(
-            "Frame-to-frame consistency tracking:\n"
-            "• Step time variance (ms)\n"
-            "• Position delta consistency\n"
-            "• Velocity consistency\n"
-            "• Gravity application timing\n"
-            "• Ground state flipping\n"
-            "\n"
-            "Detects stuttering and timing irregularities"
+            "Confirms unified physics: static and dynamic use identical code path"
         ),
         default=False
     )
@@ -163,21 +120,6 @@ def register_properties():
             "• Early vs full sweep results\n"
             "\n"
             "Use to diagnose: Phasing through walls, collision not working"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_depenetration = bpy.props.BoolProperty(
-        name="Depenetration",
-        description=(
-            "Stuck/overlap detection and push-out:\n"
-            "• Overlap detection (feet/head spheres)\n"
-            "• Push-out vectors and distances\n"
-            "• Iterations needed to escape\n"
-            "• Was stuck flag\n"
-            "• Final corrected position\n"
-            "\n"
-            "Use to diagnose: Getting stuck in geometry, jittery movement"
         ),
         default=False
     )
@@ -254,41 +196,6 @@ def register_properties():
             "• Blocked flag\n"
             "\n"
             "Use to diagnose: Stuck in corners, weird sliding behavior"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_vertical = bpy.props.BoolProperty(
-        name="Vertical Movement",
-        description=(
-            "Jumping, gravity, and ceiling hits:\n"
-            "• Gravity accumulation per frame\n"
-            "• Jump execution (buffered vs instant)\n"
-            "• Ceiling collision detection\n"
-            "• Vertical velocity changes\n"
-            "• Coyote time remaining\n"
-            "\n"
-            "Use to diagnose: Jump not working, bonking head on ceiling"
-        ),
-        default=False
-    )
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # ENHANCED PHYSICS DIAGNOSTICS (Detailed failure analysis & geometry info)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    bpy.types.Scene.dev_debug_physics_enhanced = bpy.props.BoolProperty(
-        name="Enhanced Diagnostics",
-        description=(
-            "Detailed physics diagnostics for deep debugging:\n"
-            "• Step-up failure reasons (no_landing, forward_blocked, too_steep)\n"
-            "• Hit geometry details (triangle indices, normals, distances)\n"
-            "• Movement delta (requested vs actual movement)\n"
-            "• Blocked percentage (how much movement was stopped)\n"
-            "• Proximity to nearest geometry\n"
-            "• Collision quality metrics\n"
-            "\n"
-            "Use when: Debugging specific physics bugs, need exact failure reasons"
         ),
         default=False
     )
@@ -592,17 +499,14 @@ def unregister_properties():
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
-    # Physics Diagnostics
-    for prop in ('dev_debug_physics_timing', 'dev_debug_physics_catchup',
-                 'dev_debug_physics_platform', 'dev_debug_physics_consistency'):
-        if hasattr(bpy.types.Scene, prop):
-            delattr(bpy.types.Scene, prop)
+    # Unified Physics
+    if hasattr(bpy.types.Scene, 'dev_debug_unified_physics'):
+        delattr(bpy.types.Scene, 'dev_debug_unified_physics')
 
     # Granular Physics Diagnostics
-    for prop in ('dev_debug_physics_capsule', 'dev_debug_physics_depenetration',
+    for prop in ('dev_debug_physics_capsule', 'dev_debug_physics_body_integrity',
                  'dev_debug_physics_ground', 'dev_debug_physics_step_up',
-                 'dev_debug_physics_slopes', 'dev_debug_physics_slide',
-                 'dev_debug_physics_vertical', 'dev_debug_physics_enhanced'):
+                 'dev_debug_physics_slopes', 'dev_debug_physics_slide'):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
@@ -627,15 +531,12 @@ def unregister_properties():
     for old_prop in ('dev_debug_engine_hz', 'dev_debug_kcc_offload_hz',
                      'dev_debug_frame_numbers_hz', 'dev_debug_camera_offload_hz',
                      'dev_debug_performance_hz', 'dev_debug_dynamic_offload_hz',
-                     'dev_debug_physics_timing_hz', 'dev_debug_physics_catchup_hz',
-                     'dev_debug_physics_platform_hz', 'dev_debug_physics_consistency_hz',
-                     'dev_debug_physics_capsule_hz', 'dev_debug_physics_depenetration_hz',
-                     'dev_debug_physics_ground_hz', 'dev_debug_physics_step_up_hz',
-                     'dev_debug_physics_slopes_hz', 'dev_debug_physics_slide_hz',
-                     'dev_debug_physics_vertical_hz', 'dev_debug_physics_enhanced_hz',
-                     'dev_debug_interactions_hz', 'dev_debug_audio_hz',
-                     'dev_debug_animations_hz', 'dev_debug_forward_sweep',
-                     'dev_debug_forward_sweep_hz', 'dev_debug_raycast_offload',
-                     'dev_debug_raycast_offload_hz', 'dev_debug_physics', 'dev_debug_physics_hz'):
+                     'dev_debug_physics_capsule_hz', 'dev_debug_physics_ground_hz',
+                     'dev_debug_physics_step_up_hz', 'dev_debug_physics_slopes_hz',
+                     'dev_debug_physics_slide_hz', 'dev_debug_interactions_hz',
+                     'dev_debug_audio_hz', 'dev_debug_animations_hz',
+                     'dev_debug_forward_sweep', 'dev_debug_forward_sweep_hz',
+                     'dev_debug_raycast_offload', 'dev_debug_raycast_offload_hz',
+                     'dev_debug_physics', 'dev_debug_physics_hz'):
         if hasattr(bpy.types.Scene, old_prop):
             delattr(bpy.types.Scene, old_prop)

@@ -68,17 +68,12 @@ Each log has a category that maps to a debug toggle:
 | `KCC` | `kcc_offload` | KCC physics step results |
 | `CAMERA` | `camera_offload` | Camera occlusion raycasts |
 | `FRAME` | `frame_numbers` | Frame numbers with timestamps |
+| `UNIFIED` | `unified_physics` | Unified physics confirmation (static + dynamic) |
 | `PHYS-CAPSULE` | `physics_capsule` | Capsule sweep collision testing |
 | `PHYS-GROUND` | `physics_ground` | Ground detection raycasts |
-| `PHYS-TIMING` | `physics_timing` | Physics timing breakdown |
-| `PHYS-CATCHUP` | `physics_catchup` | Multi-step catchup tracking |
-| `PHYS-PLATFORM` | `physics_platform` | Platform carry motion |
-| `PHYS-CONSISTENCY` | `physics_consistency` | Frame-to-frame consistency |
 | `PHYS-STEP` | `physics_step_up` | Step-up stair climbing |
 | `PHYS-SLOPES` | `physics_slopes` | Slope handling |
 | `PHYS-SLIDE` | `physics_slide` | Multi-plane wall sliding |
-| `PHYS-VERTICAL` | `physics_vertical` | Jumping, gravity, ceiling hits |
-| `PHYS-ENHANCED` | `physics_enhanced` | Enhanced diagnostic details |
 | `PHYS-BODY` | `physics_body_integrity` | Vertical ray mesh embedding detection |
 | `CULLING` | `performance` | Distance-based object culling |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
