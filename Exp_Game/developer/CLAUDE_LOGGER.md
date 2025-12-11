@@ -31,9 +31,11 @@ start_session()  # Resets buffer, starts frame tracking
 from Exp_Game.developer.dev_logger import log_game, increment_frame
 
 # Log game events (fast - just appends to memory buffer)
-log_game("KCC", "COMPLETE pos=(10,5,3) ground=True")
-log_game("CAMERA", "Raycast hit dist=2.5m")
-log_game("PHYS-CAPSULE", "clear move=0.3m | 4rays 12tris")
+# UNIFIED: Physics logs show source (static or dynamic)
+log_game("KCC", "GROUND pos=(10,5,3) ground=True")
+log_game("GROUND", "source=static z=5.0 normal=(0,0,1)")
+log_game("GROUND", "source=dynamic_12345 z=5.5 normal=(0,0,1)")
+log_game("HORIZONTAL", "clear move=0.3m | 4rays 12tris")
 
 # Call once per frame
 increment_frame()
@@ -61,27 +63,31 @@ The frequency gate prevents log spam while maintaining diagnostic visibility.
 
 ## Log Categories
 
-Each log has a category that maps to a debug toggle:
+UNIFIED PHYSICS: Static and dynamic meshes use identical physics code.
+All physics logs show source (static/dynamic) - there is ONE system.
 
 | Category | Debug Property | Description |
 |----------|---------------|-------------|
-| `KCC` | `kcc_offload` | KCC physics step results |
-| `CAMERA` | `camera_offload` | Camera occlusion raycasts |
+| **Engine** |
+| `ENGINE` | `engine` | Core engine diagnostics |
+| **Offload Systems** |
+| `KCC` | `kcc_physics` | KCC physics step results |
+| `CAMERA` | `camera` | Camera occlusion raycasts |
 | `FRAME` | `frame_numbers` | Frame numbers with timestamps |
-| `UNIFIED` | `unified_physics` | Unified physics confirmation (static + dynamic) |
-| `PHYS-CAPSULE` | `physics_capsule` | Capsule sweep collision testing |
-| `PHYS-GROUND` | `physics_ground` | Ground detection raycasts |
-| `PHYS-STEP` | `physics_step_up` | Step-up stair climbing |
-| `PHYS-SLOPES` | `physics_slopes` | Slope handling |
-| `PHYS-SLIDE` | `physics_slide` | Multi-plane wall sliding |
-| `PHYS-BODY` | `physics_body_integrity` | Vertical ray mesh embedding detection |
-| `DYN-MESH` | `dynamic_mesh` | Dynamic mesh transform & collision timing |
-| `DYN-CACHE` | `dynamic_cache` | Dynamic mesh caching operations |
-| `DYN-COLLISION` | `dynamic_collision` | Dynamic mesh collision results (ground/wall hits) |
-| `DYN-ACTIVATE` | `dynamic_activation` | AABB activation state (player pos vs mesh bounds) |
-| `DYN-BODY` | `dynamic_body_ray` | Body integrity ray vs dynamic meshes |
-| `DYN-HORIZ` | `dynamic_horizontal` | Horizontal collision vs dynamic meshes |
-| `CULLING` | `performance` | Distance-based object culling |
+| `CULLING` | `culling` | Distance-based object culling |
+| **Unified Physics** (all show source: static/dynamic) |
+| `PHYSICS` | `physics` | Physics summary per frame |
+| `GROUND` | `physics_ground` | Ground detection raycasts |
+| `HORIZONTAL` | `physics_horizontal` | Horizontal collision (walls/obstacles) |
+| `BODY` | `physics_body` | Body integrity (embedding detection) |
+| `CEILING` | `physics_ceiling` | Ceiling check |
+| `STEP` | `physics_step` | Step-up stair climbing |
+| `SLIDE` | `physics_slide` | Wall slide |
+| `SLOPES` | `physics_slopes` | Slope handling |
+| **Dynamic Mesh System** (activation/caching only) |
+| `DYN-CACHE` | `dynamic_cache` | Dynamic mesh caching/transform |
+| `DYN-ACTIVATE` | `dynamic_activation` | AABB activation state |
+| **Game Systems** |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |
 | `ANIMATIONS` | `animations` | Animation and NLA system |
@@ -101,9 +107,9 @@ The frequency gate is applied when worker logs are added to the buffer.
 
 ## When to Use Logger vs Print
 
-### ✅ MUST Use Logger (Performance Critical)
+### MUST Use Logger (Performance Critical)
 Anything called during the **game loop** that could impact performance:
-- Physics calculations (KCC, collisions, raycasts)
+- Physics calculations (KCC, ground, horizontal, body, ceiling, step, slide, slopes)
 - Camera occlusion checks
 - Performance culling operations
 - Dynamic mesh activation
@@ -113,7 +119,7 @@ Anything called during the **game loop** that could impact performance:
 
 **Why**: These are called every frame (30+ times per second). Console prints would destroy performance.
 
-### ✅ Can Use Print (Non-Critical)
+### Can Use Print (Non-Critical)
 Things that happen **outside the game loop** or are **one-time events**:
 - Startup logs (addon initialization)
 - Engine stress tests (standalone operators)
@@ -133,11 +139,13 @@ Exported logs are formatted as:
 [CATEGORY F#### T##.###s] message
 ```
 
-Example:
+Example (UNIFIED PHYSICS - shows source):
 ```
-[KCC F0042 T1.400s] COMPLETE pos=(10.5,5.2,3.1) vel=(2.3,1.5,0.0) ground=True
-[CAMERA F0042 T1.402s] SUBMIT job=17 origin=(10.5,5.2,5.1) dir=(0.0,-0.97,0.26)
-[PHYS-CAPSULE F0042 T1.403s] clear move=0.3m | 4rays 12tris
+[KCC F0042 T1.400s] GROUND pos=(10.5,5.2,3.1) vel=(2.3,1.5,0.0) ground=True
+[GROUND F0042 T1.401s] HIT source=static z=3.10m normal=(0.00,0.00,1.00) | player_z=3.10 tris=12
+[GROUND F0042 T1.401s] HIT source=dynamic_12345 z=3.50m normal=(0.00,0.00,1.00) | player_z=3.50 tris=8
+[HORIZONTAL F0042 T1.402s] clear move=0.3m | 4rays 12tris
+[PHYSICS F0042 T1.403s] total=150us | static+dynamic=2 | rays=6 tris=45 | ground=static
 ```
 
 Where:
@@ -166,7 +174,7 @@ Frequency gating system:
 ### `dev_properties.py`
 Debug properties:
 - `dev_debug_master_hz` - Master frequency control (1-30 Hz)
-- Individual category toggles (`dev_debug_kcc_offload`, etc.)
+- Individual category toggles (`dev_debug_kcc_physics`, `dev_debug_physics_ground`, etc.)
 
 ### `dev_panel.py`
 UI panel:
@@ -209,21 +217,21 @@ UI panel:
 
 ## Example: Replacing Prints
 
-### ❌ Bad (Console Print)
+### Bad (Console Print)
 ```python
 # In game loop - DESTROYS PERFORMANCE
-if scene.dev_debug_kcc_offload:
-    print(f"KCC pos=({pos.x:.2f},{pos.y:.2f},{pos.z:.2f})")  # ~1000μs
+if scene.dev_debug_kcc_physics:
+    print(f"KCC pos=({pos.x:.2f},{pos.y:.2f},{pos.z:.2f})")  # ~1000us
 ```
 
-### ✅ Good (Fast Buffer Logger)
+### Good (Fast Buffer Logger)
 ```python
 # In game loop - FAST
-if scene.dev_debug_kcc_offload:
-    log_game("KCC", f"pos=({pos.x:.2f},{pos.y:.2f},{pos.z:.2f})")  # ~1μs
+if scene.dev_debug_kcc_physics:
+    log_game("KCC", f"pos=({pos.x:.2f},{pos.y:.2f},{pos.z:.2f})")  # ~1us
 ```
 
-### ✅ Also Good (Non-Critical Print)
+### Also Good (Non-Critical Print)
 ```python
 # Outside game loop - OK to use print
 def invoke(self, context, event):
@@ -263,5 +271,5 @@ Potential enhancements:
 
 ---
 
-**Last Updated**: 2025-12-03
-**Status**: Fully operational, tested, performance-critical
+**Last Updated**: 2025-12-11
+**Status**: Fully operational, unified physics (static + dynamic identical)

@@ -17,7 +17,8 @@ def should_print_debug(category: str) -> bool:
     Check if debug output should be printed based on master frequency gate.
 
     Args:
-        category: Debug category name (matches scene property, e.g., "engine", "performance", "dynamic_offload")
+        category: Debug category name (matches scene property suffix, e.g., "engine", "kcc_physics", "physics_ground")
+                  Property is built as: dev_debug_{category}
 
     Returns:
         True if enough time has passed since last print, False otherwise

@@ -2,13 +2,10 @@
 """
 Developer Tools UI Panel
 
-Provides a clean interface for toggling debug output categories
-and running diagnostic tests.
+Provides a clean interface for toggling debug output categories.
 
-Categories:
-  - Engine Health: Core multiprocessing engine diagnostics
-  - Offload Systems: Worker-bound computation
-  - Game Systems: Main thread game logic
+UNIFIED PHYSICS: Static and dynamic meshes use identical physics code.
+All physics logs show source (static/dynamic) - there is ONE system.
 """
 
 import bpy
@@ -43,7 +40,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         scene = context.scene
 
         # ═══════════════════════════════════════════════════════════════
-        # Dev Refresh Button (Development Mode)
+        # Dev Refresh Button
         # ═══════════════════════════════════════════════════════════════
         row = layout.row()
         row.scale_y = 1.5
@@ -58,14 +55,8 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         box.label(text="Master Frequency Control", icon='TIME')
         col = box.column(align=True)
         col.prop(scene, "dev_debug_master_hz", text="Output Frequency (Hz)")
-        col.label(text="Controls ALL debug output frequency:", icon='INFO')
-        col.label(text="  • 30 = Every frame (verbose)")
-        col.label(text="  • 5 = Every 5th frame (~0.17s)")
-        col.label(text="  • 1 = Once per second (recommended)")
-
-        # Export Session Log toggle
         col.separator()
-        col.prop(scene, "dev_export_session_log", text="Export Diagnostics Log to File")
+        col.prop(scene, "dev_export_session_log", text="Export Diagnostics Log")
 
         layout.separator()
 
@@ -74,17 +65,10 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
         box.label(text="Engine Health", icon='MEMORY')
-
         col = box.column(align=True)
-
-        # Startup logs
         col.prop(scene, "dev_startup_logs", text="Startup Logs")
-
-        col.separator()
-
         col.prop(scene, "dev_debug_engine", text="Engine Diagnostics")
 
-        # Manual stress test operators
         col.separator()
         col.label(text="Manual Stress Tests:", icon='PLAY')
         row = col.row(align=True)
@@ -94,92 +78,61 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Offload Systems (Worker-bound)
+        # Offload Systems
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
         box.label(text="Offload Systems", icon='FORCE_CHARGE')
-
         col = box.column(align=True)
-
-        # KCC Physics (the big one)
-        col.prop(scene, "dev_debug_kcc_offload", text="KCC Physics")
-
-        # Frame Numbers (separate from KCC logs)
+        col.prop(scene, "dev_debug_kcc_physics", text="KCC Physics")
         col.prop(scene, "dev_debug_frame_numbers", text="Frame Numbers")
-
-        # Camera Occlusion
-        col.prop(scene, "dev_debug_camera_offload", text="Camera Occlusion")
-
-        # Performance Culling
-        col.prop(scene, "dev_debug_performance", text="Performance Culling")
+        col.prop(scene, "dev_debug_camera", text="Camera Occlusion")
+        col.prop(scene, "dev_debug_culling", text="Performance Culling")
 
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Dynamic Mesh Physics (Unified Offload System)
+        # UNIFIED PHYSICS (Single section - static + dynamic identical)
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
-        box.label(text="Dynamic Mesh Physics", icon='MESH_DATA')
+        box.label(text="Unified Physics", icon='PHYSICS')
 
+        col = box.column(align=True)
+        col.prop(scene, "dev_debug_physics", text="Physics Summary")
+
+        col.separator()
+        col.label(text="Granular (shows source: static/dynamic):", icon='ALIGN_JUSTIFY')
+
+        col.prop(scene, "dev_debug_physics_ground", text="Ground Detection")
+        col.prop(scene, "dev_debug_physics_horizontal", text="Horizontal Collision")
+        col.prop(scene, "dev_debug_physics_body", text="Body Integrity")
+        col.prop(scene, "dev_debug_physics_ceiling", text="Ceiling Check")
+        col.prop(scene, "dev_debug_physics_step", text="Step-Up")
+        col.prop(scene, "dev_debug_physics_slide", text="Wall Slide")
+        col.prop(scene, "dev_debug_physics_slopes", text="Slopes")
+
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
+        # Dynamic Mesh System (Activation only - this IS different)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Dynamic Mesh System", icon='MESH_DATA')
         col = box.column(align=True)
         col.prop(scene, "dev_debug_dynamic_cache", text="Cache Operations")
         col.prop(scene, "dev_debug_dynamic_activation", text="Activation State (AABB)")
-        col.prop(scene, "dev_debug_dynamic_mesh", text="Transform & Collision")
-        col.prop(scene, "dev_debug_dynamic_collision", text="Collision Results")
-
-        col.separator()
-        col.label(text="Collision Types (Step-by-Step):", icon='PHYSICS')
-        col.prop(scene, "dev_debug_dynamic_body_ray", text="Body Ray (Embedding)")
-        col.prop(scene, "dev_debug_dynamic_horizontal", text="Horizontal (Walls)")
 
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Physics Diagnostics (Deep debugging for physics smoothness)
+        # KCC Visual Debug (3D Viewport)
         # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Physics Diagnostics", icon='PHYSICS')
-
-        col = box.column(align=True)
-
-        # Unified Physics (confirms static + dynamic use same code path)
-        col.prop(scene, "dev_debug_unified_physics", text="Unified Physics")
-
-        col.separator()
-        col.label(text="Granular Physics:", icon='ALIGN_JUSTIFY')
-
-        # Capsule Collision
-        col.prop(scene, "dev_debug_physics_capsule", text="Capsule Collision")
-
-        # Body Integrity Ray
-        col.prop(scene, "dev_debug_physics_body_integrity", text="Body Integrity Ray")
-
-        # Ground Detection
-        col.prop(scene, "dev_debug_physics_ground", text="Ground Detection")
-
-        # Step-Up
-        col.prop(scene, "dev_debug_physics_step_up", text="Step-Up")
-
-        # Slopes
-        col.prop(scene, "dev_debug_physics_slopes", text="Slopes")
-
-        # Wall Slide
-        col.prop(scene, "dev_debug_physics_slide", text="Wall Slide")
-
-        # ═══════════════════════════════════════════════════════════════
-        # KCC VISUAL DEBUG (3D Viewport Overlay)
-        # ═══════════════════════════════════════════════════════════════
-
-        layout.separator()
         box = layout.box()
         box.label(text="KCC Visual Debug (3D Viewport)", icon='SHADING_WIRE')
         col = box.column(align=True)
 
-        # Master toggle
         row = col.row(align=True)
         row.prop(scene, "dev_debug_kcc_visual", text="Enable Visual Debug")
 
-        # Individual toggles (only show if master is enabled)
         if scene.dev_debug_kcc_visual:
             col.separator(factor=0.5)
             sub = col.column(align=True)
@@ -188,7 +141,6 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             sub.prop(scene, "dev_debug_kcc_visual_ground", text="Ground Ray")
             sub.prop(scene, "dev_debug_kcc_visual_movement", text="Movement Vectors")
 
-            # Line width and vector scale controls
             col.separator(factor=0.5)
             col.prop(scene, "dev_debug_kcc_visual_line_width", text="Line Width")
             col.prop(scene, "dev_debug_kcc_visual_vector_scale", text="Vector Scale")
@@ -196,18 +148,19 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Game Systems (Main thread)
+        # Game Systems
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
         box.label(text="Game Systems", icon='PLAY')
-
         col = box.column(align=True)
-
-        # Interactions
         col.prop(scene, "dev_debug_interactions", text="Interactions")
-
-        # Audio
         col.prop(scene, "dev_debug_audio", text="Audio")
-
-        # Animations
         col.prop(scene, "dev_debug_animations", text="Animations")
+
+
+def register():
+    bpy.utils.register_class(DEV_PT_DeveloperTools)
+
+
+def unregister():
+    bpy.utils.unregister_class(DEV_PT_DeveloperTools)

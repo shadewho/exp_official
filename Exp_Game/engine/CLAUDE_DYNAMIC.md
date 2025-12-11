@@ -91,10 +91,11 @@ read CLAUDE_GAME and CLAUDE_ENGINE CONTEXT
 
 **ALWAYS use the dev logger to debug and test results.**
 
-1. Enable in N-panel:
-   - `dev_debug_dynamic_mesh` - Transform timing, activation state
-   - `dev_debug_dynamic_collision` - Ground hits, AABB rejections
-   - `dev_debug_unified_physics` - Combined physics summary
+1. Enable in N-panel (UNIFIED PHYSICS - static + dynamic identical):
+   - `dev_debug_dynamic_cache` - Transform timing, cache operations
+   - `dev_debug_dynamic_activation` - AABB activation state
+   - `dev_debug_physics` - Physics summary (shows source: static/dynamic)
+   - `dev_debug_physics_ground` - Ground detection (shows source)
 
 2. Export logs to: `C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt`
 

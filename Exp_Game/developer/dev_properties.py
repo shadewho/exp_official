@@ -5,10 +5,10 @@ Developer debug properties - toggleable console output by category.
 All properties are stored on bpy.types.Scene for easy access from operators.
 Default: All debug flags are FALSE (silent console).
 
-Categories:
-  - Engine Health: Core multiprocessing engine status
-  - Offload Systems: Worker-bound computation (KCC, camera, culling, dynamic)
-  - Game Systems: Main thread systems (interactions, audio, animations)
+UNIFIED PHYSICS ARCHITECTURE:
+Static and dynamic meshes use identical physics code paths.
+All physics logs show source (static/dynamic) in the same format.
+There is ONE physics system, not two separate ones.
 """
 
 import bpy
@@ -19,7 +19,6 @@ def register_properties():
 
     # ══════════════════════════════════════════════════════════════════════════
     # MASTER FREQUENCY CONTROL
-    # Single frequency setting for all debug output
     # ══════════════════════════════════════════════════════════════════════════
 
     bpy.types.Scene.dev_debug_master_hz = bpy.props.IntProperty(
@@ -28,18 +27,15 @@ def register_properties():
             "Master debug output frequency for ALL categories:\n"
             "• 30 = every frame (verbose, use for short tests)\n"
             "• 5 = every 5th frame (~0.17s intervals)\n"
-            "• 1 = once per second (recommended for most debugging)\n"
-            "\n"
-            "This replaces all individual Hz controls with one master control"
+            "• 1 = once per second (recommended for most debugging)"
         ),
-        default=1,  # Default to summary mode (once per second)
+        default=1,
         min=1,
         max=30
     )
 
     # ══════════════════════════════════════════════════════════════════════════
     # ENGINE HEALTH
-    # Core multiprocessing engine diagnostics
     # ══════════════════════════════════════════════════════════════════════════
 
     bpy.types.Scene.dev_debug_engine = bpy.props.BoolProperty(
@@ -47,28 +43,37 @@ def register_properties():
         description=(
             "Core multiprocessing engine diagnostics:\n"
             "• Worker startup/shutdown status\n"
-            "• Jobs/sec throughput (rolling average)\n"
+            "• Jobs/sec throughput\n"
             "• Queue depth and saturation warnings\n"
-            "• Heartbeat monitoring\n"
             "• Result processing latency"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_startup_logs = bpy.props.BoolProperty(
+        name="Startup Logs",
+        description=(
+            "Show detailed engine and modal startup sequence:\n"
+            "• Engine worker spawning\n"
+            "• Grid cache confirmation\n"
+            "• Health checks\n"
+            "• READY confirmation"
         ),
         default=False
     )
 
     # ══════════════════════════════════════════════════════════════════════════
     # OFFLOAD SYSTEMS
-    # Worker-bound computation offloaded from main thread
     # ══════════════════════════════════════════════════════════════════════════
 
-    bpy.types.Scene.dev_debug_kcc_offload = bpy.props.BoolProperty(
+    bpy.types.Scene.dev_debug_kcc_physics = bpy.props.BoolProperty(
         name="KCC Physics",
         description=(
             "Full physics step offload (KCC_PHYSICS_STEP):\n"
             "• SUBMIT: pos, vel, input, jump state\n"
             "• RESULT: new pos, ground state, collision flags\n"
             "• Timing: worker calc time (µs)\n"
-            "• Stats: rays cast, triangles tested\n"
-            "• Events: BLOCKED, STEP, SLIDE, CEILING"
+            "• Stats: rays cast, triangles tested"
         ),
         default=False
     )
@@ -76,66 +81,47 @@ def register_properties():
     bpy.types.Scene.dev_debug_frame_numbers = bpy.props.BoolProperty(
         name="Frame Numbers",
         description=(
-            "Print frame numbers with timestamps.\n"
-            "Separate from other debug output for clean log analysis.\n"
-            "Shows: [FRAME 0042] t=1.400s\n"
-            "\n"
-            "Uses master Hz control for output frequency"
+            "Print frame numbers with timestamps:\n"
+            "Shows: [FRAME 0042] t=1.400s"
         ),
         default=False
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # UNIFIED PHYSICS (Confirms static + dynamic use same physics path)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    bpy.types.Scene.dev_debug_unified_physics = bpy.props.BoolProperty(
-        name="Unified Physics",
+    bpy.types.Scene.dev_debug_camera = bpy.props.BoolProperty(
+        name="Camera Occlusion",
         description=(
-            "Unified physics system confirmation logs:\n"
-            "• Static grid + dynamic mesh status per frame\n"
+            "Camera occlusion raycast offload:\n"
+            "• Ray submission (origin, target)\n"
+            "• HIT/MISS results with distance\n"
+            "• Worker timing (µs)"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_culling = bpy.props.BoolProperty(
+        name="Performance Culling",
+        description=(
+            "Distance-based object culling:\n"
+            "• Hide/show operations per frame\n"
+            "• Culling radius thresholds"
+        ),
+        default=False
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # UNIFIED PHYSICS (Static + Dynamic use identical code paths)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_physics = bpy.props.BoolProperty(
+        name="Physics Summary",
+        description=(
+            "Unified physics summary per frame:\n"
             "• Total computation time (µs)\n"
             "• Ray count and triangle count\n"
-            "• Ground source (static vs dynamic_ObjectName)\n"
-            "• Transform time vs physics time breakdown\n"
-            "• Bounding sphere culling status\n"
+            "• Ground source (static / dynamic_ObjectID)\n"
+            "• Static grid + dynamic mesh count\n"
             "\n"
-            "Confirms unified physics: static and dynamic use identical code path"
-        ),
-        default=False
-    )
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # GRANULAR PHYSICS DIAGNOSTICS (Subsystem-specific debugging)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    bpy.types.Scene.dev_debug_physics_capsule = bpy.props.BoolProperty(
-        name="Capsule Collision",
-        description=(
-            "Capsule sweep and collision testing:\n"
-            "• Horizontal/vertical sweep distances\n"
-            "• Hit detection (feet/head sphere)\n"
-            "• Collision normals and hit points\n"
-            "• Triangles tested per sweep\n"
-            "• Early vs full sweep results\n"
-            "\n"
-            "Use to diagnose: Phasing through walls, collision not working"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_body_integrity = bpy.props.BoolProperty(
-        name="Body Integrity Ray",
-        description=(
-            "Vertical ray from feet to head (embedding detection):\n"
-            "• Ray origin (feet capsule center)\n"
-            "• Ray end (head capsule center)\n"
-            "• Body height being checked\n"
-            "• EMBEDDED status (if ray blocked by mesh)\n"
-            "• Penetration depth if blocked\n"
-            "• Relationship to capsule spheres\n"
-            "\n"
-            "Use to diagnose: Sinking into meshes, mid-height penetration"
+            "UNIFIED: Static and dynamic use IDENTICAL physics code"
         ),
         default=False
     )
@@ -143,44 +129,58 @@ def register_properties():
     bpy.types.Scene.dev_debug_physics_ground = bpy.props.BoolProperty(
         name="Ground Detection",
         description=(
-            "Ground sphere cast and snap logic:\n"
-            "• Raycast down distance and results\n"
+            "Ground raycast (downward from feet):\n"
             "• Ground Z position and normal\n"
-            "• Snap distance from character to ground\n"
-            "• On ground vs airborne state\n"
-            "• Walkable vs too steep detection\n"
-            "\n"
-            "Use to diagnose: Floating, not landing, falling through floor"
+            "• Source: static or dynamic_ObjectID\n"
+            "• Snap distance and grounded state\n"
+            "• Walkable vs steep detection"
         ),
         default=False
     )
 
-    bpy.types.Scene.dev_debug_physics_step_up = bpy.props.BoolProperty(
+    bpy.types.Scene.dev_debug_physics_horizontal = bpy.props.BoolProperty(
+        name="Horizontal Collision",
+        description=(
+            "Horizontal collision (walls/obstacles):\n"
+            "• Ray hits at 3 heights (feet, mid, head)\n"
+            "• Source: static or dynamic_ObjectID\n"
+            "• Width rays (narrow gap detection)\n"
+            "• Slope rays (angled detection)\n"
+            "• Blocked distance and normal"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_physics_body = bpy.props.BoolProperty(
+        name="Body Integrity",
+        description=(
+            "Body integrity ray (embedding detection):\n"
+            "• Vertical ray from feet to head\n"
+            "• Source: static or dynamic_ObjectID\n"
+            "• EMBEDDED status if ray blocked\n"
+            "• Penetration depth and correction"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_physics_ceiling = bpy.props.BoolProperty(
+        name="Ceiling Check",
+        description=(
+            "Ceiling raycast (upward from head):\n"
+            "• Source: static or dynamic_ObjectID\n"
+            "• Hit distance and position correction\n"
+            "• Velocity zeroing on ceiling hit"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_physics_step = bpy.props.BoolProperty(
         name="Step-Up",
         description=(
-            "Step-up sequence and stair climbing:\n"
-            "• Step-up attempts (triggered vs skipped)\n"
-            "• Headroom check results\n"
-            "• Forward sweep at raised height\n"
-            "• Drop-down landing validation\n"
-            "• Final step success/failure\n"
-            "\n"
-            "Use to diagnose: Can't climb stairs, stuck on small obstacles"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_physics_slopes = bpy.props.BoolProperty(
-        name="Slopes",
-        description=(
-            "Slope handling (uphill/downhill):\n"
-            "• Slope steepness (degrees)\n"
-            "• Uphill velocity blocking\n"
-            "• Downhill slide acceleration\n"
-            "• Walkable vs too steep determination\n"
-            "• Ground normal orientation\n"
-            "\n"
-            "Use to diagnose: Sliding down slopes, can't walk uphill"
+            "Step-up (stair climbing):\n"
+            "• Headroom check (source: static/dynamic)\n"
+            "• Ground detection at drop position\n"
+            "• Success/failure and final position"
         ),
         default=False
     )
@@ -188,76 +188,102 @@ def register_properties():
     bpy.types.Scene.dev_debug_physics_slide = bpy.props.BoolProperty(
         name="Wall Slide",
         description=(
-            "Multi-plane slide algorithm:\n"
-            "• Hit normals (1st, 2nd plane)\n"
+            "Wall slide along surfaces:\n"
             "• Slide direction calculation\n"
-            "• Edge/corner detection (3+ planes)\n"
-            "• Remaining movement after slide\n"
-            "• Blocked flag\n"
-            "\n"
-            "Use to diagnose: Stuck in corners, weird sliding behavior"
+            "• Collision check (source: static/dynamic)\n"
+            "• Slide distance allowed"
         ),
         default=False
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # KCC VISUAL DEBUG (3D Viewport Overlay Visualization)
-    # ──────────────────────────────────────────────────────────────────────────
+    bpy.types.Scene.dev_debug_physics_slopes = bpy.props.BoolProperty(
+        name="Slopes",
+        description=(
+            "Slope handling:\n"
+            "• Slope angle (degrees)\n"
+            "• Uphill velocity blocking\n"
+            "• Gravity slide on steep slopes\n"
+            "• Z-clamp corrections"
+        ),
+        default=False
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # DYNAMIC MESH SYSTEM (Activation/caching - these ARE different from static)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_dynamic_cache = bpy.props.BoolProperty(
+        name="Cache Operations",
+        description=(
+            "Dynamic mesh caching (one-time per mesh):\n"
+            "• Triangle caching in local space\n"
+            "• Spatial grid building\n"
+            "• Cache registration confirmation"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_dynamic_activation = bpy.props.BoolProperty(
+        name="Activation State",
+        description=(
+            "AABB-based activation system:\n"
+            "• Player position vs mesh AABB bounds\n"
+            "• Distance to AABB edges\n"
+            "• State transitions (ACTIVATED/DEACTIVATED)\n"
+            "• Standing-on override status"
+        ),
+        default=False
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # KCC VISUAL DEBUG (3D Viewport Overlay)
+    # ══════════════════════════════════════════════════════════════════════════
 
     bpy.types.Scene.dev_debug_kcc_visual = bpy.props.BoolProperty(
-        name="KCC Visual Debug",
+        name="Enable Visual Debug",
         description=(
             "Real-time 3D visualization of KCC physics:\n"
-            "• Capsule collision shape (two spheres)\n"
-            "• Hit normals (cyan arrows showing collision surfaces)\n"
-            "• Ground detection ray (magenta = hit, purple = miss)\n"
+            "• Capsule collision shape\n"
+            "• Hit normals (cyan = static, orange = dynamic)\n"
+            "• Ground ray (magenta = hit, purple = miss)\n"
             "• Movement vectors (green = intended, red = actual)\n"
             "\n"
-            "Colors:\n"
-            "• Green capsule = grounded\n"
-            "• Yellow capsule = colliding\n"
-            "• Red capsule = stuck (depenetrating)\n"
-            "• Blue capsule = airborne\n"
-            "\n"
-            "Use individual toggles below to show/hide specific elements"
+            "Capsule colors:\n"
+            "• Green = grounded\n"
+            "• Yellow = colliding\n"
+            "• Red = stuck\n"
+            "• Blue = airborne"
         ),
         default=False
     )
 
     bpy.types.Scene.dev_debug_kcc_visual_capsule = bpy.props.BoolProperty(
-        name="Show Capsule",
-        description="Draw capsule collision shape (feet + head spheres)",
+        name="Capsule Shape",
+        description="Draw capsule collision shape (feet + mid + head spheres)",
         default=True
     )
 
     bpy.types.Scene.dev_debug_kcc_visual_normals = bpy.props.BoolProperty(
-        name="Show Hit Normals",
-        description="Draw collision surface normals as cyan arrows",
+        name="Hit Normals",
+        description="Draw collision normals (cyan = static, orange = dynamic)",
         default=True
     )
 
     bpy.types.Scene.dev_debug_kcc_visual_ground = bpy.props.BoolProperty(
-        name="Show Ground Ray",
-        description="Draw ground detection raycast (magenta = hit, purple = miss)",
+        name="Ground Ray",
+        description="Draw ground detection raycast (cyan = static hit, orange = dynamic hit, purple = miss)",
         default=True
     )
 
     bpy.types.Scene.dev_debug_kcc_visual_movement = bpy.props.BoolProperty(
-        name="Show Movement Vectors",
+        name="Movement Vectors",
         description="Draw movement vectors (green = intended, red = actual)",
         default=True
     )
 
     bpy.types.Scene.dev_debug_kcc_visual_line_width = bpy.props.FloatProperty(
         name="Line Width",
-        description=(
-            "Visual debug line thickness:\n"
-            "• 1.0 = Thin (default GPU line width)\n"
-            "• 2.5 = Medium (recommended, good visibility)\n"
-            "• 4.0 = Thick (very visible, may impact performance)\n"
-            "\n"
-            "Adjust for better visibility vs performance"
-        ),
+        description="Visual debug line thickness (1.0-10.0)",
         default=2.5,
         min=1.0,
         max=10.0
@@ -265,226 +291,44 @@ def register_properties():
 
     bpy.types.Scene.dev_debug_kcc_visual_vector_scale = bpy.props.FloatProperty(
         name="Vector Scale",
-        description=(
-            "Movement vector length multiplier:\n"
-            "• 1.0 = Normal length (velocity * dt)\n"
-            "• 3.0 = 3x longer (recommended, extends past character)\n"
-            "• 5.0 = 5x longer (very long, easier to see direction)\n"
-            "\n"
-            "Scale vectors to extend beyond character model for visibility"
-        ),
+        description="Movement vector length multiplier",
         default=3.0,
         min=0.5,
         max=10.0
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # GAME SYSTEMS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_interactions = bpy.props.BoolProperty(
+        name="Interactions",
+        description="Interaction and reaction system",
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_audio = bpy.props.BoolProperty(
+        name="Audio",
+        description="Audio playback and state",
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_animations = bpy.props.BoolProperty(
+        name="Animations",
+        description="Animation and NLA system",
+        default=False
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
     # SESSION LOG EXPORT
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
 
     bpy.types.Scene.dev_export_session_log = bpy.props.BoolProperty(
         name="Export Diagnostics Log",
         description=(
             "Export game diagnostics to text file when game ends:\n"
             "• Location: Desktop/engine_output_files/\n"
-            "• File: diagnostics_latest.txt\n"
-            "• Contains: All game diagnostics (physics, engine, performance)\n"
-            "• Format: [CATEGORY F#### T##.###s] message\n"
-            "\n"
-            "Use this to share debug logs with Claude for analysis"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_camera_offload = bpy.props.BoolProperty(
-        name="Camera Occlusion",
-        description=(
-            "Camera occlusion raycast offload:\n"
-            "• Ray submission (origin, target)\n"
-            "• HIT/MISS results with distance\n"
-            "• Static vs dynamic geometry hits\n"
-            "• Worker timing (µs)"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_performance = bpy.props.BoolProperty(
-        name="Performance Culling",
-        description=(
-            "Distance-based object culling (CULL_BATCH):\n"
-            "• Batch submissions with object counts\n"
-            "• Hide/show operations per frame\n"
-            "• Placeholder mesh swapping\n"
-            "• Culling radius thresholds"
-        ),
-        default=False
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # DYNAMIC MESH PHYSICS (Unified Offload System)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_debug_dynamic_mesh = bpy.props.BoolProperty(
-        name="Dynamic Mesh Physics",
-        description=(
-            "Dynamic mesh physics offload system:\n"
-            "• Transform updates (per-frame matrix serialization, 64 bytes per mesh)\n"
-            "• Performance timing (transform time, collision time breakdowns)\n"
-            "• Collision results (unified static+dynamic testing)\n"
-            "\n"
-            "Shows worker-side dynamic mesh processing for unified physics"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_dynamic_cache = bpy.props.BoolProperty(
-        name="Dynamic Mesh Cache",
-        description=(
-            "Dynamic mesh caching operations:\n"
-            "• One-time triangle caching in local space\n"
-            "• Cache registration on first activation\n"
-            "• Shows which meshes are cached and their triangle counts\n"
-            "\n"
-            "Use this to verify dynamic meshes are being cached to worker"
-        ),
-        default=False
-    )
-
-
-    bpy.types.Scene.dev_debug_dynamic_collision = bpy.props.BoolProperty(
-        name="Dynamic Mesh Collision",
-        description=(
-            "Collision detection with dynamic meshes:\n"
-            "• Ground detection (raycast down hits dynamic platform)\n"
-            "• Body integrity ray (embedding detection)\n"
-            "• Horizontal collision (capsule sweep)\n"
-            "• Ceiling detection (upward blocking)\n"
-            "• Step-up detection (climbing dynamic stairs)\n"
-            "• Wall slide (sliding along dynamic walls)\n"
-            "\n"
-            "Shows which physics tests hit dynamic vs static geometry"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_dynamic_activation = bpy.props.BoolProperty(
-        name="Dynamic Activation State",
-        description=(
-            "AABB-based activation system diagnostics:\n"
-            "• Player position vs mesh AABB bounds\n"
-            "• Distance to AABB edges (X, Y, Z)\n"
-            "• Activation margin and buffer status\n"
-            "• State transitions (ACTIVATED/DEACTIVATED)\n"
-            "• Standing-on override status\n"
-            "• Per-frame activation decisions\n"
-            "\n"
-            "CRITICAL for diagnosing flickering issues.\n"
-            "Shows exactly why a mesh activates or deactivates."
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_dynamic_body_ray = bpy.props.BoolProperty(
-        name="Dynamic Body Ray",
-        description=(
-            "Body integrity ray collision with dynamic meshes:\n"
-            "• Vertical ray from feet to head\n"
-            "• Detects embedding/penetration in dynamic meshes\n"
-            "• Shows penetration depth, percentage, and which mesh\n"
-            "• Performance timing per test\n"
-            "\n"
-            "CRITICAL: Prevents player getting stuck inside dynamic walls"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_dynamic_horizontal = bpy.props.BoolProperty(
-        name="Dynamic Horizontal",
-        description=(
-            "Horizontal collision with dynamic meshes:\n"
-            "• Capsule sweep at 3 heights (feet, mid, shoulder)\n"
-            "• Detects walls, obstacles, and blockages\n"
-            "• Shows hit distance, normal, and which mesh\n"
-            "• Wall slide calculation and effectiveness\n"
-            "• Performance timing per test\n"
-            "\n"
-            "CRITICAL: Prevents walking through dynamic walls"
-        ),
-        default=False
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # GAME SYSTEMS
-    # Main thread game logic (not offloaded)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_debug_interactions = bpy.props.BoolProperty(
-        name="Interactions",
-        description=(
-            "Interaction and reaction system:\n"
-            "• Trigger activations (proximity, collision, etc.)\n"
-            "• Reaction execution\n"
-            "• Task queue updates\n"
-            "• Objective progress"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_audio = bpy.props.BoolProperty(
-        name="Audio",
-        description=(
-            "Audio system:\n"
-            "• Sound playback start/stop\n"
-            "• Audio state transitions\n"
-            "• Volume adjustments\n"
-            "• Cleanup operations"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_animations = bpy.props.BoolProperty(
-        name="Animations",
-        description=(
-            "Animation and NLA system:\n"
-            "• State machine transitions\n"
-            "• NLA strip playback\n"
-            "• Custom animation updates\n"
-            "• Blend timing"
-        ),
-        default=False
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # ENGINE STRESS TESTS - REMOVED (Property no longer needed)
-    # ══════════════════════════════════════════════════════════════════════════
-    # Stress tests are now standalone operators (Quick Test / Full Stress Test)
-    # in the Developer Tools panel under "Engine Health" → "Manual Stress Tests".
-    #
-    # PURPOSE: Test the ENGINE CORE in isolation - worker performance, job
-    # throughput, queue handling, and readiness checks.
-    #
-    # NOT for testing engine+modal integration - that's a separate concern.
-    # Engine stress tests power up the engine and measure its raw capabilities.
-    #
-    # Old dev_run_sync_test property has been removed - use operator buttons instead.
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STARTUP LOGS
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_startup_logs = bpy.props.BoolProperty(
-        name="Startup Logs",
-        description=(
-            "Show detailed engine and modal startup sequence.\n\n"
-            "Logs:\n"
-            "• Engine worker spawning\n"
-            "• PING verification\n"
-            "• Grid cache confirmation\n"
-            "• Health checks\n"
-            "• Modal initialization steps\n"
-            "• Lock-step synchronization\n"
-            "• READY confirmation or failure point\n\n"
-            "Use this to debug startup issues and verify engine readiness"
+            "• File: diagnostics_latest.txt"
         ),
         default=False
     )
@@ -493,67 +337,102 @@ def register_properties():
 def unregister_properties():
     """Unregister all developer debug properties."""
 
-    # Master frequency control
-    if hasattr(bpy.types.Scene, 'dev_debug_master_hz'):
-        del bpy.types.Scene.dev_debug_master_hz
+    # All current properties
+    props_to_remove = [
+        # Master control
+        'dev_debug_master_hz',
 
-    # Startup logs
-    if hasattr(bpy.types.Scene, 'dev_startup_logs'):
-        del bpy.types.Scene.dev_startup_logs
+        # Engine
+        'dev_debug_engine',
+        'dev_startup_logs',
 
-    # Stress tests (property removed - now use operator buttons instead)
+        # Offload systems
+        'dev_debug_kcc_physics',
+        'dev_debug_frame_numbers',
+        'dev_debug_camera',
+        'dev_debug_culling',
 
-    # Engine Health
-    if hasattr(bpy.types.Scene, 'dev_debug_engine'):
-        delattr(bpy.types.Scene, 'dev_debug_engine')
+        # Unified physics
+        'dev_debug_physics',
+        'dev_debug_physics_ground',
+        'dev_debug_physics_horizontal',
+        'dev_debug_physics_body',
+        'dev_debug_physics_ceiling',
+        'dev_debug_physics_step',
+        'dev_debug_physics_slide',
+        'dev_debug_physics_slopes',
 
-    # Offload Systems
-    for prop in ('dev_debug_kcc_offload', 'dev_debug_frame_numbers',
-                 'dev_debug_camera_offload', 'dev_debug_performance',
-                 'dev_debug_dynamic_mesh', 'dev_debug_dynamic_cache',
-                 'dev_debug_dynamic_collision', 'dev_debug_dynamic_activation',
-                 'dev_debug_dynamic_body_ray', 'dev_debug_dynamic_horizontal'):
+        # Dynamic mesh system
+        'dev_debug_dynamic_cache',
+        'dev_debug_dynamic_activation',
+
+        # Visual debug
+        'dev_debug_kcc_visual',
+        'dev_debug_kcc_visual_capsule',
+        'dev_debug_kcc_visual_normals',
+        'dev_debug_kcc_visual_ground',
+        'dev_debug_kcc_visual_movement',
+        'dev_debug_kcc_visual_line_width',
+        'dev_debug_kcc_visual_vector_scale',
+
+        # Game systems
+        'dev_debug_interactions',
+        'dev_debug_audio',
+        'dev_debug_animations',
+
+        # Session export
+        'dev_export_session_log',
+    ]
+
+    for prop in props_to_remove:
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
-    # Unified Physics
-    if hasattr(bpy.types.Scene, 'dev_debug_unified_physics'):
-        delattr(bpy.types.Scene, 'dev_debug_unified_physics')
+    # Clean up OLD properties from previous versions (migration)
+    old_props = [
+        # Old offload naming
+        'dev_debug_kcc_offload',
+        'dev_debug_camera_offload',
+        'dev_debug_performance',
 
-    # Granular Physics Diagnostics
-    for prop in ('dev_debug_physics_capsule', 'dev_debug_physics_body_integrity',
-                 'dev_debug_physics_ground', 'dev_debug_physics_step_up',
-                 'dev_debug_physics_slopes', 'dev_debug_physics_slide'):
+        # Old dynamic mesh properties (now unified)
+        'dev_debug_dynamic_mesh',
+        'dev_debug_dynamic_collision',
+        'dev_debug_dynamic_body_ray',
+        'dev_debug_dynamic_horizontal',
+
+        # Old physics properties
+        'dev_debug_unified_physics',
+        'dev_debug_physics_capsule',
+        'dev_debug_physics_body_integrity',
+        'dev_debug_physics_step_up',
+
+        # Old Hz properties
+        'dev_debug_engine_hz',
+        'dev_debug_kcc_offload_hz',
+        'dev_debug_frame_numbers_hz',
+        'dev_debug_camera_offload_hz',
+        'dev_debug_performance_hz',
+        'dev_debug_dynamic_offload_hz',
+        'dev_debug_physics_capsule_hz',
+        'dev_debug_physics_ground_hz',
+        'dev_debug_physics_step_up_hz',
+        'dev_debug_physics_slopes_hz',
+        'dev_debug_physics_slide_hz',
+        'dev_debug_interactions_hz',
+        'dev_debug_audio_hz',
+        'dev_debug_animations_hz',
+
+        # Other old properties
+        'dev_debug_forward_sweep',
+        'dev_debug_forward_sweep_hz',
+        'dev_debug_raycast_offload',
+        'dev_debug_raycast_offload_hz',
+        'dev_debug_physics',
+        'dev_debug_physics_hz',
+        'dev_run_sync_test',
+    ]
+
+    for prop in old_props:
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
-
-    # KCC Visual Debug
-    for prop in ('dev_debug_kcc_visual', 'dev_debug_kcc_visual_capsule',
-                 'dev_debug_kcc_visual_normals', 'dev_debug_kcc_visual_ground',
-                 'dev_debug_kcc_visual_movement', 'dev_debug_kcc_visual_line_width',
-                 'dev_debug_kcc_visual_vector_scale'):
-        if hasattr(bpy.types.Scene, prop):
-            delattr(bpy.types.Scene, prop)
-
-    # Session Log Export
-    if hasattr(bpy.types.Scene, 'dev_export_session_log'):
-        delattr(bpy.types.Scene, 'dev_export_session_log')
-
-    # Game Systems
-    for prop in ('dev_debug_interactions', 'dev_debug_audio', 'dev_debug_animations'):
-        if hasattr(bpy.types.Scene, prop):
-            delattr(bpy.types.Scene, prop)
-
-    # Clean up old individual Hz properties from previous versions
-    for old_prop in ('dev_debug_engine_hz', 'dev_debug_kcc_offload_hz',
-                     'dev_debug_frame_numbers_hz', 'dev_debug_camera_offload_hz',
-                     'dev_debug_performance_hz', 'dev_debug_dynamic_offload_hz',
-                     'dev_debug_physics_capsule_hz', 'dev_debug_physics_ground_hz',
-                     'dev_debug_physics_step_up_hz', 'dev_debug_physics_slopes_hz',
-                     'dev_debug_physics_slide_hz', 'dev_debug_interactions_hz',
-                     'dev_debug_audio_hz', 'dev_debug_animations_hz',
-                     'dev_debug_forward_sweep', 'dev_debug_forward_sweep_hz',
-                     'dev_debug_raycast_offload', 'dev_debug_raycast_offload_hz',
-                     'dev_debug_physics', 'dev_debug_physics_hz'):
-        if hasattr(bpy.types.Scene, old_prop):
-            delattr(bpy.types.Scene, old_prop)

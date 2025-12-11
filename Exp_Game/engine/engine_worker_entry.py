@@ -957,16 +957,20 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                 t_max_z += t_delta_z
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 2: Test Dynamic Meshes (with AABB + sphere culling)
+    # PHASE 2: Test Dynamic Meshes (LOCAL-SPACE + GRID ACCELERATED)
+    # Same optimization as static: transform ray, use spatial grid
     # ─────────────────────────────────────────────────────────────────────────
     if dynamic_meshes:
         for dyn_mesh in dynamic_meshes:
             obj_id = dyn_mesh.get("obj_id")
-            world_tris = dyn_mesh.get("triangles", [])
+            triangles = dyn_mesh.get("triangles", [])
             aabb = dyn_mesh.get("aabb")
             bounding_sphere = dyn_mesh.get("bounding_sphere")
+            inv_matrix = dyn_mesh.get("inv_matrix")
+            matrix = dyn_mesh.get("matrix")
+            grid = dyn_mesh.get("grid")
 
-            # AABB rejection first (tighter than sphere for elongated meshes)
+            # AABB rejection first (world-space AABB vs world-space ray)
             if aabb:
                 aabb_min, aabb_max = aabb
                 if not ray_aabb_intersect(ray_origin, ray_direction,
@@ -979,24 +983,73 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                                            sphere_center, sphere_radius, best_dist):
                     continue  # Skip ALL triangles in this mesh!
 
-            # Test triangles
-            for tri in world_tris:
-                total_tris += 1
-                hit, dist, hit_pos = ray_triangle_intersect(
-                    ray_origin, ray_direction, tri[0], tri[1], tri[2]
+            # Transform ray to LOCAL space (O(1) regardless of mesh complexity)
+            if inv_matrix is None:
+                continue  # Can't test without inverse matrix
+
+            local_origin, local_direction = transform_ray_to_local(ray_origin, ray_direction, inv_matrix)
+
+            # Test triangles in LOCAL space (grid-accelerated if available)
+            hit_dist = None
+            hit_tri_idx = None
+
+            if grid:
+                # GRID-ACCELERATED: O(cells) instead of O(N)
+                tris_counter = [0]
+                grid_result = ray_grid_traverse(
+                    local_origin, local_direction, best_dist, grid, triangles, tris_counter
+                )
+                total_tris += tris_counter[0]
+                if grid_result:
+                    hit_dist, hit_tri_idx = grid_result
+            else:
+                # Fallback: brute-force (for meshes without grid)
+                for tri_idx, tri in enumerate(triangles):
+                    total_tris += 1
+                    hit, dist, _ = ray_triangle_intersect(
+                        local_origin, local_direction, tri[0], tri[1], tri[2]
+                    )
+                    if hit and dist < best_dist:
+                        hit_dist = dist
+                        hit_tri_idx = tri_idx
+
+            # Process hit - transform normal back to world space
+            if hit_dist is not None and hit_tri_idx is not None and hit_dist < best_dist:
+                best_dist = hit_dist
+                tri = triangles[hit_tri_idx]
+                local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+
+                # Transform normal to world space
+                if matrix:
+                    m = matrix
+                    nx, ny, nz = local_normal
+                    wnx = m[0]*nx + m[1]*ny + m[2]*nz
+                    wny = m[4]*nx + m[5]*ny + m[6]*nz
+                    wnz = m[8]*nx + m[9]*ny + m[10]*nz
+                    n_len = math.sqrt(wnx*wnx + wny*wny + wnz*wnz)
+                    if n_len > 1e-10:
+                        wnx /= n_len
+                        wny /= n_len
+                        wnz /= n_len
+                    world_normal = (wnx, wny, wnz)
+                else:
+                    world_normal = local_normal
+
+                # Compute world-space hit position
+                hit_pos = (
+                    ray_origin[0] + ray_direction[0] * hit_dist,
+                    ray_origin[1] + ray_direction[1] * hit_dist,
+                    ray_origin[2] + ray_direction[2] * hit_dist
                 )
 
-                if hit and dist < best_dist:
-                    best_dist = dist
-                    normal = compute_triangle_normal(tri[0], tri[1], tri[2])
-                    best_hit = {
-                        "hit": True,
-                        "dist": dist,
-                        "normal": normal,
-                        "pos": hit_pos,
-                        "source": "dynamic",
-                        "obj_id": obj_id
-                    }
+                best_hit = {
+                    "hit": True,
+                    "dist": hit_dist,
+                    "normal": world_normal,
+                    "pos": hit_pos,
+                    "source": "dynamic",
+                    "obj_id": obj_id
+                }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Build result
@@ -1028,6 +1081,51 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                 f"MISS tris={total_tris} cells={total_cells}"))
 
     return result
+
+
+# ============================================================================
+# UNIFIED RAY CAST - THE SINGLE FUNCTION FOR ALL PHYSICS
+# ============================================================================
+
+def cast_ray(ray_origin, ray_direction, max_dist, grid_data, dynamic_meshes, tris_counter=None):
+    """
+    THE SINGLE UNIFIED RAY FUNCTION - Tests ALL geometry (static + dynamic).
+
+    Both static and dynamic use identical physics:
+    - Same ray-triangle intersection
+    - Same spatial grid acceleration
+    - Same normal computation
+    - Closest hit wins regardless of source
+
+    Args:
+        ray_origin: (x, y, z) world-space ray start
+        ray_direction: (x, y, z) world-space direction (should be normalized)
+        max_dist: maximum ray distance
+        grid_data: static grid cache (or None)
+        dynamic_meshes: list of dynamic mesh dicts (or None/empty)
+        tris_counter: optional [count] list to track triangles tested
+
+    Returns:
+        (dist, normal, source, obj_id) if hit:
+            dist: float distance to hit
+            normal: (nx, ny, nz) surface normal
+            source: "static" or "dynamic"
+            obj_id: object ID if dynamic (None if static)
+        None if no hit
+    """
+    result = unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_meshes)
+
+    if tris_counter is not None:
+        tris_counter[0] += result.get("tris_tested", 0)
+
+    if result["hit"]:
+        return (
+            result["dist"],
+            result["normal"],
+            result["source"],
+            result["obj_id"]
+        )
+    return None
 
 
 # ============================================================================
@@ -1503,13 +1601,15 @@ def process_job(job) -> dict:
 
             # Debug flags
             debug_flags = job.data.get("debug_flags", {})
-            debug_unified_physics = debug_flags.get("unified_physics", False)
-            debug_step_up = debug_flags.get("step_up", False)
-            debug_ground = debug_flags.get("ground", False)
-            debug_capsule = debug_flags.get("capsule", False)
-            debug_slopes = debug_flags.get("slopes", False)
-            debug_slide = debug_flags.get("slide", False)
-            debug_body = debug_flags.get("body_integrity", False)
+            # UNIFIED PHYSICS: All flags control unified physics (static + dynamic identical)
+            debug_physics = debug_flags.get("physics", False)      # Physics summary
+            debug_ground = debug_flags.get("ground", False)        # Ground detection
+            debug_horizontal = debug_flags.get("horizontal", False) # Horizontal collision
+            debug_body = debug_flags.get("body", False)            # Body integrity
+            debug_ceiling = debug_flags.get("ceiling", False)      # Ceiling check
+            debug_step = debug_flags.get("step", False)            # Step-up
+            debug_slide = debug_flags.get("slide", False)          # Wall slide
+            debug_slopes = debug_flags.get("slopes", False)        # Slopes
 
             # Worker log buffer (collected during computation, returned to main thread)
             worker_logs = []
@@ -1615,11 +1715,11 @@ def process_job(job) -> dict:
                 dynamic_transform_time_us = (transform_end - transform_start) * 1_000_000
 
                 # Log transform operation
-                if debug_flags.get("dynamic_mesh", False):
+                if debug_flags.get("dynamic_cache", False):
                     mesh_count = len(unified_dynamic_meshes)
                     total_dyn_tris = sum(len(m["triangles"]) for m in unified_dynamic_meshes)
-                    worker_logs.append(("DYN-MESH",
-                        f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}µs "
+                    worker_logs.append(("DYN-CACHE",
+                        f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}us "
                         f"player=({px:.2f},{py:.2f},{pz:.2f})"))
                     # Log AABB bounds for each mesh (helps diagnose collision issues)
                     for i, mesh_data in enumerate(unified_dynamic_meshes):
@@ -1627,19 +1727,19 @@ def process_job(job) -> dict:
                             aabb = mesh_data["aabb"]
                             aabb_min, aabb_max = aabb
                             obj_id = mesh_data.get("obj_id", "?")
-                            worker_logs.append(("DYN-MESH",
+                            worker_logs.append(("DYN-CACHE",
                                 f"MESH[{i}] id={obj_id} tris={len(mesh_data['triangles'])} "
                                 f"aabb=[({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f})->({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})]"))
             else:
                 # No dynamic transforms received - log this state
-                if debug_flags.get("dynamic_mesh", False):
+                if debug_flags.get("dynamic_cache", False):
                     cached_count = len(_cached_dynamic_meshes)
                     transform_count = len(dynamic_transforms)
                     if cached_count > 0 and transform_count == 0:
-                        worker_logs.append(("DYN-MESH",
+                        worker_logs.append(("DYN-CACHE",
                             f"TRANSFORM active=0 tris=0 (cached={cached_count} but no transforms sent)"))
                     elif cached_count == 0:
-                        worker_logs.append(("DYN-MESH",
+                        worker_logs.append(("DYN-CACHE",
                             f"TRANSFORM active=0 tris=0 (no cached meshes)"))
 
             # ─────────────────────────────────────────────────────────────────
@@ -1724,7 +1824,7 @@ def process_job(job) -> dict:
                             vy += downhill_y * 2.0
 
                             if debug_slopes:
-                                worker_logs.append(("PHYS-SLOPES", f"PRE-BLOCK AIRBORNE angle={slope_angle:.0f}°"))
+                                worker_logs.append(("SLOPES", f"PRE-BLOCK AIRBORNE angle={slope_angle:.0f}°"))
 
             # ─────────────────────────────────────────────────────────────────
             # 4.9. EXTRACT GRID DATA ONCE (performance optimization)
@@ -1765,369 +1865,107 @@ def process_job(job) -> dict:
                 }
 
             # ─────────────────────────────────────────────────────────────────
-            # 5. HORIZONTAL COLLISION (3D DDA on cached grid)
+            # 5. HORIZONTAL COLLISION - UNIFIED for all geometry
+            # Single cast_ray() tests BOTH static and dynamic for each ray
             # ─────────────────────────────────────────────────────────────────
             move_x = vx * dt
             move_y = vy * dt
             move_len = math.sqrt(move_x*move_x + move_y*move_y)
 
-            # For high-speed movement (running), subdivide into substeps to prevent tunneling
-            # This is especially important for steep slopes where rays might miss
-            max_step_len = radius * 0.8  # Max movement per substep
-            num_substeps = max(1, int(math.ceil(move_len / max_step_len)))
-            substep_len = move_len / num_substeps if num_substeps > 0 else 0
+            best_d = None
+            best_n = None
+            per_ray_hits = []
 
-            # DIAGNOSTIC: Check grid state
-            if move_len > 1e-9 and _cached_grid is None:
-                worker_logs.append(("ENGINE", f"COLLISION SKIPPED: _cached_grid is None! move_len={move_len:.3f}m"))
-
-            if move_len > 1e-9 and _cached_grid is not None:
+            if move_len > 1e-9:
                 # Normalize movement direction
                 fwd_x = move_x / move_len
                 fwd_y = move_y / move_len
 
-                # Track total movement allowed across all substeps
-                total_allowed = 0.0
-                blocked_this_frame = False
-                final_wall_normal = None
-
-                # Use pre-extracted grid data
-                bounds_min = grid_bounds_min
-                bounds_max = grid_bounds_max
-                cell_size = grid_cell_size
-                cells = grid_cells
-                triangles = grid_triangles
-
-                min_x, min_y, min_z = grid_min_x, grid_min_y, grid_min_z
-                max_x, max_y, max_z = grid_max_x, grid_max_y, grid_max_z
-                nx_grid, ny_grid, nz_grid = grid_nx, grid_ny, grid_nz
-
-                # Cast rays at 3 heights (feet, mid, head) + angled rays for steep slopes
-                # Feet ray at 0.1m to catch low overhangs and crawl spaces
+                # Cast rays at 3 heights (feet, mid, head)
                 ray_heights = [0.1, min(height * 0.5, height - radius), height - radius]
                 ray_len = move_len + radius
 
-                # Additional slope detection rays (angled slightly down to catch slopes)
-                # These are critical for detecting steep slopes when running
-                slope_ray_configs = []
-                if on_ground:
-                    # Cast rays angled downward at 30 degrees to catch slopes
-                    slope_angle = 0.5  # ~30 degrees down
-                    slope_ray_z = radius * 2  # Knee height
-                    slope_fwd_len = math.sqrt(1.0 / (1.0 + slope_angle * slope_angle))
-                    slope_down_len = slope_angle * slope_fwd_len
-                    slope_ray_configs.append((slope_ray_z, slope_fwd_len, -slope_down_len))
+                # Main horizontal rays (3 heights)
+                for ray_z in ray_heights:
+                    total_rays += 1
+                    tris_counter = [0]
+                    ray_result = cast_ray(
+                        (px, py, pz + ray_z), (fwd_x, fwd_y, 0), ray_len,
+                        _cached_grid, unified_dynamic_meshes, tris_counter
+                    )
+                    total_tris += tris_counter[0]
 
-                best_d = None
-                best_n = None
-                per_ray_hits = []
+                    if ray_result:
+                        ray_dist, ray_normal, ray_source, ray_obj_id = ray_result
+                        per_ray_hits.append(ray_dist)
+                        if best_d is None or ray_dist < best_d:
+                            best_d = ray_dist
+                            best_n = ray_normal
+                    else:
+                        per_ray_hits.append(None)
 
-                # WIDTH CHECK: Add perpendicular rays to detect narrow gaps
-                # Calculate perpendicular direction (90° from forward)
-                # This prevents squeezing through gaps narrower than capsule diameter
+                # WIDTH RAYS: Check left/right edges at mid-height for narrow gaps
                 perp_x = -fwd_y  # Perpendicular left
                 perp_y = fwd_x
-
-                # Width ray positions at mid-height (most critical for gap detection)
                 mid_height = height * 0.5
                 width_ray_configs = [
                     (perp_x * radius, perp_y * radius),   # Left edge
                     (-perp_x * radius, -perp_y * radius), # Right edge
                 ]
 
-                # First, do horizontal rays (forward detection)
-                for ray_z in ray_heights:
-                    total_rays += 1
-                    ox, oy, oz = px, py, pz + ray_z
-
-                    # 3D DDA traversal
-                    start_x = max(min_x, min(max_x - 0.001, ox))
-                    start_y = max(min_y, min(max_y - 0.001, oy))
-                    start_z = max(min_z, min(max_z - 0.001, oz))
-
-                    ix = int((start_x - min_x) / cell_size)
-                    iy = int((start_y - min_y) / cell_size)
-                    iz = int((start_z - min_z) / cell_size)
-
-                    ix = max(0, min(nx_grid - 1, ix))
-                    iy = max(0, min(ny_grid - 1, iy))
-                    iz = max(0, min(nz_grid - 1, iz))
-
-                    step_x = 1 if fwd_x >= 0 else -1
-                    step_y = 1 if fwd_y >= 0 else -1
-                    step_z = 0  # Horizontal only
-
-                    INF = float('inf')
-
-                    if abs(fwd_x) > 1e-12:
-                        if fwd_x > 0:
-                            t_max_x = ((min_x + (ix + 1) * cell_size) - ox) / fwd_x
-                        else:
-                            t_max_x = ((min_x + ix * cell_size) - ox) / fwd_x
-                        t_delta_x = abs(cell_size / fwd_x)
-                    else:
-                        t_max_x = INF
-                        t_delta_x = INF
-
-                    if abs(fwd_y) > 1e-12:
-                        if fwd_y > 0:
-                            t_max_y = ((min_y + (iy + 1) * cell_size) - oy) / fwd_y
-                        else:
-                            t_max_y = ((min_y + iy * cell_size) - oy) / fwd_y
-                        t_delta_y = abs(cell_size / fwd_y)
-                    else:
-                        t_max_y = INF
-                        t_delta_y = INF
-
-                    ray_closest_dist = ray_len
-                    ray_closest_tri = None
-                    tested_triangles = set()
-                    cells_traversed = 0
-                    max_cells = nx_grid + ny_grid + 10
-                    t_current = 0.0
-
-                    while cells_traversed < max_cells:
-                        cells_traversed += 1
-                        total_cells += 1
-
-                        if t_current > ray_len:
-                            break
-                        if ix < 0 or ix >= nx_grid or iy < 0 or iy >= ny_grid or iz < 0 or iz >= nz_grid:
-                            break
-
-                        cell_key = (ix, iy, iz)
-                        if cell_key in cells:
-                            for tri_idx in cells[cell_key]:
-                                if tri_idx in tested_triangles:
-                                    continue
-                                tested_triangles.add(tri_idx)
-                                total_tris += 1
-
-                                tri = triangles[tri_idx]
-                                hit, dist, _ = ray_triangle_intersect((ox, oy, oz), (fwd_x, fwd_y, 0), tri[0], tri[1], tri[2])
-                                if hit and dist < ray_closest_dist:
-                                    ray_closest_dist = dist
-                                    ray_closest_tri = tri
-
-                        t_next = min(t_max_x, t_max_y)
-                        if ray_closest_tri is not None and ray_closest_dist <= t_next:
-                            break
-
-                        if t_max_x < t_max_y:
-                            ix += step_x
-                            t_current = t_max_x
-                            t_max_x += t_delta_x
-                        else:
-                            iy += step_y
-                            t_current = t_max_y
-                            t_max_y += t_delta_y
-
-                    # ═══════════════════════════════════════════════════════════
-                    # UNIFIED: Also test dynamic meshes for this ray (with sphere culling)
-                    # ═══════════════════════════════════════════════════════════
-                    ray_best_dist = ray_closest_dist if ray_closest_tri else ray_len
-                    ray_best_normal = compute_triangle_normal(ray_closest_tri[0], ray_closest_tri[1], ray_closest_tri[2]) if ray_closest_tri else None
-                    ray_hit = ray_closest_tri is not None
-
-                    if unified_dynamic_meshes:
-                        tris_counter = [0]
-                        horiz_debug = [] if debug_capsule else None
-                        dyn_result = test_dynamic_meshes_ray(
-                            (ox, oy, oz), (fwd_x, fwd_y, 0), ray_best_dist,
-                            unified_dynamic_meshes, tris_counter, horiz_debug
-                        )
-                        total_tris += tris_counter[0]
-
-                        # Log AABB rejection for first horizontal ray (diagnose why player enters mesh)
-                        if horiz_debug and len(horiz_debug) > 0 and ray_z == ray_heights[0]:
-                            worker_logs.append(("PHYS-CAPSULE", f"DYN_SKIP {horiz_debug[0]}"))
-
-                        if dyn_result:
-                            dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                            if dyn_dist < ray_best_dist:
-                                ray_best_dist = dyn_dist
-                                ray_best_normal = dyn_normal
-                                ray_hit = True
-
-                    # Track per-ray hits (for step-up detection)
-                    if ray_hit and ray_best_normal is not None:
-                        per_ray_hits.append(ray_best_dist)
-                        if best_d is None or ray_best_dist < best_d:
-                            best_d = ray_best_dist
-                            best_n = ray_best_normal
-                    else:
-                        per_ray_hits.append(None)
-
-                # WIDTH RAYS: Check left/right edges at mid-height
-                # Cast 2 rays perpendicular to movement to detect narrow gaps
-                # This prevents squeezing through openings narrower than capsule diameter
-                width_hits = []  # Store hits from both width rays
+                width_hits = []
                 for width_offset_x, width_offset_y in width_ray_configs:
                     total_rays += 1
+                    tris_counter = [0]
+                    width_result = cast_ray(
+                        (px + width_offset_x, py + width_offset_y, pz + mid_height),
+                        (fwd_x, fwd_y, 0), ray_len,
+                        _cached_grid, unified_dynamic_meshes, tris_counter
+                    )
+                    total_tris += tris_counter[0]
 
-                    # Ray origin offset to left/right edge at mid-height
-                    ox = px + width_offset_x
-                    oy = py + width_offset_y
-                    oz = pz + mid_height
-
-                    # Cast ray forward in movement direction (same as center rays)
-                    # Using simplified 3-cell check (cheap, like slope rays)
-                    start_ix = int((ox - min_x) / cell_size)
-                    start_iy = int((oy - min_y) / cell_size)
-                    start_iz = int((oz - min_z) / cell_size)
-                    start_ix = max(0, min(nx_grid - 1, start_ix))
-                    start_iy = max(0, min(ny_grid - 1, start_iy))
-                    start_iz = max(0, min(nz_grid - 1, start_iz))
-
-                    width_hit_dist = None
-                    width_hit_normal = None
-
-                    tested_width = set()
-                    for depth in range(3):  # Check 3 cells forward (like slope rays)
-                        check_x = ox + fwd_x * cell_size * (depth + 1)
-                        check_y = oy + fwd_y * cell_size * (depth + 1)
-                        check_z = oz
-
-                        cix = int((check_x - min_x) / cell_size)
-                        ciy = int((check_y - min_y) / cell_size)
-                        ciz = int((check_z - min_z) / cell_size)
-                        cix = max(0, min(nx_grid - 1, cix))
-                        ciy = max(0, min(ny_grid - 1, ciy))
-                        ciz = max(0, min(nz_grid - 1, ciz))
-
-                        cell_key = (cix, ciy, ciz)
-                        if cell_key in cells:
-                            for tri_idx in cells[cell_key]:
-                                if tri_idx in tested_width:
-                                    continue
-                                tested_width.add(tri_idx)
-                                total_tris += 1
-
-                                tri = triangles[tri_idx]
-                                hit, dist, _ = ray_triangle_intersect(
-                                    (ox, oy, oz), (fwd_x, fwd_y, 0),
-                                    tri[0], tri[1], tri[2]
-                                )
-                                if hit and dist < ray_len:
-                                    if width_hit_dist is None or dist < width_hit_dist:
-                                        width_hit_dist = dist
-                                        width_hit_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
-
-                    # UNIFIED: Also test dynamic meshes for width ray
-                    if unified_dynamic_meshes:
-                        tris_counter = [0]
-                        dyn_result = test_dynamic_meshes_ray(
-                            (ox, oy, oz), (fwd_x, fwd_y, 0),
-                            width_hit_dist if width_hit_dist else ray_len,
-                            unified_dynamic_meshes, tris_counter
-                        )
-                        total_tris += tris_counter[0]
-
-                        if dyn_result:
-                            dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                            if width_hit_dist is None or dyn_dist < width_hit_dist:
-                                width_hit_dist = dyn_dist
-                                width_hit_normal = dyn_normal
-
-                    width_hits.append((width_hit_dist, width_hit_normal))
+                    if width_result:
+                        width_hits.append((width_result[0], width_result[1]))
+                    else:
+                        width_hits.append((None, None))
 
                 # Only block if BOTH width rays hit (narrow gap detection)
-                # Don't interfere with normal wall sliding where only one edge hits
                 if len(width_hits) == 2:
                     left_dist, left_n = width_hits[0]
                     right_dist, right_n = width_hits[1]
-
                     if left_dist is not None and right_dist is not None:
-                        # Both edges hit - this is a narrow gap
-                        # Use the closer hit to block movement
                         closest_dist = min(left_dist, right_dist)
                         if best_d is None or closest_dist < best_d:
                             best_d = closest_dist
                             best_n = left_n if left_dist < right_dist else right_n
 
-                # Second, do angled slope detection rays (only when grounded)
-                # These catch steep slopes that horizontal rays might miss
-                for slope_cfg in slope_ray_configs:
-                    slope_ray_z, slope_fwd_mult, slope_z_mult = slope_cfg
+                # SLOPE RAYS: Angled down to catch steep slopes (only when grounded)
+                if on_ground:
+                    slope_angle = 0.5  # ~30 degrees down
+                    slope_ray_z = radius * 2  # Knee height
+                    slope_fwd_len = math.sqrt(1.0 / (1.0 + slope_angle * slope_angle))
+                    slope_down_len = slope_angle * slope_fwd_len
+
+                    ray_dx = fwd_x * slope_fwd_len
+                    ray_dy = fwd_y * slope_fwd_len
+                    ray_dz = -slope_down_len
+
                     total_rays += 1
+                    tris_counter = [0]
+                    slope_result = cast_ray(
+                        (px, py, pz + slope_ray_z), (ray_dx, ray_dy, ray_dz), ray_len,
+                        _cached_grid, unified_dynamic_meshes, tris_counter
+                    )
+                    total_tris += tris_counter[0]
 
-                    # Ray direction is forward + slightly down
-                    ray_dx = fwd_x * slope_fwd_mult
-                    ray_dy = fwd_y * slope_fwd_mult
-                    ray_dz = slope_z_mult  # Negative = downward
-
-                    ox, oy, oz = px, py, pz + slope_ray_z
-
-                    # Simple brute-force check in nearby cells (cheaper than full DDA for one ray)
-                    start_ix = int((ox - min_x) / cell_size)
-                    start_iy = int((oy - min_y) / cell_size)
-                    start_iz = int((oz - min_z) / cell_size)
-                    start_ix = max(0, min(nx_grid - 1, start_ix))
-                    start_iy = max(0, min(ny_grid - 1, start_iy))
-                    start_iz = max(0, min(nz_grid - 1, start_iz))
-
-                    # Check cells in forward direction (3 cells deep)
-                    tested_slope = set()
-                    for depth in range(3):
-                        check_x = ox + ray_dx * cell_size * (depth + 1)
-                        check_y = oy + ray_dy * cell_size * (depth + 1)
-                        check_z = oz + ray_dz * cell_size * (depth + 1)
-
-                        cix = int((check_x - min_x) / cell_size)
-                        ciy = int((check_y - min_y) / cell_size)
-                        ciz = int((check_z - min_z) / cell_size)
-                        cix = max(0, min(nx_grid - 1, cix))
-                        ciy = max(0, min(ny_grid - 1, ciy))
-                        ciz = max(0, min(nz_grid - 1, ciz))
-
-                        cell_key = (cix, ciy, ciz)
-                        if cell_key in cells:
-                            for tri_idx in cells[cell_key]:
-                                if tri_idx in tested_slope:
-                                    continue
-                                tested_slope.add(tri_idx)
-                                total_tris += 1
-
-                                tri = triangles[tri_idx]
-                                hit, dist, _ = ray_triangle_intersect(
-                                    (ox, oy, oz), (ray_dx, ray_dy, ray_dz),
-                                    tri[0], tri[1], tri[2]
-                                )
-                                if hit and dist < ray_len:
-                                    tri_n = compute_triangle_normal(tri[0], tri[1], tri[2])
-                                    # Only count steep slopes (not floors)
-                                    if tri_n[2] < floor_cos and tri_n[2] > 0.1:
-                                        # This is a steep slope - treat as wall
-                                        # Convert angled ray hit to equivalent horizontal distance
-                                        horiz_dist = dist * slope_fwd_mult
-                                        if best_d is None or horiz_dist < best_d:
-                                            best_d = horiz_dist
-                                            best_n = tri_n
-
-                    # UNIFIED: Also test dynamic meshes for slope ray
-                    if unified_dynamic_meshes:
-                        tris_counter = [0]
-                        dyn_result = test_dynamic_meshes_ray(
-                            (ox, oy, oz), (ray_dx, ray_dy, ray_dz),
-                            ray_len, unified_dynamic_meshes, tris_counter
-                        )
-                        total_tris += tris_counter[0]
-
-                        if dyn_result:
-                            dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                            # Only count steep slopes (not floors)
-                            if dyn_normal[2] < floor_cos and dyn_normal[2] > 0.1:
-                                horiz_dist = dyn_dist * slope_fwd_mult
-                                if best_d is None or horiz_dist < best_d:
-                                    best_d = horiz_dist
-                                    best_n = dyn_normal
-
-                # ═══════════════════════════════════════════════════════════════════
-                # NOTE: Dynamic mesh testing now happens INLINE with each ray above
-                # (horizontal rays, width rays, slope rays all test dynamic meshes)
-                # The old separate dynamic mesh collision loop has been REMOVED.
-                # This is the UNIFIED physics architecture - same code path for all geometry.
-                # ═══════════════════════════════════════════════════════════════════
+                    if slope_result:
+                        slope_dist, slope_normal, slope_source, slope_obj_id = slope_result
+                        # Only count steep slopes (not floors)
+                        if slope_normal[2] < floor_cos and slope_normal[2] > 0.1:
+                            horiz_dist = slope_dist * slope_fwd_len
+                            if best_d is None or horiz_dist < best_d:
+                                best_d = horiz_dist
+                                best_n = slope_normal
 
                 # Apply horizontal collision result (static OR dynamic - whichever is closer)
                 if best_d is not None:
@@ -2174,14 +2012,14 @@ def process_job(job) -> dict:
                                         vy = vy - uphill_y * uphill_vel
 
                     # Debug logging
-                    if debug_capsule:
+                    if debug_horizontal:
                         if best_n is not None:
-                            worker_logs.append(("PHYS-CAPSULE", f"blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=({best_n[0]:.2f},{best_n[1]:.2f},{best_n[2]:.2f}) | {total_rays}rays {total_tris}tris"))
+                            worker_logs.append(("HORIZONTAL", f"blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=({best_n[0]:.2f},{best_n[1]:.2f},{best_n[2]:.2f}) | {total_rays}rays {total_tris}tris"))
                         else:
-                            worker_logs.append(("PHYS-CAPSULE", f"blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=None | {total_rays}rays {total_tris}tris"))
+                            worker_logs.append(("HORIZONTAL", f"blocked dist={best_d:.3f}m allowed={allowed:.3f}m normal=None | {total_rays}rays {total_tris}tris"))
 
                     # ─────────────────────────────────────────────────────────
-                    # 5a. STEP-UP (if only feet ray hit)
+                    # 5a. STEP-UP (if only feet ray hit) - UNIFIED
                     # ─────────────────────────────────────────────────────────
                     feet_only = (len(per_ray_hits) >= 3 and
                                 per_ray_hits[0] is not None and
@@ -2190,216 +2028,115 @@ def process_job(job) -> dict:
 
                     # Only allow step-up when on walkable ground (prevent step-up on steep slopes)
                     if on_ground and on_walkable and feet_only and step_height > 0.0 and best_n is not None:
-                        # Check if it's a steep face (step-able)
                         bn_x, bn_y, bn_z = best_n
-                        if bn_z < floor_cos:  # Steep face
-                            if debug_step_up:
-                                worker_logs.append(("PHYS-STEP", f"attempting step-up | pos=({px:.2f},{py:.2f},{pz:.2f}) face_nz={bn_z:.3f}"))
-                            # Try step-up: raise, forward, drop
-                            test_z = pz + step_height
-                            test_ox = px
-                            test_oy = py
+                        if bn_z < floor_cos:  # Steep face (step-able)
+                            if debug_step:
+                                worker_logs.append(("STEP", f"attempting step-up | pos=({px:.2f},{py:.2f},{pz:.2f}) face_nz={bn_z:.3f}"))
 
-                            # Check headroom using grid (not brute force)
-                            head_clear = True
+                            test_z = pz + step_height
                             head_ray_z = test_z + height
 
-                            # Grid-based ceiling check at raised position
-                            check_ix = int((test_ox - min_x) / cell_size)
-                            check_iy = int((test_oy - min_y) / cell_size)
-                            check_iz = int((head_ray_z - min_z) / cell_size)
-                            check_ix = max(0, min(nx_grid - 1, check_ix))
-                            check_iy = max(0, min(ny_grid - 1, check_iy))
-                            check_iz = max(0, min(nz_grid - 1, check_iz))
-
-                            # Check a few cells above for ceiling
-                            tested_ceil = set()
-                            for dz_off in range(3):
-                                ceil_iz = min(nz_grid - 1, check_iz + dz_off)
-                                ceil_key = (check_ix, check_iy, ceil_iz)
-                                if ceil_key in cells:
-                                    for tri_idx in cells[ceil_key]:
-                                        if tri_idx in tested_ceil:
-                                            continue
-                                        tested_ceil.add(tri_idx)
-                                        tri = triangles[tri_idx]
-                                        hit, dist, _ = ray_triangle_intersect(
-                                            (test_ox, test_oy, head_ray_z),
-                                            (0, 0, 1),
-                                            tri[0], tri[1], tri[2]
-                                        )
-                                        if hit and dist < step_height:
-                                            head_clear = False
-                                            break
-                                if not head_clear:
-                                    break
+                            # UNIFIED headroom check - tests both static and dynamic
+                            tris_counter = [0]
+                            headroom_result = cast_ray(
+                                (px, py, head_ray_z), (0, 0, 1), step_height,
+                                _cached_grid, unified_dynamic_meshes, tris_counter
+                            )
+                            total_tris += tris_counter[0]
+                            head_clear = (headroom_result is None)
 
                             if head_clear:
-                                # Cast forward ray at raised position
                                 remaining_move = move_len - allowed
                                 if remaining_move > 0.01:
-                                    # Simple forward check at raised height (abbreviated)
-                                    can_step = True
-                                    if can_step:
-                                        # Drop down to find ground
-                                        drop_ox = test_ox + fwd_x * min(remaining_move, radius)
-                                        drop_oy = test_oy + fwd_y * min(remaining_move, radius)
-                                        drop_max = step_height + snap_down
+                                    # Drop down to find ground
+                                    drop_ox = px + fwd_x * min(remaining_move, radius)
+                                    drop_oy = py + fwd_y * min(remaining_move, radius)
+                                    drop_max = step_height + snap_down + 1.0
 
-                                        # Grid-based ground raycast at dropped position
-                                        step_ground_z = None
-                                        step_ground_n = None
+                                    # UNIFIED ground detection at drop position
+                                    tris_counter = [0]
+                                    drop_result = cast_ray(
+                                        (drop_ox, drop_oy, test_z + 1.0), (0, 0, -1), drop_max,
+                                        _cached_grid, unified_dynamic_meshes, tris_counter
+                                    )
+                                    total_tris += tris_counter[0]
 
-                                        # Find cell for drop position
-                                        drop_ix = int((drop_ox - min_x) / cell_size)
-                                        drop_iy = int((drop_oy - min_y) / cell_size)
-                                        drop_iz = int((test_z + 1.0 - min_z) / cell_size)
-                                        drop_ix = max(0, min(nx_grid - 1, drop_ix))
-                                        drop_iy = max(0, min(ny_grid - 1, drop_iy))
-                                        drop_iz = max(0, min(nz_grid - 1, drop_iz))
+                                    if drop_result:
+                                        drop_dist, step_ground_n, drop_source, drop_obj_id = drop_result
+                                        step_ground_z = test_z + 1.0 - drop_dist
 
-                                        # Search downward through cells
-                                        tested_step = set()
-                                        for dz_off in range(min(10, nz_grid)):
-                                            step_iz = drop_iz - dz_off
-                                            if step_iz < 0:
-                                                break
-                                            step_key = (drop_ix, drop_iy, step_iz)
-                                            if step_key in cells:
-                                                for tri_idx in cells[step_key]:
-                                                    if tri_idx in tested_step:
-                                                        continue
-                                                    tested_step.add(tri_idx)
-                                                    total_tris += 1
-                                                    tri = triangles[tri_idx]
-                                                    hit, dist, hp = ray_triangle_intersect(
-                                                        (drop_ox, drop_oy, test_z + 1.0),
-                                                        (0, 0, -1),
-                                                        tri[0], tri[1], tri[2]
-                                                    )
-                                                    if hit and dist < drop_max + 1.0:
-                                                        hit_z = test_z + 1.0 - dist
-                                                        if step_ground_z is None or hit_z > step_ground_z:
-                                                            step_ground_z = hit_z
-                                                            step_ground_n = compute_triangle_normal(tri[0], tri[1], tri[2])
-
-                                        if step_ground_z is not None and step_ground_n is not None:
-                                            # Check if walkable
-                                            gn_check = step_ground_n[2]
-                                            if gn_check >= floor_cos:
-                                                if debug_step_up:
-                                                    worker_logs.append(("PHYS-STEP", f"SUCCESS | drop_pos=({drop_ox:.2f},{drop_oy:.2f},{step_ground_z:.2f}) gn_z={gn_check:.3f}"))
-                                                px = drop_ox
-                                                py = drop_oy
-                                                pz = step_ground_z
-                                                vz = 0.0
-                                                on_ground = True
-                                                on_walkable = True
-                                                gn_x, gn_y, gn_z = step_ground_n
-                                                did_step_up = True
-                                                coyote_remaining = coyote_time
+                                        # Check if walkable
+                                        gn_check = step_ground_n[2]
+                                        if gn_check >= floor_cos:
+                                            if debug_step:
+                                                worker_logs.append(("STEP", f"SUCCESS source={drop_source} | drop_pos=({drop_ox:.2f},{drop_oy:.2f},{step_ground_z:.2f}) gn_z={gn_check:.3f}"))
+                                            px = drop_ox
+                                            py = drop_oy
+                                            pz = step_ground_z
+                                            vz = 0.0
+                                            on_ground = True
+                                            on_walkable = True
+                                            gn_x, gn_y, gn_z = step_ground_n
+                                            did_step_up = True
+                                            coyote_remaining = coyote_time
 
                     # ─────────────────────────────────────────────────────────
-                    # 5b. WALL SLIDE (if blocked and not step-up)
+                    # 5b. WALL SLIDE (if blocked and not step-up) - UNIFIED
                     # ─────────────────────────────────────────────────────────
                     if not did_step_up and best_n is not None:
                         remaining = move_len - allowed
                         if remaining > 0.001:
                             bn_x, bn_y, bn_z = best_n
-
-                            # Check if this is a steep slope we're trying to climb
-                            # If hitting a steep face (bn_z < floor_cos) and we're grounded,
-                            # don't allow wall slide that would move us up the slope
-                            is_steep_face = bn_z < floor_cos and bn_z > 0.1  # Not a ceiling
+                            is_steep_face = bn_z < floor_cos and bn_z > 0.1
 
                             # Compute slide direction (tangent to wall)
                             dot = fwd_x * bn_x + fwd_y * bn_y
-
                             slide_x = fwd_x - bn_x * dot
                             slide_y = fwd_y - bn_y * dot
                             slide_len = math.sqrt(slide_x*slide_x + slide_y*slide_y)
 
-                            # Don't slide if moving nearly head-on into wall (within ~15° of perpendicular)
-                            # sin(15°) ≈ 0.259 - if tangent component is smaller, we're too perpendicular
+                            # Don't slide if too perpendicular
                             if slide_len < 0.259:
-                                slide_len = 0.0  # Prevent slide for head-on collisions
+                                slide_len = 0.0
 
-                            # For steep slopes: check if slide would move us "up" the slope
-                            # We detect this by checking if the slide direction aligns with
-                            # the uphill direction (opposite of normal's XY projection)
+                            # Block uphill sliding on steep slopes
                             if is_steep_face and on_ground and slide_len > 1e-9:
-                                # Uphill direction in XY
                                 uphill_xy_len = math.sqrt(bn_x*bn_x + bn_y*bn_y)
                                 if uphill_xy_len > 0.001:
                                     uphill_x = bn_x / uphill_xy_len
                                     uphill_y = bn_y / uphill_xy_len
-
-                                    # How much is slide aligned with uphill?
                                     slide_nx = slide_x / slide_len
                                     slide_ny = slide_y / slide_len
                                     uphill_dot = slide_nx * uphill_x + slide_ny * uphill_y
-
-                                    # If slide is uphill at all (dot > -0.1), block it
-                                    # Changed from 0.3 to -0.1 for much stricter blocking
-                                    # This prevents nearly all uphill sliding on steep slopes
                                     if uphill_dot > -0.1:
-                                        slide_len = 0.0  # Prevent slide
+                                        slide_len = 0.0
 
                             if slide_len > 1e-9:
                                 slide_x /= slide_len
                                 slide_y /= slide_len
                                 slide_dist = remaining * 0.65
 
-                                # Collision check for slide movement
-                                # Cast a single ray in slide direction to prevent corner clipping
-                                slide_blocked = False
+                                # UNIFIED slide collision check
+                                tris_counter = [0]
+                                slide_result = cast_ray(
+                                    (px, py, pz + height * 0.5), (slide_x, slide_y, 0),
+                                    slide_dist + radius, _cached_grid, unified_dynamic_meshes, tris_counter
+                                )
+                                total_tris += tris_counter[0]
+
                                 slide_allowed = slide_dist
+                                if slide_result:
+                                    slide_hit_dist = slide_result[0]
+                                    slide_allowed = min(slide_allowed, max(0, slide_hit_dist - radius))
 
-                                slide_ox, slide_oy = px, py
-                                slide_oz = pz + height * 0.5  # Mid-height check
-
-                                # Quick cell-based check in slide direction
-                                slide_ix = int((slide_ox - min_x) / cell_size)
-                                slide_iy = int((slide_oy - min_y) / cell_size)
-                                slide_iz = int((slide_oz - min_z) / cell_size)
-                                slide_ix = max(0, min(nx_grid - 1, slide_ix))
-                                slide_iy = max(0, min(ny_grid - 1, slide_iy))
-                                slide_iz = max(0, min(nz_grid - 1, slide_iz))
-
-                                # Check current cell and adjacent cells in slide direction
-                                tested_slide = set()
-                                for dx_off in range(-1, 2):
-                                    for dy_off in range(-1, 2):
-                                        check_ix = slide_ix + dx_off
-                                        check_iy = slide_iy + dy_off
-                                        if check_ix < 0 or check_ix >= nx_grid or check_iy < 0 or check_iy >= ny_grid:
-                                            continue
-                                        cell_key = (check_ix, check_iy, slide_iz)
-                                        if cell_key in cells:
-                                            for tri_idx in cells[cell_key]:
-                                                if tri_idx in tested_slide:
-                                                    continue
-                                                tested_slide.add(tri_idx)
-                                                tri = triangles[tri_idx]
-                                                hit, dist, _ = ray_triangle_intersect(
-                                                    (slide_ox, slide_oy, slide_oz),
-                                                    (slide_x, slide_y, 0),
-                                                    tri[0], tri[1], tri[2]
-                                                )
-                                                if hit and dist < slide_dist + radius:
-                                                    slide_allowed = min(slide_allowed, max(0, dist - radius))
-                                                    slide_blocked = True
-
-                                # Apply slide with collision result
                                 if slide_allowed > 0.01:
                                     px += slide_x * slide_allowed
                                     py += slide_y * slide_allowed
                                     did_slide = True
 
                                 # Reduce velocity
-                                vel_after_factor = 0.65
-                                vx *= vel_after_factor
-                                vy *= vel_after_factor
+                                vx *= 0.65
+                                vy *= 0.65
 
                                 # SLIDE DIAGNOSTICS (logging only - after slide is applied)
                                 if debug_slide:
@@ -2407,7 +2144,7 @@ def process_job(job) -> dict:
                                         slide_applied = slide_allowed if slide_allowed > 0.01 else 0.0
                                         slide_requested = slide_dist
                                         effectiveness = (slide_applied / slide_requested * 100.0) if slide_requested > 0.001 else 0.0
-                                        worker_logs.append(("PHYS-SLIDE",
+                                        worker_logs.append(("SLIDE",
                                             f"applied={slide_applied:.3f}m requested={slide_requested:.3f}m eff={effectiveness:.0f}% "
                                             f"normal=({bn_x:.2f},{bn_y:.2f},{bn_z:.2f}) blocked={slide_blocked}"))
                                     except:
@@ -2416,8 +2153,8 @@ def process_job(job) -> dict:
                     # No collision - full movement
                     px += move_x
                     py += move_y
-                    if debug_capsule and move_len > 1e-9:
-                        worker_logs.append(("PHYS-CAPSULE", f"clear move={move_len:.3f}m | {total_rays}rays {total_tris}tris"))
+                    if debug_horizontal and move_len > 1e-9:
+                        worker_logs.append(("HORIZONTAL", f"clear move={move_len:.3f}m | {total_rays}rays {total_tris}tris"))
 
             elif move_len > 1e-9:
                 # No grid cached - just move
@@ -2425,114 +2162,38 @@ def process_job(job) -> dict:
                 py += move_y
 
             # ─────────────────────────────────────────────────────────────────
-            # 5.5 VERTICAL BODY INTEGRITY CHECK (detect mesh embedding) - Using DDA
+            # 5.5 VERTICAL BODY INTEGRITY CHECK - UNIFIED for all geometry
             # ─────────────────────────────────────────────────────────────────
             # Cast vertical ray from feet to head - if blocked, character is embedded in mesh
             body_embedded = False
             embed_distance = None
 
-            if _cached_grid is not None:
-                # Feet at 0.1m to match horizontal ray height (better low-obstacle detection)
-                feet_pos = (px, py, pz + 0.1)
-                head_pos = (px, py, pz + height - radius)
-                body_height = (height - radius) - 0.1  # Distance from feet (0.1m) to head
+            # Feet at 0.1m to match horizontal ray height (better low-obstacle detection)
+            feet_pos = (px, py, pz + 0.1)
+            head_pos = (px, py, pz + height - radius)
+            body_height = (height - radius) - 0.1  # Distance from feet (0.1m) to head
 
-                # Use pre-extracted grid data (performance optimization)
-                triangles = grid_triangles
-                cells = grid_cells
-                min_x, min_y, min_z = grid_min_x, grid_min_y, grid_min_z
-                max_x, max_y, max_z = grid_max_x, grid_max_y, grid_max_z
-                nx_grid, ny_grid, nz_grid = grid_nx, grid_ny, grid_nz
-                cell_size = grid_cell_size
+            tris_counter = [0]
+            total_rays += 1
+            body_result = cast_ray(
+                feet_pos, (0, 0, 1), body_height,
+                _cached_grid, unified_dynamic_meshes, tris_counter
+            )
+            total_tris += tris_counter[0]
 
-                # Vertical DDA traversal from feet to head
-                ray_origin = feet_pos
-                ray_dir = (0, 0, 1)
+            if body_result:
+                embed_distance, embed_normal, embed_source, embed_obj_id = body_result
+                body_embedded = True
 
-                start_x = max(min_x, min(max_x - 0.001, px))
-                start_y = max(min_y, min(max_y - 0.001, py))
-                start_z = max(min_z, min(max_z - 0.001, feet_pos[2]))
-
-                ix = int((start_x - min_x) / cell_size)
-                iy = int((start_y - min_y) / cell_size)
-                iz = int((start_z - min_z) / cell_size)
-
-                ix = max(0, min(nx_grid - 1, ix))
-                iy = max(0, min(ny_grid - 1, iy))
-                iz = max(0, min(nz_grid - 1, iz))
-
-                # Z traversal upward
-                t_max_z = ((min_z + (iz + 1) * cell_size) - feet_pos[2]) / 1.0
-                t_delta_z = abs(cell_size / 1.0)
-
-                tested_body = set()
-                cells_traversed = 0
-                max_cells = nz_grid + 10
-                t_current = 0.0
-                total_rays += 1
-
-                while cells_traversed < max_cells and t_current < body_height:
-                    cells_traversed += 1
-                    total_cells += 1
-
-                    if iz < 0 or iz >= nz_grid:
-                        break
-
-                    cell_key = (ix, iy, iz)
-                    if cell_key in cells:
-                        for tri_idx in cells[cell_key]:
-                            if tri_idx in tested_body:
-                                continue
-                            tested_body.add(tri_idx)
-                            total_tris += 1
-
-                            tri = triangles[tri_idx]
-                            hit, dist, _ = ray_triangle_intersect(ray_origin, ray_dir, tri[0], tri[1], tri[2])
-                            if hit and dist < body_height:
-                                body_embedded = True
-                                embed_distance = dist
-
-                                if debug_body:
-                                    penetration_pct = (dist / body_height) * 100.0
-                                    from_feet = dist
-                                    to_head = body_height - dist
-                                    worker_logs.append(("PHYS-BODY", f"EMBEDDED! hit={dist:.3f}m pct={penetration_pct:.1f}% feet={from_feet:.3f}m head={to_head:.3f}m z=[{feet_pos[2]:.2f},{head_pos[2]:.2f}]"))
-                                break
-
-                    if body_embedded:
-                        break
-
-                    # Move to next cell upward
-                    iz += 1
-                    t_current = t_max_z
-                    t_max_z += t_delta_z
-
-                # ═══════════════════════════════════════════════════════════
-                # UNIFIED: Also test dynamic meshes for body integrity ray
-                # ═══════════════════════════════════════════════════════════
-                if unified_dynamic_meshes:
-                    tris_counter = [0]
-                    dyn_result = test_dynamic_meshes_ray(
-                        feet_pos, (0, 0, 1),
-                        embed_distance if embed_distance else body_height,
-                        unified_dynamic_meshes, tris_counter
-                    )
-                    total_tris += tris_counter[0]
-
-                    if dyn_result:
-                        dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                        if embed_distance is None or dyn_dist < embed_distance:
-                            body_embedded = True
-                            embed_distance = dyn_dist
-                            if debug_body:
-                                penetration_pct = (dyn_dist / body_height) * 100.0
-                                worker_logs.append(("PHYS-BODY",
-                                    f"EMBEDDED (dynamic:{dyn_obj_id}) hit={dyn_dist:.3f}m pct={penetration_pct:.1f}%"))
-
-                # Single combined log after all checks (avoids frequency gating split)
                 if debug_body:
-                    status = "EMBEDDED" if body_embedded else "CLEAR"
-                    worker_logs.append(("PHYS-BODY", f"[{status}] feet=({feet_pos[0]:.2f},{feet_pos[1]:.2f},{feet_pos[2]:.2f}) head=({head_pos[0]:.2f},{head_pos[1]:.2f},{head_pos[2]:.2f}) h={body_height:.2f}m"))
+                    penetration_pct = (embed_distance / body_height) * 100.0
+                    source_str = f"dynamic_{embed_obj_id}" if embed_source == "dynamic" else "static"
+                    worker_logs.append(("BODY",
+                        f"EMBEDDED source={source_str} hit={embed_distance:.3f}m pct={penetration_pct:.1f}%"))
+
+            if debug_body:
+                status = "EMBEDDED" if body_embedded else "CLEAR"
+                worker_logs.append(("BODY", f"[{status}] feet=({feet_pos[0]:.2f},{feet_pos[1]:.2f},{feet_pos[2]:.2f}) head=({head_pos[0]:.2f},{head_pos[1]:.2f},{head_pos[2]:.2f}) h={body_height:.2f}m"))
 
             # ─────────────────────────────────────────────────────────────────
             # 5.6 EMBEDDING RESOLUTION (Prevention + Correction)
@@ -2554,7 +2215,7 @@ def process_job(job) -> dict:
                     on_walkable = True  # Assume walkable (will be verified by ground detection)
 
                     if debug_body:
-                        worker_logs.append(("PHYS-BODY", f"PREVENT-FALL corrected={correction:.3f}m landing on embedded mesh"))
+                        worker_logs.append(("BODY", f"PREVENT-FALL corrected={correction:.3f}m landing on embedded mesh"))
 
                 # CASE 2: CORRECTION - Already embedded from side collision
                 # Push character up to clear the penetration
@@ -2567,288 +2228,113 @@ def process_job(job) -> dict:
                     vz = max(0.0, vz)  # Preserve upward velocity if any, kill downward
 
                     if debug_body:
-                        worker_logs.append(("PHYS-BODY", f"CORRECT-SIDE corrected={correction:.3f}m pushed up from embedded mesh"))
+                        worker_logs.append(("BODY", f"CORRECT-SIDE corrected={correction:.3f}m pushed up from embedded mesh"))
 
             # ─────────────────────────────────────────────────────────────────
-            # 6. CEILING CHECK (if moving up) - Using DDA spatial grid
+            # 6. CEILING CHECK (if moving up) - UNIFIED for all geometry
             # ─────────────────────────────────────────────────────────────────
-            if vz > 0.0 and _cached_grid is not None:
+            if vz > 0.0:
                 up_dist = vz * dt
                 head_z = pz + height
 
-                # Use pre-extracted grid data (performance optimization)
-                cells = grid_cells
-                triangles = grid_triangles
-                cell_size = grid_cell_size
-                min_x, min_y, min_z = grid_min_x, grid_min_y, grid_min_z
-                max_x, max_y, max_z = grid_max_x, grid_max_y, grid_max_z
-                nx_grid, ny_grid, nz_grid = grid_nx, grid_ny, grid_nz
-
-                # Vertical DDA traversal upward from head
-                ray_origin = (px, py, head_z)
-                ray_dir = (0, 0, 1)
-
-                start_x = max(min_x, min(max_x - 0.001, px))
-                start_y = max(min_y, min(max_y - 0.001, py))
-                start_z = max(min_z, min(max_z - 0.001, head_z))
-
-                ix = int((start_x - min_x) / cell_size)
-                iy = int((start_y - min_y) / cell_size)
-                iz = int((start_z - min_z) / cell_size)
-
-                ix = max(0, min(nx_grid - 1, ix))
-                iy = max(0, min(ny_grid - 1, iy))
-                iz = max(0, min(nz_grid - 1, iz))
-
-                # Z traversal upward
-                INF = float('inf')
-                t_max_z = ((min_z + (iz + 1) * cell_size) - head_z) / 1.0
-                t_delta_z = abs(cell_size / 1.0)
-
-                tested_ceiling = set()
-                cells_traversed = 0
-                max_cells = nz_grid + 10
-                t_current = 0.0
+                tris_counter = [0]
                 total_rays += 1
+                ceiling_result = cast_ray(
+                    (px, py, head_z), (0, 0, 1), up_dist,
+                    _cached_grid, unified_dynamic_meshes, tris_counter
+                )
+                total_tris += tris_counter[0]
 
-                ceiling_hit = False
-
-                while cells_traversed < max_cells and t_current < up_dist:
-                    cells_traversed += 1
-                    total_cells += 1
-
-                    if iz < 0 or iz >= nz_grid:
-                        break
-
-                    cell_key = (ix, iy, iz)
-                    if cell_key in cells:
-                        for tri_idx in cells[cell_key]:
-                            if tri_idx in tested_ceiling:
-                                continue
-                            tested_ceiling.add(tri_idx)
-                            total_tris += 1
-
-                            tri = triangles[tri_idx]
-                            hit, dist, _ = ray_triangle_intersect(
-                                ray_origin, ray_dir,
-                                tri[0], tri[1], tri[2]
-                            )
-                            if hit and dist < up_dist:
-                                pz = head_z + dist - height
-                                vz = 0.0
-                                hit_ceiling = True
-                                ceiling_hit = True
-                                break
-
-                    if ceiling_hit:
-                        break
-
-                    # Move to next cell upward
-                    iz += 1
-                    t_current = t_max_z
-                    t_max_z += t_delta_z
-
-                # ═══════════════════════════════════════════════════════════
-                # UNIFIED: Also test dynamic meshes for ceiling check
-                # ═══════════════════════════════════════════════════════════
-                if not ceiling_hit and unified_dynamic_meshes:
-                    tris_counter = [0]
-                    dyn_result = test_dynamic_meshes_ray(
-                        ray_origin, (0, 0, 1), up_dist,
-                        unified_dynamic_meshes, tris_counter
-                    )
-                    total_tris += tris_counter[0]
-
-                    if dyn_result:
-                        dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                        if dyn_dist < up_dist:
-                            pz = head_z + dyn_dist - height
-                            vz = 0.0
-                            hit_ceiling = True
+                if ceiling_result:
+                    ceil_dist, ceil_normal, ceil_source, ceil_obj_id = ceiling_result
+                    pz = head_z + ceil_dist - height
+                    vz = 0.0
+                    hit_ceiling = True
 
             # ─────────────────────────────────────────────────────────────────
-            # 7. VERTICAL MOVEMENT + GROUND DETECTION
+            # 7. VERTICAL MOVEMENT + GROUND DETECTION (UNIFIED)
+            # Single cast_ray() tests BOTH static and dynamic - identical physics
             # ─────────────────────────────────────────────────────────────────
             dz = vz * dt
             was_grounded = on_ground
             ground_hit_source = None  # Track if standing on static or dynamic mesh
 
-            if _cached_grid is not None:
-                # Use pre-extracted grid data (performance optimization)
-                triangles = grid_triangles
-                cells = grid_cells
-                cell_size = grid_cell_size
-                min_x, min_y, min_z = grid_min_x, grid_min_y, grid_min_z
-                max_x, max_y, max_z = grid_max_x, grid_max_y, grid_max_z
-                nx_grid, ny_grid, nz_grid = grid_nx, grid_ny, grid_nz
+            # UNIFIED GROUND RAY - tests ALL geometry in one call
+            ray_start_z = pz + 1.0  # Guard above
+            ray_max = snap_down + 1.0 + (abs(dz) if dz < 0 else 0)
 
-                # Raycast down for ground
-                ray_start_z = pz + 1.0  # Guard above
-                ray_max = snap_down + 1.0 + (abs(dz) if dz < 0 else 0)
+            ground_hit_z = None
+            ground_hit_n = None
 
-                ground_hit_z = None
-                ground_hit_n = None
+            tris_counter = [0]
+            total_rays += 1
+            ground_result = cast_ray(
+                (px, py, ray_start_z), (0, 0, -1), ray_max,
+                _cached_grid, unified_dynamic_meshes, tris_counter
+            )
+            total_tris += tris_counter[0]
 
-                start_x = max(min_x, min(max_x - 0.001, px))
-                start_y = max(min_y, min(max_y - 0.001, py))
-                start_z = max(min_z, min(max_z - 0.001, ray_start_z))
-
-                ix = int((start_x - min_x) / cell_size)
-                iy = int((start_y - min_y) / cell_size)
-                iz = int((start_z - min_z) / cell_size)
-
-                ix = max(0, min(nx_grid - 1, ix))
-                iy = max(0, min(ny_grid - 1, iy))
-                iz = max(0, min(nz_grid - 1, iz))
-
-                INF = float('inf')
-                t_max_z = ((min_z + iz * cell_size) - ray_start_z) / (-1.0) if True else INF
-                t_delta_z = abs(cell_size / 1.0)
-
-                tested_triangles = set()
-                cells_traversed = 0
-                max_cells = nz_grid + 10
-                t_current = 0.0
-                total_rays += 1
-
-                while cells_traversed < max_cells and t_current < ray_max:
-                    cells_traversed += 1
-                    total_cells += 1
-
-                    if iz < 0 or iz >= nz_grid:
-                        break
-
-                    cell_key = (ix, iy, iz)
-                    if cell_key in cells:
-                        for tri_idx in cells[cell_key]:
-                            if tri_idx in tested_triangles:
-                                continue
-                            tested_triangles.add(tri_idx)
-                            total_tris += 1
-
-                            tri = triangles[tri_idx]
-                            hit, dist, hp = ray_triangle_intersect(
-                                (px, py, ray_start_z), (0, 0, -1),
-                                tri[0], tri[1], tri[2]
-                            )
-                            if hit and dist < ray_max:
-                                hit_z = ray_start_z - dist
-                                if ground_hit_z is None or hit_z > ground_hit_z:
-                                    ground_hit_z = hit_z
-                                    ground_hit_n = compute_triangle_normal(tri[0], tri[1], tri[2])
-
-                    iz -= 1
-                    t_current = t_max_z
-                    t_max_z += t_delta_z
-
-                    if ground_hit_z is not None:
-                        break
-
-                # ═══════════════════════════════════════════════════════════
-                # UNIFIED: Also test dynamic meshes for ground detection
-                # ═══════════════════════════════════════════════════════════
-                static_ground_z = ground_hit_z  # Save static result for comparison logging
-                ground_hit_source = "static" if ground_hit_z is not None else None
-                debug_collision = debug_flags.get("dynamic_collision", False)
-
-                if unified_dynamic_meshes:
-                    tris_counter = [0]
-                    aabb_debug = [] if debug_collision else None
-                    dyn_result = test_dynamic_meshes_ray(
-                        (px, py, ray_start_z), (0, 0, -1), ray_max,
-                        unified_dynamic_meshes, tris_counter, aabb_debug
-                    )
-                    total_tris += tris_counter[0]
-
-                    # Log AABB rejections for diagnosis
-                    if aabb_debug and debug_collision:
-                        for msg in aabb_debug:
-                            worker_logs.append(("DYN-COLLISION", msg))
-
-                    if dyn_result:
-                        dyn_dist, dyn_normal, dyn_obj_id = dyn_result
-                        # CRITICAL: Only accept hits that are BELOW the player (positive distance)
-                        # A hit at distance > 0 means the surface is below ray_start_z
-                        # If dyn_dist <= 0, the hit is above us (invalid for ground detection)
-                        if dyn_dist > 0 and dyn_dist < ray_max:
-                            hit_z = ray_start_z - dyn_dist
-                            # Also verify hit_z is below player feet (sanity check)
-                            if hit_z <= pz + 0.1:  # Allow small tolerance
-                                if ground_hit_z is None or hit_z > ground_hit_z:
-                                    ground_hit_z = hit_z
-                                    ground_hit_n = dyn_normal
-                                    ground_hit_source = f"dynamic_{dyn_obj_id}"
-                            elif debug_collision:
-                                worker_logs.append(("DYN-COLLISION", f"GROUND_ABOVE_REJECT z={hit_z:.2f} > pz={pz:.2f}"))
-                    elif debug_collision and tris_counter[0] > 0:
-                        # Ray passed AABB but no triangle hit
-                        worker_logs.append(("DYN-COLLISION", f"GROUND_MISS tris_tested={tris_counter[0]} no_hit ray_origin=({px:.2f},{py:.2f},{ray_start_z:.2f})"))
-                    elif debug_collision and tris_counter[0] == 0:
-                        # AABB rejection - log the mesh count for context
-                        mesh_count = len(unified_dynamic_meshes)
-                        worker_logs.append(("DYN-COLLISION", f"GROUND_AABB_SKIP all {mesh_count} meshes rejected ray=({px:.2f},{py:.2f},{ray_start_z:.2f})"))
-
-                # Log comprehensive ground detection result
-                if debug_collision:
-                    if ground_hit_z is not None:
-                        if ground_hit_source and "dynamic" in ground_hit_source:
-                            # Dynamic mesh was closest
-                            static_info = f"static_z={static_ground_z:.2f}" if static_ground_z is not None else "static=none"
-                            worker_logs.append(("DYN-COLLISION",
-                                f"GROUND hit_source={ground_hit_source} z={ground_hit_z:.2f}m "
-                                f"normal=({ground_hit_n[0]:.2f},{ground_hit_n[1]:.2f},{ground_hit_n[2]:.2f}) | "
-                                f"player_z={pz:.2f} dist={pz - ground_hit_z:.2f}m {static_info}"))
-                        elif static_ground_z is not None and unified_dynamic_meshes:
-                            # Static was used (dynamic either missed or was farther)
-                            worker_logs.append(("DYN-COLLISION",
-                                f"GROUND_STATIC_CHOSEN z={ground_hit_z:.2f}m (dynamic missed or farther)"))
-
-                # Apply vertical movement and ground snap
-                if dz < 0.0:  # Falling
-                    target_z = pz + dz
-                    if ground_hit_z is not None and target_z <= ground_hit_z:
-                        pz = ground_hit_z
-                        vz = 0.0
-                        on_ground = True
-                        if ground_hit_n is not None:
-                            gn_x, gn_y, gn_z = ground_hit_n
-                            on_walkable = gn_z >= floor_cos
-                        coyote_remaining = coyote_time
+            if ground_result:
+                dist, normal, source, obj_id = ground_result
+                # Sanity check: hit must be below player
+                hit_z = ray_start_z - dist
+                if hit_z <= pz + 0.1:  # Allow small tolerance
+                    ground_hit_z = hit_z
+                    ground_hit_n = normal
+                    if source == "dynamic":
+                        ground_hit_source = f"dynamic_{obj_id}"
                     else:
-                        pz = target_z
-                        on_ground = False
-                        on_walkable = False
-                else:
-                    pz += dz
+                        ground_hit_source = "static"
 
-                # Ground snap (when grounded) or unground (when no ground found)
-                if ground_hit_z is not None and abs(ground_hit_z - pz) <= snap_down and vz <= 0.0:
-                    # Ground found within snap distance - snap to it
+            # Debug logging - UNIFIED: Ground detection shows source (static or dynamic)
+            if debug_ground and ground_hit_z is not None:
+                worker_logs.append(("GROUND",
+                    f"HIT source={ground_hit_source} z={ground_hit_z:.2f}m "
+                    f"normal=({ground_hit_n[0]:.2f},{ground_hit_n[1]:.2f},{ground_hit_n[2]:.2f}) | "
+                    f"player_z={pz:.2f} tris={tris_counter[0]}"))
+
+            # Apply vertical movement and ground snap (unified for all geometry)
+            if dz < 0.0:  # Falling
+                target_z = pz + dz
+                if ground_hit_z is not None and target_z <= ground_hit_z:
                     pz = ground_hit_z
-                    on_ground = True
                     vz = 0.0
+                    on_ground = True
                     if ground_hit_n is not None:
                         gn_x, gn_y, gn_z = ground_hit_n
                         on_walkable = gn_z >= floor_cos
                     coyote_remaining = coyote_time
-                    if debug_ground:
-                        worker_logs.append(("PHYS-GROUND", f"ON_GROUND snap | dist={abs(ground_hit_z - pz):.3f}m gn_z={gn_z:.3f} walkable={on_walkable}"))
-                elif ground_hit_z is None and was_grounded:
-                    # Was grounded but no ground found - walked off a ledge!
+                else:
+                    pz = target_z
                     on_ground = False
                     on_walkable = False
-                    coyote_remaining = coyote_time  # Grant coyote time
-                    if debug_ground:
-                        worker_logs.append(("PHYS-GROUND", f"airborne | walked_off_ledge coyote={coyote_time:.2f}s"))
-                elif not on_ground and was_grounded:
-                    coyote_remaining = coyote_time
-
-                if debug_ground and ground_hit_z is not None and not on_ground:
-                    worker_logs.append(("PHYS-GROUND", f"airborne | dist={abs(ground_hit_z - pz):.3f}m too_far | {total_tris}tris"))
             else:
-                # No grid - just apply vertical movement
                 pz += dz
+
+            # Ground snap (when grounded) or unground (when no ground found)
+            if ground_hit_z is not None and abs(ground_hit_z - pz) <= snap_down and vz <= 0.0:
+                # Ground found within snap distance - snap to it
+                pz = ground_hit_z
+                on_ground = True
+                vz = 0.0
+                if ground_hit_n is not None:
+                    gn_x, gn_y, gn_z = ground_hit_n
+                    on_walkable = gn_z >= floor_cos
+                coyote_remaining = coyote_time
+                if debug_ground:
+                    worker_logs.append(("GROUND", f"ON_GROUND snap | dist={abs(ground_hit_z - pz):.3f}m gn_z={gn_z:.3f} walkable={on_walkable}"))
+            elif ground_hit_z is None and was_grounded:
+                # Was grounded but no ground found - walked off a ledge!
                 on_ground = False
+                on_walkable = False
+                coyote_remaining = coyote_time  # Grant coyote time
+                if debug_ground:
+                    worker_logs.append(("GROUND", f"airborne | walked_off_ledge coyote={coyote_time:.2f}s"))
+            elif not on_ground and was_grounded:
+                coyote_remaining = coyote_time
+
+            if debug_ground and ground_hit_z is not None and not on_ground:
+                worker_logs.append(("GROUND", f"airborne | dist={abs(ground_hit_z - pz):.3f}m too_far | {total_tris}tris"))
 
             # ─────────────────────────────────────────────────────────────────
             # 8. STEEP SLOPE SLIDING (after ground detection updates the normal)
@@ -2903,7 +2389,7 @@ def process_job(job) -> dict:
                             vy += downhill_y * 2.0
 
                             if debug_slopes:
-                                worker_logs.append(("PHYS-SLOPES", f"POST-CORRECT angle={slope_angle:.0f}° (backup)"))
+                                worker_logs.append(("SLOPES", f"POST-CORRECT angle={slope_angle:.0f}° (backup)"))
 
                         # Slopes slope_limit_deg-65°: Gentle correction
                         elif slope_angle > slope_limit_deg and uphill_vel > 0.0:
@@ -2919,7 +2405,7 @@ def process_job(job) -> dict:
                             max_allowed_z = ground_hit_z if ground_hit_z is not None else pz
                             if pz > max_allowed_z:
                                 if debug_slopes:
-                                    worker_logs.append(("PHYS-SLOPES", f"Z-CLAMP angle={slope_angle:.0f}° prevented {pz - max_allowed_z:.3f}m upward movement"))
+                                    worker_logs.append(("SLOPES", f"Z-CLAMP angle={slope_angle:.0f}° prevented {pz - max_allowed_z:.3f}m upward movement"))
                                 pz = max_allowed_z  # FORCE character to ground level or below
 
                     # Compute slide direction (down the slope in XY plane)
@@ -3011,10 +2497,10 @@ def process_job(job) -> dict:
                             if debug_slopes:
                                 slope_angle = math.degrees(math.acos(min(1.0, max(-1.0, n_z))))
                                 surface_tracking = "TRACKED" if (current_downhill_speed > 5.0 and steepness > 0.3) else "free"
-                                worker_logs.append(("PHYS-SLOPES", f"GRAVITY-SLIDE angle={slope_angle:.0f}° normal=({n_x:.2f},{n_y:.2f},{n_z:.2f}) "
-                                                                   f"dir=({slide_x:.2f},{slide_y:.2f}) "
-                                                                   f"vel_downhill={current_downhill_speed:.2f} max={max_slide_speed:.2f} "
-                                                                   f"accel={slide_accel:.2f} steep={steepness:.2f} track={surface_tracking}"))
+                                worker_logs.append(("SLOPES", f"GRAVITY-SLIDE angle={slope_angle:.0f}° normal=({n_x:.2f},{n_y:.2f},{n_z:.2f}) "
+                                                              f"dir=({slide_x:.2f},{slide_y:.2f}) "
+                                                              f"vel_downhill={current_downhill_speed:.2f} max={max_slide_speed:.2f} "
+                                                              f"accel={slide_accel:.2f} steep={steepness:.2f} track={surface_tracking}"))
 
             # ─────────────────────────────────────────────────────────────────
             # BUILD RESULT
@@ -3022,10 +2508,10 @@ def process_job(job) -> dict:
             calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
             # ═════════════════════════════════════════════════════════════════
-            # UNIFIED PHYSICS DIAGNOSTICS
+            # PHYSICS SUMMARY - Unified physics (static + dynamic identical)
             # ═════════════════════════════════════════════════════════════════
             # Log unified physics system status (static + dynamic in single path)
-            if debug_unified_physics:
+            if debug_physics:
                 transform_time = dynamic_transform_time_us
                 total_time = calc_time_us
                 physics_time = total_time - transform_time
@@ -3039,15 +2525,15 @@ def process_job(job) -> dict:
 
                 if active_mesh_count > 0:
                     # With dynamic meshes: show timing breakdown
-                    worker_logs.append(("UNIFIED",
-                        f"total={total_time:.0f}µs (xform={transform_time:.0f}µs) | "
+                    worker_logs.append(("PHYSICS",
+                        f"total={total_time:.0f}us (xform={transform_time:.0f}us) | "
                         f"static+dynamic={active_mesh_count} | "
                         f"rays={total_rays} tris={total_tris} | "
                         f"ground={ground_src}"))
                 else:
                     # Static only: simpler log
-                    worker_logs.append(("UNIFIED",
-                        f"total={total_time:.0f}µs | static_only | "
+                    worker_logs.append(("PHYSICS",
+                        f"total={total_time:.0f}us | static_only | "
                         f"rays={total_rays} tris={total_tris} | "
                         f"ground={ground_src}"))
 

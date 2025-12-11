@@ -7,7 +7,7 @@ import threading
 from ..version_info import CURRENT_VERSION
 from ..internet.helpers import ensure_internet_connection, start_local_server, initiate_login
 from ..auth.helpers import clear_token
-from ..main_config import DOCS_URL
+from ..main_config import DOCS_URL, WORLD_URL, SHOP_URL, EVENTS_URL
 
 def clear_login_error():
     """Timer callback to clear the login error message after 5 seconds"""
@@ -126,3 +126,37 @@ class REFRESH_USAGE_OT(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"Failed to fetch usage data: {str(e)}")
             return {'CANCELLED'}
+
+
+# ─────────────────────────────────────────────────────────────
+# Browse Operators
+# ─────────────────────────────────────────────────────────────
+
+class BROWSE_WORLD_OT(bpy.types.Operator):
+    bl_idname = "webapp.browse_world"
+    bl_label = "Browse Worlds"
+    bl_description = "Browse worlds on Exploratory"
+
+    def execute(self, context):
+        webbrowser.open(WORLD_URL)
+        return {'FINISHED'}
+
+
+class BROWSE_SHOP_OT(bpy.types.Operator):
+    bl_idname = "webapp.browse_shop"
+    bl_label = "Browse Shop"
+    bl_description = "Browse shop on Exploratory"
+
+    def execute(self, context):
+        webbrowser.open(SHOP_URL)
+        return {'FINISHED'}
+
+
+class BROWSE_EVENTS_OT(bpy.types.Operator):
+    bl_idname = "webapp.browse_events"
+    bl_label = "Browse Events"
+    bl_description = "Browse events on Exploratory"
+
+    def execute(self, context):
+        webbrowser.open(EVENTS_URL)
+        return {'FINISHED'}

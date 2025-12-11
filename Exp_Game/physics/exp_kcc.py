@@ -140,15 +140,23 @@ def _draw_kcc_visual():
             all_colors.extend([normal_color, normal_color])
 
     # ─────────────────────────────────────────────────────────────────────
-    # GROUND RAY (Magenta = hit, Purple = miss)
+    # GROUND RAY (UNIFIED: Cyan = static hit, Orange = dynamic hit, Purple = miss)
     # ─────────────────────────────────────────────────────────────────────
     if show_ground and 'ground_ray' in _kcc_vis_data:
         ray_data = _kcc_vis_data['ground_ray']
         origin = ray_data['origin']
         end = ray_data['end']
         hit = ray_data['hit']
+        is_dynamic = ray_data.get('is_dynamic', False)
 
-        ray_color = (1.0, 0.0, 1.0, 0.9) if hit else (0.5, 0.0, 0.5, 0.7)  # Magenta/Purple
+        # UNIFIED: Different colors for static vs dynamic ground
+        if hit:
+            if is_dynamic:
+                ray_color = (1.0, 0.5, 0.0, 0.9)  # Orange = dynamic ground
+            else:
+                ray_color = (0.0, 1.0, 1.0, 0.9)  # Cyan = static ground
+        else:
+            ray_color = (0.5, 0.0, 0.5, 0.7)  # Purple = miss
 
         # Add ray line
         all_verts.extend([origin, end])
@@ -495,6 +503,7 @@ class KinematicCharacterController:
         # ─────────────────────────────────────────────────────────────────────
         ground_hit_source = result.get("ground_hit_source")  # "static", "dynamic_{obj_id}", or None
         self.ground_obj = None  # Default to no ground object
+        self._vis_ground_source = ground_hit_source  # Cache for visualization (static vs dynamic)
 
         if ground_hit_source and ground_hit_source.startswith("dynamic_"):
             # Extract object ID from "dynamic_{obj_id}" format (worker uses id(obj))
@@ -554,7 +563,7 @@ class KinematicCharacterController:
             log_worker_messages(worker_logs)
 
         # Debug output (FAST BUFFER LOGGING - no console, no I/O)
-        if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
+        if context and getattr(context.scene, 'dev_debug_kcc_physics', False):
             from ..developer.dev_logger import log_game
             # Extract debug data
             debug = result.get("debug", {})
@@ -565,13 +574,13 @@ class KinematicCharacterController:
 
             # Visual state indicator (matches capsule color)
             if was_stuck:
-                state = "STUCK🔴"  # Red capsule
+                state = "STUCK"
             elif h_blocked:
-                state = "BLOCK🟡"  # Yellow capsule
+                state = "BLOCK"
             elif on_ground:
-                state = "GROUND🟢"  # Green capsule
+                state = "GROUND"
             else:
-                state = "AIR🔵"  # Blue capsule
+                state = "AIR"
 
             log_game("KCC", f"{state} pos=({self.pos.x:.2f},{self.pos.y:.2f},{self.pos.z:.2f}) "
                             f"step={debug.get('did_step_up', False)} | "
@@ -587,21 +596,23 @@ class KinematicCharacterController:
         cfg = self.cfg
 
         # Extract debug flags from scene (if context available)
+        # UNIFIED PHYSICS: All flags control unified physics (static + dynamic identical)
         debug_flags = {}
         if context and hasattr(context, 'scene'):
             scene = context.scene
             debug_flags = {
-                "unified_physics": getattr(scene, "dev_debug_unified_physics", False),
-                "step_up": getattr(scene, "dev_debug_physics_step_up", False),
+                # Unified physics (all show source: static/dynamic)
+                "physics": getattr(scene, "dev_debug_physics", False),
                 "ground": getattr(scene, "dev_debug_physics_ground", False),
-                "capsule": getattr(scene, "dev_debug_physics_capsule", False),
-                "slopes": getattr(scene, "dev_debug_physics_slopes", False),
+                "horizontal": getattr(scene, "dev_debug_physics_horizontal", False),
+                "body": getattr(scene, "dev_debug_physics_body", False),
+                "ceiling": getattr(scene, "dev_debug_physics_ceiling", False),
+                "step": getattr(scene, "dev_debug_physics_step", False),
                 "slide": getattr(scene, "dev_debug_physics_slide", False),
-                "body_integrity": getattr(scene, "dev_debug_physics_body_integrity", False),
-                "dynamic_mesh": getattr(scene, "dev_debug_dynamic_mesh", False),
-                "dynamic_collision": getattr(scene, "dev_debug_dynamic_collision", False),
-                "dynamic_body_ray": getattr(scene, "dev_debug_dynamic_body_ray", False),
-                "dynamic_horizontal": getattr(scene, "dev_debug_dynamic_horizontal", False),
+                "slopes": getattr(scene, "dev_debug_physics_slopes", False),
+                # Dynamic mesh system (activation/caching only)
+                "dynamic_cache": getattr(scene, "dev_debug_dynamic_cache", False),
+                "dynamic_activation": getattr(scene, "dev_debug_dynamic_activation", False),
             }
 
         # Serialize dynamic mesh transforms (64 bytes per mesh)
@@ -777,7 +788,7 @@ class KinematicCharacterController:
                     time.sleep(0.00005)  # 50µs (smaller than before)
 
             # Debug output (FAST BUFFER LOGGING)
-            if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
+            if context and getattr(context.scene, 'dev_debug_kcc_physics', False):
                 from ..developer.dev_logger import log_game
                 poll_time_us = (time.perf_counter() - poll_start) * 1_000_000
                 if result_found:
@@ -788,7 +799,7 @@ class KinematicCharacterController:
                                     f"poll={poll_time_us:.0f}us - using previous state")
         else:
             # NO ENGINE FALLBACK - Physics requires engine
-            if context and getattr(context.scene, 'dev_debug_kcc_offload', False):
+            if context and getattr(context.scene, 'dev_debug_kcc_physics', False):
                 from ..developer.dev_logger import log_game
                 log_game("KCC", "WARNING: No engine available - physics step skipped")
 
@@ -946,14 +957,20 @@ class KinematicCharacterController:
         if hasattr(self, '_vis_hit_normals') and self._vis_hit_normals:
             vis_data['hit_normals'] = self._vis_hit_normals
 
-        # Ground ray
+        # Ground ray - UNIFIED: shows source (static vs dynamic) with different colors
         ray_origin = (self.pos.x, self.pos.y, self.pos.z + 0.5)
         ray_end = (self.pos.x, self.pos.y, self.pos.z - self.cfg.snap_down)
+
+        # Get ground source (static, dynamic_*, or None)
+        ground_source = getattr(self, '_vis_ground_source', None)
+        is_dynamic_ground = ground_source and ground_source.startswith("dynamic_")
 
         vis_data['ground_ray'] = {
             'origin': ray_origin,
             'end': ray_end,
-            'hit': self.on_ground
+            'hit': self.on_ground,
+            'source': ground_source,  # "static", "dynamic_{obj_id}", or None
+            'is_dynamic': is_dynamic_ground
         }
 
         if self.on_ground:

@@ -295,35 +295,9 @@ class GameLoop:
                                 f"MAIN: worker_time={calc_time:.0f}µs (xform={dynamic_xform_time:.0f}µs) "
                                 f"rays={rays} tris={tris} dyn={dynamic_active}")
 
-                        # Debug output - check Hz setting for mode
-                        scene = bpy.context.scene
-                        kcc_enabled = getattr(scene, "dev_debug_kcc_offload", False)
-                        kcc_hz = getattr(scene, "dev_debug_kcc_offload_hz", 1)
-
-                        if kcc_enabled:
-                            if kcc_hz >= 30:
-                                # Verbose mode: per-frame output
-                                pos = result.result.get("pos", (0, 0, 0))
-                                on_ground = result.result.get("on_ground", False)
-
-                                flags = []
-                                if h_blocked: flags.append("BLOCKED")
-                                if did_step: flags.append("STEP")
-                                if did_slide: flags.append("SLIDE")
-                                if hit_ceiling: flags.append("CEILING")
-                                flag_str = " ".join(flags) if flags else "CLEAR"
-
-                                print(f"[KCC] pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) ground={on_ground} {flag_str} | {calc_time:.0f}us {rays}rays {tris}tris")
-                            else:
-                                # Summary mode: print at configured Hz
-                                now = time.perf_counter()
-                                interval = 1.0 / kcc_hz
-                                if (now - self._last_kcc_summary) >= interval:
-                                    self._last_kcc_summary = now
-                                    summary = stats.get_kcc_summary()
-
-                                    # All KCC logs go to diagnostics file via fast buffer logger
-                                    # NO console prints during gameplay (per user request)
+                        # KCC Debug output uses fast buffer logger (log_game)
+                        # NO console prints during gameplay (destroys performance)
+                        # All KCC physics logs are handled in exp_kcc.py via log_game()
 
                     except Exception as e:
                         print(f"[GameLoop] Error processing KCC stats: {e}")
@@ -331,7 +305,7 @@ class GameLoop:
                 elif result.job_type == "CACHE_GRID":
                     # Grid caching confirmation
                     from ..developer.dev_debug_gate import should_print_debug
-                    if should_print_debug("kcc_offload"):
+                    if should_print_debug("kcc_physics"):
                         if result.result.get("success"):
                             tris = result.result.get("triangles", 0)
                             cells = result.result.get("cells", 0)

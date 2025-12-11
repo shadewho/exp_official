@@ -49,7 +49,8 @@ if not _IS_WORKER_PROCESS:
     from .download_and_explore.cleanup import cleanup_world_downloads
     #Auth operators
     from .auth.operators import (
-        LOGIN_OT_WebApp, LOGOUT_OT_WebApp, OPEN_DOCS_OT, REFRESH_USAGE_OT)
+        LOGIN_OT_WebApp, LOGOUT_OT_WebApp, OPEN_DOCS_OT, REFRESH_USAGE_OT,
+        BROWSE_WORLD_OT, BROWSE_SHOP_OT, BROWSE_EVENTS_OT)
 
     #interface operators
     from .interface.operators.display import PACKAGE_OT_Display, WEBAPP_OT_ShowDetailByCode, REMOVE_PACKAGE_OT_Display, WEBAPP_OT_PasteAndSearch
@@ -81,6 +82,9 @@ if not _IS_WORKER_PROCESS:
         VIEW3D_PT_SettingsAndUpdate,
         OPEN_DOCS_OT,
         REFRESH_USAGE_OT,
+        BROWSE_WORLD_OT,
+        BROWSE_SHOP_OT,
+        BROWSE_EVENTS_OT,
         OPEN_ADDON_PREFS_OT,
         PACKAGE_OT_Display,
         VIEW3D_PT_ExploreByCode,

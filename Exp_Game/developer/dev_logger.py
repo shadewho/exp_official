@@ -1,7 +1,10 @@
 """
 Developer Logger - Fast Memory Buffer Logging System
 
-Replaces slow console prints with fast in-memory logging.
+UNIFIED PHYSICS ARCHITECTURE:
+All physics logs show source (static/dynamic) in a consistent format.
+Static and dynamic use identical code paths - there is ONE physics system.
+
 Performance: ~1μs per log call (vs ~1000μs+ for console print)
 Export: Batch write to file when game stops.
 
@@ -9,19 +12,19 @@ Usage:
     from Exp_Game.developer.dev_logger import log_game, export_game_log, clear_log
 
     # During gameplay (fast - just appends to buffer)
-    log_game("KCC", "APPLY pos=(10,5,3) ground=True")
-    log_game("CAMERA", "Raycast hit dist=2.5m")
+    log_game("GROUND", "source=static z=5.0 normal=(0,0,1)")
+    log_game("GROUND", "source=dynamic_12345 z=5.5 normal=(0,0,1)")
 
     # When game stops
     export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-    clear_log()  # Prepare for next session
+    clear_log()
 """
 
 import time
 from typing import List, Dict, Optional
 from .dev_debug_gate import should_print_debug
 
-# Global log buffer - accumulates all logs during gameplay
+# Global log buffer
 _log_buffer: List[Dict] = []
 
 # Session tracking
@@ -32,26 +35,39 @@ _current_frame: int = 0
 _total_logs: int = 0
 _logs_per_category: Dict[str, int] = {}
 
-# Category name mapping (log category -> debug property name)
+# ══════════════════════════════════════════════════════════════════════════════
+# CATEGORY MAPPING (log category -> debug property name)
+# ══════════════════════════════════════════════════════════════════════════════
+# Property names match dev_properties.py: dev_debug_{property_name}
+#
+# UNIFIED PHYSICS: All physics categories show source (static/dynamic).
+# There is NO separation between static and dynamic physics code.
+
 _CATEGORY_MAP = {
+    # Engine
     'ENGINE': 'engine',
-    'KCC': 'kcc_offload',
-    'CAMERA': 'camera_offload',
-    'DYN-MESH': 'dynamic_mesh',
-    'DYN-CACHE': 'dynamic_cache',
-    'DYN-COLLISION': 'dynamic_collision',
-    'DYN-BODY': 'dynamic_body_ray',
-    'DYN-HORIZ': 'dynamic_horizontal',
-    'DYN-ACTIVATE': 'dynamic_activation',  # AABB activation state changes
+
+    # Offload Systems
+    'KCC': 'kcc_physics',
+    'CAMERA': 'camera',
     'FRAME': 'frame_numbers',
-    'UNIFIED': 'unified_physics',
-    'PHYS-CAPSULE': 'physics_capsule',
-    'PHYS-BODY': 'physics_body_integrity',
-    'PHYS-GROUND': 'physics_ground',
-    'PHYS-STEP': 'physics_step_up',
-    'PHYS-SLOPES': 'physics_slopes',
-    'PHYS-SLIDE': 'physics_slide',
-    'CULLING': 'performance',
+    'CULLING': 'culling',
+
+    # Unified Physics (all show source: static/dynamic)
+    'PHYSICS': 'physics',                 # Summary
+    'GROUND': 'physics_ground',           # Ground detection
+    'HORIZONTAL': 'physics_horizontal',   # Horizontal collision
+    'BODY': 'physics_body',               # Body integrity
+    'CEILING': 'physics_ceiling',         # Ceiling check
+    'STEP': 'physics_step',               # Step-up
+    'SLIDE': 'physics_slide',             # Wall slide
+    'SLOPES': 'physics_slopes',           # Slope handling
+
+    # Dynamic Mesh System (activation/caching only)
+    'DYN-CACHE': 'dynamic_cache',
+    'DYN-ACTIVATE': 'dynamic_activation',
+
+    # Game Systems
     'INTERACTIONS': 'interactions',
     'AUDIO': 'audio',
     'ANIMATIONS': 'animations',
@@ -65,9 +81,8 @@ def start_session():
     _current_frame = 0
     _total_logs = 0
     _logs_per_category.clear()
-    _log_buffer.clear()  # Clear buffer from previous session
+    _log_buffer.clear()
 
-    # Log session start marker
     print("[DevLogger] Session started - fast logging active")
 
 
@@ -82,22 +97,20 @@ def log_game(category: str, message: str):
     Fast in-memory logging with frequency gating. Zero I/O during gameplay.
 
     Args:
-        category: Log category (e.g., "KCC", "CAMERA", "CULLING")
-        message: The log message
+        category: Log category (e.g., "GROUND", "HORIZONTAL", "BODY")
+        message: The log message (should include source=static/dynamic for physics)
 
     Performance: ~1μs (just list append + dict creation) + frequency check
     """
     global _log_buffer, _total_logs, _logs_per_category
 
-    # Map category to debug property name and check frequency gate
+    # Map category to debug property and check frequency gate
     debug_property = _CATEGORY_MAP.get(category)
     if debug_property:
-        # Check if this category should log based on master Hz setting
         if not should_print_debug(debug_property):
-            return  # Skip logging if frequency gate blocks it
-    # If category not in map, log anyway (for backwards compatibility)
+            return  # Frequency gate blocked
 
-    # Fast: just append to list (no I/O, no formatting, no console)
+    # Fast: just append to list (no I/O)
     _log_buffer.append({
         'frame': _current_frame,
         'time': time.perf_counter(),
@@ -105,7 +118,6 @@ def log_game(category: str, message: str):
         'message': message
     })
 
-    # Track stats
     _total_logs += 1
     _logs_per_category[category] = _logs_per_category.get(category, 0) + 1
 
@@ -114,9 +126,8 @@ def log_worker_messages(worker_logs: list):
     """
     Log messages from worker processes with frequency gating.
 
-    Worker processes can't share the main buffer, so they collect logs
-    during computation and return them in the engine result. The main
-    thread then calls this function to add them to the buffer.
+    Workers collect logs during computation and return them in the result.
+    Main thread calls this to add them to the buffer.
 
     Args:
         worker_logs: List of (category, message) tuples from worker
@@ -124,12 +135,10 @@ def log_worker_messages(worker_logs: list):
     global _log_buffer, _total_logs, _logs_per_category
 
     for category, message in worker_logs:
-        # Apply frequency gating (same as log_game)
         debug_property = _CATEGORY_MAP.get(category)
         if debug_property:
             if not should_print_debug(debug_property):
-                continue  # Skip logging if frequency gate blocks it
-        # If category not in map, log anyway (for backwards compatibility)
+                continue  # Frequency gate blocked
 
         _log_buffer.append({
             'frame': _current_frame,
@@ -144,9 +153,6 @@ def log_worker_messages(worker_logs: list):
 def export_game_log(filepath: str) -> bool:
     """
     Write entire buffer to file. Call when game stops.
-
-    Args:
-        filepath: Absolute path to output file
 
     Returns:
         True if successful, False if error
@@ -163,7 +169,7 @@ def export_game_log(filepath: str) -> bool:
         with open(filepath, 'w', encoding='utf-8') as f:
             # Header
             f.write("=" * 80 + "\n")
-            f.write(f"GAME DIAGNOSTICS LOG\n")
+            f.write("GAME DIAGNOSTICS LOG (UNIFIED PHYSICS)\n")
             f.write(f"Total Logs: {_total_logs}\n")
             f.write(f"Total Frames: {_current_frame}\n")
             f.write(f"Duration: {_log_buffer[-1]['time'] - start_time:.3f}s\n")
@@ -185,7 +191,7 @@ def export_game_log(filepath: str) -> bool:
             f.write(f"END OF LOG - {_total_logs} entries\n")
             f.write("=" * 80 + "\n")
 
-        print(f"[DevLogger] ✓ Exported {_total_logs} logs ({len(_log_buffer)} entries) to: {filepath}")
+        print(f"[DevLogger] ✓ Exported {_total_logs} logs to: {filepath}")
         return True
 
     except Exception as e:

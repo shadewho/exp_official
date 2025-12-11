@@ -138,7 +138,7 @@ def update_dynamic_meshes(modal_op):
     use_workers = engine is not None and engine.is_alive()
 
     # Debug logging setup
-    debug_dyn_mesh = getattr(scene, 'dev_debug_dynamic_mesh', False)
+    debug_dyn_cache = getattr(scene, 'dev_debug_dynamic_cache', False)
     debug_activation = getattr(scene, 'dev_debug_dynamic_activation', False)
 
     # Get current ground object from KCC (if player is standing on a dynamic mesh)
@@ -289,11 +289,11 @@ def update_dynamic_meshes(modal_op):
                 log_game("DYN-ACTIVATE",
                     f"⚠ {dyn_obj.name} NEAR_BOUNDARY min_dist={min_margin_dist:.2f}m < 0.5m (may flicker)")
 
-        # Log state transitions to DYN-MESH as well for backwards compatibility
-        if debug_dyn_mesh and prev_active is not None and prev_active != active:
+        # Log state transitions to DYN-CACHE
+        if debug_dyn_cache and prev_active is not None and prev_active != active:
             from ..developer.dev_logger import log_game
             state_str = "ACTIVATED" if active else "DEACTIVATED"
-            log_game("DYN-MESH", f"AABB {state_str}: {dyn_obj.name} reason={activation_reason}")
+            log_game("DYN-CACHE", f"AABB {state_str}: {dyn_obj.name} reason={activation_reason}")
 
         modal_op._dyn_active_state[dyn_obj] = active
 

@@ -159,7 +159,7 @@ def build_uniform_grid(triangles, cell_size=2.0, context=None):
     # Get debug flag
     debug = False
     if context:
-        debug = getattr(context.scene, 'dev_debug_kcc_offload', False)
+        debug = getattr(context.scene, 'dev_debug_kcc_physics', False)
 
     # ========== Step 1: Calculate Bounds ==========
     min_x = min_y = min_z = float('inf')
@@ -298,7 +298,7 @@ def print_grid_report(grid_data, context=None):
 
     # Check debug flag
     if context:
-        if not getattr(context.scene, 'dev_debug_kcc_offload', False):
+        if not getattr(context.scene, 'dev_debug_kcc_physics', False):
             return
 
     stats = grid_data["stats"]

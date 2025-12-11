@@ -43,21 +43,23 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
         layout.operator("webapp.logout", text="Log Out", icon='URL')
         layout.separator()
 
-        # ─── Explore Section ───
+        # ─── Play Section ───
         code_box = layout.box()
-        code_box.label(text="Explore", icon='VIEWZOOM')
-        code_box.separator()
-        code_box.label(text="Download Code:")
+
+        # Header
+        code_box.label(text="Play Worlds & Games", icon='PLAY')
 
         # Code field + Search button
-        row = code_box.split(factor=0.9, align=True)
+        code_box.label(text="Enter a download code to play:")
+        row = code_box.row(align=True)
         row.prop(context.scene, "download_code", text="")
-        btns = row.row(align=True)
-        btns.operator("webapp.show_detail_by_code", text="", icon='VIEWZOOM')
+        row.operator("webapp.show_detail_by_code", text="", icon='VIEWZOOM')
 
-        code_box.label(text="Or:")
-        paste = code_box.column(align=True)
-        paste.operator("webapp.paste_and_search", text="Paste & Search", icon='PASTEDOWN')
+        code_box.separator()
+
+        # Paste shortcut - separate section
+        code_box.label(text="Or paste from clipboard:")
+        code_box.operator("webapp.paste_and_search", text="Paste & Search", icon='PASTEDOWN')
 
         layout.separator()
 
@@ -65,12 +67,9 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
         browse_box = layout.box()
         browse_box.label(text="Browse", icon='WORLD')
         row = browse_box.row(align=True)
-        op_world = row.operator("webapp.open_url", text="World", icon='WORLD')
-        op_world.url = WORLD_URL
-        op_shop = row.operator("webapp.open_url", text="Shop", icon='FUND')
-        op_shop.url = SHOP_URL
-        op_events = row.operator("webapp.open_url", text="Events", icon='OUTLINER_OB_LIGHT')
-        op_events.url = EVENTS_URL
+        op_world = row.operator("webapp.browse_world", text="World", icon='WORLD')
+        op_shop = row.operator("webapp.browse_shop", text="Shop", icon='TAG')
+        op_events = row.operator("webapp.browse_events", text="Events", icon='TIME')
 
         layout.separator()
 
