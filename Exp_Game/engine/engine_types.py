@@ -19,11 +19,13 @@ class EngineJob:
         job_type: String identifier for what kind of job this is (e.g., "PATHFIND", "PHYSICS")
         data: Job-specific data (must be picklable - no bpy objects!)
         timestamp: When this job was created
+        target_worker: If set, only this worker should process the job (-1 = any worker)
     """
     job_id: int
     job_type: str
     data: Any
     timestamp: float = None
+    target_worker: int = -1  # -1 = any worker can process, else specific worker ID
 
     def __post_init__(self):
         if self.timestamp is None:

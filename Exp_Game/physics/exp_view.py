@@ -158,7 +158,7 @@ def update_camera_for_operator(context, op):
     """
     if not op or not getattr(op, "target_object", None):
         import bpy
-        if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
+        if getattr(bpy.context.scene, "dev_debug_camera", False):
             from ..developer.dev_logger import log_game
             log_game("CAMERA", "UPDATE SKIP: No operator or target object")
         return
@@ -225,7 +225,7 @@ def update_camera_for_operator(context, op):
 
     # Check debug flag once
     import bpy
-    camera_debug_enabled = getattr(bpy.context.scene, "dev_debug_camera_offload", False)
+    camera_debug_enabled = getattr(bpy.context.scene, "dev_debug_camera", False)
 
     if cached_result is not None:
         # PURE ENGINE: Use the result from the worker for primary raycast
@@ -413,7 +413,7 @@ def submit_camera_occlusion_early(op, context):
     """
     if not op or not getattr(op, "target_object", None):
         import bpy
-        if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
+        if getattr(bpy.context.scene, "dev_debug_camera", False):
             from ..developer.dev_logger import log_game
             log_game("CAMERA", "SKIP: No operator or target object")
         return None
@@ -421,7 +421,7 @@ def submit_camera_occlusion_early(op, context):
     engine = getattr(op, "engine", None)
     if not engine:
         import bpy
-        if getattr(bpy.context.scene, "dev_debug_camera_offload", False):
+        if getattr(bpy.context.scene, "dev_debug_camera", False):
             from ..developer.dev_logger import log_game
             log_game("CAMERA", "SKIP: No engine available")
         return None
@@ -431,7 +431,7 @@ def submit_camera_occlusion_early(op, context):
 
     # Check debug flag once at start
     import bpy
-    debug_camera = getattr(bpy.context.scene, "dev_debug_camera_offload", False)
+    debug_camera = getattr(bpy.context.scene, "dev_debug_camera", False)
 
     # NOTE: Old timeout check removed - no longer needed with explicit polling
     # Explicit polling in game loop handles timeouts properly (3ms timeout with active wait)
@@ -473,7 +473,7 @@ def submit_camera_occlusion_early(op, context):
     #         return
 
     # Gather dynamic mesh transforms (worker uses cached triangles)
-    # Uses dynamic_objects_map which has same objects as worker cache
+    # Mesh triangles are cached via targeted broadcast_job (guaranteed delivery)
     dynamic_objects_map = getattr(op, "dynamic_objects_map", None)
     dynamic_transforms = {}
 
@@ -499,7 +499,7 @@ def submit_camera_occlusion_early(op, context):
             except Exception:
                 continue
 
-    # Submit job with static (cached grid) and dynamic (transforms only)
+    # Submit job with static (cached grid) and dynamic (transforms only - lightweight)
     job_data = {
         "ray_origin": (anchor.x, anchor.y, anchor.z),
         "ray_direction": (direction.x, direction.y, direction.z),
@@ -546,7 +546,7 @@ def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
 
     # Check debug flag
     import bpy
-    debug_camera = getattr(bpy.context.scene, "dev_debug_camera_offload", False)
+    debug_camera = getattr(bpy.context.scene, "dev_debug_camera", False)
 
     # CRITICAL: Small guaranteed delay before polling starts
     # This gives the worker time to:

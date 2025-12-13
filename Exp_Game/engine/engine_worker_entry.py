@@ -30,9 +30,20 @@ DEBUG_ENGINE = False
 _cached_grid = None  # Will hold the spatial grid data after CACHE_GRID job
 
 # ============================================================================
-# WORKER-SIDE DYNAMIC MESH 
+# WORKER-SIDE DYNAMIC MESH
 # ============================================================================
 _cached_dynamic_meshes = {}  # Will hold dynamic mesh data after CACHE_DYNAMIC_MESH jobs
+
+# ============================================================================
+# PERSISTENT TRANSFORM CACHE
+# ============================================================================
+# Main thread sends transform updates only when meshes MOVE.
+# Worker caches last known transform for each mesh, enabling:
+# - Stationary meshes: zero main-thread work, worker uses cached transform
+# - Moving meshes: main thread sends update, worker caches it
+# - No activation logic needed - worker always knows where all meshes are
+# ============================================================================
+_cached_dynamic_transforms = {}  # {obj_id: (matrix_16_tuple, world_aabb)}
 
 
 # ============================================================================
@@ -167,6 +178,37 @@ def compute_triangle_normal(v0, v1, v2):
         nx /= length
         ny /= length
         nz /= length
+
+    return (nx, ny, nz)
+
+
+def compute_facing_normal(v0, v1, v2, ray_direction):
+    """
+    Compute triangle normal that faces TOWARD the ray origin (not away).
+
+    This handles backface hits correctly: if the geometric normal points
+    in the same direction as the ray (backface hit), we flip it.
+
+    Args:
+        v0, v1, v2: Triangle vertices as (x, y, z) tuples
+        ray_direction: (dx, dy, dz) ray direction (should be normalized)
+
+    Returns:
+        (nx, ny, nz) normalized normal vector facing the ray origin
+    """
+    # Get geometric normal from winding order
+    nx, ny, nz = compute_triangle_normal(v0, v1, v2)
+
+    # Check if normal faces away from ray (backface hit)
+    # dot(normal, ray_direction) > 0 means they point in same direction
+    dx, dy, dz = ray_direction
+    dot = nx * dx + ny * dy + nz * dz
+
+    if dot > 0:
+        # Backface hit - flip normal to face the ray
+        nx = -nx
+        ny = -ny
+        nz = -nz
 
     return (nx, ny, nz)
 
@@ -932,7 +974,8 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
 
                     if hit and dist < best_dist:
                         best_dist = dist
-                        normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                        # Use facing normal (handles backface hits correctly)
+                        normal = compute_facing_normal(tri[0], tri[1], tri[2], ray_direction)
                         best_hit = {
                             "hit": True,
                             "dist": dist,
@@ -1032,7 +1075,9 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                 if hit_dist_world < best_dist:
                     best_dist = hit_dist_world
                     tri = triangles[hit_tri_idx]
-                    local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                    # Use facing normal (handles backface hits correctly)
+                    # Use local_direction since triangles are in local space
+                    local_normal = compute_facing_normal(tri[0], tri[1], tri[2], local_direction)
 
                     # Transform normal to world space using INVERSE TRANSPOSE
                     # N_world = normalize((M^-1)^T @ N_local)
@@ -1246,8 +1291,9 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
             if hit_dist_world < best_dist:
                 best_dist = hit_dist_world
                 tri = triangles[hit_tri_idx]
-                # Compute normal in local space
-                local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                # Use facing normal (handles backface hits correctly)
+                # Use local_direction since triangles are in local space
+                local_normal = compute_facing_normal(tri[0], tri[1], tri[2], local_direction)
                 # Transform normal to world space using INVERSE TRANSPOSE
                 # N_world = normalize((M^-1)^T @ N_local)
                 # For row-major matrix, transpose means using columns instead of rows
@@ -1658,116 +1704,120 @@ def process_job(job) -> dict:
             jump_consumed = False
 
             # ─────────────────────────────────────────────────────────────────
-            # TRANSFORM DYNAMIC MESHES (Once per frame)
+            # PERSISTENT TRANSFORM CACHE - UNIFIED ARCHITECTURE
             # ─────────────────────────────────────────────────────────────────
-            # Transform all active dynamic meshes from local to world space
-            # Uses cached triangles + per-frame transform matrices (64 bytes each)
+            # Worker maintains last-known transform for ALL dynamic meshes.
+            # Main thread only sends transforms when meshes MOVE (thin/efficient).
+            # Worker uses cached transforms for stationary meshes (zero main-thread cost).
+            #
+            # This eliminates the "activation" concept entirely:
+            # - No AABB checks on main thread
+            # - No chicken-and-egg timing issues
+            # - Dynamic meshes behave like static: always available for testing
+            # ─────────────────────────────────────────────────────────────────
 
-            dynamic_transforms = job.data.get("dynamic_transforms", {})
+            global _cached_dynamic_transforms
+            dynamic_transforms_update = job.data.get("dynamic_transforms", {})
             dynamic_transform_time_us = 0.0
+            transforms_updated = 0
+            transforms_from_cache = 0
 
             # ═══════════════════════════════════════════════════════════════════
-            # UNIFIED DYNAMIC MESH FORMAT
+            # STEP 1: Update transform cache with any new transforms from main thread
+            # Mesh triangles are cached via targeted broadcast_job (guaranteed delivery)
             # ═══════════════════════════════════════════════════════════════════
-            # List of dicts ready for unified_raycast:
-            # [{"obj_id": id, "triangles": [...], "bounding_sphere": (center, radius)}, ...]
+            for obj_id, matrix_4x4 in dynamic_transforms_update.items():
+                cached = _cached_dynamic_meshes.get(obj_id)
+                if cached is None:
+                    continue  # Mesh triangles not cached yet, skip
+
+                local_aabb = cached.get("local_aabb")
+                if local_aabb:
+                    world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4)
+                else:
+                    world_aabb = None
+
+                # Cache the transform + computed world AABB
+                _cached_dynamic_transforms[obj_id] = (matrix_4x4, world_aabb)
+                transforms_updated += 1
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 2: Build unified_dynamic_meshes from ALL cached transforms
+            # ═══════════════════════════════════════════════════════════════════
+            # This is the key change: we test ALL meshes that have cached transforms,
+            # not just ones that received updates this frame.
             unified_dynamic_meshes = []
+            transform_start = time.perf_counter()
 
-            # CACHE DIAGNOSTICS - Log cache state before transform
+            for obj_id, (matrix_4x4, world_aabb) in _cached_dynamic_transforms.items():
+                cached = _cached_dynamic_meshes.get(obj_id)
+                if cached is None:
+                    continue  # Shouldn't happen, but be safe
+
+                local_triangles = cached["triangles"]
+
+                # Check if this was a fresh update or from cache
+                if obj_id not in dynamic_transforms_update:
+                    transforms_from_cache += 1
+
+                # Compute inverse matrix for local-space ray testing
+                inv_matrix = invert_matrix_4x4(matrix_4x4)
+
+                # Compute bounding sphere center from AABB (fast approximation)
+                if world_aabb:
+                    aabb_min, aabb_max = world_aabb
+                    center = (
+                        (aabb_min[0] + aabb_max[0]) * 0.5,
+                        (aabb_min[1] + aabb_max[1]) * 0.5,
+                        (aabb_min[2] + aabb_max[2]) * 0.5
+                    )
+                    # Radius is half-diagonal of AABB (conservative bound)
+                    import math
+                    half_diag = math.sqrt(
+                        (aabb_max[0] - aabb_min[0])**2 +
+                        (aabb_max[1] - aabb_min[1])**2 +
+                        (aabb_max[2] - aabb_min[2])**2
+                    ) * 0.5
+                    bounding_sphere = (center, half_diag)
+                else:
+                    bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
+
+                # Add to unified format - triangles stay in LOCAL space!
+                unified_dynamic_meshes.append({
+                    "obj_id": obj_id,
+                    "triangles": local_triangles,
+                    "matrix": matrix_4x4,
+                    "inv_matrix": inv_matrix,
+                    "bounding_sphere": bounding_sphere,
+                    "aabb": world_aabb,
+                    "grid": cached.get("grid")
+                })
+
+            transform_end = time.perf_counter()
+            dynamic_transform_time_us = (transform_end - transform_start) * 1_000_000
+
+            # ═══════════════════════════════════════════════════════════════════
+            # DIAGNOSTIC LOGGING - Unified Dynamic Mesh System
+            # ═══════════════════════════════════════════════════════════════════
+            total_cached_meshes = len(_cached_dynamic_meshes)
+            total_cached_transforms = len(_cached_dynamic_transforms)
+            mesh_count = len(unified_dynamic_meshes)
+            total_dyn_tris = sum(len(m["triangles"]) for m in unified_dynamic_meshes)
+
             if debug_flags.get("engine", False):
-                cached_count = len(_cached_dynamic_meshes)
-                transform_count = len(dynamic_transforms)
+                # Cache efficiency: how many transforms came from persistent cache
+                cache_hit_pct = (transforms_from_cache / mesh_count * 100) if mesh_count > 0 else 0
                 worker_logs.append(("ENGINE",
-                    f"CACHE: cached_meshes={cached_count} transforms_received={transform_count}"))
+                    f"DYNAMIC: meshes={mesh_count} tris={total_dyn_tris} | "
+                    f"updated={transforms_updated} cached={transforms_from_cache} ({cache_hit_pct:.0f}% cache hit) | "
+                    f"transform_time={dynamic_transform_time_us:.0f}us"))
 
-            if dynamic_transforms and _cached_dynamic_meshes:
-                transform_start = time.perf_counter()
-
-                for obj_id, matrix_4x4 in dynamic_transforms.items():
-                    # Get cached local-space data
-                    cached = _cached_dynamic_meshes.get(obj_id)
-                    if cached is None:
-                        continue
-
-                    local_triangles = cached["triangles"]
-                    local_aabb = cached.get("local_aabb")
-
-                    # ═══════════════════════════════════════════════════════════
-                    # OPTIMIZED: Transform only 8 AABB corners, not N*3 vertices
-                    # O(8) operations instead of O(N*3) - 300x faster for 1000 tris
-                    # ═══════════════════════════════════════════════════════════
-
-                    # Transform local AABB to world space (8 corner transforms)
-                    if local_aabb:
-                        world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4)
-                    else:
-                        # Fallback: compute from scratch (shouldn't happen for new caches)
-                        world_aabb = None
-
-                    # Compute inverse matrix for local-space ray testing
-                    inv_matrix = invert_matrix_4x4(matrix_4x4)
-
-                    # Compute bounding sphere center from AABB (fast approximation)
-                    if world_aabb:
-                        aabb_min, aabb_max = world_aabb
-                        center = (
-                            (aabb_min[0] + aabb_max[0]) * 0.5,
-                            (aabb_min[1] + aabb_max[1]) * 0.5,
-                            (aabb_min[2] + aabb_max[2]) * 0.5
-                        )
-                        # Radius is half-diagonal of AABB (conservative bound)
-                        import math
-                        half_diag = math.sqrt(
-                            (aabb_max[0] - aabb_min[0])**2 +
-                            (aabb_max[1] - aabb_min[1])**2 +
-                            (aabb_max[2] - aabb_min[2])**2
-                        ) * 0.5
-                        bounding_sphere = (center, half_diag)
-                    else:
-                        bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
-
-                    # Add to unified format - triangles stay in LOCAL space!
-                    # Rays will be transformed to local space for testing
-                    unified_dynamic_meshes.append({
-                        "obj_id": obj_id,
-                        "triangles": local_triangles,  # LOCAL space (no transform!)
-                        "matrix": matrix_4x4,          # World transform (for hit point conversion)
-                        "inv_matrix": inv_matrix,      # Inverse (for ray-to-local transform)
-                        "bounding_sphere": bounding_sphere,
-                        "aabb": world_aabb,            # World-space AABB (for culling)
-                        "grid": cached.get("grid")     # Spatial grid for fast ray-triangle culling
-                    })
-
-                transform_end = time.perf_counter()
-                dynamic_transform_time_us = (transform_end - transform_start) * 1_000_000
-
-                # Log transform operation
-                if debug_flags.get("dynamic_cache", False):
-                    mesh_count = len(unified_dynamic_meshes)
-                    total_dyn_tris = sum(len(m["triangles"]) for m in unified_dynamic_meshes)
-                    worker_logs.append(("DYN-CACHE",
-                        f"TRANSFORM active={mesh_count} tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}us "
-                        f"player=({px:.2f},{py:.2f},{pz:.2f})"))
-                    # Log AABB bounds for each mesh (helps diagnose collision issues)
-                    for i, mesh_data in enumerate(unified_dynamic_meshes):
-                        if mesh_data.get("aabb"):
-                            aabb = mesh_data["aabb"]
-                            aabb_min, aabb_max = aabb
-                            obj_id = mesh_data.get("obj_id", "?")
-                            worker_logs.append(("DYN-CACHE",
-                                f"MESH[{i}] id={obj_id} tris={len(mesh_data['triangles'])} "
-                                f"aabb=[({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f})->({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})]"))
-            else:
-                # No dynamic transforms received - log this state
-                if debug_flags.get("dynamic_cache", False):
-                    cached_count = len(_cached_dynamic_meshes)
-                    transform_count = len(dynamic_transforms)
-                    if cached_count > 0 and transform_count == 0:
-                        worker_logs.append(("DYN-CACHE",
-                            f"TRANSFORM active=0 tris=0 (cached={cached_count} but no transforms sent)"))
-                    elif cached_count == 0:
-                        worker_logs.append(("DYN-CACHE",
-                            f"TRANSFORM active=0 tris=0 (no cached meshes)"))
+            if debug_flags.get("dynamic_cache", False):
+                # Detailed cache state
+                worker_logs.append(("DYN-CACHE",
+                    f"STATE: mesh_cache={total_cached_meshes} transform_cache={total_cached_transforms} active={mesh_count} | "
+                    f"updated={transforms_updated} from_cache={transforms_from_cache} | "
+                    f"tris={total_dyn_tris} time={dynamic_transform_time_us:.1f}us"))
 
             # ─────────────────────────────────────────────────────────────────
             # 1. TIMERS
@@ -2641,56 +2691,67 @@ def process_job(job) -> dict:
                 }
 
             # ─────────────────────────────────────────────────────────────────
-            # Build unified_dynamic_meshes (same format as KCC_PHYSICS_STEP)
+            # Build unified_dynamic_meshes FROM PERSISTENT CACHE
             # ─────────────────────────────────────────────────────────────────
+            # Camera uses the same transform cache as KCC physics.
+            # If transforms are sent in the job, update the cache first.
+            # Then build mesh list from ALL cached transforms.
+            # Note: _cached_dynamic_transforms is already declared global in KCC handler
+            # ─────────────────────────────────────────────────────────────────
+            dynamic_transforms_update = job.data.get("dynamic_transforms", {})
+
+            # Update cache with any fresh transforms
+            # Mesh triangles are cached via targeted broadcast_job (guaranteed delivery)
+            for obj_id, matrix_4x4 in dynamic_transforms_update.items():
+                cached = _cached_dynamic_meshes.get(obj_id)
+                if cached is None:
+                    continue
+                local_aabb = cached.get("local_aabb")
+                world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4) if local_aabb else None
+                _cached_dynamic_transforms[obj_id] = (matrix_4x4, world_aabb)
+
+            # Build mesh list from ALL cached transforms
             unified_dynamic_meshes = []
 
-            if dynamic_transforms and _cached_dynamic_meshes:
-                for obj_id, matrix_4x4 in dynamic_transforms.items():
-                    cached = _cached_dynamic_meshes.get(obj_id)
-                    if cached is None:
-                        continue
+            for obj_id, (matrix_4x4, world_aabb) in _cached_dynamic_transforms.items():
+                cached = _cached_dynamic_meshes.get(obj_id)
+                if cached is None:
+                    continue
 
-                    local_triangles = cached["triangles"]
-                    local_aabb = cached.get("local_aabb")
+                local_triangles = cached["triangles"]
 
-                    # Transform local AABB to world space
-                    world_aabb = None
-                    if local_aabb:
-                        world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4)
+                # Compute inverse matrix for local-space ray testing
+                inv_matrix = invert_matrix_4x4(matrix_4x4)
+                if inv_matrix is None:
+                    continue
 
-                    # Compute inverse matrix for local-space ray testing
-                    inv_matrix = invert_matrix_4x4(matrix_4x4)
-                    if inv_matrix is None:
-                        continue
+                # Compute bounding sphere from AABB
+                if world_aabb:
+                    aabb_min, aabb_max = world_aabb
+                    center = (
+                        (aabb_min[0] + aabb_max[0]) * 0.5,
+                        (aabb_min[1] + aabb_max[1]) * 0.5,
+                        (aabb_min[2] + aabb_max[2]) * 0.5
+                    )
+                    half_diag = math.sqrt(
+                        (aabb_max[0] - aabb_min[0])**2 +
+                        (aabb_max[1] - aabb_min[1])**2 +
+                        (aabb_max[2] - aabb_min[2])**2
+                    ) * 0.5
+                    bounding_sphere = (center, half_diag)
+                else:
+                    bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
 
-                    # Compute bounding sphere from AABB
-                    if world_aabb:
-                        aabb_min, aabb_max = world_aabb
-                        center = (
-                            (aabb_min[0] + aabb_max[0]) * 0.5,
-                            (aabb_min[1] + aabb_max[1]) * 0.5,
-                            (aabb_min[2] + aabb_max[2]) * 0.5
-                        )
-                        half_diag = math.sqrt(
-                            (aabb_max[0] - aabb_min[0])**2 +
-                            (aabb_max[1] - aabb_min[1])**2 +
-                            (aabb_max[2] - aabb_min[2])**2
-                        ) * 0.5
-                        bounding_sphere = (center, half_diag)
-                    else:
-                        bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
-
-                    # Add to unified format (same as KCC)
-                    unified_dynamic_meshes.append({
-                        "obj_id": obj_id,
-                        "triangles": local_triangles,
-                        "matrix": matrix_4x4,
-                        "inv_matrix": inv_matrix,
-                        "bounding_sphere": bounding_sphere,
-                        "aabb": world_aabb,
-                        "grid": cached.get("grid"),
-                    })
+                # Add to unified format (same as KCC)
+                unified_dynamic_meshes.append({
+                    "obj_id": obj_id,
+                    "triangles": local_triangles,
+                    "matrix": matrix_4x4,
+                    "inv_matrix": inv_matrix,
+                    "bounding_sphere": bounding_sphere,
+                    "aabb": world_aabb,
+                    "grid": cached.get("grid"),
+                })
 
             # ─────────────────────────────────────────────────────────────────
             # Call unified_raycast - same function used by KCC physics
@@ -2771,6 +2832,16 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
             try:
                 # Wait for a job (with timeout so we can check shutdown_event)
                 job = job_queue.get(timeout=0.1)
+
+                # Check if this job is targeted at a specific worker
+                target = getattr(job, 'target_worker', -1)
+                if target >= 0 and target != worker_id:
+                    # This job is for a different worker - put it back and try again
+                    try:
+                        job_queue.put_nowait(job)
+                    except Exception:
+                        pass  # Queue full, job will be lost (shouldn't happen)
+                    continue
 
                 if DEBUG_ENGINE:
                     print(f"[Engine Worker {worker_id}] Processing job {job.job_id} (type: {job.job_type})")

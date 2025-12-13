@@ -548,7 +548,7 @@ class EngineCore:
 
         return health
 
-    def submit_job(self, job_type: str, data: any, check_overload: bool = True) -> Optional[int]:
+    def submit_job(self, job_type: str, data: any, check_overload: bool = True, target_worker: int = -1) -> Optional[int]:
         """
         Submit a job to be processed by workers.
 
@@ -556,6 +556,7 @@ class EngineCore:
             job_type: String identifier for the job type (e.g., "ECHO", "PATHFIND")
             data: Job data (must be picklable - NO bpy objects!)
             check_overload: If True, reject job if queue is too full (default: True)
+            target_worker: If >= 0, only this worker will process the job (-1 = any worker)
 
         Returns:
             job_id if submitted successfully, None if queue is full or engine not running
@@ -580,7 +581,8 @@ class EngineCore:
         job = EngineJob(
             job_id=job_id,
             job_type=job_type,
-            data=data
+            data=data,
+            target_worker=target_worker
         )
 
         try:
@@ -588,7 +590,8 @@ class EngineCore:
             self._jobs_submitted += 1
 
             if DEBUG_ENGINE:
-                print(f"[Engine Core] Submitted job {job_id} (type: {job_type})")
+                target_str = f" (target: W{target_worker})" if target_worker >= 0 else ""
+                print(f"[Engine Core] Submitted job {job_id} (type: {job_type}){target_str}")
 
             return job_id
 
@@ -599,11 +602,11 @@ class EngineCore:
 
     def broadcast_job(self, job_type: str, data: any) -> int:
         """
-        Broadcast a job to ALL workers (submits once per worker).
+        Broadcast a job to ALL workers with per-worker targeting.
 
-        Use for one-time setup jobs like CACHE_DYNAMIC_MESH that need to reach
-        every worker's local memory. Workers pulling from the shared queue will
-        each get one copy.
+        Each worker gets exactly one job targeted specifically to them.
+        Workers only process jobs targeted at their ID or jobs with no target (-1).
+        This guarantees reliable delivery to all workers.
 
         Args:
             job_type: String identifier for the job type
@@ -616,13 +619,14 @@ class EngineCore:
             return 0
 
         submitted = 0
-        for _ in range(self._worker_count):
-            job_id = self.submit_job(job_type, data, check_overload=False)
+        for worker_id in range(self._worker_count):
+            # Target each job to a specific worker
+            job_id = self.submit_job(job_type, data, check_overload=False, target_worker=worker_id)
             if job_id is not None:
                 submitted += 1
 
         if DEBUG_ENGINE:
-            print(f"[Engine Core] Broadcast {job_type} to {submitted}/{self._worker_count} workers")
+            print(f"[Engine Core] Broadcast {job_type} to {submitted}/{self._worker_count} workers (targeted)")
 
         return submitted
 

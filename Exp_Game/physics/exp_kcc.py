@@ -610,12 +610,12 @@ class KinematicCharacterController:
                 "step": getattr(scene, "dev_debug_physics_step", False),
                 "slide": getattr(scene, "dev_debug_physics_slide", False),
                 "slopes": getattr(scene, "dev_debug_physics_slopes", False),
-                # Dynamic mesh system (activation/caching only)
+                # Dynamic mesh system (unified with static)
                 "dynamic_cache": getattr(scene, "dev_debug_dynamic_cache", False),
-                "dynamic_activation": getattr(scene, "dev_debug_dynamic_activation", False),
             }
 
-        # Serialize dynamic mesh transforms (64 bytes per mesh)
+        # Serialize dynamic mesh transforms (64 bytes per mesh) - lightweight, per-frame
+        # Mesh triangles are cached via targeted broadcast_job (one-time, guaranteed delivery)
         dynamic_transforms = {}
         if dynamic_map:
             for dyn_obj in dynamic_map.keys():
@@ -671,7 +671,8 @@ class KinematicCharacterController:
             # Debug flags
             "debug_flags": debug_flags,
 
-            # Dynamic mesh transforms (per-frame, lightweight)
+            # Dynamic mesh transforms (per-frame, lightweight - 64 bytes per mesh)
+            # Mesh triangles are cached via targeted broadcast_job (guaranteed delivery)
             "dynamic_transforms": dynamic_transforms,
         }
 

@@ -85,7 +85,6 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(scene, "dev_debug_kcc_physics", text="KCC Physics")
         col.prop(scene, "dev_debug_frame_numbers", text="Frame Numbers")
-        col.prop(scene, "dev_debug_camera", text="Camera Occlusion")
         col.prop(scene, "dev_debug_culling", text="Performance Culling")
 
         layout.separator()
@@ -113,13 +112,22 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Dynamic Mesh System (Activation only - this IS different)
+        # Unified Camera (Static + Dynamic use same raycast)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Unified Camera", icon='VIEW_CAMERA')
+        col = box.column(align=True)
+        col.prop(scene, "dev_debug_camera", text="Camera Raycast")
+
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
+        # Dynamic Mesh System (Unified with static)
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
         box.label(text="Dynamic Mesh System", icon='MESH_DATA')
         col = box.column(align=True)
-        col.prop(scene, "dev_debug_dynamic_cache", text="Cache Operations")
-        col.prop(scene, "dev_debug_dynamic_activation", text="Activation State (AABB)")
+        col.prop(scene, "dev_debug_dynamic_cache", text="Cache & Transforms")
 
         layout.separator()
 

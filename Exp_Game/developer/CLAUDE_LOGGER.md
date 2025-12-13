@@ -84,9 +84,8 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | `STEP` | `physics_step` | Step-up stair climbing |
 | `SLIDE` | `physics_slide` | Wall slide |
 | `SLOPES` | `physics_slopes` | Slope handling |
-| **Dynamic Mesh System** (activation/caching only) |
-| `DYN-CACHE` | `dynamic_cache` | Dynamic mesh caching/transform |
-| `DYN-ACTIVATE` | `dynamic_activation` | AABB activation state |
+| **Dynamic Mesh System** (unified with static) |
+| `DYN-CACHE` | `dynamic_cache` | Dynamic mesh caching & transforms |
 | **Game Systems** |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |

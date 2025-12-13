@@ -63,9 +63,8 @@ _CATEGORY_MAP = {
     'SLIDE': 'physics_slide',             # Wall slide
     'SLOPES': 'physics_slopes',           # Slope handling
 
-    # Dynamic Mesh System (activation/caching only)
+    # Dynamic Mesh System (unified with static)
     'DYN-CACHE': 'dynamic_cache',
-    'DYN-ACTIVATE': 'dynamic_activation',
 
     # Game Systems
     'INTERACTIONS': 'interactions',

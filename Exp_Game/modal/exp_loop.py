@@ -38,7 +38,6 @@ class GameLoop:
         # Summary print timers (for 1Hz stats)
         self._last_engine_summary = time.perf_counter()
         self._last_kcc_summary = time.perf_counter()
-        self._last_camera_summary = time.perf_counter()
 
         # Reset stats tracker on game start
         get_stats_tracker().reset_all()
@@ -199,6 +198,7 @@ class GameLoop:
                 elif result.job_type == "CAMERA_OCCLUSION_FULL":
                     # Cache camera occlusion result - only if it matches current pending job
                     try:
+                        from ..developer.dev_logger import log_game
                         op_key = id(op)
                         job_id = result.job_id
                         hit = result.result.get("hit", False)
@@ -217,32 +217,15 @@ class GameLoop:
                         # Check if grid is cached in worker (diagnostic)
                         grid_cached = result.result.get("grid_cached", True)
                         if not grid_cached:
-                            print(f"[Camera WARNING] Grid not cached in worker! Static geometry will not be tested.")
+                            log_game("CAMERA", "WARNING: Grid not cached in worker! Static geometry will not be tested.")
 
-                        # Debug output - check Hz setting for mode
-                        scene = bpy.context.scene
-                        camera_enabled = getattr(scene, "dev_debug_camera_offload", False)
-                        camera_hz = getattr(scene, "dev_debug_camera_offload_hz", 5)
-
-                        if camera_enabled:
-                            if camera_hz >= 30:
-                                # Verbose mode: per-frame output
-                                method = result.result.get("method", "CAMERA_FULL")
-                                if hit:
-                                    print(f"[Camera] job={job_id} HIT({hit_source}) dist={hit_distance:.3f}m | tris={static_tris} cells={static_cells} | {calc_time_us:.0f}us")
-                                else:
-                                    print(f"[Camera] job={job_id} MISS | tris={static_tris} cells={static_cells} | {calc_time_us:.0f}us")
-                            else:
-                                # Summary mode: print at configured Hz
-                                now = time.perf_counter()
-                                interval = 1.0 / camera_hz
-                                if (now - self._last_camera_summary) >= interval:
-                                    self._last_camera_summary = now
-                                    summary = stats.get_camera_summary()
-
-                                    print(f"[Camera] {summary['rays_per_sec']:.0f} rays/sec | "
-                                          f"hit_rate: {summary['hit_rate']*100:.0f}% | "
-                                          f"avg: {summary['avg_calc_us']:.0f}us")
+                        # Log unified camera result (uses master Hz control)
+                        dynamic_meshes = result.result.get("dynamic_meshes_tested", 0)
+                        method = result.result.get("method", "CAMERA_UNIFIED")
+                        if hit:
+                            log_game("CAMERA", f"HIT({hit_source}) dist={hit_distance:.3f}m | static_tris={static_tris} cells={static_cells} dyn_meshes={dynamic_meshes} | {calc_time_us:.0f}us [{method}]")
+                        else:
+                            log_game("CAMERA", f"MISS | static_tris={static_tris} cells={static_cells} dyn_meshes={dynamic_meshes} | {calc_time_us:.0f}us [{method}]")
 
                     except Exception as e:
                         print(f"[GameLoop] Error caching camera occlusion result: {e}")

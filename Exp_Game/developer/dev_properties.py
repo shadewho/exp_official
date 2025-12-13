@@ -87,13 +87,21 @@ def register_properties():
         default=False
     )
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # UNIFIED CAMERA (Static + Dynamic use identical unified_raycast)
+    # ══════════════════════════════════════════════════════════════════════════
+
     bpy.types.Scene.dev_debug_camera = bpy.props.BoolProperty(
-        name="Camera Occlusion",
+        name="Camera Raycast",
         description=(
-            "Camera occlusion raycast offload:\n"
-            "• Ray submission (origin, target)\n"
-            "• HIT/MISS results with distance\n"
-            "• Worker timing (µs)"
+            "Unified camera raycast (static + dynamic):\n"
+            "• Uses same unified_raycast as KCC physics\n"
+            "• HIT source: STATIC or DYNAMIC\n"
+            "• Hit distance and allowed camera distance\n"
+            "• Worker timing (µs)\n"
+            "• Dynamic meshes tested count\n"
+            "\n"
+            "UNIFIED: Static and dynamic use IDENTICAL raycast code"
         ),
         default=False
     )
@@ -209,28 +217,18 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # DYNAMIC MESH SYSTEM (Activation/caching - these ARE different from static)
+    # DYNAMIC MESH SYSTEM (Unified with static - same physics code path)
     # ══════════════════════════════════════════════════════════════════════════
 
     bpy.types.Scene.dev_debug_dynamic_cache = bpy.props.BoolProperty(
-        name="Cache Operations",
+        name="Dynamic Mesh System",
         description=(
-            "Dynamic mesh caching (one-time per mesh):\n"
-            "• Triangle caching in local space\n"
-            "• Spatial grid building\n"
-            "• Cache registration confirmation"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_dynamic_activation = bpy.props.BoolProperty(
-        name="Activation State",
-        description=(
-            "AABB-based activation system:\n"
-            "• Player position vs mesh AABB bounds\n"
-            "• Distance to AABB edges\n"
-            "• State transitions (ACTIVATED/DEACTIVATED)\n"
-            "• Standing-on override status"
+            "Dynamic mesh system diagnostics:\n"
+            "• Triangle caching (one-time per mesh)\n"
+            "• Transform updates sent to worker\n"
+            "• Worker transform cache state\n"
+            "\n"
+            "UNIFIED: Dynamic meshes use same physics as static"
         ),
         default=False
     )
@@ -364,7 +362,6 @@ def unregister_properties():
 
         # Dynamic mesh system
         'dev_debug_dynamic_cache',
-        'dev_debug_dynamic_activation',
 
         # Visual debug
         'dev_debug_kcc_visual',
