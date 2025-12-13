@@ -692,7 +692,10 @@ def transform_ray_to_local(ray_origin, ray_direction, inv_matrix):
         inv_matrix: 16-element inverted 4x4 matrix
 
     Returns:
-        (local_origin, local_direction) - direction is re-normalized
+        (local_origin, local_direction, dir_len) - direction is re-normalized
+        dir_len is the scale factor for converting local t-values to world t-values:
+            t_world = t_local / dir_len
+            t_local = t_world * dir_len
     """
     m = inv_matrix
     ox, oy, oz = ray_origin
@@ -708,15 +711,18 @@ def transform_ray_to_local(ray_origin, ray_direction, inv_matrix):
     ldy = m[4]*dx + m[5]*dy + m[6]*dz
     ldz = m[8]*dx + m[9]*dy + m[10]*dz
 
-    # Re-normalize direction (may be scaled by non-uniform matrix)
+    # Compute direction length BEFORE normalizing - this is the scale factor
+    # for converting between local and world t-values
     import math
     dir_len = math.sqrt(ldx*ldx + ldy*ldy + ldz*ldz)
     if dir_len > 1e-10:
         ldx /= dir_len
         ldy /= dir_len
         ldz /= dir_len
+    else:
+        dir_len = 1.0  # Avoid division by zero
 
-    return ((lox, loy, loz), (ldx, ldy, ldz))
+    return ((lox, loy, loz), (ldx, ldy, ldz), dir_len)
 
 
 def ray_aabb_intersect(ray_origin, ray_dir, aabb_min, aabb_max, max_dist):
@@ -987,7 +993,11 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
             if inv_matrix is None:
                 continue  # Can't test without inverse matrix
 
-            local_origin, local_direction = transform_ray_to_local(ray_origin, ray_direction, inv_matrix)
+            local_origin, local_direction, dir_len = transform_ray_to_local(ray_origin, ray_direction, inv_matrix)
+
+            # Convert best_dist (world) to local space for comparisons
+            # t_local = t_world * dir_len
+            best_dist_local = best_dist * dir_len
 
             # Test triangles in LOCAL space (grid-accelerated if available)
             hit_dist = None
@@ -997,7 +1007,7 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                 # GRID-ACCELERATED: O(cells) instead of O(N)
                 tris_counter = [0]
                 grid_result = ray_grid_traverse(
-                    local_origin, local_direction, best_dist, grid, triangles, tris_counter
+                    local_origin, local_direction, best_dist_local, grid, triangles, tris_counter
                 )
                 total_tris += tris_counter[0]
                 if grid_result:
@@ -1009,47 +1019,55 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
                     hit, dist, _ = ray_triangle_intersect(
                         local_origin, local_direction, tri[0], tri[1], tri[2]
                     )
-                    if hit and dist < best_dist:
+                    if hit and dist < best_dist_local:
                         hit_dist = dist
                         hit_tri_idx = tri_idx
 
             # Process hit - transform normal back to world space
-            if hit_dist is not None and hit_tri_idx is not None and hit_dist < best_dist:
-                best_dist = hit_dist
-                tri = triangles[hit_tri_idx]
-                local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+            if hit_dist is not None and hit_tri_idx is not None:
+                # Convert hit distance from local to world space
+                # t_world = t_local / dir_len
+                hit_dist_world = hit_dist / dir_len
 
-                # Transform normal to world space
-                if matrix:
-                    m = matrix
-                    nx, ny, nz = local_normal
-                    wnx = m[0]*nx + m[1]*ny + m[2]*nz
-                    wny = m[4]*nx + m[5]*ny + m[6]*nz
-                    wnz = m[8]*nx + m[9]*ny + m[10]*nz
-                    n_len = math.sqrt(wnx*wnx + wny*wny + wnz*wnz)
-                    if n_len > 1e-10:
-                        wnx /= n_len
-                        wny /= n_len
-                        wnz /= n_len
-                    world_normal = (wnx, wny, wnz)
-                else:
-                    world_normal = local_normal
+                if hit_dist_world < best_dist:
+                    best_dist = hit_dist_world
+                    tri = triangles[hit_tri_idx]
+                    local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
 
-                # Compute world-space hit position
-                hit_pos = (
-                    ray_origin[0] + ray_direction[0] * hit_dist,
-                    ray_origin[1] + ray_direction[1] * hit_dist,
-                    ray_origin[2] + ray_direction[2] * hit_dist
-                )
+                    # Transform normal to world space using INVERSE TRANSPOSE
+                    # N_world = normalize((M^-1)^T @ N_local)
+                    # For row-major matrix, transpose means using columns instead of rows
+                    if inv_matrix:
+                        inv = inv_matrix
+                        nx, ny, nz = local_normal
+                        # Use columns of inv_matrix (= rows of inv_matrix transposed)
+                        wnx = inv[0]*nx + inv[4]*ny + inv[8]*nz
+                        wny = inv[1]*nx + inv[5]*ny + inv[9]*nz
+                        wnz = inv[2]*nx + inv[6]*ny + inv[10]*nz
+                        n_len = math.sqrt(wnx*wnx + wny*wny + wnz*wnz)
+                        if n_len > 1e-10:
+                            wnx /= n_len
+                            wny /= n_len
+                            wnz /= n_len
+                        world_normal = (wnx, wny, wnz)
+                    else:
+                        world_normal = local_normal
 
-                best_hit = {
-                    "hit": True,
-                    "dist": hit_dist,
-                    "normal": world_normal,
-                    "pos": hit_pos,
-                    "source": "dynamic",
-                    "obj_id": obj_id
-                }
+                    # Compute world-space hit position using world distance
+                    hit_pos = (
+                        ray_origin[0] + ray_direction[0] * hit_dist_world,
+                        ray_origin[1] + ray_direction[1] * hit_dist_world,
+                        ray_origin[2] + ray_direction[2] * hit_dist_world
+                    )
+
+                    best_hit = {
+                        "hit": True,
+                        "dist": hit_dist_world,
+                        "normal": world_normal,
+                        "pos": hit_pos,
+                        "source": "dynamic",
+                        "obj_id": obj_id
+                    }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Build result
@@ -1185,7 +1203,11 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
             # No inverse matrix - skip (shouldn't happen with new caches)
             continue
 
-        local_origin, local_direction = transform_ray_to_local(ray_origin, ray_direction, inv_matrix)
+        local_origin, local_direction, dir_len = transform_ray_to_local(ray_origin, ray_direction, inv_matrix)
+
+        # Convert best_dist (world) to local space for comparisons
+        # t_local = t_world * dir_len
+        best_dist_local = best_dist * dir_len
 
         # Get spatial grid if available
         grid = dyn_mesh.get("grid")
@@ -1198,7 +1220,7 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
         # ═══════════════════════════════════════════════════════════════════
         if grid:
             grid_result = ray_grid_traverse(
-                local_origin, local_direction, best_dist, grid, triangles, tris_tested_counter
+                local_origin, local_direction, best_dist_local, grid, triangles, tris_tested_counter
             )
             if grid_result:
                 hit_dist, hit_tri_idx = grid_result
@@ -1211,37 +1233,42 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
                 hit, dist, _ = ray_triangle_intersect(
                     local_origin, local_direction, tri[0], tri[1], tri[2]
                 )
-                if hit and dist < best_dist:
+                if hit and dist < best_dist_local:
                     hit_dist = dist
                     hit_tri_idx = tri_idx
 
         # Process hit result
-        if hit_dist is not None and hit_tri_idx is not None and hit_dist < best_dist:
-            best_dist = hit_dist
-            tri = triangles[hit_tri_idx]
-            # Compute normal in local space
-            local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
-            # Transform normal to world space (use matrix, not inv_matrix)
-            # Normal transform: N_world = (M^-T) @ N_local = transpose(inv(M)) @ N
-            # For orthonormal matrices, this is just M @ N (ignoring translation)
-            if matrix:
-                m = matrix
-                nx, ny, nz = local_normal
-                # Transform direction (no translation)
-                wnx = m[0]*nx + m[1]*ny + m[2]*nz
-                wny = m[4]*nx + m[5]*ny + m[6]*nz
-                wnz = m[8]*nx + m[9]*ny + m[10]*nz
-                # Normalize
-                import math
-                n_len = math.sqrt(wnx*wnx + wny*wny + wnz*wnz)
-                if n_len > 1e-10:
-                    wnx /= n_len
-                    wny /= n_len
-                    wnz /= n_len
-                best_normal = (wnx, wny, wnz)
-            else:
-                best_normal = local_normal
-            best_obj_id = obj_id
+        if hit_dist is not None and hit_tri_idx is not None:
+            # Convert hit distance from local to world space
+            # t_world = t_local / dir_len
+            hit_dist_world = hit_dist / dir_len
+
+            if hit_dist_world < best_dist:
+                best_dist = hit_dist_world
+                tri = triangles[hit_tri_idx]
+                # Compute normal in local space
+                local_normal = compute_triangle_normal(tri[0], tri[1], tri[2])
+                # Transform normal to world space using INVERSE TRANSPOSE
+                # N_world = normalize((M^-1)^T @ N_local)
+                # For row-major matrix, transpose means using columns instead of rows
+                if inv_matrix:
+                    inv = inv_matrix
+                    nx, ny, nz = local_normal
+                    # Use columns of inv_matrix (= rows of inv_matrix transposed)
+                    wnx = inv[0]*nx + inv[4]*ny + inv[8]*nz
+                    wny = inv[1]*nx + inv[5]*ny + inv[9]*nz
+                    wnz = inv[2]*nx + inv[6]*ny + inv[10]*nz
+                    # Normalize
+                    import math
+                    n_len = math.sqrt(wnx*wnx + wny*wny + wnz*wnz)
+                    if n_len > 1e-10:
+                        wnx /= n_len
+                        wny /= n_len
+                        wnz /= n_len
+                    best_normal = (wnx, wny, wnz)
+                else:
+                    best_normal = local_normal
+                best_obj_id = obj_id
 
     if best_normal is not None:
         return (best_dist, best_normal, best_obj_id)
@@ -2576,8 +2603,10 @@ def process_job(job) -> dict:
         # Now using unified KCC_PHYSICS_STEP handler above
 
         elif job.job_type == "CAMERA_OCCLUSION_FULL":
-            # Full camera occlusion: static grid + cached dynamic meshes
-            # Uses same cached dynamic data as KCC physics (no main thread extraction!)
+            # ═══════════════════════════════════════════════════════════════════
+            # UNIFIED CAMERA OCCLUSION - Uses same raycast as KCC physics
+            # Static grid + dynamic meshes go through unified_raycast
+            # ═══════════════════════════════════════════════════════════════════
             import math
 
             calc_start = time.perf_counter()
@@ -2588,136 +2617,34 @@ def process_job(job) -> dict:
             max_distance = job.data.get("max_distance", 10.0)
             dynamic_transforms = job.data.get("dynamic_transforms", {})
 
-            ox, oy, oz = ray_origin
-            dx, dy, dz = ray_direction
-
             # Normalize direction
+            dx, dy, dz = ray_direction
             d_len = math.sqrt(dx*dx + dy*dy + dz*dz)
             if d_len > 1e-12:
                 dx /= d_len
                 dy /= d_len
                 dz /= d_len
+            ray_direction_norm = (dx, dy, dz)
 
-            closest_dist = max_distance
-            hit_found = False
-            hit_source = None
-            static_tris_tested = 0
-            static_cells_traversed = 0
-            dynamic_tris_tested = 0
-
-            # === STATIC GEOMETRY (cached grid) ===
+            # ─────────────────────────────────────────────────────────────────
+            # Build grid_data for unified_raycast (same format as KCC)
+            # ─────────────────────────────────────────────────────────────────
+            grid_data = None
             if _cached_grid is not None:
-                grid = _cached_grid
-                bounds_min = grid["bounds_min"]
-                bounds_max = grid["bounds_max"]
-                cell_size = grid["cell_size"]
-                grid_dims = grid["grid_dims"]
-                cells = grid["cells"]
-                triangles = grid["triangles"]
+                grid_data = {
+                    "cells": _cached_grid.get("cells", {}),
+                    "triangles": _cached_grid.get("triangles", []),
+                    "bounds_min": _cached_grid.get("bounds_min", (0, 0, 0)),
+                    "bounds_max": _cached_grid.get("bounds_max", (0, 0, 0)),
+                    "cell_size": _cached_grid.get("cell_size", 1.0),
+                    "grid_dims": _cached_grid.get("grid_dims", (1, 1, 1)),
+                }
 
-                nx, ny, nz = grid_dims
-                min_x, min_y, min_z = bounds_min
-                max_x, max_y, max_z = bounds_max
+            # ─────────────────────────────────────────────────────────────────
+            # Build unified_dynamic_meshes (same format as KCC_PHYSICS_STEP)
+            # ─────────────────────────────────────────────────────────────────
+            unified_dynamic_meshes = []
 
-                start_x = max(min_x, min(max_x - 0.001, ox))
-                start_y = max(min_y, min(max_y - 0.001, oy))
-                start_z = max(min_z, min(max_z - 0.001, oz))
-
-                ix = int((start_x - min_x) / cell_size)
-                iy = int((start_y - min_y) / cell_size)
-                iz = int((start_z - min_z) / cell_size)
-
-                ix = max(0, min(nx - 1, ix))
-                iy = max(0, min(ny - 1, iy))
-                iz = max(0, min(nz - 1, iz))
-
-                step_x = 1 if dx >= 0 else -1
-                step_y = 1 if dy >= 0 else -1
-                step_z = 1 if dz >= 0 else -1
-
-                INF = float('inf')
-
-                if abs(dx) > 1e-12:
-                    if dx > 0:
-                        t_max_x = ((min_x + (ix + 1) * cell_size) - ox) / dx
-                    else:
-                        t_max_x = ((min_x + ix * cell_size) - ox) / dx
-                    t_delta_x = abs(cell_size / dx)
-                else:
-                    t_max_x = INF
-                    t_delta_x = INF
-
-                if abs(dy) > 1e-12:
-                    if dy > 0:
-                        t_max_y = ((min_y + (iy + 1) * cell_size) - oy) / dy
-                    else:
-                        t_max_y = ((min_y + iy * cell_size) - oy) / dy
-                    t_delta_y = abs(cell_size / dy)
-                else:
-                    t_max_y = INF
-                    t_delta_y = INF
-
-                if abs(dz) > 1e-12:
-                    if dz > 0:
-                        t_max_z = ((min_z + (iz + 1) * cell_size) - oz) / dz
-                    else:
-                        t_max_z = ((min_z + iz * cell_size) - oz) / dz
-                    t_delta_z = abs(cell_size / dz)
-                else:
-                    t_max_z = INF
-                    t_delta_z = INF
-
-                tested_triangles = set()
-                max_cells = nx + ny + nz + 10
-                t_current = 0.0
-
-                while static_cells_traversed < max_cells:
-                    static_cells_traversed += 1
-
-                    if t_current > closest_dist:
-                        break
-                    if ix < 0 or ix >= nx or iy < 0 or iy >= ny or iz < 0 or iz >= nz:
-                        break
-
-                    cell_key = (ix, iy, iz)
-                    if cell_key in cells:
-                        for tri_idx in cells[cell_key]:
-                            if tri_idx in tested_triangles:
-                                continue
-                            tested_triangles.add(tri_idx)
-                            static_tris_tested += 1
-
-                            tri = triangles[tri_idx]
-                            hit, dist, _ = ray_triangle_intersect(ray_origin, (dx, dy, dz), tri[0], tri[1], tri[2])
-                            if hit and dist < closest_dist:
-                                closest_dist = dist
-                                hit_found = True
-                                hit_source = "STATIC"
-
-                    t_next = min(t_max_x, t_max_y, t_max_z)
-                    if hit_found and closest_dist <= t_next:
-                        break
-
-                    if t_max_x < t_max_y:
-                        if t_max_x < t_max_z:
-                            ix += step_x
-                            t_current = t_max_x
-                            t_max_x += t_delta_x
-                        else:
-                            iz += step_z
-                            t_current = t_max_z
-                            t_max_z += t_delta_z
-                    else:
-                        if t_max_y < t_max_z:
-                            iy += step_y
-                            t_current = t_max_y
-                            t_max_y += t_delta_y
-                        else:
-                            iz += step_z
-                            t_current = t_max_z
-                            t_max_z += t_delta_z
-
-            # === DYNAMIC GEOMETRY (use cached meshes with transforms - same as KCC) ===
             if dynamic_transforms and _cached_dynamic_meshes:
                 for obj_id, matrix_4x4 in dynamic_transforms.items():
                     cached = _cached_dynamic_meshes.get(obj_id)
@@ -2727,51 +2654,70 @@ def process_job(job) -> dict:
                     local_triangles = cached["triangles"]
                     local_aabb = cached.get("local_aabb")
 
-                    # Quick AABB rejection using transformed bounds
+                    # Transform local AABB to world space
+                    world_aabb = None
                     if local_aabb:
                         world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4)
-                        if world_aabb:
-                            aabb_min, aabb_max = world_aabb
-                            # Simple ray-AABB intersection test
-                            if (ox < aabb_min[0] - max_distance and dx <= 0) or \
-                               (ox > aabb_max[0] + max_distance and dx >= 0) or \
-                               (oy < aabb_min[1] - max_distance and dy <= 0) or \
-                               (oy > aabb_max[1] + max_distance and dy >= 0) or \
-                               (oz < aabb_min[2] - max_distance and dz <= 0) or \
-                               (oz > aabb_max[2] + max_distance and dz >= 0):
-                                continue
 
-                    # Transform ray to local space and test triangles
+                    # Compute inverse matrix for local-space ray testing
                     inv_matrix = invert_matrix_4x4(matrix_4x4)
-                    local_origin = transform_point(ray_origin, inv_matrix)
-                    local_dir = transform_direction((dx, dy, dz), inv_matrix)
+                    if inv_matrix is None:
+                        continue
 
-                    # Normalize local direction
-                    ld_len = math.sqrt(local_dir[0]**2 + local_dir[1]**2 + local_dir[2]**2)
-                    if ld_len > 1e-12:
-                        local_dir = (local_dir[0]/ld_len, local_dir[1]/ld_len, local_dir[2]/ld_len)
+                    # Compute bounding sphere from AABB
+                    if world_aabb:
+                        aabb_min, aabb_max = world_aabb
+                        center = (
+                            (aabb_min[0] + aabb_max[0]) * 0.5,
+                            (aabb_min[1] + aabb_max[1]) * 0.5,
+                            (aabb_min[2] + aabb_max[2]) * 0.5
+                        )
+                        half_diag = math.sqrt(
+                            (aabb_max[0] - aabb_min[0])**2 +
+                            (aabb_max[1] - aabb_min[1])**2 +
+                            (aabb_max[2] - aabb_min[2])**2
+                        ) * 0.5
+                        bounding_sphere = (center, half_diag)
+                    else:
+                        bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
 
-                    # Test triangles in local space
-                    for tri in local_triangles:
-                        dynamic_tris_tested += 1
-                        hit, dist, _ = ray_triangle_intersect(local_origin, local_dir, tri[0], tri[1], tri[2])
-                        if hit and dist < closest_dist:
-                            closest_dist = dist
-                            hit_found = True
-                            hit_source = "DYNAMIC"
+                    # Add to unified format (same as KCC)
+                    unified_dynamic_meshes.append({
+                        "obj_id": obj_id,
+                        "triangles": local_triangles,
+                        "matrix": matrix_4x4,
+                        "inv_matrix": inv_matrix,
+                        "bounding_sphere": bounding_sphere,
+                        "aabb": world_aabb,
+                        "grid": cached.get("grid"),
+                    })
+
+            # ─────────────────────────────────────────────────────────────────
+            # Call unified_raycast - same function used by KCC physics
+            # ─────────────────────────────────────────────────────────────────
+            result = unified_raycast(
+                ray_origin, ray_direction_norm, max_distance,
+                grid_data, unified_dynamic_meshes
+            )
 
             calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
+            # Extract result
+            hit_found = result.get("hit", False)
+            hit_distance = result.get("dist") if hit_found else None
+            hit_source = result.get("source", "").upper() if hit_found else None
+
             result_data = {
                 "hit": hit_found,
-                "hit_distance": closest_dist if hit_found else None,
+                "hit_distance": hit_distance,
                 "hit_source": hit_source,
-                "static_triangles_tested": static_tris_tested,
-                "static_cells_traversed": static_cells_traversed,
-                "dynamic_triangles_tested": dynamic_tris_tested,
+                "static_triangles_tested": result.get("tris_tested", 0),
+                "static_cells_traversed": result.get("cells_traversed", 0),
+                "dynamic_triangles_tested": 0,  # Included in tris_tested
                 "calc_time_us": calc_time_us,
-                "method": "CAMERA_FULL",
-                "grid_cached": _cached_grid is not None
+                "method": "CAMERA_UNIFIED",
+                "grid_cached": _cached_grid is not None,
+                "dynamic_meshes_tested": len(unified_dynamic_meshes),
             }
 
         else:

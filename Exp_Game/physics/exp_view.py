@@ -487,14 +487,14 @@ def submit_camera_occlusion_early(op, context):
                 if along_ray < -approx_rad or along_ray > desired_max + approx_rad:
                     continue
 
-                # Send transform matrix (worker will use cached triangles)
+                # Send transform matrix as FLAT 16-element tuple (same format as KCC)
                 obj_id = id(obj)
                 M = obj.matrix_world
                 dynamic_transforms[obj_id] = (
-                    (M[0][0], M[0][1], M[0][2], M[0][3]),
-                    (M[1][0], M[1][1], M[1][2], M[1][3]),
-                    (M[2][0], M[2][1], M[2][2], M[2][3]),
-                    (M[3][0], M[3][1], M[3][2], M[3][3]),
+                    M[0][0], M[0][1], M[0][2], M[0][3],
+                    M[1][0], M[1][1], M[1][2], M[1][3],
+                    M[2][0], M[2][1], M[2][2], M[2][3],
+                    M[3][0], M[3][1], M[3][2], M[3][3],
                 )
             except Exception:
                 continue
@@ -630,5 +630,3 @@ def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
         view["stats_timeout"] = view.get("stats_timeout", 0) + 1
 
     return result_found
-
-
