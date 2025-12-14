@@ -53,6 +53,9 @@ _CATEGORY_MAP = {
     'FRAME': 'frame_numbers',
     'CULLING': 'culling',
 
+    # Spatial Grid System
+    'GRID': 'grid',                       # Grid build and raycast stats
+
     # Unified Physics (all show source: static/dynamic)
     'PHYSICS': 'physics',                 # Summary
     'GROUND': 'physics_ground',           # Ground detection
@@ -65,6 +68,7 @@ _CATEGORY_MAP = {
 
     # Dynamic Mesh System (unified with static)
     'DYN-CACHE': 'dynamic_cache',
+    'PLATFORM': 'dynamic_cache',  # Platform attach/detach (relative position system)
 
     # Game Systems
     'INTERACTIONS': 'interactions',

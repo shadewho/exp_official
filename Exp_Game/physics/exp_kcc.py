@@ -373,6 +373,15 @@ class KinematicCharacterController:
         self._coyote      = 0.0
         self._jump_buf    = 0.0
 
+        # ═══════════════════════════════════════════════════════════════════
+        # PLATFORM SYSTEM (Relative Position)
+        # When on a dynamic platform, store position RELATIVE to the platform.
+        # Each frame: worldPos = platform.matrix @ relativePos
+        # Cost: One matrix multiply (~16 muls + 12 adds) - extremely fast
+        # ═══════════════════════════════════════════════════════════════════
+        self._platform_relative_pos = None  # (x, y, z) in platform's local space
+        self._platform_obj_id = None        # id() of platform we're attached to
+
         # Cached constants
         self._up = _UP
         self._floor_cos = math.cos(math.radians(self.cfg.slope_limit_deg))
@@ -431,29 +440,6 @@ class KinematicCharacterController:
             wish_x = wish_y = 0.0
 
         return (wish_x, wish_y), (run_key in keys_pressed)
-
-    # --------------------
-    # Dynamic mover handling (main thread - frame-perfect)
-    # --------------------
-
-    def _get_platform_carry(self, platform_linear_velocity_map, platform_ang_velocity_map, pos, rot, dt):
-        """Get velocity carry from ground platform (main thread, frame-perfect)."""
-        carry = Vector((0.0, 0.0, 0.0))
-        rot_delta_z = 0.0
-
-        if self.on_ground and self.ground_obj:
-            v_lin = platform_linear_velocity_map.get(self.ground_obj, Vector((0.0, 0.0, 0.0))) if platform_linear_velocity_map else Vector((0.0, 0.0, 0.0))
-            v_rot = Vector((0.0, 0.0, 0.0))
-
-            if platform_ang_velocity_map and self.ground_obj in platform_ang_velocity_map:
-                omega = platform_ang_velocity_map[self.ground_obj]
-                r_vec = (pos - self.ground_obj.matrix_world.translation)
-                v_rot = omega.cross(r_vec)
-                rot_delta_z = omega.z * dt
-
-            carry = v_lin + v_rot
-
-        return carry, rot_delta_z
 
     # --------------------
     # Worker result application
@@ -523,38 +509,10 @@ class KinematicCharacterController:
                 pass  # Invalid ID format, ground_obj stays None
 
         # ─────────────────────────────────────────────────────────────────────
-        # PLATFORM CARRY (uses ground_obj set from worker's ground_hit_source)
-        # This must happen AFTER physics to avoid stutter - we ADD platform
-        # motion to the physics result rather than baking it into velocity
+        # PLATFORM SYSTEM: Handled via relative position in step() method
+        # Player position is stored relative to platform, then transformed
+        # to world space each frame. No velocity tracking needed.
         # ─────────────────────────────────────────────────────────────────────
-        platform_lin_map = getattr(self, '_pending_platform_lin_map', None)
-        platform_ang_map = getattr(self, '_pending_platform_ang_map', None)
-        pending_dt = getattr(self, '_pending_dt', 1.0/30.0)
-
-        if self.on_ground and self.ground_obj and platform_lin_map:
-            v_lin = platform_lin_map.get(self.ground_obj)
-            if v_lin and v_lin.length_squared > 1e-12:
-                # Add platform velocity directly to position (not velocity)
-                # This keeps the character fixed relative to the platform
-                self.pos.x += v_lin.x * pending_dt
-                self.pos.y += v_lin.y * pending_dt
-                self.pos.z += v_lin.z * pending_dt
-
-            # Handle angular velocity (rotation around platform center)
-            if platform_ang_map:
-                omega = platform_ang_map.get(self.ground_obj)
-                if omega and abs(omega.z) > 1e-9:
-                    # Rotate position around platform center
-                    import math
-                    platform_center = self.ground_obj.matrix_world.translation
-                    rel_pos = self.pos - platform_center
-                    angle = omega.z * pending_dt
-                    cos_a = math.cos(angle)
-                    sin_a = math.sin(angle)
-                    new_x = rel_pos.x * cos_a - rel_pos.y * sin_a
-                    new_y = rel_pos.x * sin_a + rel_pos.y * cos_a
-                    self.pos.x = platform_center.x + new_x
-                    self.pos.y = platform_center.y + new_y
 
         # Log worker messages to fast buffer (worker collected these during computation)
         worker_logs = result.get("logs", [])
@@ -686,23 +644,20 @@ class KinematicCharacterController:
         camera_yaw: float,
         static_bvh,  # Not used - worker has cached grid
         dynamic_map,
-        platform_linear_velocity_map=None,
-        platform_ang_velocity_map=None,
+        platform_linear_velocity_map=None,  # DEPRECATED - kept for API compat
+        platform_ang_velocity_map=None,     # DEPRECATED - kept for API compat
         engine=None,
         context=None,
         physics_frame=0,
     ):
         """
         Same-Frame Physics Offload step:
-        1. Handle dynamic movers (frame-perfect, main thread)
+        1. PLATFORM SYSTEM - relative position tracking (one matrix multiply)
         2. SNAPSHOT current state + input
         3. SUBMIT job to worker
         4. POLL for result (same-frame, with timeout)
         5. APPLY result immediately
         6. Write position to Blender
-
-        This eliminates the 1-frame latency of the previous architecture.
-        Worker computation is ~100-200µs, well within frame budget.
         """
         import time
         rot = self.obj.rotation_euler.copy()
@@ -710,15 +665,57 @@ class KinematicCharacterController:
         # Sync position from Blender (in case of external changes)
         self.pos = self.obj.location.copy()
 
-        # Store velocity maps for post-physics platform carry
-        self._pending_platform_lin_map = platform_linear_velocity_map
-        self._pending_platform_ang_map = platform_ang_velocity_map
-        self._pending_dt = dt
+        # ═══════════════════════════════════════════════════════════════════
+        # PLATFORM SYSTEM (Relative Position - How Real Game Engines Do It)
+        # ═══════════════════════════════════════════════════════════════════
+        # When on a dynamic platform:
+        #   - Store position RELATIVE to platform (once, on landing)
+        #   - Each frame: worldPos = platform.matrix @ relativePos
+        # Cost: ONE matrix multiply per frame (~16 muls + 12 adds)
+        # Benefits: No velocity tracking, no timing issues, frame-perfect
+        # ═══════════════════════════════════════════════════════════════════
 
-        # ═══════════════════════════════════════════════════════════════════
-        # UNIFIED PHYSICS: All collision (including push-out) handled in worker
-        # No main thread collision detection needed
-        # ═══════════════════════════════════════════════════════════════════
+        platform_attached = False
+
+        if self.on_ground and self.ground_obj:
+            current_platform_id = id(self.ground_obj)
+
+            # Check if we just landed on a NEW platform
+            if self._platform_obj_id != current_platform_id:
+                # LANDING: Compute relative position (one-time)
+                try:
+                    inv_matrix = self.ground_obj.matrix_world.inverted()
+                    local_pos = inv_matrix @ self.pos
+                    self._platform_relative_pos = (local_pos.x, local_pos.y, local_pos.z)
+                    self._platform_obj_id = current_platform_id
+
+                    # Log platform attachment
+                    if context and getattr(context.scene, 'dev_debug_dynamic_cache', False):
+                        from ..developer.dev_logger import log_game
+                        log_game("PLATFORM", f"ATTACH obj={current_platform_id} rel=({local_pos.x:.2f},{local_pos.y:.2f},{local_pos.z:.2f})")
+                except Exception:
+                    self._platform_relative_pos = None
+                    self._platform_obj_id = None
+
+            # EACH FRAME: Transform relative pos to world pos
+            if self._platform_relative_pos is not None:
+                try:
+                    rel = self._platform_relative_pos
+                    world_pos = self.ground_obj.matrix_world @ Vector((rel[0], rel[1], rel[2]))
+                    self.pos = world_pos
+                    platform_attached = True
+                except Exception:
+                    # Platform gone or invalid - detach
+                    self._platform_relative_pos = None
+                    self._platform_obj_id = None
+        else:
+            # NOT on ground or no ground_obj - detach from platform
+            if self._platform_obj_id is not None:
+                if context and getattr(context.scene, 'dev_debug_dynamic_cache', False):
+                    from ..developer.dev_logger import log_game
+                    log_game("PLATFORM", f"DETACH obj={self._platform_obj_id}")
+            self._platform_relative_pos = None
+            self._platform_obj_id = None
 
         # ─────────────────────────────────────────────────────────────────────
         # 1. SNAPSHOT current state + input
@@ -810,6 +807,19 @@ class KinematicCharacterController:
         self.obj.location = self.pos
         if abs(rot.z - self.obj.rotation_euler.z) > 1e-9:
             self.obj.rotation_euler = rot
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 5b. UPDATE relative position after physics (player moved on platform)
+        # ─────────────────────────────────────────────────────────────────────
+        # If player is on a platform and moved (walked, jumped, etc.), we need
+        # to recompute their relative position so they stay in the new spot
+        if self._platform_obj_id is not None and self.ground_obj:
+            try:
+                inv_matrix = self.ground_obj.matrix_world.inverted()
+                local_pos = inv_matrix @ self.pos
+                self._platform_relative_pos = (local_pos.x, local_pos.y, local_pos.z)
+            except Exception:
+                pass  # Keep old relative pos if matrix inversion fails
 
         # ─────────────────────────────────────────────────────────────────────
         # 6. Update visualization (if enabled)

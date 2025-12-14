@@ -78,6 +78,16 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
+        # Spatial Grid
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Spatial Grid", icon='MESH_GRID')
+        col = box.column(align=True)
+        col.prop(scene, "dev_debug_grid", text="Grid Diagnostics")
+
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
         # Offload Systems
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()

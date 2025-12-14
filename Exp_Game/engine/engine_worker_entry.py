@@ -46,6 +46,7 @@ _cached_dynamic_meshes = {}  # Will hold dynamic mesh data after CACHE_DYNAMIC_M
 _cached_dynamic_transforms = {}  # {obj_id: (matrix_16_tuple, world_aabb)}
 
 
+
 # ============================================================================
 # RAY-TRIANGLE INTERSECTION (Möller-Trumbore Algorithm)
 # ============================================================================
@@ -357,7 +358,34 @@ def compute_aabb(triangles):
 # SPATIAL ACCELERATION: Grid for fast ray-triangle culling
 # ============================================================================
 
-GRID_RESOLUTION = 8  # 8x8x8 = 512 cells - good balance of overhead vs culling
+# Dynamic mesh grid resolution tiers based on triangle count
+# Goal: ~30-50 triangles per cell for optimal ray culling
+def get_adaptive_grid_resolution(tri_count):
+    """
+    Compute adaptive grid resolution based on triangle count.
+
+    Fixed 8x8x8 was too coarse for dense meshes (2500+ tris).
+    Now scales based on complexity:
+    - <200 tris: 4x4x4 = 64 cells (~3 tris/cell)
+    - <500 tris: 6x6x6 = 216 cells (~2 tris/cell)
+    - <1500 tris: 8x8x8 = 512 cells (~3 tris/cell)
+    - <4000 tris: 12x12x12 = 1728 cells (~2 tris/cell)
+    - <10000 tris: 16x16x16 = 4096 cells (~2 tris/cell)
+    - 10000+ tris: 20x20x20 = 8000 cells
+    """
+    if tri_count < 200:
+        return 4
+    elif tri_count < 500:
+        return 6
+    elif tri_count < 1500:
+        return 8
+    elif tri_count < 4000:
+        return 12
+    elif tri_count < 10000:
+        return 16
+    else:
+        return 20
+
 
 def build_triangle_grid(triangles, aabb):
     """
@@ -365,6 +393,9 @@ def build_triangle_grid(triangles, aabb):
     Each cell contains indices of triangles that overlap it.
 
     Built ONCE during caching - O(N) build, O(cells_traversed) query.
+
+    ADAPTIVE: Grid resolution now scales with triangle count to maintain
+    ~30-50 triangles per cell even for dense meshes.
 
     Args:
         triangles: list of ((x,y,z), (x,y,z), (x,y,z)) triangles
@@ -386,9 +417,12 @@ def build_triangle_grid(triangles, aabb):
     size_y = max(max_y - min_y, eps)
     size_z = max(max_z - min_z, eps)
 
-    cell_size_x = size_x / GRID_RESOLUTION
-    cell_size_y = size_y / GRID_RESOLUTION
-    cell_size_z = size_z / GRID_RESOLUTION
+    # ADAPTIVE: Scale resolution based on triangle count
+    grid_resolution = get_adaptive_grid_resolution(len(triangles))
+
+    cell_size_x = size_x / grid_resolution
+    cell_size_y = size_y / grid_resolution
+    cell_size_z = size_z / grid_resolution
 
     # Grid cells: dict of (ix, iy, iz) -> list of triangle indices
     cells = {}
@@ -404,12 +438,17 @@ def build_triangle_grid(triangles, aabb):
         tri_max_z = max(v0[2], v1[2], v2[2])
 
         # Find cell range this triangle overlaps
-        ix_min = max(0, int((tri_min_x - min_x) / cell_size_x))
-        ix_max = min(GRID_RESOLUTION - 1, int((tri_max_x - min_x) / cell_size_x))
-        iy_min = max(0, int((tri_min_y - min_y) / cell_size_y))
-        iy_max = min(GRID_RESOLUTION - 1, int((tri_max_y - min_y) / cell_size_y))
-        iz_min = max(0, int((tri_min_z - min_z) / cell_size_z))
-        iz_max = min(GRID_RESOLUTION - 1, int((tri_max_z - min_z) / cell_size_z))
+        # CRITICAL: Clamp BOTH min and max to valid range [0, grid_resolution-1]
+        # Without upper-bound clamping on _min, flat faces at mesh boundary
+        # (e.g., cylinder tops where all verts have z=max_z) get:
+        #   iz_min = grid_resolution, iz_max = grid_resolution - 1
+        #   range(iz_min, iz_max+1) = EMPTY! Triangle never added to any cell!
+        ix_min = max(0, min(grid_resolution - 1, int((tri_min_x - min_x) / cell_size_x)))
+        ix_max = max(0, min(grid_resolution - 1, int((tri_max_x - min_x) / cell_size_x)))
+        iy_min = max(0, min(grid_resolution - 1, int((tri_min_y - min_y) / cell_size_y)))
+        iy_max = max(0, min(grid_resolution - 1, int((tri_max_y - min_y) / cell_size_y)))
+        iz_min = max(0, min(grid_resolution - 1, int((tri_min_z - min_z) / cell_size_z)))
+        iz_max = max(0, min(grid_resolution - 1, int((tri_max_z - min_z) / cell_size_z)))
 
         # Add triangle to all overlapping cells
         for ix in range(ix_min, ix_max + 1):
@@ -425,7 +464,7 @@ def build_triangle_grid(triangles, aabb):
         "aabb_min": aabb_min,
         "aabb_max": aabb_max,
         "cell_size": (cell_size_x, cell_size_y, cell_size_z),
-        "resolution": GRID_RESOLUTION
+        "resolution": grid_resolution
     }
 
 
@@ -491,7 +530,10 @@ def ray_grid_traverse(ray_origin, ray_direction, max_dist, grid, triangles, tris
                 if t_min > t_max:
                     return None
 
-        t_start = t_min + 0.001  # Small offset to be inside
+        # Small offset to be inside - but direction matters!
+        # For rays entering from above going down, we want to start at the TOP of the AABB
+        # to ensure we check the topmost cells first
+        t_start = t_min + 1e-6  # Tiny offset (was 0.001 which skipped top cells)
 
     # Starting point in grid
     start_x = ox + dx * t_start
@@ -1458,13 +1500,14 @@ def process_job(job) -> dict:
                     "grid": tri_grid          # Spatial grid for fast ray-triangle culling
                 }
                 tri_count = len(triangles)
+                grid_res = tri_grid["resolution"] if tri_grid else 0
                 if DEBUG_ENGINE:
-                    print(f"[Worker] Dynamic mesh cached: obj_id={obj_id} tris={tri_count:,} radius={radius:.2f}m grid_cells={grid_cells}")
+                    print(f"[Worker] Dynamic mesh cached: obj_id={obj_id} tris={tri_count:,} radius={radius:.2f}m grid={grid_res}³={grid_cells}cells")
 
                 # Log to diagnostics (one-time cache event)
                 status = "RE-CACHED" if was_cached else "CACHED"
                 total_cached = len(_cached_dynamic_meshes)
-                cache_log = ("DYN-CACHE", f"{status} obj_id={obj_id} tris={tri_count} grid_cells={grid_cells} radius={radius:.2f}m total_cache={total_cached}")
+                cache_log = ("DYN-CACHE", f"{status} obj_id={obj_id} tris={tri_count} grid={grid_res}³={grid_cells}cells radius={radius:.2f}m total={total_cached}")
                 logs = [cache_log]
 
                 result_data = {

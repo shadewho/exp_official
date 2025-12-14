@@ -86,6 +86,7 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | `SLOPES` | `physics_slopes` | Slope handling |
 | **Dynamic Mesh System** (unified with static) |
 | `DYN-CACHE` | `dynamic_cache` | Dynamic mesh caching & transforms |
+| `PLATFORM` | `dynamic_cache` | Platform attach/detach (relative position) |
 | **Game Systems** |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |

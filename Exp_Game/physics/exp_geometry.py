@@ -125,7 +125,105 @@ def get_triangle_stats(triangles):
 # Spatial Acceleration (Phase 2 - Uniform Grid)
 # ============================================================================
 
-def build_uniform_grid(triangles, cell_size=2.0, context=None):
+def compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_cell=150):
+    """
+    Auto-tune cell size based on triangle density AND hotspot detection.
+
+    Problem: Global average density fails for scenes with sparse backgrounds
+    and concentrated dense meshes (e.g., detailed staircase in open field).
+
+    Solution: Start with average-based estimate, then VERIFY by sampling
+    actual triangle distribution. If hotspots detected, reduce cell size.
+
+    Args:
+        triangles: List of triangles
+        target_tris_per_cell: Target average triangles per cell (default 50)
+        max_tris_per_cell: Maximum acceptable triangles in ANY cell (default 150)
+                          If exceeded, cell size will be reduced.
+
+    Returns:
+        Optimal cell size in meters (clamped to 0.25m - 2.0m range)
+    """
+    if not triangles or len(triangles) == 0:
+        return 1.0  # Default fallback
+
+    # Get scene bounds
+    min_x = min_y = min_z = float('inf')
+    max_x = max_y = max_z = float('-inf')
+
+    for tri in triangles:
+        for v in tri:
+            min_x = min(min_x, v[0])
+            max_x = max(max_x, v[0])
+            min_y = min(min_y, v[1])
+            max_y = max(max_y, v[1])
+            min_z = min(min_z, v[2])
+            max_z = max(max_z, v[2])
+
+    # Scene dimensions
+    size_x = max(max_x - min_x, 0.1)
+    size_y = max(max_y - min_y, 0.1)
+    size_z = max(max_z - min_z, 0.1)
+    volume = size_x * size_y * size_z
+
+    tri_count = len(triangles)
+
+    # Calculate density (triangles per cubic meter)
+    density = tri_count / volume if volume > 0 else 1.0
+
+    # Initial estimate based on average density
+    target_cell_volume = target_tris_per_cell / density if density > 0 else 1.0
+    cell_size = target_cell_volume ** (1/3)
+
+    # Clamp to reasonable range:
+    # - Min 0.25m: Prevents excessive memory usage
+    # - Max 2.0m: Lowered from 5.0m to handle mixed-density scenes better
+    cell_size = max(0.25, min(2.0, cell_size))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # HOTSPOT DETECTION: Sample actual triangle distribution
+    # If any cell would have too many triangles, reduce cell size
+    # ═══════════════════════════════════════════════════════════════════════════
+    max_iterations = 4  # Prevent infinite loop
+    iteration = 0
+
+    while iteration < max_iterations:
+        # Quick cell count estimation
+        nx = max(1, int(size_x / cell_size) + 1)
+        ny = max(1, int(size_y / cell_size) + 1)
+        nz = max(1, int(size_z / cell_size) + 1)
+
+        # Sample triangle distribution (count tris per cell)
+        cell_counts = {}
+        for tri in triangles:
+            # Get triangle center
+            cx = (tri[0][0] + tri[1][0] + tri[2][0]) / 3.0
+            cy = (tri[0][1] + tri[1][1] + tri[2][1]) / 3.0
+            cz = (tri[0][2] + tri[1][2] + tri[2][2]) / 3.0
+
+            # Map to cell
+            ix = min(nx - 1, max(0, int((cx - min_x) / cell_size)))
+            iy = min(ny - 1, max(0, int((cy - min_y) / cell_size)))
+            iz = min(nz - 1, max(0, int((cz - min_z) / cell_size)))
+
+            key = (ix, iy, iz)
+            cell_counts[key] = cell_counts.get(key, 0) + 1
+
+        # Find maximum triangles in any cell
+        max_in_cell = max(cell_counts.values()) if cell_counts else 0
+
+        # If within threshold, we're done
+        if max_in_cell <= max_tris_per_cell:
+            break
+
+        # Hotspot detected! Reduce cell size by 30% and try again
+        cell_size = max(0.25, cell_size * 0.7)
+        iteration += 1
+
+    return cell_size
+
+
+def build_uniform_grid(triangles, cell_size=None, context=None):
     """
     Build a uniform 3D grid for spatial acceleration.
 
@@ -135,7 +233,8 @@ def build_uniform_grid(triangles, cell_size=2.0, context=None):
 
     Args:
         triangles: List of triangles (picklable format)
-        cell_size: Size of each grid cell in Blender units (default 2.0m)
+        cell_size: Size of each grid cell in Blender units.
+                   If None, auto-computes optimal size based on triangle density.
         context: Blender context for debug output
 
     Returns:
@@ -156,10 +255,12 @@ def build_uniform_grid(triangles, cell_size=2.0, context=None):
     if not triangles:
         return None
 
-    # Get debug flag
+    # Get debug flag - always show grid build info at startup
     debug = False
+    startup_logs = True  # Grid build is always logged (one-time startup event)
     if context:
         debug = getattr(context.scene, 'dev_debug_kcc_physics', False)
+        startup_logs = getattr(context.scene, 'dev_startup_logs', True)
 
     # ========== Step 1: Calculate Bounds ==========
     min_x = min_y = min_z = float('inf')
@@ -173,6 +274,27 @@ def build_uniform_grid(triangles, cell_size=2.0, context=None):
             max_y = max(max_y, v[1])
             min_z = min(min_z, v[2])
             max_z = max(max_z, v[2])
+
+    # Calculate scene dimensions for adaptive cell size
+    size_x = max(max_x - min_x, 0.1)
+    size_y = max(max_y - min_y, 0.1)
+    size_z = max(max_z - min_z, 0.1)
+    volume = size_x * size_y * size_z
+    tri_count = len(triangles)
+    density = tri_count / volume if volume > 0 else 1.0
+
+    # ========== Step 1.5: Auto-compute cell size if not specified ==========
+    cell_size_mode = "fixed"
+    hotspot_iterations = 0
+    if cell_size is None:
+        # Pass back iteration count for logging
+        initial_estimate = (50 / density) ** (1/3) if density > 0 else 1.0
+        initial_estimate = max(0.25, min(2.0, initial_estimate))
+        cell_size = compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_cell=150)
+        cell_size_mode = "adaptive"
+        # Detect if hotspot refinement happened
+        if cell_size < initial_estimate * 0.95:  # More than 5% reduction = refinement happened
+            hotspot_iterations = int(round((1 - cell_size / initial_estimate) / 0.3)) + 1  # Estimate iterations
 
     # Add small padding to avoid edge cases
     padding = cell_size * 0.01
@@ -199,10 +321,20 @@ def build_uniform_grid(triangles, cell_size=2.0, context=None):
     grid_dims = (nx, ny, nz)
     total_cells = nx * ny * nz
 
-    if debug:
+    # Log grid build info (one-time startup event - always useful to see)
+    if startup_logs:
         print(f"\n[Grid Build] ========== BUILDING SPATIAL GRID ==========")
-        print(f"[Grid Build] Cell size: {cell_size:.2f}m")
-        print(f"[Grid Build] Scene size: ({size_x:.2f}, {size_y:.2f}, {size_z:.2f})")
+        print(f"[Grid Build] Triangles: {tri_count:,}")
+        print(f"[Grid Build] Scene size: ({size_x:.2f}m x {size_y:.2f}m x {size_z:.2f}m) = {volume:.1f}m³")
+        print(f"[Grid Build] Density: {density:.1f} tris/m³")
+        if cell_size_mode == "adaptive":
+            if hotspot_iterations > 0:
+                print(f"[Grid Build] Cell size: {cell_size:.3f}m (ADAPTIVE + HOTSPOT REFINEMENT x{hotspot_iterations})")
+                print(f"[Grid Build]            Initial estimate was too large, reduced to handle dense areas")
+            else:
+                print(f"[Grid Build] Cell size: {cell_size:.3f}m (ADAPTIVE - auto-computed for ~50 tris/cell)")
+        else:
+            print(f"[Grid Build] Cell size: {cell_size:.3f}m (FIXED - manually specified)")
         print(f"[Grid Build] Grid dimensions: {nx} x {ny} x {nz} = {total_cells:,} cells")
 
     # ========== Step 3: Assign Triangles to Cells ==========
@@ -263,13 +395,25 @@ def build_uniform_grid(triangles, cell_size=2.0, context=None):
         "triangle_count": len(triangles)
     }
 
-    if debug:
+    # Add cell_size_mode to stats for diagnostics
+    stats["cell_size_mode"] = cell_size_mode
+    stats["cell_size"] = cell_size
+    stats["density_tris_per_m3"] = density
+
+    if startup_logs:
         print(f"[Grid Build] ----- Cell Statistics -----")
         print(f"[Grid Build] Non-empty cells: {non_empty_cells:,} / {total_cells:,} ({stats['fill_ratio']*100:.1f}% fill)")
-        print(f"[Grid Build] Triangle references: {total_refs:,} (avg {avg_tris_per_cell:.1f} per cell)")
-        print(f"[Grid Build] Triangles per cell: min={min_tris_in_cell}, max={max_tris_in_cell}")
+        print(f"[Grid Build] Triangle refs: {total_refs:,} (avg {avg_tris_per_cell:.1f} per cell)")
+        print(f"[Grid Build] Tris per cell: min={min_tris_in_cell}, max={max_tris_in_cell}, target=50")
         print(f"[Grid Build] Grid memory: {memory_kb:.2f} KB")
         print(f"[Grid Build] Build time: {build_time_ms:.2f}ms")
+        # Show optimization assessment
+        if avg_tris_per_cell > 100:
+            print(f"[Grid Build] ⚠️  High avg tris/cell ({avg_tris_per_cell:.0f}) - consider smaller cell size")
+        elif avg_tris_per_cell < 10:
+            print(f"[Grid Build] ⚠️  Low avg tris/cell ({avg_tris_per_cell:.0f}) - consider larger cell size")
+        else:
+            print(f"[Grid Build] ✓ Good avg tris/cell ({avg_tris_per_cell:.0f}) - near optimal")
         print(f"[Grid Build] ============================================\n")
 
     # ========== Return Picklable Structure ==========

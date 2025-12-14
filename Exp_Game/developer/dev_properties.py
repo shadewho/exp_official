@@ -63,6 +63,22 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # SPATIAL GRID SYSTEM
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_grid = bpy.props.BoolProperty(
+        name="Spatial Grid",
+        description=(
+            "Spatial grid diagnostics:\n"
+            "• Cell size (adaptive or fixed)\n"
+            "• Triangle density (tris/m³)\n"
+            "• Average triangles per cell\n"
+            "• Raycast cell traversal stats"
+        ),
+        default=False
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
     # OFFLOAD SYSTEMS
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -343,6 +359,9 @@ def unregister_properties():
         # Engine
         'dev_debug_engine',
         'dev_startup_logs',
+
+        # Spatial grid
+        'dev_debug_grid',
 
         # Offload systems
         'dev_debug_kcc_physics',

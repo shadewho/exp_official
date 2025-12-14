@@ -768,8 +768,8 @@ class ExpModal(bpy.types.Operator):
             print_geometry_report(self.static_triangles, context)
 
             # Phase 2: Build spatial acceleration grid
-            # Cell size 0.5m for dense mesh support (was 2.0m - too coarse for dense geometry)
-            self.spatial_grid = build_uniform_grid(self.static_triangles, cell_size=0.5, context=context)
+            # Cell size auto-computed based on triangle density (targets ~50 tris/cell)
+            self.spatial_grid = build_uniform_grid(self.static_triangles, cell_size=None, context=context)
         else:
             self.static_triangles = []
             self.spatial_grid = None
