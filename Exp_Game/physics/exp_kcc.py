@@ -549,7 +549,7 @@ class KinematicCharacterController:
     # Job building
     # --------------------
 
-    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt, context=None, dynamic_map=None):
+    def _build_physics_job(self, wish_dir, is_running, jump_requested, dt, context=None, dynamic_map=None, velocity_map=None):
         """Build KCC_PHYSICS_STEP job data for worker."""
         cfg = self.cfg
 
@@ -575,6 +575,7 @@ class KinematicCharacterController:
         # Serialize dynamic mesh transforms (64 bytes per mesh) - lightweight, per-frame
         # Mesh triangles are cached via targeted broadcast_job (one-time, guaranteed delivery)
         dynamic_transforms = {}
+        dynamic_velocities = {}  # Mesh velocities for proximity diagnostics (12 bytes per mesh)
         if dynamic_map:
             for dyn_obj in dynamic_map.keys():
                 try:
@@ -587,6 +588,10 @@ class KinematicCharacterController:
                         matrix[2][0], matrix[2][1], matrix[2][2], matrix[2][3],
                         matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3],
                     )
+                    # Serialize velocity if available
+                    if velocity_map and dyn_obj in velocity_map:
+                        vel = velocity_map[dyn_obj]
+                        dynamic_velocities[obj_id] = (vel.x, vel.y, vel.z)
                 except Exception:
                     continue
 
@@ -632,6 +637,9 @@ class KinematicCharacterController:
             # Dynamic mesh transforms (per-frame, lightweight - 64 bytes per mesh)
             # Mesh triangles are cached via targeted broadcast_job (guaranteed delivery)
             "dynamic_transforms": dynamic_transforms,
+
+            # Dynamic mesh velocities (for proximity diagnostics - 12 bytes per mesh)
+            "dynamic_velocities": dynamic_velocities,
         }
 
     # ---- Main step ----------------------------------------------------------
@@ -747,7 +755,7 @@ class KinematicCharacterController:
         # 3. SUBMIT job and 4. POLL for same-frame result
         # ─────────────────────────────────────────────────────────────────────
         if engine:
-            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt, context, dynamic_map)
+            job_data = self._build_physics_job(wish_dir, is_running, jump_requested, dt, context, dynamic_map, platform_linear_velocity_map)
             job_id = engine.submit_job("KCC_PHYSICS_STEP", job_data)
             self._last_physics_job_id = job_id
 

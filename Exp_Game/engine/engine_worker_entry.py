@@ -1761,6 +1761,7 @@ def process_job(job) -> dict:
 
             global _cached_dynamic_transforms
             dynamic_transforms_update = job.data.get("dynamic_transforms", {})
+            dynamic_velocities = job.data.get("dynamic_velocities", {})  # For diagnostics
             dynamic_transform_time_us = 0.0
             transforms_updated = 0
             transforms_from_cache = 0
@@ -1983,6 +1984,127 @@ def process_job(job) -> dict:
                     "cell_size": grid_cell_size,
                     "grid_dims": grid_dims
                 }
+
+            # ─────────────────────────────────────────────────────────────────
+            # 4.99. DYNAMIC MESH PROXIMITY + PROACTIVE DETECTION
+            # When mesh is near AND (player stationary OR mesh approaching),
+            # cast rays TOWARD mesh to detect contact before normal collision
+            # ─────────────────────────────────────────────────────────────────
+            proximity_meshes = []
+            proactive_best_d = None
+            proactive_best_n = None
+            proactive_obj_id = None
+
+            if unified_dynamic_meshes:
+                # Player capsule AABB
+                p_min = (px - radius, py - radius, pz)
+                p_max = (px + radius, py + radius, pz + height)
+                player_speed = math.sqrt(vx*vx + vy*vy)
+
+                for dyn_mesh in unified_dynamic_meshes:
+                    obj_id = dyn_mesh.get("obj_id")
+                    mesh_aabb = dyn_mesh.get("aabb")
+                    if mesh_aabb is None:
+                        continue
+
+                    m_min, m_max = mesh_aabb
+
+                    # Get mesh velocity FIRST to scale detection range
+                    mesh_vel = dynamic_velocities.get(obj_id, (0.0, 0.0, 0.0))
+                    mvx, mvy, mvz = mesh_vel
+                    mesh_speed = math.sqrt(mvx*mvx + mvy*mvy)
+
+                    # AABB overlap check - expand by velocity to catch fast meshes EARLY
+                    # At 20m/s, mesh travels 0.66m/frame - need to detect 2-3 frames ahead
+                    speed_expand = mesh_speed * dt * 3.0  # 3 frames of travel
+                    expand = radius + 0.3 + speed_expand
+                    overlap = (
+                        p_min[0] - expand <= m_max[0] and p_max[0] + expand >= m_min[0] and
+                        p_min[1] - expand <= m_max[1] and p_max[1] + expand >= m_min[1] and
+                        p_min[2] - expand <= m_max[2] and p_max[2] + expand >= m_min[2]
+                    )
+
+                    if not overlap:
+                        continue
+
+                    # Compute mesh center
+                    mcx = (m_min[0] + m_max[0]) * 0.5
+                    mcy = (m_min[1] + m_max[1]) * 0.5
+
+                    # Direction from player to mesh center (horizontal only)
+                    dx = mcx - px
+                    dy = mcy - py
+                    dist_xy = math.sqrt(dx*dx + dy*dy)
+
+                    proximity_meshes.append(obj_id)
+
+                    if debug_horizontal:
+                        worker_logs.append(("HORIZONTAL",
+                            f"PROXIMITY obj={obj_id} dist_xy={dist_xy:.2f}m "
+                            f"mesh_vel=({mvx:.2f},{mvy:.2f},{mvz:.2f}) speed={mesh_speed:.2f}m/s "
+                            f"player_vel=({vx:.2f},{vy:.2f})"))
+
+                    # Check if mesh is moving fast enough to need proactive detection
+                    if mesh_speed < 0.5 and player_speed >= 1.0:
+                        continue  # Mesh slow and player moving - normal collision handles it
+
+                    # Determine ray direction based on mesh velocity (cast OPPOSITE to mesh movement)
+                    # This finds the surface that's approaching the player
+                    ray_directions = []
+
+                    if mesh_speed > 0.5:
+                        # Primary: Cast opposite to mesh velocity (toward approaching face)
+                        ray_dir_x = -mvx / mesh_speed
+                        ray_dir_y = -mvy / mesh_speed
+                        ray_directions.append((ray_dir_x, ray_dir_y, mesh_speed))
+
+                    # Secondary: Also cast toward mesh center for stationary meshes
+                    if dist_xy > 0.1:
+                        ray_dir_x = dx / dist_xy
+                        ray_dir_y = dy / dist_xy
+                        ray_directions.append((ray_dir_x, ray_dir_y, dist_xy))
+
+                    # Tertiary: Cardinal directions for robustness
+                    if mesh_speed > 2.0 or player_speed < 0.5:
+                        ray_directions.extend([
+                            (1.0, 0.0, 2.0),
+                            (-1.0, 0.0, 2.0),
+                            (0.0, 1.0, 2.0),
+                            (0.0, -1.0, 2.0),
+                        ])
+
+                    ray_heights = [0.1, height * 0.5, height - radius]
+
+                    # Scale ray distance by mesh speed - need to see further ahead for fast meshes
+                    speed_ray_extend = mesh_speed * dt * 3.0  # Look 3 frames ahead
+                    contact_range = radius + 0.1 + speed_ray_extend  # Detection triggers this far out
+
+                    for ray_dir_x, ray_dir_y, ray_max_hint in ray_directions:
+                        ray_max = max(radius + 0.5 + speed_ray_extend, ray_max_hint + speed_ray_extend)
+
+                        for ray_z in ray_heights:
+                            tris_counter = [0]
+                            total_rays += 1
+                            ray_result = cast_ray(
+                                (px, py, pz + ray_z), (ray_dir_x, ray_dir_y, 0), ray_max,
+                                _cached_grid, unified_dynamic_meshes, tris_counter
+                            )
+                            total_tris += tris_counter[0]
+
+                            if ray_result:
+                                hit_dist, hit_normal, hit_source, hit_obj_id = ray_result
+                                # Trigger if within contact range (scaled by speed)
+                                if hit_dist < contact_range:
+                                    if proactive_best_d is None or hit_dist < proactive_best_d:
+                                        proactive_best_d = hit_dist
+                                        proactive_best_n = hit_normal
+                                        proactive_obj_id = hit_obj_id
+
+                                        if debug_horizontal:
+                                            worker_logs.append(("HORIZONTAL",
+                                                f"PROACTIVE_HIT obj={hit_obj_id} dist={hit_dist:.3f}m "
+                                                f"contact_range={contact_range:.2f}m "
+                                                f"normal=({hit_normal[0]:.2f},{hit_normal[1]:.2f},{hit_normal[2]:.2f})"))
 
             # ─────────────────────────────────────────────────────────────────
             # 5. HORIZONTAL COLLISION - UNIFIED for all geometry
@@ -2281,6 +2403,70 @@ def process_job(job) -> dict:
                 # No grid cached - just move
                 px += move_x
                 py += move_y
+
+            # ─────────────────────────────────────────────────────────────────
+            # 5.1 PROACTIVE COLLISION RESPONSE
+            # Always push player away if penetrating a dynamic mesh
+            # Normal collision only BLOCKS movement, doesn't PUSH away
+            # ─────────────────────────────────────────────────────────────────
+            if proactive_best_d is not None:
+                pn_x, pn_y, pn_z = proactive_best_n
+
+                # Get mesh velocity
+                mesh_vel_toward = 0.0
+                mesh_speed_total = 0.0
+                if proactive_obj_id in dynamic_velocities:
+                    mvx, mvy, mvz = dynamic_velocities[proactive_obj_id]
+                    mesh_speed_total = math.sqrt(mvx*mvx + mvy*mvy)
+                    # How fast is mesh moving toward player? (along normal)
+                    mesh_vel_toward = -(mvx * pn_x + mvy * pn_y)  # Negative because normal points away from mesh
+
+                # Calculate "safe distance" - how far we need to be to survive next frame
+                # At high speeds, need bigger safety margin
+                safe_distance = radius + mesh_speed_total * dt * 2.0
+
+                # Penetration relative to safe distance (not just radius)
+                effective_penetration = safe_distance - proactive_best_d
+
+                # Always push if within safe distance
+                if effective_penetration > -0.1:  # Within 10cm of safe threshold
+                    h_blocked = True
+
+                    # Push amount = get to safe distance + buffer
+                    # For 20m/s mesh: safe_distance ~= 0.22 + 20*0.033*2 = 1.54m
+                    push_base = max(0.0, effective_penetration + 0.05)
+
+                    # Extra velocity-based push for very fast meshes
+                    push_velocity = max(0.0, mesh_vel_toward * dt * 2.0)
+
+                    push_total = push_base + push_velocity
+
+                    if push_total > 0.001:
+                        px += pn_x * push_total
+                        py += pn_y * push_total
+
+                    # Remove velocity component into wall
+                    vn = vx * pn_x + vy * pn_y
+                    if vn > 0.0:
+                        vx -= pn_x * vn
+                        vy -= pn_y * vn
+
+                    # Inherit mesh velocity (horizontal carry)
+                    if mesh_vel_toward > 0.5 and proactive_obj_id in dynamic_velocities:
+                        mvx, mvy, mvz = dynamic_velocities[proactive_obj_id]
+                        vx += mvx
+                        vy += mvy
+
+                    if debug_horizontal:
+                        worker_logs.append(("HORIZONTAL",
+                            f"PROACTIVE_PUSH dist={proactive_best_d:.3f}m safe={safe_distance:.2f}m "
+                            f"pen={effective_penetration:.3f}m vel={mesh_vel_toward:.1f}m/s push={push_total:.3f}m"))
+
+            # Post-collision diagnostic: did we miss any proximity meshes?
+            if debug_horizontal and proximity_meshes and not h_blocked:
+                worker_logs.append(("HORIZONTAL",
+                    f"MISSED? prox_meshes={len(proximity_meshes)} no_collision | "
+                    f"move_len={move_len:.3f}m player_vel=({vx:.2f},{vy:.2f})"))
 
             # ─────────────────────────────────────────────────────────────────
             # 5.5 VERTICAL BODY INTEGRITY CHECK - UNIFIED for all geometry
