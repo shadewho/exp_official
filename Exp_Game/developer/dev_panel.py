@@ -138,6 +138,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         box.label(text="Dynamic Mesh System", icon='MESH_DATA')
         col = box.column(align=True)
         col.prop(scene, "dev_debug_dynamic_cache", text="Cache & Transforms")
+        col.prop(scene, "dev_debug_dynamic_opt", text="Optimization Stats")
 
         layout.separator()
 

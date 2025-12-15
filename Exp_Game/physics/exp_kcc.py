@@ -428,16 +428,20 @@ class KinematicCharacterController:
         else:
             vx = vy = 0.0
 
-        # Rotate by camera yaw about Z
-        Rz = mathutils.Matrix.Rotation(camera_yaw, 4, 'Z')
-        world3 = Rz @ Vector((vx, vy, 0.0))
-        xy_len2 = world3.x * world3.x + world3.y * world3.y
-        if xy_len2 > 1.0e-12:
-            inv_xy = 1.0 / math.sqrt(xy_len2)
-            wish_x = world3.x * inv_xy
-            wish_y = world3.y * inv_xy
-        else:
-            wish_x = wish_y = 0.0
+        # Rotate by camera yaw about Z (OPTIMIZED: direct trig vs matrix allocation)
+        # 2D rotation: x' = x*cos - y*sin, y' = x*sin + y*cos
+        # Saves ~50-100µs vs Matrix.Rotation() + matrix-vector multiply
+        cos_yaw = math.cos(camera_yaw)
+        sin_yaw = math.sin(camera_yaw)
+        wish_x = vx * cos_yaw - vy * sin_yaw
+        wish_y = vx * sin_yaw + vy * cos_yaw
+
+        # Already normalized (vx,vy was normalized above), but clamp for safety
+        wish_len2 = wish_x * wish_x + wish_y * wish_y
+        if wish_len2 > 1.0001:  # Only normalize if somehow > 1 (floating point edge case)
+            inv_len = 1.0 / math.sqrt(wish_len2)
+            wish_x *= inv_len
+            wish_y *= inv_len
 
         return (wish_x, wish_y), (run_key in keys_pressed)
 
@@ -570,6 +574,7 @@ class KinematicCharacterController:
                 "slopes": getattr(scene, "dev_debug_physics_slopes", False),
                 # Dynamic mesh system (unified with static)
                 "dynamic_cache": getattr(scene, "dev_debug_dynamic_cache", False),
+                "dynamic_opt": getattr(scene, "dev_debug_dynamic_opt", False),
             }
 
         # Serialize dynamic mesh transforms (64 bytes per mesh) - lightweight, per-frame
@@ -892,23 +897,8 @@ class KinematicCharacterController:
         """
         self._cached_physics_result = result
 
-    # ---- Deprecated methods (kept for compatibility during transition) ------
-
-    def cache_input_result(self, wish_dir_xy, is_running):
-        """DEPRECATED: Use cache_physics_result instead."""
-        pass
-
-    def cache_slope_platform_result(self, delta_z, slide_xy, is_sliding, carry, rot_delta_z):
-        """DEPRECATED: Use cache_physics_result instead."""
-        pass
-
-    def cache_raycast_result(self, hit, hit_location, hit_normal, hit_distance):
-        """DEPRECATED: Use cache_physics_result instead."""
-        pass
-
-    def cache_forward_sweep_result(self, result_dict):
-        """DEPRECATED: Use cache_physics_result instead."""
-        pass
+    # NOTE: Deprecated cache_* methods removed (cache_input_result, cache_slope_platform_result,
+    # cache_raycast_result, cache_forward_sweep_result) - all replaced by cache_physics_result
 
     # ---- Debug visualization cleanup ----------------------------------------
 

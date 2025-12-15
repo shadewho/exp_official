@@ -32,6 +32,26 @@ import time
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _compute_bounding_radius(dyn_obj, matrix_world):
+    """
+    Compute bounding sphere radius for a dynamic mesh.
+    Accounts for object origin not being at mesh center.
+
+    Args:
+        dyn_obj: Blender mesh object
+        matrix_world: Object's world matrix
+
+    Returns:
+        float: Bounding sphere radius
+    """
+    bbox_world = [matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
+    center_world = sum(bbox_world, mathutils.Vector()) / 8.0
+    rad_center = max((p - center_world).length for p in bbox_world)
+    origin_world = matrix_world.translation
+    center_offset = (center_world - origin_world).length
+    return rad_center + center_offset
+
+
 def update_dynamic_meshes(modal_op):
     """
     Thin main-thread function for dynamic mesh management.
@@ -48,8 +68,7 @@ def update_dynamic_meshes(modal_op):
     # --- Initialize caches (once) ---
     if not hasattr(modal_op, "platform_prev_positions"):
         modal_op.platform_prev_positions = {}
-    if not hasattr(modal_op, "platform_prev_matrices"):
-        modal_op.platform_prev_matrices = {}
+    # NOTE: platform_prev_matrices replaced with platform_prev_quaternions (4 floats vs 16)
     if not hasattr(modal_op, "_cached_dyn_radius"):
         modal_op._cached_dyn_radius = {}
     if not hasattr(modal_op, "_cached_dynamic_mesh_ids"):
@@ -71,20 +90,12 @@ def update_dynamic_meshes(modal_op):
     else:
         modal_op.platform_ang_velocity_map.clear()
 
-    if not hasattr(modal_op, "platform_motion_map"):
-        modal_op.platform_motion_map = {}
-    else:
-        modal_op.platform_motion_map.clear()
+    # NOTE: platform_delta_quat_map, platform_delta_map, and platform_motion_map were REMOVED
+    # They were computed but never read (dead code)
+    # Only platform_ang_velocity_map is actually used downstream
 
-    if not hasattr(modal_op, "platform_delta_quat_map"):
-        modal_op.platform_delta_quat_map = {}
-    else:
-        modal_op.platform_delta_quat_map.clear()
-
-    if not hasattr(modal_op, "platform_delta_map"):
-        modal_op.platform_delta_map = {}
-    else:
-        modal_op.platform_delta_map.clear()
+    if not hasattr(modal_op, "platform_prev_quaternions"):
+        modal_op.platform_prev_quaternions = {}
 
     # Safe dt for velocity calculation
     frame_dt = getattr(modal_op, "physics_dt", None)
@@ -122,13 +133,8 @@ def update_dynamic_meshes(modal_op):
                     v2 = tuple(mesh.vertices[tri.vertices[2]].co)
                     triangles.append((v0, v1, v2))
 
-                # Compute bounding radius
-                bbox_world = [dyn_obj.matrix_world @ mathutils.Vector(c) for c in dyn_obj.bound_box]
-                center_world = sum(bbox_world, mathutils.Vector()) / 8.0
-                rad_center = max((p - center_world).length for p in bbox_world)
-                origin_world = dyn_obj.matrix_world.translation
-                center_offset = (center_world - origin_world).length
-                radius = rad_center + center_offset
+                # Compute bounding radius (uses helper to avoid duplicate code)
+                radius = _compute_bounding_radius(dyn_obj, dyn_obj.matrix_world)
                 modal_op._cached_dyn_radius[dyn_obj] = radius
 
                 # Broadcast to all workers with per-worker targeting (guaranteed delivery)
@@ -162,14 +168,9 @@ def update_dynamic_meshes(modal_op):
         mesh_count += 1
         cur_M = dyn_obj.matrix_world
 
-        # Get cached radius (or compute if missing)
+        # Get cached radius (or compute if missing - fallback only)
         if dyn_obj not in modal_op._cached_dyn_radius:
-            bbox_world = [cur_M @ mathutils.Vector(c) for c in dyn_obj.bound_box]
-            center_world = sum(bbox_world, mathutils.Vector()) / 8.0
-            rad_center = max((p - center_world).length for p in bbox_world)
-            origin_world = cur_M.translation
-            center_offset = (center_world - origin_world).length
-            modal_op._cached_dyn_radius[dyn_obj] = rad_center + center_offset
+            modal_op._cached_dyn_radius[dyn_obj] = _compute_bounding_radius(dyn_obj, cur_M)
 
         rad = modal_op._cached_dyn_radius.get(dyn_obj, 1.0)
 
@@ -178,34 +179,41 @@ def update_dynamic_meshes(modal_op):
 
         # ─────────────────────────────────────────────────────────────────
         # Compute velocities for platform carry (moving platforms)
+        # OPTIMIZED: Avoid redundant matrix copies on first frame
         # ─────────────────────────────────────────────────────────────────
         cur_pos = cur_M.translation.copy()
         prev_pos = modal_op.platform_prev_positions.get(dyn_obj)
 
         if prev_pos is not None:
             disp = cur_pos - prev_pos
-            modal_op.platform_motion_map[dyn_obj] = disp
             modal_op.platform_linear_velocity_map[dyn_obj] = disp / frame_dt
 
         modal_op.platform_prev_positions[dyn_obj] = cur_pos
 
-        # Angular velocity
-        prev_M = modal_op.platform_prev_matrices.get(dyn_obj, cur_M.copy())
-        delta_M = cur_M @ prev_M.inverted()
-        R = delta_M.to_3x3()
-        R.normalize()
-        dq = R.to_quaternion()
-        modal_op.platform_delta_quat_map[dyn_obj] = dq
-        modal_op.platform_delta_map[dyn_obj] = delta_M
-        modal_op.platform_prev_matrices[dyn_obj] = cur_M.copy()
+        # Angular velocity - OPTIMIZED: use quaternions instead of matrix inversion
+        # Quaternion inversion is O(1) vs matrix inversion O(n³)
+        # Also stores 4 floats instead of 16
+        cur_quat = cur_M.to_quaternion()
+        prev_quat = modal_op.platform_prev_quaternions.get(dyn_obj)
 
-        try:
-            axis, angle = dq.to_axis_angle()
-        except Exception:
-            axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
+        if prev_quat is None:
+            # First frame for this mesh - no angular velocity yet
+            modal_op.platform_ang_velocity_map[dyn_obj] = mathutils.Vector((0.0, 0.0, 0.0))
+        else:
+            # Compute delta rotation: delta = cur @ prev.inverted()
+            # Quaternion inversion is just conjugate for unit quaternions - O(1)!
+            delta_quat = cur_quat @ prev_quat.inverted()
 
-        omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
-        modal_op.platform_ang_velocity_map[dyn_obj] = omega
+            try:
+                axis, angle = delta_quat.to_axis_angle()
+            except Exception:
+                axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
+
+            omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
+            modal_op.platform_ang_velocity_map[dyn_obj] = omega
+
+        # Store current quaternion for next frame (4 floats vs 16 for matrix)
+        modal_op.platform_prev_quaternions[dyn_obj] = cur_quat
 
     # ═══════════════════════════════════════════════════════════════════════
     # PHASE 3: Summary logging

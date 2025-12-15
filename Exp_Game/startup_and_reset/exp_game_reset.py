@@ -216,17 +216,16 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             # Drop any notion of being "on a platform"
             modal_op.grounded_platform = None
 
-            # Re-seed prev positions/matrices to CURRENT matrices post-restore
-            modal_op.platform_motion_map = {}
-            modal_op.platform_delta_map = {}
+            # Re-seed prev positions to CURRENT matrices post-restore
+            # NOTE: platform_delta_map and platform_motion_map removed (dead code)
 
             if hasattr(modal_op, "moving_meshes"):
                 modal_op.platform_prev_positions = {}
-                modal_op.platform_prev_matrices  = {}
+                modal_op.platform_prev_quaternions = {}  # OPTIMIZED: 4 floats vs 16 for matrices
                 for dyn_obj in modal_op.moving_meshes:
                     if dyn_obj:
                         modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
-                        modal_op.platform_prev_matrices[dyn_obj]  = dyn_obj.matrix_world.copy()
+                        modal_op.platform_prev_quaternions[dyn_obj] = dyn_obj.matrix_world.to_quaternion()
 
             # Optional: suppress one frame of platform-delta application (see Patch 3)
             from ..props_and_utils.exp_time import get_game_time

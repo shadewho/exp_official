@@ -249,6 +249,19 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_dynamic_opt = bpy.props.BoolProperty(
+        name="Dynamic Optimization Stats",
+        description=(
+            "Dynamic mesh collision optimization stats:\n"
+            "• Meshes in proximity vs skipped by AABB\n"
+            "• Rays cast vs rays skipped (AABB cull)\n"
+            "• Triangles tested vs triangles skipped\n"
+            "• Early-out hits (stopped testing other meshes)\n"
+            "• Per-frame timing breakdown"
+        ),
+        default=False
+    )
+
     # ══════════════════════════════════════════════════════════════════════════
     # KCC VISUAL DEBUG (3D Viewport Overlay)
     # ══════════════════════════════════════════════════════════════════════════
@@ -381,6 +394,7 @@ def unregister_properties():
 
         # Dynamic mesh system
         'dev_debug_dynamic_cache',
+        'dev_debug_dynamic_opt',
 
         # Visual debug
         'dev_debug_kcc_visual',

@@ -69,6 +69,7 @@ _CATEGORY_MAP = {
     # Dynamic Mesh System (unified with static)
     'DYN-CACHE': 'dynamic_cache',
     'PLATFORM': 'dynamic_cache',  # Platform attach/detach (relative position system)
+    'DYN-OPT': 'dynamic_opt',     # Dynamic mesh optimization stats
 
     # Game Systems
     'INTERACTIONS': 'interactions',

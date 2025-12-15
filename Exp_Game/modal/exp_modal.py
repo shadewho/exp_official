@@ -530,14 +530,11 @@ class ExpModal(bpy.types.Operator):
         Make sure we have dictionaries for dynamic features,
         even if we don't have any dynamic meshes.
         """
-        if not hasattr(self, "platform_motion_map"):
-            self.platform_motion_map = {}
-        if not hasattr(self, "platform_delta_map"):
-            self.platform_delta_map = {}
+        # NOTE: platform_delta_map and platform_motion_map removed (dead code)
         if not hasattr(self, "platform_prev_positions"):
             self.platform_prev_positions = {}
-        if not hasattr(self, "platform_prev_matrices"):
-            self.platform_prev_matrices = {}
+        if not hasattr(self, "platform_prev_quaternions"):
+            self.platform_prev_quaternions = {}
         if not hasattr(self, "moving_meshes"):
             self.moving_meshes = []
         if not hasattr(self, "grounded_platform"):
@@ -781,10 +778,10 @@ class ExpModal(bpy.types.Operator):
                 # Store its initial position
                 self.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
 
-        self.platform_prev_matrices = {}
+        self.platform_prev_quaternions = {}  # OPTIMIZED: 4 floats vs 16 for matrices
         for dyn_obj in self.moving_meshes:
             if dyn_obj:
-                self.platform_prev_matrices[dyn_obj] = dyn_obj.matrix_world.copy()
+                self.platform_prev_quaternions[dyn_obj] = dyn_obj.matrix_world.to_quaternion()
 
         for entry in context.scene.proxy_meshes:
             if entry.hide_during_game and entry.mesh_object:

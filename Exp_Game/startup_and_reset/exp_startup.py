@@ -78,9 +78,7 @@ def clear_old_dynamic_references(self):
     """
     self.moving_meshes = []
     self.platform_prev_positions = {}
-    self.platform_prev_matrices = {}
-    if hasattr(self, "platform_motion_map"):
-        self.platform_motion_map = {}
+    self.platform_prev_quaternions = {}  # OPTIMIZED: 4 floats vs 16 for matrices
     if hasattr(self, "grounded_platform"):
         self.grounded_platform = None
 

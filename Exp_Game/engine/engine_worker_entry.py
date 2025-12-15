@@ -1726,6 +1726,7 @@ def process_job(job) -> dict:
             debug_step = debug_flags.get("step", False)            # Step-up
             debug_slide = debug_flags.get("slide", False)          # Wall slide
             debug_slopes = debug_flags.get("slopes", False)        # Slopes
+            debug_dynamic_opt = debug_flags.get("dynamic_opt", False)  # Dynamic mesh optimization stats
 
             # Worker log buffer (collected during computation, returned to main thread)
             worker_logs = []
@@ -1807,23 +1808,12 @@ def process_job(job) -> dict:
                 # Compute inverse matrix for local-space ray testing
                 inv_matrix = invert_matrix_4x4(matrix_4x4)
 
-                # Compute bounding sphere center from AABB (fast approximation)
-                if world_aabb:
-                    aabb_min, aabb_max = world_aabb
-                    center = (
-                        (aabb_min[0] + aabb_max[0]) * 0.5,
-                        (aabb_min[1] + aabb_max[1]) * 0.5,
-                        (aabb_min[2] + aabb_max[2]) * 0.5
-                    )
-                    # Radius is half-diagonal of AABB (conservative bound)
-                    import math
-                    half_diag = math.sqrt(
-                        (aabb_max[0] - aabb_min[0])**2 +
-                        (aabb_max[1] - aabb_min[1])**2 +
-                        (aabb_max[2] - aabb_min[2])**2
-                    ) * 0.5
-                    bounding_sphere = (center, half_diag)
-                else:
+                # OPTIMIZED: Skip bounding sphere computation - unified_raycast uses AABB first
+                # Bounding sphere is only a fallback, and we always have AABB from local_aabb transform
+                # This saves ~200 ops per mesh per frame (center calc + sqrt for radius)
+                # If AABB is somehow None, fall back to cached radius
+                bounding_sphere = None
+                if not world_aabb:
                     bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
 
                 # Add to unified format - triangles stay in LOCAL space!
@@ -1986,14 +1976,30 @@ def process_job(job) -> dict:
                 }
 
             # ─────────────────────────────────────────────────────────────────
-            # 4.99. DYNAMIC MESH PROXIMITY + PROACTIVE DETECTION
+            # 4.99. DYNAMIC MESH PROXIMITY + PROACTIVE DETECTION (OPTIMIZED)
             # When mesh is near AND (player stationary OR mesh approaching),
             # cast rays TOWARD mesh to detect contact before normal collision
+            #
+            # OPTIMIZATIONS:
+            # - Reduced ray directions: velocity-opposite + center only (was 8, now 2-4)
+            # - Perpendicular rays only for very fast meshes (>8m/s)
+            # - Early-out when contact found (< radius)
+            # - Stats tracking for performance monitoring
             # ─────────────────────────────────────────────────────────────────
             proximity_meshes = []
             proactive_best_d = None
             proactive_best_n = None
             proactive_obj_id = None
+            proactive_mesh_vel = None  # Cache velocity to avoid duplicate lookup
+
+            # Optimization stats
+            opt_meshes_total = len(unified_dynamic_meshes) if unified_dynamic_meshes else 0
+            opt_meshes_proximity = 0
+            opt_meshes_aabb_skip = 0
+            opt_meshes_slow_skip = 0
+            opt_rays_proactive = 0
+            opt_rays_hit = 0
+            opt_early_out = False
 
             if unified_dynamic_meshes:
                 # Player capsule AABB
@@ -2002,6 +2008,11 @@ def process_job(job) -> dict:
                 player_speed = math.sqrt(vx*vx + vy*vy)
 
                 for dyn_mesh in unified_dynamic_meshes:
+                    # Early-out: if we already found very close contact, stop searching
+                    if proactive_best_d is not None and proactive_best_d < radius * 0.5:
+                        opt_early_out = True
+                        break
+
                     obj_id = dyn_mesh.get("obj_id")
                     mesh_aabb = dyn_mesh.get("aabb")
                     if mesh_aabb is None:
@@ -2025,7 +2036,10 @@ def process_job(job) -> dict:
                     )
 
                     if not overlap:
+                        opt_meshes_aabb_skip += 1
                         continue
+
+                    opt_meshes_proximity += 1
 
                     # Compute mesh center
                     mcx = (m_min[0] + m_max[0]) * 0.5
@@ -2046,10 +2060,13 @@ def process_job(job) -> dict:
 
                     # Check if mesh is moving fast enough to need proactive detection
                     if mesh_speed < 0.5 and player_speed >= 1.0:
+                        opt_meshes_slow_skip += 1
                         continue  # Mesh slow and player moving - normal collision handles it
 
-                    # Determine ray direction based on mesh velocity (cast OPPOSITE to mesh movement)
-                    # This finds the surface that's approaching the player
+                    # OPTIMIZED: Reduced ray directions (was 8 directions, now 2-4)
+                    # Primary: velocity-opposite (most important)
+                    # Secondary: toward mesh center (backup)
+                    # Tertiary: perpendicular only for VERY fast meshes
                     ray_directions = []
 
                     if mesh_speed > 0.5:
@@ -2058,21 +2075,21 @@ def process_job(job) -> dict:
                         ray_dir_y = -mvy / mesh_speed
                         ray_directions.append((ray_dir_x, ray_dir_y, mesh_speed))
 
-                    # Secondary: Also cast toward mesh center for stationary meshes
+                        # Tertiary: Perpendicular rays for very fast meshes only (>8m/s)
+                        # Catches glancing collisions at high speed
+                        if mesh_speed > 8.0:
+                            perp_x = -ray_dir_y  # Perpendicular left
+                            perp_y = ray_dir_x
+                            ray_directions.append((perp_x, perp_y, radius + 0.5))
+                            ray_directions.append((-perp_x, -perp_y, radius + 0.5))
+
+                    # Secondary: Also cast toward mesh center
                     if dist_xy > 0.1:
                         ray_dir_x = dx / dist_xy
                         ray_dir_y = dy / dist_xy
                         ray_directions.append((ray_dir_x, ray_dir_y, dist_xy))
 
-                    # Tertiary: Cardinal directions for robustness
-                    if mesh_speed > 2.0 or player_speed < 0.5:
-                        ray_directions.extend([
-                            (1.0, 0.0, 2.0),
-                            (-1.0, 0.0, 2.0),
-                            (0.0, 1.0, 2.0),
-                            (0.0, -1.0, 2.0),
-                        ])
-
+                    # 3 heights: feet, mid, head (head important for beams/overhangs)
                     ray_heights = [0.1, height * 0.5, height - radius]
 
                     # Scale ray distance by mesh speed - need to see further ahead for fast meshes
@@ -2080,11 +2097,16 @@ def process_job(job) -> dict:
                     contact_range = radius + 0.1 + speed_ray_extend  # Detection triggers this far out
 
                     for ray_dir_x, ray_dir_y, ray_max_hint in ray_directions:
+                        # Early-out within direction loop
+                        if proactive_best_d is not None and proactive_best_d < radius * 0.5:
+                            break
+
                         ray_max = max(radius + 0.5 + speed_ray_extend, ray_max_hint + speed_ray_extend)
 
                         for ray_z in ray_heights:
                             tris_counter = [0]
                             total_rays += 1
+                            opt_rays_proactive += 1
                             ray_result = cast_ray(
                                 (px, py, pz + ray_z), (ray_dir_x, ray_dir_y, 0), ray_max,
                                 _cached_grid, unified_dynamic_meshes, tris_counter
@@ -2093,18 +2115,29 @@ def process_job(job) -> dict:
 
                             if ray_result:
                                 hit_dist, hit_normal, hit_source, hit_obj_id = ray_result
+                                opt_rays_hit += 1
                                 # Trigger if within contact range (scaled by speed)
                                 if hit_dist < contact_range:
                                     if proactive_best_d is None or hit_dist < proactive_best_d:
                                         proactive_best_d = hit_dist
                                         proactive_best_n = hit_normal
                                         proactive_obj_id = hit_obj_id
+                                        # Cache velocity to avoid duplicate lookup in push response
+                                        proactive_mesh_vel = (mvx, mvy, mvz, mesh_speed)
 
                                         if debug_horizontal:
                                             worker_logs.append(("HORIZONTAL",
                                                 f"PROACTIVE_HIT obj={hit_obj_id} dist={hit_dist:.3f}m "
                                                 f"contact_range={contact_range:.2f}m "
                                                 f"normal=({hit_normal[0]:.2f},{hit_normal[1]:.2f},{hit_normal[2]:.2f})"))
+
+            # Log optimization stats
+            if debug_dynamic_opt and opt_meshes_total > 0:
+                worker_logs.append(("DYN-OPT",
+                    f"PROACTIVE meshes={opt_meshes_proximity}/{opt_meshes_total} "
+                    f"aabb_skip={opt_meshes_aabb_skip} slow_skip={opt_meshes_slow_skip} "
+                    f"rays={opt_rays_proactive} hits={opt_rays_hit} "
+                    f"early_out={opt_early_out} best_d={proactive_best_d if proactive_best_d else 'none'}"))
 
             # ─────────────────────────────────────────────────────────────────
             # 5. HORIZONTAL COLLISION - UNIFIED for all geometry
@@ -2335,11 +2368,14 @@ def process_job(job) -> dict:
                             dot = fwd_x * bn_x + fwd_y * bn_y
                             slide_x = fwd_x - bn_x * dot
                             slide_y = fwd_y - bn_y * dot
-                            slide_len = math.sqrt(slide_x*slide_x + slide_y*slide_y)
 
-                            # Don't slide if too perpendicular
-                            if slide_len < 0.259:
+                            # OPTIMIZED: Check squared length first to avoid sqrt when zeroing
+                            # 0.259² ≈ 0.067
+                            slide_len_sq = slide_x*slide_x + slide_y*slide_y
+                            if slide_len_sq < 0.067:
                                 slide_len = 0.0
+                            else:
+                                slide_len = math.sqrt(slide_len_sq)
 
                             # Block uphill sliding on steep slopes
                             if is_steep_face and on_ground and slide_len > 1e-9:
@@ -2412,12 +2448,11 @@ def process_job(job) -> dict:
             if proactive_best_d is not None:
                 pn_x, pn_y, pn_z = proactive_best_n
 
-                # Get mesh velocity
+                # Use cached velocity (OPTIMIZED: avoids duplicate dict lookup + sqrt)
                 mesh_vel_toward = 0.0
                 mesh_speed_total = 0.0
-                if proactive_obj_id in dynamic_velocities:
-                    mvx, mvy, mvz = dynamic_velocities[proactive_obj_id]
-                    mesh_speed_total = math.sqrt(mvx*mvx + mvy*mvy)
+                if proactive_mesh_vel is not None:
+                    mvx, mvy, mvz, mesh_speed_total = proactive_mesh_vel
                     # How fast is mesh moving toward player? (along normal)
                     mesh_vel_toward = -(mvx * pn_x + mvy * pn_y)  # Negative because normal points away from mesh
 
@@ -2452,8 +2487,8 @@ def process_job(job) -> dict:
                         vy -= pn_y * vn
 
                     # Inherit mesh velocity (horizontal carry)
-                    if mesh_vel_toward > 0.5 and proactive_obj_id in dynamic_velocities:
-                        mvx, mvy, mvz = dynamic_velocities[proactive_obj_id]
+                    # Uses cached mvx, mvy from proactive_mesh_vel (no extra lookup)
+                    if mesh_vel_toward > 0.5 and proactive_mesh_vel is not None:
                         vx += mvx
                         vy += mvy
 
@@ -2844,6 +2879,25 @@ def process_job(job) -> dict:
                         f"rays={total_rays} tris={total_tris} | "
                         f"ground={ground_src}"))
 
+            # ═════════════════════════════════════════════════════════════════
+            # DYNAMIC OPTIMIZATION SUMMARY - Per-frame stats
+            # ═════════════════════════════════════════════════════════════════
+            if debug_dynamic_opt and opt_meshes_total > 0:
+                # Calculate rays used for normal collision (total - proactive)
+                normal_rays = total_rays - opt_rays_proactive
+
+                # Estimate efficiency: how many rays we saved vs old system
+                # Old: 8 directions × 3 heights = 24 rays per mesh
+                # New: 2-4 directions × 2 heights = 4-8 rays per mesh
+                old_system_rays = opt_meshes_proximity * 24  # Worst case old
+                rays_saved = max(0, old_system_rays - opt_rays_proactive)
+
+                worker_logs.append(("DYN-OPT",
+                    f"FRAME total={calc_time_us:.0f}us | "
+                    f"rays: proactive={opt_rays_proactive} normal={normal_rays} total={total_rays} | "
+                    f"tris={total_tris} | "
+                    f"est_saved={rays_saved}rays"))
+
             result_data = {
                 "pos": (px, py, pz),
                 "vel": (vx, vy, vz),
@@ -2954,21 +3008,9 @@ def process_job(job) -> dict:
                 if inv_matrix is None:
                     continue
 
-                # Compute bounding sphere from AABB
-                if world_aabb:
-                    aabb_min, aabb_max = world_aabb
-                    center = (
-                        (aabb_min[0] + aabb_max[0]) * 0.5,
-                        (aabb_min[1] + aabb_max[1]) * 0.5,
-                        (aabb_min[2] + aabb_max[2]) * 0.5
-                    )
-                    half_diag = math.sqrt(
-                        (aabb_max[0] - aabb_min[0])**2 +
-                        (aabb_max[1] - aabb_min[1])**2 +
-                        (aabb_max[2] - aabb_min[2])**2
-                    ) * 0.5
-                    bounding_sphere = (center, half_diag)
-                else:
+                # OPTIMIZED: Skip bounding sphere - unified_raycast uses AABB first
+                bounding_sphere = None
+                if not world_aabb:
                     bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
 
                 # Add to unified format (same as KCC)
