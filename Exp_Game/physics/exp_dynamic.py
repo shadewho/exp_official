@@ -153,9 +153,9 @@ def update_dynamic_meshes(modal_op):
     # ═══════════════════════════════════════════════════════════════════════
     # PHASE 2: Send transforms for ALL dynamic meshes
     # ═══════════════════════════════════════════════════════════════════════
-    # Worker caches transforms, so we only need to send when mesh MOVES.
-    # For now, send all transforms every frame (simple, correct).
-    # Optimization: Track dirty state and only send changes.
+    # Worker caches transforms, so stationary meshes have zero worker cost.
+    # We still send all transforms because worker cache can be cleared/reset
+    # and we need to ensure it always has current data.
     # ═══════════════════════════════════════════════════════════════════════
 
     mesh_count = 0
@@ -206,7 +206,10 @@ def update_dynamic_meshes(modal_op):
 
             try:
                 axis, angle = delta_quat.to_axis_angle()
-            except Exception:
+            except Exception as e:
+                if debug_dyn_cache:
+                    from ..developer.dev_logger import log_game
+                    log_game("DYN-CACHE", f"WARN: axis_angle failed: {type(e).__name__}")
                 axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
 
             omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
@@ -220,7 +223,4 @@ def update_dynamic_meshes(modal_op):
     # ═══════════════════════════════════════════════════════════════════════
     if debug_dyn_cache and mesh_count > 0:
         from ..developer.dev_logger import log_game
-        total_tris = sum(len(pm.mesh_object.data.loop_triangles)
-                        for pm in scene.proxy_meshes
-                        if pm.mesh_object and pm.mesh_object.type == 'MESH' and pm.is_moving)
-        log_game("DYN-CACHE", f"SEND: {mesh_count} meshes ({total_tris} tris) → worker")
+        log_game("DYN-CACHE", f"TRANSFORMS: sent={mesh_count} meshes")

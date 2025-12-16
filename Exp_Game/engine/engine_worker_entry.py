@@ -43,7 +43,7 @@ _cached_dynamic_meshes = {}  # Will hold dynamic mesh data after CACHE_DYNAMIC_M
 # - Moving meshes: main thread sends update, worker caches it
 # - No activation logic needed - worker always knows where all meshes are
 # ============================================================================
-_cached_dynamic_transforms = {}  # {obj_id: (matrix_16_tuple, world_aabb)}
+_cached_dynamic_transforms = {}  # {obj_id: (matrix_16_tuple, world_aabb, inv_matrix)}
 
 
 
@@ -1782,8 +1782,11 @@ def process_job(job) -> dict:
                 else:
                     world_aabb = None
 
-                # Cache the transform + computed world AABB
-                _cached_dynamic_transforms[obj_id] = (matrix_4x4, world_aabb)
+                # Compute inverse matrix ONCE when transform changes (not every frame)
+                inv_matrix = invert_matrix_4x4(matrix_4x4)
+
+                # Cache the transform + computed world AABB + inverse matrix
+                _cached_dynamic_transforms[obj_id] = (matrix_4x4, world_aabb, inv_matrix)
                 transforms_updated += 1
 
             # ═══════════════════════════════════════════════════════════════════
@@ -1794,10 +1797,14 @@ def process_job(job) -> dict:
             unified_dynamic_meshes = []
             transform_start = time.perf_counter()
 
-            for obj_id, (matrix_4x4, world_aabb) in _cached_dynamic_transforms.items():
+            for obj_id, (matrix_4x4, world_aabb, inv_matrix) in _cached_dynamic_transforms.items():
                 cached = _cached_dynamic_meshes.get(obj_id)
                 if cached is None:
                     continue  # Shouldn't happen, but be safe
+
+                # Skip if inverse matrix failed (singular matrix)
+                if inv_matrix is None:
+                    continue
 
                 local_triangles = cached["triangles"]
 
@@ -1805,8 +1812,7 @@ def process_job(job) -> dict:
                 if obj_id not in dynamic_transforms_update:
                     transforms_from_cache += 1
 
-                # Compute inverse matrix for local-space ray testing
-                inv_matrix = invert_matrix_4x4(matrix_4x4)
+                # inv_matrix already cached - no per-frame computation needed!
 
                 # OPTIMIZED: Skip bounding sphere computation - unified_raycast uses AABB first
                 # Bounding sphere is only a fallback, and we always have AABB from local_aabb transform
@@ -2991,22 +2997,25 @@ def process_job(job) -> dict:
                     continue
                 local_aabb = cached.get("local_aabb")
                 world_aabb = transform_aabb_by_matrix(local_aabb, matrix_4x4) if local_aabb else None
-                _cached_dynamic_transforms[obj_id] = (matrix_4x4, world_aabb)
+                # Compute inverse matrix ONCE when transform changes
+                inv_matrix = invert_matrix_4x4(matrix_4x4)
+                _cached_dynamic_transforms[obj_id] = (matrix_4x4, world_aabb, inv_matrix)
 
             # Build mesh list from ALL cached transforms
             unified_dynamic_meshes = []
 
-            for obj_id, (matrix_4x4, world_aabb) in _cached_dynamic_transforms.items():
+            for obj_id, (matrix_4x4, world_aabb, inv_matrix) in _cached_dynamic_transforms.items():
                 cached = _cached_dynamic_meshes.get(obj_id)
                 if cached is None:
                     continue
 
-                local_triangles = cached["triangles"]
-
-                # Compute inverse matrix for local-space ray testing
-                inv_matrix = invert_matrix_4x4(matrix_4x4)
+                # Skip if inverse matrix failed (singular matrix)
                 if inv_matrix is None:
                     continue
+
+                local_triangles = cached["triangles"]
+
+                # inv_matrix already cached - no per-frame computation needed!
 
                 # OPTIMIZED: Skip bounding sphere - unified_raycast uses AABB first
                 bounding_sphere = None

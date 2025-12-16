@@ -766,11 +766,13 @@ class KinematicCharacterController:
 
             # Same-frame polling: wait for our result
             # Worker computes in ~100-200µs typically, but dynamic mesh transforms can add 1-2ms
-            # Using adaptive polling: busy-poll first, then sleep if needed
+            # Using EXPONENTIAL BACKOFF: start with tiny sleep, double each iteration
+            # This catches fast results quickly while avoiding CPU spin on slow ones
             poll_start = time.perf_counter()
             poll_timeout = 0.005  # 5ms max wait (dynamic mesh adds latency)
             result_found = False
-            poll_count = 0
+            sleep_us = 25  # Start at 25µs, will double each iteration
+            max_sleep_us = 500  # Cap at 500µs to stay responsive
 
             while True:
                 elapsed = time.perf_counter() - poll_start
@@ -791,12 +793,11 @@ class KinematicCharacterController:
                 if result_found:
                     break
 
-                poll_count += 1
-
-                # Adaptive sleep: busy-poll first 3 times, then add tiny sleeps
-                # This minimizes latency while avoiding CPU spin
-                if poll_count >= 3:
-                    time.sleep(0.00005)  # 50µs (smaller than before)
+                # Exponential backoff: 25µs → 50µs → 100µs → 200µs → 400µs → 500µs (capped)
+                # Fast results (~100µs): caught in 1-2 iterations with minimal latency
+                # Slow results (~2ms): ~8 iterations instead of ~40, less CPU spin
+                time.sleep(sleep_us * 1e-6)
+                sleep_us = min(sleep_us * 2, max_sleep_us)
 
             # Debug output (FAST BUFFER LOGGING)
             if context and getattr(context.scene, 'dev_debug_kcc_physics', False):
