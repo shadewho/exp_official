@@ -255,12 +255,12 @@ def build_uniform_grid(triangles, cell_size=None, context=None):
     if not triangles:
         return None
 
-    # Get debug flag - always show grid build info at startup
+    # Get debug flags from context
     debug = False
-    startup_logs = True  # Grid build is always logged (one-time startup event)
+    startup_logs = False
     if context:
         debug = getattr(context.scene, 'dev_debug_kcc_physics', False)
-        startup_logs = getattr(context.scene, 'dev_startup_logs', True)
+        startup_logs = getattr(context.scene, 'dev_startup_logs', False)
 
     # ========== Step 1: Calculate Bounds ==========
     min_x = min_y = min_z = float('inf')

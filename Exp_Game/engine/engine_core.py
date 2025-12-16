@@ -698,14 +698,14 @@ class EngineCore:
 
     def output_debug_stats(self, context=None):
         """
-        Phase 1: Output debug statistics for visibility.
+        Output debug statistics for visibility.
 
         Shows:
         - Worker load distribution (% of total jobs)
-        - Job type profiling (avg time, count, jobs/sec)
         - Overall throughput (jobs/sec)
 
-        Respects scene.dev_debug_engine and scene.dev_debug_engine_hz properties.
+        Respects scene.dev_debug_engine property.
+        Frequency gating handled by log_game() via master Hz.
 
         Args:
             context: Blender context (optional, for accessing scene properties)
@@ -713,23 +713,18 @@ class EngineCore:
         if not self._running:
             return
 
-        # Try to get scene properties (if context provided and bpy available)
+        # Check if engine debug is enabled
         engine_enabled = False
-        engine_hz = 1
 
         try:
             if context:
                 import bpy
-                scene = context.scene
-                engine_enabled = getattr(scene, "dev_debug_engine", False)
-                engine_hz = getattr(scene, "dev_debug_engine_hz", 1)
+                engine_enabled = getattr(context.scene, "dev_debug_engine", False)
             else:
                 # No context - try to get from bpy.context
                 import bpy
                 if bpy.context and bpy.context.scene:
-                    scene = bpy.context.scene
-                    engine_enabled = getattr(scene, "dev_debug_engine", False)
-                    engine_hz = getattr(scene, "dev_debug_engine_hz", 1)
+                    engine_enabled = getattr(bpy.context.scene, "dev_debug_engine", False)
         except:
             # bpy not available or no context - skip debug output
             return

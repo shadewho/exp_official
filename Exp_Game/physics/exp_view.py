@@ -452,26 +452,6 @@ def submit_camera_occlusion_early(op, context):
     anchor = op.target_object.location + Vector((0.0, 0.0, cap_h))
 
     desired_max = max(0.0, context.scene.orbit_distance + context.scene.zoom_factor)
-
-    # Early-out: DISABLED - was causing timing-dependent behavior
-    # TODO: Re-enable with proper dynamic mesh tracking after debug investigation
-    # last_submit = view.get("last_submit_params")
-    # if last_submit is not None:
-    #     lp, ly, lax, lay, laz, ldm = last_submit
-    #     pose_unchanged = (
-    #         abs(pitch - lp) < 0.0015 and
-    #         abs(yaw - ly) < 0.0015 and
-    #         abs(anchor.x - lax) < 0.008 and
-    #         abs(anchor.y - lay) < 0.008 and
-    #         abs(anchor.z - laz) < 0.008 and
-    #         abs(desired_max - ldm) < 0.010
-    #     )
-    #     if pose_unchanged:
-    #         view["stats_skip_unchanged"] = view.get("stats_skip_unchanged", 0) + 1
-    #         if debug_camera:
-    #             print(f"[Camera SKIP] pose unchanged (Δpitch={abs(pitch-lp):.4f} Δyaw={abs(yaw-ly):.4f})")
-    #         return
-
     # Gather dynamic mesh transforms (worker uses cached triangles)
     # Mesh triangles are cached via targeted broadcast_job (guaranteed delivery)
     dynamic_objects_map = getattr(op, "dynamic_objects_map", None)
