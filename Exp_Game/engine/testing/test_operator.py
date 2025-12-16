@@ -4,7 +4,7 @@ Blender operator for running engine stress tests from the UI.
 """
 
 import bpy
-from .engine_core import EngineCore
+from ..engine_core import EngineCore
 from .stress_test import run_stress_test, quick_test
 
 

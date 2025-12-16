@@ -32,12 +32,19 @@ from ..mouse_and_movement.exp_cursor import (
     handle_mouse_move,
     release_cursor_clip,
     ensure_cursor_hidden_if_mac,
+    force_restore_cursor,
 )
 from ..physics.exp_kcc import KinematicCharacterController
 from ..startup_and_reset.exp_fullscreen import exit_fullscreen_once
 from .exp_loop import GameLoop
 from ..physics.exp_view_fpv import reset_fpv_rot_scale
-from ..engine import EngineCore
+from .exp_engine_bridge import (
+    init_engine,
+    shutdown_engine,
+    submit_engine_job,
+    process_engine_result,
+    print_sync_report,
+)
 
 def _first_view3d_r3d():
     """
@@ -77,326 +84,6 @@ def get_active_modal_operator():
     """
     return _active_modal_operator
 
-
-# ============================================================================
-# ENGINE SYNC TEST MANAGER
-# Comprehensive testing system for engine-modal synchronization under load
-# ============================================================================
-
-class EngineSyncTestManager:
-    """
-    Manages comprehensive stress testing of the multiprocessing engine.
-    Tests engine synchronization with 30Hz modal under realistic game loads.
-    """
-
-    def __init__(self):
-        # Test scenarios - each tests different load characteristics
-        self.scenarios = [
-            {
-                "name": "BASELINE",
-                "duration_frames": 60,  # 2 seconds at 30Hz
-                "jobs_per_frame": 1,
-                "compute_ms_min": 0.0,
-                "compute_ms_max": 0.1,
-                "description": "Lightweight test - verify zero-latency capability",
-                "target_grade": "A",
-            },
-            {
-                "name": "LIGHT_LOAD",
-                "duration_frames": 90,  # 3 seconds
-                "jobs_per_frame": 5,
-                "compute_ms_min": 1.0,
-                "compute_ms_max": 3.0,
-                "description": "Normal gameplay - 5 AI agents pathfinding",
-                "target_grade": "A",
-            },
-            {
-                "name": "MEDIUM_LOAD",
-                "duration_frames": 90,  # 3 seconds
-                "jobs_per_frame": 15,
-                "compute_ms_min": 2.0,
-                "compute_ms_max": 5.0,
-                "description": "Busy gameplay - 10 AI + 5 physics predictions",
-                "target_grade": "B",
-            },
-            {
-                "name": "HEAVY_LOAD",
-                "duration_frames": 90,  # 3 seconds
-                "jobs_per_frame": 30,
-                "compute_ms_min": 3.0,
-                "compute_ms_max": 8.0,
-                "description": "Worst case - 20 AI + 10 physics + batch operations",
-                "target_grade": "B",
-            },
-            {
-                "name": "BURST_TEST",
-                "duration_frames": 90,  # 3 seconds
-                "jobs_per_frame": 5,  # Normal load
-                "burst_every_n_frames": 30,  # Every second
-                "burst_job_count": 50,
-                "compute_ms_min": 2.0,
-                "compute_ms_max": 5.0,
-                "description": "Burst stress - simulate enemy spawns/explosions",
-                "target_grade": "B",
-            },
-            {
-                "name": "CATCHUP_STRESS",
-                "duration_frames": 120,  # 4 seconds
-                "jobs_per_frame": 10,
-                "compute_ms_min": 2.0,
-                "compute_ms_max": 5.0,
-                "force_delays": True,  # Trigger catchup frames
-                "delay_every_n_frames": 15,  # Every 0.5 seconds
-                "delay_duration_ms": 100,  # 100ms delay = guaranteed catchup
-                "description": "Catchup stress - force modal inconsistency and verify sync",
-                "target_grade": "B",
-            },
-        ]
-
-        # Current test state
-        self.current_scenario_index = 0
-        self.scenario_start_frame = 0
-        self.total_test_frames = sum(s["duration_frames"] for s in self.scenarios)
-
-        # Per-scenario metrics
-        self.scenario_metrics = []
-        for scenario in self.scenarios:
-            self.scenario_metrics.append({
-                "name": scenario["name"],
-                "jobs_submitted": 0,
-                "results_received": 0,
-                "frame_latencies": [],
-                "time_latencies": [],
-                "start_frame": 0,
-                "end_frame": 0,
-                # Catchup tracking
-                "catchup_events": 0,  # Times we had 2+ physics steps in one timer event
-                "total_catchup_steps": 0,  # Total extra steps (steps - 1)
-                "max_catchup": 0,  # Max steps in single event
-                "frame_attribution_errors": 0,  # Results arriving at wrong frame
-            })
-
-        # Test start time
-        self.test_start_time = time.perf_counter()
-
-        print("\n" + "="*70)
-        print("ENGINE SYNC STRESS TEST - STARTING")
-        print("="*70)
-        print(f"Total duration: {self.total_test_frames} frames ({self.total_test_frames/30:.1f}s at 30Hz)")
-        print(f"Scenarios: {len(self.scenarios)}")
-        for i, scenario in enumerate(self.scenarios):
-            print(f"  [{i+1}] {scenario['name']}: {scenario['duration_frames']}f - {scenario['description']}")
-        print("="*70 + "\n")
-
-    def get_current_scenario(self):
-        """Get the currently active test scenario."""
-        if self.current_scenario_index >= len(self.scenarios):
-            return None
-        return self.scenarios[self.current_scenario_index]
-
-    def should_advance_scenario(self, current_frame):
-        """Check if we should move to the next scenario."""
-        scenario = self.get_current_scenario()
-        if not scenario:
-            return False
-
-        frames_in_scenario = current_frame - self.scenario_start_frame
-        return frames_in_scenario >= scenario["duration_frames"]
-
-    def advance_scenario(self, current_frame):
-        """Move to the next test scenario."""
-        if self.current_scenario_index < len(self.scenarios):
-            # Close out current scenario metrics
-            self.scenario_metrics[self.current_scenario_index]["end_frame"] = current_frame
-
-            # Advance to next scenario
-            self.current_scenario_index += 1
-            self.scenario_start_frame = current_frame
-
-            if self.current_scenario_index < len(self.scenarios):
-                scenario = self.scenarios[self.current_scenario_index]
-                self.scenario_metrics[self.current_scenario_index]["start_frame"] = current_frame
-
-                print(f"\n{'='*70}")
-                print(f"SCENARIO {self.current_scenario_index + 1}/{len(self.scenarios)}: {scenario['name']}")
-                print(f"{'='*70}")
-                print(f"Description: {scenario['description']}")
-                print(f"Duration: {scenario['duration_frames']} frames")
-                print(f"Jobs/frame: {scenario['jobs_per_frame']}")
-                print(f"Compute: {scenario['compute_ms_min']}-{scenario['compute_ms_max']}ms")
-                if "burst_every_n_frames" in scenario:
-                    print(f"Bursts: {scenario['burst_job_count']} jobs every {scenario['burst_every_n_frames']} frames")
-                print(f"Target: Grade {scenario['target_grade']}")
-                print(f"{'='*70}\n")
-
-    def generate_jobs_for_frame(self, current_frame, operator, physics_steps=1):
-        """Generate and submit jobs based on current scenario."""
-        scenario = self.get_current_scenario()
-        if not scenario:
-            return  # Test complete
-
-        # Check if we should advance to next scenario
-        if self.should_advance_scenario(current_frame):
-            self.advance_scenario(current_frame)
-            scenario = self.get_current_scenario()
-            if not scenario:
-                return
-
-        frames_in_scenario = current_frame - self.scenario_start_frame
-        jobs_to_submit = scenario["jobs_per_frame"]
-
-        # CATCHUP TRACKING: Record if this is a catchup event
-        if physics_steps > 1:
-            metrics = self.scenario_metrics[self.current_scenario_index]
-            metrics["catchup_events"] += 1
-            metrics["total_catchup_steps"] += (physics_steps - 1)
-            metrics["max_catchup"] = max(metrics["max_catchup"], physics_steps)
-            print(f"[CATCHUP] Frame {current_frame}: {physics_steps} physics steps in one timer event")
-
-        # Check for burst
-        if "burst_every_n_frames" in scenario:
-            if frames_in_scenario > 0 and frames_in_scenario % scenario["burst_every_n_frames"] == 0:
-                jobs_to_submit += scenario["burst_job_count"]
-                print(f"[BURST] Frame {current_frame}: Submitting {scenario['burst_job_count']} additional jobs")
-
-        # Check for forced delay (to trigger catchup frames)
-        if scenario.get("force_delays", False):
-            delay_interval = scenario.get("delay_every_n_frames", 15)
-            if frames_in_scenario > 0 and frames_in_scenario % delay_interval == 0:
-                delay_ms = scenario.get("delay_duration_ms", 100)
-                print(f"[DELAY] Frame {current_frame}: Injecting {delay_ms}ms delay to force catchup")
-                time.sleep(delay_ms / 1000.0)
-
-        # Submit jobs
-        for i in range(jobs_to_submit):
-            # Generate realistic compute time
-            compute_ms = random.uniform(scenario["compute_ms_min"], scenario["compute_ms_max"])
-
-            job_id = operator.submit_engine_job("COMPUTE_HEAVY", {
-                "iterations": int(compute_ms * 10),  # Rough calibration for 1-10ms jobs
-                "data": list(range(50)),
-                "frame": current_frame,
-                "scenario": scenario["name"],
-            })
-
-            if job_id >= 0:
-                self.scenario_metrics[self.current_scenario_index]["jobs_submitted"] += 1
-
-    def record_result(self, result, frame_latency, time_latency_ms):
-        """Record metrics for a completed job."""
-        # Find which scenario this job belongs to
-        scenario_name = result.result.get("scenario", "UNKNOWN") if result.success else "UNKNOWN"
-
-        for i, metrics in enumerate(self.scenario_metrics):
-            if metrics["name"] == scenario_name:
-                metrics["results_received"] += 1
-                metrics["frame_latencies"].append(frame_latency)
-                metrics["time_latencies"].append(time_latency_ms)
-                break
-
-    def is_complete(self):
-        """Check if all test scenarios are complete."""
-        return self.current_scenario_index >= len(self.scenarios)
-
-    def calculate_grade(self, avg_latency, max_latency, stale_pct):
-        """Calculate grade based on metrics."""
-        if avg_latency <= 1.0 and max_latency <= 2 and stale_pct < 5.0:
-            return "A"
-        elif avg_latency <= 1.5 and max_latency <= 3 and stale_pct < 10.0:
-            return "B"
-        else:
-            return "F"
-
-    def print_final_report(self):
-        """Print comprehensive test results."""
-        test_duration = time.perf_counter() - self.test_start_time
-
-        print("\n" + "="*70)
-        print("ENGINE SYNC STRESS TEST - FINAL REPORT")
-        print("="*70)
-        print(f"Total test duration: {test_duration:.1f}s")
-        print(f"Scenarios completed: {len(self.scenarios)}")
-        print("="*70)
-
-        all_passed = True
-
-        for i, (scenario, metrics) in enumerate(zip(self.scenarios, self.scenario_metrics)):
-            print(f"\n{'─'*70}")
-            print(f"SCENARIO {i+1}: {scenario['name']}")
-            print(f"{'─'*70}")
-            print(f"Description: {scenario['description']}")
-            print(f"Target Grade: {scenario['target_grade']}")
-            print(f"Duration: {metrics['end_frame'] - metrics['start_frame']} frames")
-            print(f"\nMetrics:")
-            print(f"  Jobs Submitted:    {metrics['jobs_submitted']}")
-            print(f"  Results Received:  {metrics['results_received']}")
-            print(f"  Pending/Lost:      {metrics['jobs_submitted'] - metrics['results_received']}")
-
-            if metrics['frame_latencies']:
-                avg_lat = sum(metrics['frame_latencies']) / len(metrics['frame_latencies'])
-                max_lat = max(metrics['frame_latencies'])
-                min_lat = min(metrics['frame_latencies'])
-                stale_count = sum(1 for x in metrics['frame_latencies'] if x > 2)
-                stale_pct = (stale_count / len(metrics['frame_latencies'])) * 100
-
-                print(f"\nFrame Latency:")
-                print(f"  Average:           {avg_lat:.2f} frames")
-                print(f"  Min:               {min_lat} frames")
-                print(f"  Max:               {max_lat} frames")
-                print(f"  Stale (>2 frames): {stale_count} ({stale_pct:.1f}%)")
-
-                if metrics['time_latencies']:
-                    avg_time = sum(metrics['time_latencies']) / len(metrics['time_latencies'])
-                    max_time = max(metrics['time_latencies'])
-                    min_time = min(metrics['time_latencies'])
-
-                    print(f"\nTime Latency:")
-                    print(f"  Average:           {avg_time:.2f}ms")
-                    print(f"  Min:               {min_time:.2f}ms")
-                    print(f"  Max:               {max_time:.2f}ms")
-
-                # Catchup statistics
-                if metrics["catchup_events"] > 0:
-                    print(f"\nCatchup Events:")
-                    print(f"  Total Events:      {metrics['catchup_events']}")
-                    print(f"  Extra Steps:       {metrics['total_catchup_steps']}")
-                    print(f"  Max Steps/Event:   {metrics['max_catchup']}")
-                    total_frames = metrics['end_frame'] - metrics['start_frame']
-                    if total_frames > 0:
-                        catchup_pct = (metrics["catchup_events"] / total_frames) * 100
-                        print(f"  Catchup Rate:      {catchup_pct:.1f}% of timer events")
-
-                # Calculate grade
-                actual_grade = self.calculate_grade(avg_lat, max_lat, stale_pct)
-                target_grade = scenario['target_grade']
-
-                # Determine pass/fail
-                grade_order = {"A": 3, "B": 2, "F": 1}
-                passed = grade_order.get(actual_grade, 0) >= grade_order.get(target_grade, 0)
-
-                status = "✓ PASS" if passed else "✗ FAIL"
-                print(f"\nResult: Grade {actual_grade} (Target: {target_grade}) - {status}")
-
-                if not passed:
-                    all_passed = False
-            else:
-                print("\n✗ FAIL - No results received!")
-                all_passed = False
-
-        # Overall verdict
-        print(f"\n{'='*70}")
-        if all_passed:
-            print("OVERALL VERDICT: ✓ PASS - ENGINE IS PRODUCTION READY")
-            print("The engine can handle realistic game loads while maintaining sync.")
-        else:
-            print("OVERALL VERDICT: ✗ FAIL - ENGINE NEEDS IMPROVEMENT")
-            print("The engine cannot maintain acceptable sync under load.")
-            print("\nPossible issues:")
-            print("  - Queue size too small (increase JOB_QUEUE_SIZE)")
-            print("  - Too few workers (increase WORKER_COUNT)")
-            print("  - Jobs too computationally heavy (optimize algorithms)")
-            print("  - System CPU overloaded (close background apps)")
-        print("="*70 + "\n")
 
 class ExpModal(bpy.types.Operator):
     """Windowed (minimized) game start."""
@@ -547,12 +234,69 @@ class ExpModal(bpy.types.Operator):
     _loop = None
 
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # EMERGENCY CLEANUP - Critical Failure Recovery
+    # ═══════════════════════════════════════════════════════════════════════════
+    # This is the SINGLE entry point for crash recovery. All exception handlers
+    # call this method. It attempts full cleanup via cancel(), falling back to
+    # minimal cleanup (cursor + engine) if cancel() itself fails.
+    #
+    # Call this from ANY exception handler in invoke() or modal().
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _emergency_cleanup(self, context, error_msg: str = "Unknown error"):
+        """
+        Emergency cleanup when modal crashes. Attempts full cancel() cleanup,
+        falls back to minimal cursor/engine cleanup if that fails.
+
+        Args:
+            context: Blender context
+            error_msg: Error message for logging
+        """
+        print(f"\n[CRITICAL FAILURE] {error_msg}")
+        print("="*60)
+        print("  Running emergency cleanup...")
+        print("="*60)
+
+        # Try full cleanup via cancel()
+        try:
+            self.cancel(context)
+            print("  ✓ Full cleanup completed via cancel()")
+        except Exception as cancel_error:
+            # cancel() failed - do minimal cleanup
+            print(f"  ✗ cancel() failed: {cancel_error}")
+            print("  Attempting minimal cleanup...")
+
+            # 1. Restore cursor (most important for UX)
+            try:
+                force_restore_cursor()
+                print("  ✓ Cursor restored")
+            except Exception as cursor_error:
+                print(f"  ✗ Cursor restore failed: {cursor_error}")
+
+            # 2. Shutdown engine (prevent worker process leaks)
+            if hasattr(self, 'engine') and self.engine:
+                try:
+                    self.engine.shutdown()
+                    self.engine = None
+                    print("  ✓ Engine shutdown")
+                except Exception as engine_error:
+                    print(f"  ✗ Engine shutdown failed: {engine_error}")
+
+            # 3. Clear global operator reference
+            global _active_modal_operator
+            _active_modal_operator = None
+
+        print("="*60 + "\n")
+
+
     # ---------------------------
     # Main Modal Functions
     # ---------------------------
     def invoke(self, context, event):
         global _active_modal_operator
-        _active_modal_operator = self
+        # NOTE: _active_modal_operator is set at the END of invoke, just before return {'RUNNING_MODAL'}
+        # This ensures if invoke fails at any point, the global reference is never set to a dead operator
 
         scene = context.scene
 
@@ -727,7 +471,6 @@ class ExpModal(bpy.types.Operator):
 
         # 7) Setup modal cursor region and hide the system cursor
         setup_cursor_region(context, self)
-
         # 8) Create a timer (runs as fast as possible, interval=0.0)
         self._timer = context.window_manager.event_timer_add(1.0/30.0, window=context.window)
         self._last_time = time.perf_counter()
@@ -799,231 +542,87 @@ class ExpModal(bpy.types.Operator):
         # ═══════════════════════════════════════════════════════════════════
         # ENGINE INITIALIZATION - CRITICAL GATE
         # ═══════════════════════════════════════════════════════════════════
-        # Engine must be 100% ready before modal starts.
-        # Philosophy: Engine = orchestrator, Modal = puppet
-        # If engine fails, game cannot start. Period.
-        # ═══════════════════════════════════════════════════════════════════
-
-        startup_logs = context.scene.dev_startup_logs
-
-        if startup_logs:
-            print("\n" + "="*70)
-            print("  GAME STARTUP SEQUENCE - ENGINE FIRST")
-            print("="*70)
-
-        # ─── STEP 1: Spawn Engine ───
-        if startup_logs:
-            print("\n[STARTUP 1/5] Spawning engine workers...")
-
-        if not hasattr(self, 'engine'):
-            self.engine = EngineCore()
-
-        self.engine.start()
-
-        if startup_logs:
-            stats = self.engine.get_stats()
-            print(f"[STARTUP 1/5] ✓ Engine started")
-            print(f"              Workers: {stats['workers_alive']}/{stats['workers_total']} spawned")
-
-        # ─── STEP 2: Verify Workers Alive ───
-        if startup_logs:
-            print(f"\n[STARTUP 2/5] Verifying workers alive...")
-
-        if not self.engine.is_alive():
-            error_msg = "Engine workers failed to spawn"
-            if startup_logs:
-                print(f"[STARTUP 2/5] ✗ FAILED: {error_msg}")
-                print("="*70 + "\n")
-            self.report({'ERROR'}, f"{error_msg} - aborting game")
-            self.engine.shutdown()
-            return {'CANCELLED'}
-
-        if startup_logs:
-            print(f"[STARTUP 2/5] ✓ All workers alive and running")
-
-        # ─── STEP 3: PING Verification (Comprehensive Readiness) ───
-        if startup_logs:
-            print(f"\n[STARTUP 3/5] Verifying worker responsiveness (PING check)...")
-
-        if not self.engine.wait_for_readiness(timeout=5.0):
-            error_msg = "Engine workers not responding to PING"
-            if startup_logs:
-                print(f"[STARTUP 3/5] ✗ FAILED: {error_msg}")
-                print("="*70 + "\n")
-            self.report({'ERROR'}, f"{error_msg} - aborting game")
-            self.engine.shutdown()
-            return {'CANCELLED'}
-
-        if startup_logs:
-            print(f"[STARTUP 3/5] ✓ All workers responding to PING")
-
-        # Initialize engine sync tracking
-        self._physics_frame = 0
-        self._pending_jobs = {}
-        self._sync_jobs_submitted = 0
-        self._sync_results_received = 0
-        self._sync_frame_latencies = []
-        self._sync_time_latencies = []
-        self._sync_last_report_frame = 0
-
-        # Note: EngineSyncTestManager removed - use standalone stress test operators instead
-        # (Developer Tools → Manual Stress Tests)
-        # Those test the ENGINE CORE in isolation, not engine+modal integration
-
-        # ─── STEP 4: Cache Spatial Grid (Physics Requirement) ───
-        if startup_logs:
-            print(f"\n[STARTUP 4/5] Caching spatial grid in workers...")
-
-        if self.spatial_grid and self.engine and self.engine.is_alive():
-            import pickle
-            import time as time_module
-
-            # Measure grid serialization (one-time cost)
-            pickle_start = time_module.perf_counter()
-            pickled = pickle.dumps({"grid": self.spatial_grid})
-            pickle_time = (time_module.perf_counter() - pickle_start) * 1000
-            pickle_size_kb = len(pickled) / 1024
-
-            if startup_logs:
-                print(f"[STARTUP 4/5] Grid size: {pickle_size_kb:.1f} KB")
-                print(f"              Serialization time: {pickle_time:.1f}ms")
-
-            # Send CACHE_GRID jobs to ensure all workers receive the cache
-            # Submit 8 jobs (2x worker count) to increase probability each worker gets one
-            # Workers share a job queue, so we need extra jobs to ensure coverage
-            # Duplicate cache jobs are safe - workers just overwrite _cached_grid
-            for i in range(8):
-                self.engine.submit_job("CACHE_GRID", {"grid": self.spatial_grid})
-
-            if startup_logs:
-                print(f"[STARTUP 4/5] Grid jobs submitted, waiting for all workers to confirm...")
-
-            # CRITICAL: Wait for all unique workers to confirm grid receipt
-            # This now tracks which workers confirmed, not just result count
-            if not self.engine.verify_grid_cache(timeout=5.0):
-                error_msg = "Not all workers cached spatial grid (see console for details)"
-                if startup_logs:
-                    print(f"[STARTUP 4/5] ✗ FAILED: {error_msg}")
-                    print("="*70 + "\n")
+        try:
+            success, error_msg = init_engine(self, context)
+            if not success:
                 self.report({'ERROR'}, f"{error_msg} - aborting game")
-                self.engine.shutdown()
                 return {'CANCELLED'}
 
-            if startup_logs:
-                print(f"[STARTUP 4/5] ✓ Grid successfully cached in all workers")
-        else:
-            if startup_logs:
-                print(f"[STARTUP 4/5] ⊘ No spatial grid (skipped)")
+            # Initialize interaction offload tracking
+            self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job
+            self._interaction_map = []  # Maps worker indices to scene interactions
 
-        # ─── STEP 5: Final Readiness Confirmation (Lock-Step Gate) ───
-        if startup_logs:
-            print(f"\n[STARTUP 5/5] Final readiness check (lock-step synchronization)...")
+            # Game loop initialization
+            self._loop = GameLoop(self)
+            _bind_view3d_once(self, context)
 
-        final_status = self.engine.get_full_readiness_status(grid_required=bool(self.spatial_grid))
-
-        if not final_status["ready"]:
-            error_msg = final_status["message"]
-            if startup_logs:
-                print(f"[STARTUP 5/5] ✗ FAILED: {error_msg}")
-                print(f"\n              Checks:")
-                for check_name, passed in final_status["checks"].items():
-                    status = "✓" if passed else "✗"
-                    print(f"              {status} {check_name}")
-                if final_status["details"]["critical"]:
-                    print(f"\n              Critical Issues:")
-                    for issue in final_status["details"]["critical"]:
-                        print(f"              • {issue}")
-                if final_status["details"]["warnings"]:
-                    print(f"\n              Warnings:")
-                    for warning in final_status["details"]["warnings"]:
-                        print(f"              • {warning}")
-                print("="*70 + "\n")
-            self.report({'ERROR'}, f"Engine not ready: {error_msg} - aborting game")
-            self.engine.shutdown()
+        except Exception as e:
+            # Engine initialization failed - run emergency cleanup
+            import traceback
+            traceback.print_exc()
+            self._emergency_cleanup(context, f"Engine init failed: {e}")
+            self.report({'ERROR'}, f"Engine initialization failed: {e}")
             return {'CANCELLED'}
 
-        if startup_logs:
-            print(f"[STARTUP 5/5] ✓ {final_status['message']}")
-            print(f"\n              All Checks Passed:")
-            for check_name, passed in final_status["checks"].items():
-                print(f"              ✓ {check_name}")
-            print(f"\n" + "="*70)
-            print(f"  ENGINE READY - MODAL STARTING")
-            print("="*70 + "\n")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ENGINE CONFIRMED READY - MODAL CAN NOW INITIALIZE
-        # ═══════════════════════════════════════════════════════════════════
-
-        # Initialize interaction offload tracking
-        self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job
-        self._interaction_map = []  # Maps worker indices to scene interactions
-
-        #game loop initialization
-        self._loop = GameLoop(self)
-        
-        _bind_view3d_once(self, context)
+        # Set global operator reference ONLY after all initialization succeeds
+        # This ensures failed invoke() never leaves a dangling reference
+        _active_modal_operator = self
 
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
-        # End game hotkey
-        if event.type == self.pref_end_game_key and event.value == 'PRESS':
-            self.cancel(context)
-            return {'CANCELLED'}
+        try:
+            # End game hotkey
+            if event.type == self.pref_end_game_key and event.value == 'PRESS':
+                self.cancel(context)
+                return {'CANCELLED'}
 
-        if event.type == 'TIMER':
-            if self._loop:
-                self._loop.on_timer(context)
+            if event.type == 'TIMER':
+                if self._loop:
+                    self._loop.on_timer(context)
 
-            # ========== ENGINE HEARTBEAT ==========
-            # Send heartbeat to confirm engine is alive
-            # (Polling moved to GameLoop.on_timer() for proper frame sync)
-            if hasattr(self, 'engine') and self.engine:
-                self.engine.send_heartbeat()
-            # ======================================
+                # ========== ENGINE HEARTBEAT ==========
+                # Send heartbeat to confirm engine is alive
+                # (Polling moved to GameLoop.on_timer() for proper frame sync)
+                if hasattr(self, 'engine') and self.engine:
+                    self.engine.send_heartbeat()
+                # ======================================
+
+                return {'RUNNING_MODAL'}
+
+            # Key events
+            elif event.type in {
+                self.pref_forward_key, self.pref_backward_key, self.pref_left_key,
+                self.pref_right_key,  self.pref_run_key,       self.pref_jump_key,
+                self.pref_interact_key, self.pref_reset_key,   self.pref_action_key,
+            }:
+                # Option A: delegate to loop (keeps modal slim)
+                if self._loop:
+                    self._loop.handle_key_input(event)
+                else:
+                    self.handle_key_input(event)
+
+            # Mouse -> camera rotation
+            elif event.type == 'MOUSEMOVE':
+                # Update yaw/pitch only — keep camera/FPV on the TIMER clock.
+                handle_mouse_move(self, context, event)
+                ensure_cursor_hidden_if_mac(context)
 
             return {'RUNNING_MODAL'}
 
-        # Key events
-        elif event.type in {
-            self.pref_forward_key, self.pref_backward_key, self.pref_left_key,
-            self.pref_right_key,  self.pref_run_key,       self.pref_jump_key,
-            self.pref_interact_key, self.pref_reset_key,   self.pref_action_key, 
-        }:
-            # Option A: delegate to loop (keeps modal slim)
-            if self._loop:
-                self._loop.handle_key_input(event)
-            else:
-                self.handle_key_input(event)
-
-        # Mouse -> camera rotation
-        elif event.type == 'MOUSEMOVE':
-            # Update yaw/pitch only — keep camera/FPV on the TIMER clock.
-            handle_mouse_move(self, context, event)
-            ensure_cursor_hidden_if_mac(context)
-
-        return {'RUNNING_MODAL'}
+        except Exception as e:
+            # Modal crashed - run emergency cleanup
+            import traceback
+            traceback.print_exc()
+            self._emergency_cleanup(context, f"Modal crashed: {e}")
+            self.report({'ERROR'}, f"Game crashed: {e}")
+            return {'CANCELLED'}
 
 
     def cancel(self, context):
 
         # ========== ENGINE SHUTDOWN ==========
-        # Shutdown multiprocessing engine gracefully
-        if hasattr(self, 'engine') and self.engine:
-            if context.scene.dev_debug_engine:
-                print("[ExpModal] Shutting down multiprocessing engine...")
-
-            # Print comprehensive test report if test manager is active
-            # Test manager removed - use standalone stress test operators
-            elif context.scene.dev_debug_engine:
-                # Only print sync report if engine debug is enabled
-                self._print_sync_report()
-
-            self.engine.shutdown()
-            self.engine = None
-            if context.scene.dev_debug_engine:
-                print("[ExpModal] Engine shutdown complete")
+        shutdown_engine(self, context)
         # ====================================
 
         # ========== KCC VISUALIZATION CLEANUP ==========
@@ -1336,51 +935,3 @@ class ExpModal(bpy.types.Operator):
             print(f"[EngineSync] WARNING: Stale result - Frame latency: {frame_latency} frames ({time_latency_ms:.1f}ms)")
 
         return True
-
-    def _print_sync_report(self):
-        """Print comprehensive synchronization statistics."""
-        if self._sync_jobs_submitted == 0:
-            print("\n[EngineSync] No jobs submitted during session")
-            return
-
-        print("\n" + "="*60)
-        print("ENGINE SYNCHRONIZATION REPORT")
-        print("="*60)
-        print(f"Total Physics Frames:     {self._physics_frame}")
-        print(f"Jobs Submitted:           {self._sync_jobs_submitted}")
-        print(f"Results Received:         {self._sync_results_received}")
-        print(f"Pending Jobs:             {len(self._pending_jobs)}")
-
-        if self._sync_frame_latencies:
-            avg_frame_lat = sum(self._sync_frame_latencies) / len(self._sync_frame_latencies)
-            max_frame_lat = max(self._sync_frame_latencies)
-            stale_count = sum(1 for x in self._sync_frame_latencies if x > 2)
-            stale_pct = (stale_count / len(self._sync_frame_latencies)) * 100
-
-            print(f"\nFrame Latency:")
-            print(f"  Average:                {avg_frame_lat:.2f} frames")
-            print(f"  Maximum:                {max_frame_lat} frames")
-            print(f"  Stale (>2 frames):      {stale_count} ({stale_pct:.1f}%)")
-
-        if self._sync_time_latencies:
-            avg_time_lat = sum(self._sync_time_latencies) / len(self._sync_time_latencies)
-            max_time_lat = max(self._sync_time_latencies)
-            min_time_lat = min(self._sync_time_latencies)
-
-            print(f"\nTime Latency:")
-            print(f"  Average:                {avg_time_lat:.2f}ms")
-            print(f"  Min:                    {min_time_lat:.2f}ms")
-            print(f"  Max:                    {max_time_lat:.2f}ms")
-
-        # Grade the synchronization quality
-        if self._sync_frame_latencies:
-            if avg_frame_lat <= 1.0 and max_frame_lat <= 2 and stale_pct < 5:
-                grade = "A (Excellent)"
-            elif avg_frame_lat <= 1.5 and max_frame_lat <= 3 and stale_pct < 10:
-                grade = "B (Good)"
-            else:
-                grade = "F (Needs Improvement)"
-
-            print(f"\nSync Quality Grade:       {grade}")
-
-        print("="*60 + "\n")

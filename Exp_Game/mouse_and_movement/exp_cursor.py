@@ -3,8 +3,57 @@
 import bpy
 import math
 import sys
+import atexit
 
 _IS_MAC = (sys.platform == 'darwin')
+
+# ─── Failsafe cursor restoration ───────────────────────────────────────────────
+# Track whether cursor is currently captured so we can restore on crash
+_cursor_captured = False
+
+def _atexit_restore_cursor():
+    """Last-resort cursor restoration when Python exits."""
+    global _cursor_captured
+    if _cursor_captured:
+        try:
+            release_cursor_clip()
+            # Try to restore cursor in any available window
+            if bpy.context and bpy.context.window:
+                bpy.context.window.cursor_modal_restore()
+        except:
+            pass  # Best effort - might fail if Blender is shutting down
+        _cursor_captured = False
+
+# Register atexit handler
+atexit.register(_atexit_restore_cursor)
+
+
+def force_restore_cursor():
+    """
+    Force restore cursor visibility - call this on any failure path.
+    Safe to call even if cursor wasn't captured.
+    """
+    global _cursor_captured
+    release_cursor_clip()
+
+    # Try to restore cursor in current context
+    try:
+        if bpy.context and bpy.context.window:
+            bpy.context.window.cursor_modal_restore()
+    except:
+        pass
+
+    # Also try all windows as fallback
+    try:
+        for window in bpy.context.window_manager.windows:
+            try:
+                window.cursor_modal_restore()
+            except:
+                pass
+    except:
+        pass
+
+    _cursor_captured = False
 
 # ─── Windows-only cursor confinement ────────────────────────────────────────────
 
@@ -27,11 +76,15 @@ if sys.platform == 'win32':
         ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
 
     def release_cursor_clip():
+        global _cursor_captured
         ctypes.windll.user32.ClipCursor(None)
+        _cursor_captured = False
 
 else:
     def confine_cursor_to_window(): pass
-    def release_cursor_clip():    pass
+    def release_cursor_clip():
+        global _cursor_captured
+        _cursor_captured = False
 
 
 def ensure_cursor_hidden_if_mac(context):
@@ -48,10 +101,12 @@ def setup_cursor_region(context, operator):
     Hide the system cursor, lock it in modal, and on Windows
     confine it to the Blender window. Initialize raw-delta state.
     """
+    global _cursor_captured
     context.window.cursor_modal_set('NONE')
     confine_cursor_to_window()
     operator.last_mouse_x = None
     operator.last_mouse_y = None
+    _cursor_captured = True  # Track that cursor is now hidden
 
 
 def handle_mouse_move(operator, context, event):

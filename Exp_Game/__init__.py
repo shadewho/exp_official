@@ -99,7 +99,7 @@ if not _IS_WORKER_PROCESS:
     from .reactions.exp_action_keys import ActionKeyItemPG, register_action_key_properties, unregister_action_key_properties
 
     # --- Engine testing ---
-    from .engine.test_operator import EXP_ENGINE_OT_StressTest, EXP_ENGINE_OT_QuickTest
+    from .engine.testing.test_operator import EXP_ENGINE_OT_StressTest, EXP_ENGINE_OT_QuickTest
 
     def register():
         # --- Developer Properties (early registration) ---

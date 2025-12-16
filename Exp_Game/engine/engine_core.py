@@ -125,7 +125,7 @@ class EngineCore:
 
         # Get paths for bootstrap and worker
         bootstrap_file = str(Path(__file__).parent / "worker_bootstrap.py")
-        worker_entry_file = str(Path(__file__).parent / "engine_worker_entry.py")
+        worker_entry_file = str(Path(__file__).parent / "worker" / "entry.py")
 
         # Spawn worker processes using isolated bootstrap
         # Pass bootstrap and worker paths as strings to avoid pickling issues

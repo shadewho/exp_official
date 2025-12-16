@@ -28,6 +28,60 @@ All physics computation MUST happen in worker (`engine_worker_entry.py`). Main t
 - ✅ Optimized for zero gameplay impact when enabled
 
 ---
+---
+
+## 0. Engine Module Structure (Refactored 2025-12-16)
+
+The engine was refactored from a single 3,156-line file into organized modules.
+
+**NEVER let files grow too large.** When adding new functionality:
+1. **Ask: Does this belong in an existing module?** If yes, add it there.
+2. **Ask: Is this a new concern?** If yes, create a new file.
+3. **Ask: Is the file getting too long (500+ lines)?** Consider splitting.
+
+### Current Structure
+```
+engine/
+├── __init__.py              # Public API exports
+├── engine_config.py         # Configuration constants (29 lines)
+├── engine_types.py          # EngineJob, EngineResult types (78 lines)
+├── engine_core.py           # Main thread engine manager (852 lines)
+├── worker_bootstrap.py      # Process isolation loader (16 lines)
+│
+├── worker/                  # Worker subprocess modules (NO bpy!)
+│   ├── __init__.py          # Exports all worker functions
+│   ├── math.py              # Geometric algorithms (876 lines)
+│   ├── raycast.py           # Unified raycast system (499 lines)
+│   ├── physics.py           # KCC physics step (1,317 lines)
+│   ├── jobs.py              # Other job handlers (143 lines)
+│   └── entry.py             # Worker loop + dispatcher (402 lines)
+│
+└── testing/                 # Test utilities
+    ├── stress_test.py       # Engine stress tests
+    └── test_operator.py     # Blender UI operators
+```
+
+### Where to Put New Code
+
+| New Feature | File | Why |
+|-------------|------|-----|
+| New math/geometry function | `worker/math.py` | Pure math utilities |
+| New raycast variant | `worker/raycast.py` | Ray-based queries |
+| KCC physics change | `worker/physics.py` | Character controller logic |
+| New job type handler | `worker/jobs.py` | Non-physics job handlers |
+| Worker loop change | `worker/entry.py` | Dispatcher/loop logic |
+| Main thread engine API | `engine_core.py` | Job submission, worker management |
+| New engine config | `engine_config.py` | Constants, tuning values |
+
+### Code Organization Rules
+
+1. **Worker modules have NO bpy imports** - They run in isolated processes
+2. **One concern per file** - Don't mix unrelated functionality
+3. **Functions over giant if/elif chains** - Extract handlers to functions
+4. **Parameters over globals** - Pass data explicitly, don't rely on module globals
+5. **Document dependencies** - If file A imports from file B, that's a dependency
+
+---
 
 ## 🛠️ DEVELOPER SYSTEM WORKFLOW (CRITICAL)
 

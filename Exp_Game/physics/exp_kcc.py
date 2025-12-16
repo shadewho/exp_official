@@ -1016,3 +1016,4 @@ class KinematicCharacterController:
 
         _kcc_vis_data = vis_data
         _tag_all_view3d_for_redraw()
+    
