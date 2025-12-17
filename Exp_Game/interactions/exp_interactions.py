@@ -8,10 +8,10 @@ from ..reactions.exp_reactions import ( execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
                              execute_objective_counter_reaction,
                              execute_objective_timer_reaction, execute_sound_reaction,
+                             execute_custom_action_reaction,
 )
 from ..reactions.exp_transforms import execute_transform_reaction
 from ..reactions.exp_projectiles import execute_projectile_reaction, execute_hitscan_reaction
-from ..animations.exp_custom_animations import execute_custom_action_reaction
 from ..props_and_utils.exp_time import get_game_time
 from ..systems.exp_objectives import update_all_objective_timers
 from ..reactions.exp_mobility_and_game_reactions import (
@@ -35,26 +35,6 @@ _pending_reaction_batches = []
 _pending_trigger_tasks = []
 
 
-def apply_interaction_check_result(engine_result):
-    """
-    Apply worker result for interaction checks (diagnostic only for Sprint 1.2).
-    Called from game loop when INTERACTION_CHECK_BATCH job completes.
-
-    For now, this just logs worker execution to prove offload works.
-    Future: Could optimize to skip trigger handlers for non-triggered interactions.
-    """
-    debug_offload = should_print_debug("interactions")
-
-    if not debug_offload:
-        return  # Silent if debug disabled
-
-    result_data = engine_result.result
-    triggered_indices = result_data.get("triggered_indices", [])
-    total_count = result_data.get("count", 0)
-    calc_time_us = result_data.get("calc_time_us", 0.0)
-    worker_time_ms = engine_result.processing_time * 1000.0
-
-    print(f"[InteractionOffload] Workers checked {total_count} interactions, {len(triggered_indices)} triggered (worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
 def _execute_reaction_now(r):
     """
     Execute a single reaction immediately (no scheduling).

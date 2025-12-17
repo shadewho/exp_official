@@ -437,3 +437,4 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
     finally:
         if DEBUG_ENGINE:
             print(f"[Engine Worker {worker_id}] Shutting down (processed {jobs_processed} jobs)")
+            

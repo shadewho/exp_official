@@ -340,12 +340,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_animations = bpy.props.BoolProperty(
-        name="Animations",
-        description="Animation and NLA system",
-        default=False
-    )
-
     # ══════════════════════════════════════════════════════════════════════════
     # SESSION LOG EXPORT
     # ══════════════════════════════════════════════════════════════════════════
@@ -406,9 +400,7 @@ def unregister_properties():
         'dev_debug_kcc_visual_vector_scale',
 
         # Game systems
-        'dev_debug_interactions',
         'dev_debug_audio',
-        'dev_debug_animations',
 
         # Session export
         'dev_export_session_log',
@@ -420,6 +412,12 @@ def unregister_properties():
 
     # Clean up OLD properties from previous versions (migration)
     old_props = [
+        # Old animation system (replaced by new worker-based engine)
+        'dev_debug_animations',
+        'dev_debug_anim_engine',
+        'dev_debug_anim_blending',
+        'dev_debug_anim_baking',
+
         # Old offload naming
         'dev_debug_kcc_offload',
         'dev_debug_camera_offload',

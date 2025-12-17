@@ -10,7 +10,7 @@ from ..physics.exp_raycastutils import create_bvh_tree
 from ..startup_and_reset.exp_spawn import spawn_user
 from .exp_view_helpers import (_update_axis_resolution_on_release, _resolved_move_keys, _axis_of_key,
                                 smooth_rotate_towards_camera, _maybe_rebind_view3d, _bind_view3d_once)
-from ..animations.exp_animations import AnimationStateManager, set_global_animation_manager
+from ..animations.state_machine import CharacterStateMachine, AnimState
 from ..audio.exp_audio import (get_global_audio_state_manager, clean_audio_temp)
 from ..startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
@@ -41,6 +41,8 @@ from ..physics.exp_view_fpv import reset_fpv_rot_scale
 from .exp_engine_bridge import (
     init_engine,
     shutdown_engine,
+    init_animations,
+    shutdown_animations,
 )
 
 def _first_view3d_r3d():
@@ -158,7 +160,7 @@ class ExpModal(bpy.types.Operator):
     # References to objects / data
     target_object = None
     bvh_tree = None
-    animation_manager = None
+    char_state_machine = None
 
     # Keep track of pressed keys
     keys_pressed = set()
@@ -447,9 +449,9 @@ class ExpModal(bpy.types.Operator):
                     self.yaw = self.target_object.matrix_world.to_euler('XYZ').z if self.target_object else 0.0
             else:
                 self.yaw = self.target_object.matrix_world.to_euler('XYZ').z if self.target_object else 0.0
-        # Set up the animation manager
-        self.animation_manager = AnimationStateManager()
-        set_global_animation_manager(self.animation_manager)
+        # Set up the animation system
+        self.char_state_machine = CharacterStateMachine()
+        init_animations(self, context)
         move_armature_and_children_to_scene(self.target_object, context.scene)
 
         # --- Physics controller + HARD-LOCKED 30 Hz scheduler ---
@@ -617,6 +619,10 @@ class ExpModal(bpy.types.Operator):
 
 
     def cancel(self, context):
+
+        # ========== ANIMATION SHUTDOWN ==========
+        shutdown_animations(self, context)
+        # ========================================
 
         # ========== ENGINE SHUTDOWN ==========
         shutdown_engine(self, context)

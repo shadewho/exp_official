@@ -101,6 +101,12 @@ if not _IS_WORKER_PROCESS:
     # --- Engine testing ---
     from .engine.testing.test_operator import EXP_ENGINE_OT_StressTest, EXP_ENGINE_OT_QuickTest
 
+    # --- Animation Engine ---
+    from .engine import animations as anim_module
+
+    # --- Animation 2.0 Test Panel ---
+    from .animations import test_panel as anim2_test_panel
+
     def register():
         # --- Developer Properties (early registration) ---
         register_dev_properties()
@@ -199,6 +205,12 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.register_class(EXP_ENGINE_OT_QuickTest)
         bpy.utils.register_class(EXP_ENGINE_OT_StressTest)
 
+        # ─── Animation Engine ──────────────────────────────
+        anim_module.register()
+
+        # ─── Animation 2.0 Test Panel ──────────────────────────────
+        anim2_test_panel.register()
+
 
     def unregister():
         remove_scene_properties()
@@ -282,6 +294,12 @@ if not _IS_WORKER_PROCESS:
 
         # ─── Performance Culling ──────────────────────────────────
         unregister_performance()
+
+        # ─── Animation 2.0 Test Panel ──────────────────────────────
+        anim2_test_panel.unregister()
+
+        # ─── Animation Engine ──────────────────────────────
+        anim_module.unregister()
 
         # ─── Developer Properties ──────────────────────────────────
         unregister_dev_properties()

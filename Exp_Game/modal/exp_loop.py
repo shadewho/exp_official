@@ -2,9 +2,9 @@
 
 import time
 import bpy
-from ..props_and_utils.exp_time import update_real_time, tick_sim_time
-from ..animations.exp_custom_animations import update_all_custom_managers
-from ..animations.exp_animations import nla_is_locked
+from ..props_and_utils.exp_time import update_real_time, tick_sim_time, get_game_time
+from ..animations.state_machine import AnimState
+from .exp_engine_bridge import update_animations
 from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_tasks
 from ..reactions.exp_transforms import update_transform_tasks
@@ -72,9 +72,6 @@ class GameLoop:
 
             # B1) Custom/scripted tasks (SIM-timed): cheap → step-per-step
             for _ in range(steps):
-                # >>> guard: skip NLA custom managers while reset/start wipes <<<
-                if not nla_is_locked():
-                    update_all_custom_managers(dt_sim)
                 update_transform_tasks()
                 update_property_tasks()
                 update_projectile_tasks(dt_sim)
@@ -88,16 +85,7 @@ class GameLoop:
             update_performance_culling(op, context)
 
             # B4) Animations & audio: once with aggregated dt
-            # >>> guard: skip character animation update while reset/start wipes <<<
-            if not nla_is_locked() and op.animation_manager:
-                op.animation_manager.update(
-                    op.keys_pressed, agg_dt, op.is_grounded, op.z_velocity
-                )
-                cur_state = op.animation_manager.anim_state
-                if cur_state is not None and cur_state != self._last_anim_state:
-                    audio_state_mgr = get_global_audio_state_manager()
-                    audio_state_mgr.update_audio_state(cur_state)
-                    self._last_anim_state = cur_state
+            self._update_character_animation(op, agg_dt)
 
         # C) Input gating based on game mobility flags (unchanged)
         mg = context.scene.mobility_game
@@ -139,12 +127,78 @@ class GameLoop:
 
     def handle_key_input(self, event):
         """
-        Delegate to operator’s existing key handler (or migrate into here later).
+        Delegate to operator's existing key handler (or migrate into here later).
         This keeps behavior identical and lets you move it later if you want.
         """
         self.op.handle_key_input(event)
 
     # ---------- Internals ----------
+
+    def _update_character_animation(self, op, agg_dt: float):
+        """
+        Update character animation state machine and play animations.
+
+        1. Update state machine with current input/physics state
+        2. If state changed, play new animation via controller
+        3. Advance animation playback
+        4. Update audio state
+        """
+        # Skip if no state machine or controller
+        if not hasattr(op, 'char_state_machine') or not op.char_state_machine:
+            return
+        if not hasattr(op, 'anim_controller') or not op.anim_controller:
+            return
+
+        sm = op.char_state_machine
+        ctrl = op.anim_controller
+        armature = bpy.context.scene.target_armature
+
+        if not armature:
+            return
+
+        # Get current game time for one-shot timing
+        game_time = get_game_time()
+
+        # Update state machine
+        new_state, state_changed = sm.update(
+            keys_pressed=op.keys_pressed,
+            delta_time=agg_dt,
+            is_grounded=op.is_grounded,
+            vertical_velocity=op.z_velocity,
+            game_time=game_time
+        )
+
+        # If state changed, play the new animation
+        if state_changed:
+            action_name = sm.get_action_name()
+            if action_name and ctrl.has_animation(action_name):
+                props = sm.get_state_properties()
+
+                # Play on armature
+                ctrl.play(
+                    armature.name,
+                    action_name,
+                    weight=1.0,
+                    speed=props['speed'],
+                    looping=props['loop'],
+                    fade_in=0.15,
+                    replace=True
+                )
+
+                # Start one-shot tracking if needed
+                if props['is_one_shot']:
+                    anim = ctrl.cache.get(action_name)
+                    if anim:
+                        sm.start_one_shot(anim.duration / props['speed'], game_time)
+
+            # Update audio state
+            if new_state != self._last_anim_state:
+                audio_state_mgr = get_global_audio_state_manager()
+                audio_state_mgr.update_audio_state(new_state)
+                self._last_anim_state = new_state
+
+        # Advance animation playback
+        update_animations(op, agg_dt)
 
     def _poll_and_apply_engine_results(self):
         """

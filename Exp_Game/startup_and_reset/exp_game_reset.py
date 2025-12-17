@@ -175,90 +175,78 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             self.report({'WARNING'}, "No active ExpModal found.")
             return {'CANCELLED'}
 
-        # --- NLA critical section so scrubbing can't fight the wipe ---
-        from ..animations.exp_animations import nla_guard_enter, nla_guard_exit, get_global_animation_manager
-        nla_guard_enter()
+        # ─── 0) Reset the game clock first ───────────────────────────
+        #    so that any "last_trigger_time" stamps use the new zero baseline.
+        init_time()
+
+        # ─── 0.5) Reset animation state machine ───────────────────────
+        # Reset character state machine to initial state
+        if hasattr(modal_op, 'char_state_machine') and modal_op.char_state_machine:
+            from ..animations.state_machine import AnimState
+            modal_op.char_state_machine.state = AnimState.IDLE
+            modal_op.char_state_machine.air_time = 0.0
+            modal_op.char_state_machine.fall_timer = 0.0
+            modal_op.char_state_machine.landing_in_progress = False
+            modal_op.char_state_machine.jump_played_in_air = False
+            modal_op.char_state_machine.one_shot_playing = False
+
+        # Stop all animations on the character
+        if hasattr(modal_op, 'anim_controller') and modal_op.anim_controller:
+            armature = context.scene.target_armature
+            if armature:
+                modal_op.anim_controller.stop(armature.name, fade_out=0.0)
+
+        # ─── 0.6) Stop all playing sounds ─────────────────────────────────
         try:
-            # Quiesce the animation manager so no stale strip refs remain
-            try:
-                mgr = get_global_animation_manager()
-                if mgr:
-                    mgr.active_actions.clear()
-                    mgr.one_time_in_progress = False
-                    mgr.last_action_name = None
-            except Exception:
-                pass
+            exp_globals.stop_all_sounds()
+        except Exception as e:
+            print(f"[WARN] stop_all_sounds failed: {e}")
 
-            # ─── 0) Reset the game clock first ───────────────────────────
-            #    so that any "last_trigger_time" stamps use the new zero baseline.
-            init_time()
+        # 1) only restore the scene if skip_restore is False
+        if not self.skip_restore:
+            restore_scene_state(modal_op, context)
+            apply_hide_during_game(modal_op, context)
 
-            # ─── 0.5) Stop custom actions and rewind exp_custom strips ───
-            # Do this BEFORE restoring object transforms, so strips can't "fight" the pose.
-            try:
-                from ..animations.exp_custom_animations import stop_custom_actions_and_rewind_strips
-                stop_custom_actions_and_rewind_strips()
-            except Exception as e:
-                print(f"[WARN] stop_custom_actions_and_rewind_strips failed: {e}")
+        # ---- Reset dynamic platform state so no stale deltas apply after reset ----
+        # Drop any notion of being "on a platform"
+        modal_op.grounded_platform = None
 
-            # ─── 0.6) Stop all playing sounds ─────────────────────────────────
-            try:
-                exp_globals.stop_all_sounds()
-            except Exception as e:
-                print(f"[WARN] stop_all_sounds failed: {e}")
+        # Re-seed prev positions to CURRENT matrices post-restore
+        # NOTE: platform_delta_map and platform_motion_map removed (dead code)
 
-            # 1) only restore the scene if skip_restore is False
-            if not self.skip_restore:
-                restore_scene_state(modal_op, context)
-                apply_hide_during_game(modal_op, context)
+        if hasattr(modal_op, "moving_meshes"):
+            modal_op.platform_prev_positions = {}
+            modal_op.platform_prev_quaternions = {}  # OPTIMIZED: 4 floats vs 16 for matrices
+            for dyn_obj in modal_op.moving_meshes:
+                if dyn_obj:
+                    modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
+                    modal_op.platform_prev_quaternions[dyn_obj] = dyn_obj.matrix_world.to_quaternion()
 
-            # ---- Reset dynamic platform state so no stale deltas apply after reset ----
-            # Drop any notion of being "on a platform"
-            modal_op.grounded_platform = None
+        # Optional: suppress one frame of platform-delta application (see Patch 3)
+        from ..props_and_utils.exp_time import get_game_time
+        modal_op._suppress_platform_delta_until = get_game_time() + 1e-6
 
-            # Re-seed prev positions to CURRENT matrices post-restore
-            # NOTE: platform_delta_map and platform_motion_map removed (dead code)
+        # ─── 2) Reset interactions, tasks, objectives, and properties ─
+        #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
+        reset_all_interactions(context.scene)
+        reset_all_tasks()
+        clear_tracking_tasks()
+        reset_all_objectives(context.scene)
+        reset_property_reactions(context.scene)
 
-            if hasattr(modal_op, "moving_meshes"):
-                modal_op.platform_prev_positions = {}
-                modal_op.platform_prev_quaternions = {}  # OPTIMIZED: 4 floats vs 16 for matrices
-                for dyn_obj in modal_op.moving_meshes:
-                    if dyn_obj:
-                        modal_op.platform_prev_positions[dyn_obj] = dyn_obj.matrix_world.translation.copy()
-                        modal_op.platform_prev_quaternions[dyn_obj] = dyn_obj.matrix_world.to_quaternion()
+        # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
+        clear_all_text()
+        try:
+            disable_crosshairs()
+        except Exception:
+            pass
+        spawn_user()
 
-            # Optional: suppress one frame of platform-delta application (see Patch 3)
-            from ..props_and_utils.exp_time import get_game_time
-            modal_op._suppress_platform_delta_until = get_game_time() + 1e-6
+        # Re-arm performance culling after restoring visibility
+        rearm_performance_after_reset(modal_op, context)
 
-            # ─── 2) Reset interactions, tasks, objectives, and properties ─
-            #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
-            reset_all_interactions(context.scene)
-            reset_all_tasks()
-            clear_tracking_tasks()
-            reset_all_objectives(context.scene)
-            reset_property_reactions(context.scene)
-
-            # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
-            clear_all_text()
-            try:
-                disable_crosshairs()
-            except Exception:
-                pass
-            spawn_user()
-
-            # Re-arm performance culling after restoring visibility
-            rearm_performance_after_reset(modal_op, context)
-
-            self.report({'INFO'}, "Game fully reset.")
-            return {'FINISHED'}
-
-        finally:
-            # Leave the NLA critical section so scrubbing can resume next tick
-            try:
-                nla_guard_exit()
-            except Exception:
-                pass
+        self.report({'INFO'}, "Game fully reset.")
+        return {'FINISHED'}
 
 
 

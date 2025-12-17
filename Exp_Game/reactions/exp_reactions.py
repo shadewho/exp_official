@@ -273,29 +273,94 @@ def reset_all_tasks():
 
 
 def execute_char_action_reaction(r):
-    from ..animations.exp_animations import get_global_animation_manager
-    mgr = get_global_animation_manager()
-    if not mgr:
+    """
+    Execute a character action reaction using the new animation controller.
+    Plays an action on the target armature via the modal's animation controller.
+    """
+    from ..modal.exp_modal import get_active_modal_operator
+
+    op = get_active_modal_operator()
+    if not op or not hasattr(op, 'anim_controller') or not op.anim_controller:
         return
 
     act = getattr(r, "char_action_ref", None)
     if not act:
         return
 
+    armature = bpy.context.scene.target_armature
+    if not armature:
+        return
+
+    ctrl = op.anim_controller
+
+    # Check if the action is baked in the controller
+    action_name = act.name
+    if not ctrl.has_animation(action_name):
+        print(f"[CharAction] Action '{action_name}' not baked in animation controller")
+        return
+
     mode = getattr(r, "char_action_mode", "PLAY_ONCE")
     loop = (mode == "LOOP")
-    loop_duration = getattr(r, "char_action_loop_duration", 10.0) if loop else 0.0
     speed = max(0.05, float(getattr(r, "char_action_speed", 1.0) or 1.0))
 
-    # NEW: Blend flag → overlay track ('exp_char_custom') instead of replacing locomotion
+    # Blend flag → additive layer instead of replacing
     blend = bool(getattr(r, "char_action_blend", False))
 
-    mgr.play_char_action(
-        act,
-        loop=loop,
-        loop_duration=loop_duration,
+    # Play the animation
+    ctrl.play(
+        armature.name,
+        action_name,
+        weight=1.0,
         speed=speed,
-        blend=blend,  # NEW
+        looping=loop,
+        fade_in=0.15,
+        replace=not blend  # If blend=True, don't replace existing animations
+    )
+
+
+def execute_custom_action_reaction(r):
+    """
+    Execute a custom action reaction on an arbitrary object.
+    Plays an action on the specified target object via the animation controller.
+    """
+    from ..modal.exp_modal import get_active_modal_operator
+
+    op = get_active_modal_operator()
+    if not op or not hasattr(op, 'anim_controller') or not op.anim_controller:
+        return
+
+    # Get target object from reaction
+    target_obj = getattr(r, "custom_action_object", None)
+    if not target_obj:
+        return
+
+    # Get action to play
+    action = getattr(r, "custom_action_ref", None)
+    if not action:
+        return
+
+    ctrl = op.anim_controller
+    action_name = action.name
+
+    # Check if action is baked
+    if not ctrl.has_animation(action_name):
+        print(f"[CustomAction] Action '{action_name}' not baked in animation controller")
+        return
+
+    # Get playback settings
+    mode = getattr(r, "custom_action_mode", "PLAY_ONCE")
+    loop = (mode == "LOOP")
+    speed = max(0.05, float(getattr(r, "custom_action_speed", 1.0) or 1.0))
+
+    # Play the animation on the target object
+    ctrl.play(
+        target_obj.name,
+        action_name,
+        weight=1.0,
+        speed=speed,
+        looping=loop,
+        fade_in=0.1,
+        replace=True
     )
 
 

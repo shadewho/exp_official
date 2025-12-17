@@ -6,7 +6,6 @@ import os
 from ...exp_preferences import get_addon_path
 from ..props_and_utils.exp_utilities import get_game_world
 from .exp_fullscreen import enter_fullscreen_once
-from ..animations.exp_custom_animations import purge_all_game_custom_nla
 # ────────────────────────────────────
 # Global for restoring scene
 # ────────────────────────────────────
@@ -361,15 +360,13 @@ def disable_live_perf_overlay_next_tick():
 
 
 
-#---------clear custom actions in NLA --- updated or changed actions replace action strips
+#---------clear custom actions in NLA --- LEGACY (no longer used)
 def clear_all_exp_custom_strips():
     """
-    HARD-WIPE for game START. See purge_all_game_custom_nla() for rules.
+    Legacy function - no longer needed with unified animation system.
+    The new system doesn't use NLA tracks; animations are applied directly.
     """
-    try:
-        purge_all_game_custom_nla()
-    except Exception as e:
-        print(f"[WARN] purge_all_game_custom_nla failed: {e}")
+    pass
 
 
 #----------------------------------------------------------------------------------------

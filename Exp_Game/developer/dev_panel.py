@@ -174,7 +174,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(scene, "dev_debug_interactions", text="Interactions")
         col.prop(scene, "dev_debug_audio", text="Audio")
-        col.prop(scene, "dev_debug_animations", text="Animations")
+
 
 
 def register():

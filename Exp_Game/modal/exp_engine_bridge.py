@@ -7,13 +7,17 @@ This module handles all engine lifecycle and communication:
 - Engine shutdown with cache cleanup
 - Job submission with sync tracking
 - Result processing with latency metrics
+- Animation system lifecycle (bake on start, clear on end)
 
 Keeps engine concerns separate from modal game logic.
 """
 
 import time
 import pickle
+import bpy
 from ..engine import EngineCore
+from ..engine.animations.baker import bake_action
+from ..animations.controller import AnimationController
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -319,3 +323,95 @@ def print_sync_report(modal):
         print(f"\nSync Quality Grade:       {grade}")
 
     print("="*60 + "\n")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANIMATION LIFECYCLE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def init_animations(modal, context) -> tuple[bool, str]:
+    """
+    Initialize animation system - bake all actions.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+
+    Returns:
+        (success: bool, message: str)
+    """
+    startup_logs = context.scene.dev_startup_logs
+    scene = context.scene
+    armature = scene.target_armature
+
+    if startup_logs:
+        print("\n[ANIMATIONS] Initializing animation system...")
+
+    # Create fresh controller
+    modal.anim_controller = AnimationController()
+
+    if not armature:
+        if startup_logs:
+            print("[ANIMATIONS] ⊘ No target armature - animations disabled")
+        return True, "No armature"
+
+    if armature.type != 'ARMATURE':
+        if startup_logs:
+            print("[ANIMATIONS] ⊘ Target is not an armature - animations disabled")
+        return True, "Invalid armature"
+
+    # Bake ALL actions in the blend file
+    start_time = time.perf_counter()
+    baked_count = 0
+    failed = []
+
+    for action in bpy.data.actions:
+        try:
+            anim = bake_action(action, armature)
+            modal.anim_controller.add_animation(anim)
+            baked_count += 1
+        except Exception as e:
+            failed.append(f"{action.name}: {e}")
+
+    elapsed = (time.perf_counter() - start_time) * 1000
+
+    if startup_logs:
+        print(f"[ANIMATIONS] ✓ Baked {baked_count} actions in {elapsed:.0f}ms")
+        if failed:
+            print(f"[ANIMATIONS] ⚠ {len(failed)} actions failed to bake")
+
+    return True, f"Baked {baked_count} actions"
+
+
+def shutdown_animations(modal, context):
+    """
+    Shutdown animation system - clear all cached data.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+    """
+    debug = context.scene.dev_debug_engine
+
+    if hasattr(modal, 'anim_controller') and modal.anim_controller:
+        if debug:
+            cache_count = modal.anim_controller.cache.count
+            print(f"[ANIMATIONS] Clearing {cache_count} cached animations...")
+
+        modal.anim_controller.clear_all()
+        modal.anim_controller = None
+
+        if debug:
+            print("[ANIMATIONS] Animation system shutdown complete")
+
+
+def update_animations(modal, delta_time: float):
+    """
+    Update animation playback. Call once per frame.
+
+    Args:
+        modal: ExpModal operator instance
+        delta_time: Time since last frame in seconds
+    """
+    if hasattr(modal, 'anim_controller') and modal.anim_controller:
+        modal.anim_controller.update(delta_time)

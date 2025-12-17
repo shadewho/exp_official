@@ -2,7 +2,7 @@ import bpy
 import os
 import aud
 from bpy.types import PropertyGroup
-from ..animations.exp_animations import AnimState
+from ..animations.state_machine import AnimState
 from ...exp_preferences import get_addon_path
 import shutil
 import time

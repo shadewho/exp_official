@@ -90,7 +90,6 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | **Game Systems** |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |
-| `ANIMATIONS` | `animations` | Animation and NLA system |
 
 ---
 
