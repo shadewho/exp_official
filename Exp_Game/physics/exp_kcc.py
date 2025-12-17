@@ -382,6 +382,8 @@ class KinematicCharacterController:
         self._platform_relative_pos = None  # (x, y, z) in platform's local space
         self._platform_obj_id = None        # id() of platform we're attached to
         self._pending_platform_yaw_delta = 0.0  # Yaw delta from worker (applied in step)
+        self._platform_prev_yaws = {}       # {obj_id: prev_yaw} - MAIN THREAD tracking (not worker!)
+        self._prev_dynamic_transforms = {}  # {obj_id: matrix_tuple} - dirty checking for transforms
 
         # Cached constants
         self._up = _UP
@@ -491,6 +493,16 @@ class KinematicCharacterController:
         # (Cannot apply here because step() overwrites rotation_euler at the end)
         self._pending_platform_yaw_delta = result.get("platform_yaw_delta", 0.0)
 
+        # Store current platform yaw for next frame (main thread tracking)
+        # This fixes the multi-worker stale cache bug where each worker had its own prev_yaw
+        platform_current_yaw = result.get("platform_current_yaw")
+        platform_rot_obj_id = result.get("platform_rot_obj_id")
+        if platform_current_yaw is not None and platform_rot_obj_id is not None:
+            self._platform_prev_yaws[platform_rot_obj_id] = platform_current_yaw
+        elif result.get("ground_hit_source") is None or not result.get("ground_hit_source", "").startswith("dynamic_"):
+            # Not on a dynamic platform - clear stale entries
+            self._platform_prev_yaws.clear()
+
         # ─────────────────────────────────────────────────────────────────────
         # UNIFIED PHYSICS: Ground source from worker (static or dynamic)
         # Worker now handles ALL collision detection (static grid + dynamic meshes)
@@ -582,8 +594,9 @@ class KinematicCharacterController:
                 "dynamic_opt": getattr(scene, "dev_debug_dynamic_opt", False),
             }
 
-        # Serialize dynamic mesh transforms (64 bytes per mesh) - lightweight, per-frame
-        # Mesh triangles are cached via targeted broadcast_job (one-time, guaranteed delivery)
+        # Serialize dynamic mesh transforms - ONLY send changed transforms (dirty checking)
+        # Worker has persistent cache, so unchanged meshes keep using cached transforms
+        # This reduces serialization when only 1 of N meshes is moving
         dynamic_transforms = {}
         dynamic_velocities = {}  # Mesh velocities for proximity diagnostics (12 bytes per mesh)
         if dynamic_map:
@@ -592,18 +605,31 @@ class KinematicCharacterController:
                     matrix = dyn_obj.matrix_world
                     obj_id = id(dyn_obj)
                     # Serialize as 16-element tuple (row-major)
-                    dynamic_transforms[obj_id] = (
+                    current_transform = (
                         matrix[0][0], matrix[0][1], matrix[0][2], matrix[0][3],
                         matrix[1][0], matrix[1][1], matrix[1][2], matrix[1][3],
                         matrix[2][0], matrix[2][1], matrix[2][2], matrix[2][3],
                         matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3],
                     )
-                    # Serialize velocity if available
+
+                    # Only send if transform changed from previous frame
+                    prev_transform = self._prev_dynamic_transforms.get(obj_id)
+                    if prev_transform != current_transform:
+                        dynamic_transforms[obj_id] = current_transform
+                        self._prev_dynamic_transforms[obj_id] = current_transform
+
+                    # Serialize velocity if available (always send - needed for proactive detection)
                     if velocity_map and dyn_obj in velocity_map:
                         vel = velocity_map[dyn_obj]
                         dynamic_velocities[obj_id] = (vel.x, vel.y, vel.z)
                 except Exception:
                     continue
+
+            # Clean up stale entries (meshes no longer in dynamic_map)
+            current_obj_ids = {id(obj) for obj in dynamic_map.keys()}
+            stale_ids = [oid for oid in self._prev_dynamic_transforms if oid not in current_obj_ids]
+            for oid in stale_ids:
+                del self._prev_dynamic_transforms[oid]
 
         return {
             # Current state
@@ -650,6 +676,10 @@ class KinematicCharacterController:
 
             # Dynamic mesh velocities (for proximity diagnostics - 12 bytes per mesh)
             "dynamic_velocities": dynamic_velocities,
+
+            # Platform rotation tracking (main thread → worker → main thread)
+            # Fixes multi-worker stale cache bug where each worker had its own prev_yaw
+            "platform_prev_yaws": dict(self._platform_prev_yaws),
         }
 
     # ---- Main step ----------------------------------------------------------

@@ -44,7 +44,9 @@ Worker handles ALL physics decisions. Main thread is I/O only.
 
 ---
 
-## 3. Optimizations Completed (2025-12-15)
+## 3. Optimizations & Fixes
+
+### Completed (2025-12-15)
 
 | Optimization | Description | Savings |
 |-------------|-------------|---------|
@@ -54,6 +56,36 @@ Worker handles ALL physics decisions. Main thread is I/O only.
 | Squared length check | Check `len_sq < threshold^2` before calling `sqrt()` | ~2-10us/frame |
 | Bounding radius helper | Extracted `_compute_bounding_radius()` - no duplicate code | Cleaner code |
 | Quaternion storage | Store 4 floats instead of 16 for previous rotation | 75% memory reduction |
+
+### Bug Fix (2025-12-17): Multi-Worker Rotation Stale Cache
+
+**Problem:** Platform rotation sync was inconsistent - sometimes character spun correctly with platform, sometimes way too fast.
+
+**Root Cause:** `_platform_prev_yaw` was a worker-side global. With 4 workers, each had its own stale copy. When jobs were distributed across workers, `prev_yaw` came from whichever frame that worker last processed (not the actual previous frame).
+
+**Fix:** Moved `prev_yaw` tracking to main thread:
+- Main thread stores `_platform_prev_yaws` dict in exp_kcc.py
+- Passed to worker via job data (`platform_prev_yaws`)
+- Worker returns `platform_current_yaw` and `platform_rot_obj_id`
+- Main thread stores returned value for next frame
+
+**Files changed:** `exp_kcc.py`, `engine/worker/physics.py`
+
+### Optimization (2025-12-17): Dirty Transform Tracking
+
+**Problem:** All dynamic mesh transforms (64 bytes each) were sent every frame, even for stationary meshes.
+
+**Fix:** Main thread tracks `_prev_dynamic_transforms` and only sends transforms that changed:
+- Compare current transform tuple to previous
+- Only include in job data if different
+- Worker's persistent `cached_dynamic_transforms` keeps using cached values for unchanged meshes
+
+**Savings:** With 4 meshes where only 1 is moving:
+- Before: 256 bytes/frame (4 × 64)
+- After: 64 bytes/frame (1 × 64)
+- 75% reduction in transform serialization
+
+**Files changed:** `exp_kcc.py`
 
 **Dead code removed:**
 - `platform_delta_map` - computed but never read
@@ -67,6 +99,8 @@ Worker handles ALL physics decisions. Main thread is I/O only.
 
 **Platform Riding:** Player can stand on moving platforms and be carried correctly. Uses relative position storage - player position stored in platform's local space on landing, transformed back to world each frame.
 
+**Platform Rotation:** Player rotates with spinning platforms. Main thread tracks `prev_yaw` per platform, passes to worker, worker computes delta and returns current yaw. Consistent frame-to-frame tracking regardless of which worker processes each job.
+
 **Horizontal Collisions:** Dynamic meshes push the player horizontally. Uses proactive detection - rays cast toward approaching mesh surfaces based on mesh velocity. Speed-scaled detection range handles fast-moving meshes.
 
 **Unified Raycast:** Static and dynamic meshes use identical code paths. `unified_raycast()` tests both, returns closest hit regardless of source. No special-case logic.
@@ -75,19 +109,11 @@ Worker handles ALL physics decisions. Main thread is I/O only.
 
 ## 5. Known Issues (Needs Work)
 
-### Multiple Dynamic Meshes Simultaneously
-- Current system not fully tested with multiple moving meshes at once
-- May have issues with priority/ordering when player contacts multiple meshes
-
 ### Reset Spawn Location Drift
 - Resetting game while interacting with dynamic mesh causes spawn location to differ
 - Likely related to platform carry state not being fully cleared on reset
 - Check `exp_game_reset.py` for platform state cleanup
 
-### Clip-Through / Sinking Into Meshes
-- Character tends to sink into dynamic meshes during contact
-- Penetration resolution may be insufficient
-- May need stronger push-out force or better overlap detection
 
 ---
 

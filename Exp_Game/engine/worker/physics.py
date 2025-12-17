@@ -9,34 +9,18 @@ import time
 
 # Import raycast functions from sibling module
 from .raycast import (
-    unified_raycast,
     cast_ray,
-    test_dynamic_meshes_ray,
 )
 
 # Import math utilities
 from .math import (
-    ray_triangle_intersect,
-    compute_triangle_normal,
-    compute_facing_normal,
-    ray_sphere_intersect,
-    compute_bounding_sphere,
-    compute_aabb,
     transform_aabb_by_matrix,
-    ray_aabb_intersect,
     invert_matrix_4x4,
-    transform_ray_to_local,
-    transform_point,
-    transform_triangle,
-    get_adaptive_grid_resolution,
-    build_triangle_grid,
-    ray_grid_traverse,
     matrix_to_euler_z,
 )
 
-# Platform rotation tracking: {obj_id: prev_yaw}
-# Persists across frames for computing rotation delta
-_platform_prev_yaw = {}
+# Platform rotation tracking is now done on main thread (exp_kcc.py)
+# to fix multi-worker stale cache bug. Prev yaws passed in job data.
 
 
 def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached_dynamic_transforms):
@@ -1291,9 +1275,15 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
 
     # ─────────────────────────────────────────────────────────────────────
     # PLATFORM ROTATION SYNC: Compute yaw delta when on rotating platform
+    # FIX: prev_yaw now comes from main thread (job_data) instead of worker global
+    # This fixes multi-worker stale cache bug where each worker had its own prev_yaw
     # ─────────────────────────────────────────────────────────────────────
-    global _platform_prev_yaw
     platform_yaw_delta = 0.0
+    platform_current_yaw = None  # Return to main thread for next frame
+    platform_rot_obj_id = None   # Which platform we're tracking
+
+    # Get prev_yaws from main thread (passed in job data)
+    platform_prev_yaws = job_data.get("platform_prev_yaws", {})
 
     if ground_hit_source and ground_hit_source.startswith("dynamic_"):
         try:
@@ -1303,9 +1293,9 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
                 matrix_16, _, _ = cached_dynamic_transforms[platform_obj_id]
                 current_yaw = matrix_to_euler_z(matrix_16)
 
-                # Compute delta from previous yaw
-                if platform_obj_id in _platform_prev_yaw:
-                    prev_yaw = _platform_prev_yaw[platform_obj_id]
+                # Compute delta from previous yaw (from main thread)
+                if platform_obj_id in platform_prev_yaws:
+                    prev_yaw = platform_prev_yaws[platform_obj_id]
                     platform_yaw_delta = current_yaw - prev_yaw
                     # Handle wrap-around at ±π
                     if platform_yaw_delta > math.pi:
@@ -1319,8 +1309,9 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
                             f"yaw={math.degrees(current_yaw):.1f}° prev={math.degrees(prev_yaw):.1f}° "
                             f"delta={math.degrees(platform_yaw_delta):.2f}°"))
 
-                # Store current yaw for next frame
-                _platform_prev_yaw[platform_obj_id] = current_yaw
+                # Return current yaw to main thread for next frame
+                platform_current_yaw = current_yaw
+                platform_rot_obj_id = platform_obj_id
             else:
                 # Debug: platform not in cache
                 if debug_ground:
@@ -1328,9 +1319,6 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
         except (ValueError, TypeError) as e:
             if debug_ground:
                 worker_logs.append(("PLATFORM-ROT", f"ERROR parsing ID: {e}"))
-    else:
-        # Not on a dynamic platform - clear old entries to prevent stale data
-        _platform_prev_yaw.clear()
 
     result_data = {
         "pos": (px, py, pz),
@@ -1340,6 +1328,8 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
         "ground_normal": (gn_x, gn_y, gn_z),
         "ground_hit_source": ground_hit_source,  # "static", "dynamic_{obj_id}", or None
         "platform_yaw_delta": platform_yaw_delta,  # Rotation sync for moving platforms
+        "platform_current_yaw": platform_current_yaw,  # Return to main thread for next frame
+        "platform_rot_obj_id": platform_rot_obj_id,    # Which platform we're tracking
         "coyote_remaining": coyote_remaining,
         "jump_consumed": jump_consumed,
         "logs": worker_logs,  # Fast buffer logs (sent to main thread)
