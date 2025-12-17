@@ -264,7 +264,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     char_action_blend: bpy.props.BoolProperty(
         name="Blend animation",
         default=False,
-        description="If enabled, this action plays on the overlay track (exp_char_custom) and combines with locomotion instead of replacing it."
+        description="If enabled, this action blends with existing animations instead of replacing them."
     )
 
     #--------------------------------------------------------
@@ -532,7 +532,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     custom_action_action: bpy.props.PointerProperty(
         name="Custom Action",
         type=bpy.types.Action,
-        description="Which Action to play (NLA track in exp_custom_actions)"
+        description="Which Action to play on the target object"
     )
     custom_action_speed: bpy.props.FloatProperty(
         name="Speed Multiplier",

@@ -190,7 +190,7 @@ This would replace hardcoded locomotion states with user-configurable animation 
 
 ### What Still Needs Work
 
-- [ ] Worker offloading for animation sampling/blending (currently all main thread)
+- [x] Worker offloading for animation sampling/blending ✓ COMPLETED
 - [ ] Additive animation layers (overlay actions on top of base)
 - [ ] Animation events/notifies (trigger sounds/effects at specific frames)
 - [ ] Bone masks (apply animation to subset of skeleton)
@@ -199,6 +199,87 @@ This would replace hardcoded locomotion states with user-configurable animation 
 - [ ] Smart/context-aware animation selection
 
 This is foundation work. The core is solid but there's significant development ahead.
+
+---
+
+## Context: 2025-12-17 (Worker Offloading Complete)
+
+### Worker-Based Animation Architecture
+
+**Animation sampling and blending is now fully offloaded to workers.**
+
+The main thread is now as thin as possible:
+1. **State management** - What's playing, times, weights, fades
+2. **Job submission** - Send minimal data to worker
+3. **Result application** - Apply bone transforms via bpy
+
+### New Job Types
+
+| Job Type | When | Data Sent | Data Returned |
+|----------|------|-----------|---------------|
+| `CACHE_ANIMATIONS` | Game start | All baked animation data | Confirmation |
+| `ANIMATION_COMPUTE` | Each frame | `{object_name, playing: [{anim_name, time, weight, looping}, ...]}` | `{bone_transforms: {bone: transform, ...}}` |
+
+### Data Flow
+
+```
+GAME START:
+  1. Bake all Actions → BakedAnimation (main thread, one-time)
+  2. Send CACHE_ANIMATIONS to all workers (one-time, ~140ms for 6 anims)
+  3. Workers store animations in _cached_animations dict
+
+EACH FRAME:
+  1. State machine evaluates (main thread) → decide what to play
+  2. update_state() advances times/fades (main thread, ~10µs)
+  3. get_compute_job_data() collects {anim_name, time, weight} (main thread, ~5µs)
+  4. Submit ANIMATION_COMPUTE job to engine (main thread, ~50µs)
+  5. Worker samples + blends animations (worker, ~100-500µs depending on bone count)
+  6. apply_worker_result() writes to pose bones (main thread, ~50µs)
+```
+
+### Performance Impact
+
+| Operation | Before (Main Thread) | After (Worker) |
+|-----------|---------------------|----------------|
+| Sample animation | ~200µs | 0µs (worker) |
+| Blend N animations | ~150µs × N | 0µs (worker) |
+| Apply to bones | ~50µs | ~50µs (still required) |
+| **Total main thread** | ~400-800µs | ~100µs |
+
+### Worker-Side Implementation (`engine/worker/entry.py`)
+
+```python
+# Worker-side caches (persistent across jobs)
+_cached_animations = {}  # {anim_name: {bones: {...}, duration, fps, ...}}
+
+# Animation compute handler
+def _handle_animation_compute(job_data):
+    # 1. For each playing animation: sample at time
+    # 2. Blend all samples by weight
+    # 3. Return final bone transforms
+```
+
+### Logging
+
+Animation logging uses the `ANIMATIONS` category, controlled by `dev_debug_animations` toggle in Developer Tools panel.
+
+Log format:
+```
+[ANIMATIONS F0042 T1.400s] Armature: Walk:100% | 52 bones | 142µs
+[ANIMATIONS F0043 T1.433s] Armature: Walk:75% + Run:25% | 52 bones | 198µs
+```
+
+### Controller Changes
+
+`AnimationController` now has two update paths:
+
+1. **Worker path** (default when engine available):
+   - `update_state(dt)` - Update times/fades only
+   - `get_compute_job_data()` - Get data for job submission
+   - `apply_worker_result(object_name, bone_transforms)` - Apply result
+
+2. **Local fallback** (when no engine):
+   - `update(dt)` - Full local computation (original behavior)
 
 ---
 

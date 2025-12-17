@@ -104,7 +104,7 @@ if not _IS_WORKER_PROCESS:
     # --- Animation Engine ---
     from .engine import animations as anim_module
 
-    # --- Animation 2.0 Test Panel ---
+    # --- Animation 2.0 Operators & Properties ---
     from .animations import test_panel as anim2_test_panel
 
     def register():
@@ -208,7 +208,7 @@ if not _IS_WORKER_PROCESS:
         # ─── Animation Engine ──────────────────────────────
         anim_module.register()
 
-        # ─── Animation 2.0 Test Panel ──────────────────────────────
+        # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.register()
 
 
@@ -295,7 +295,7 @@ if not _IS_WORKER_PROCESS:
         # ─── Performance Culling ──────────────────────────────────
         unregister_performance()
 
-        # ─── Animation 2.0 Test Panel ──────────────────────────────
+        # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.unregister()
 
         # ─── Animation Engine ──────────────────────────────

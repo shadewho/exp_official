@@ -52,6 +52,283 @@ _cached_dynamic_meshes = {}
 # Worker caches last known transform for each mesh.
 _cached_dynamic_transforms = {}
 
+# Animation cache: {anim_name: {bones: {bone_name: [frames]}, duration, fps, ...}}
+# Sent once via CACHE_ANIMATIONS job. Per-frame, only times/weights are sent.
+_cached_animations = {}
+
+
+# ============================================================================
+# ANIMATION COMPUTE (Worker-side blending)
+# ============================================================================
+
+def _lerp(a: float, b: float, t: float) -> float:
+    """Linear interpolation."""
+    return a + (b - a) * t
+
+
+def _slerp(q1, q2, t: float):
+    """
+    Spherical linear interpolation between two quaternions.
+    Quaternions are (w, x, y, z) format.
+    """
+    import math
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    # Dot product
+    dot = w1*w2 + x1*x2 + y1*y2 + z1*z2
+
+    # Take shorter path
+    if dot < 0.0:
+        w2, x2, y2, z2 = -w2, -x2, -y2, -z2
+        dot = -dot
+
+    # Very close - use linear interpolation
+    if dot > 0.9995:
+        w = w1 + t * (w2 - w1)
+        x = x1 + t * (x2 - x1)
+        y = y1 + t * (y2 - y1)
+        z = z1 + t * (z2 - z1)
+        # Normalize
+        length = (w*w + x*x + y*y + z*z) ** 0.5
+        if length > 0:
+            w, x, y, z = w/length, x/length, y/length, z/length
+        return (w, x, y, z)
+
+    # Standard slerp
+    theta_0 = math.acos(min(1.0, max(-1.0, dot)))
+    theta = theta_0 * t
+    sin_theta = math.sin(theta)
+    sin_theta_0 = math.sin(theta_0)
+
+    if abs(sin_theta_0) < 1e-10:
+        return (w1, x1, y1, z1)
+
+    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
+    s1 = sin_theta / sin_theta_0
+
+    return (
+        s0 * w1 + s1 * w2,
+        s0 * x1 + s1 * x2,
+        s0 * y1 + s1 * y2,
+        s0 * z1 + s1 * z2,
+    )
+
+
+def _blend_transform(t1, t2, weight: float):
+    """
+    Blend two transforms. weight=0 returns t1, weight=1 returns t2.
+    Transform format: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
+    """
+    q = _slerp(t1[0:4], t2[0:4], weight)
+    l = (_lerp(t1[4], t2[4], weight),
+         _lerp(t1[5], t2[5], weight),
+         _lerp(t1[6], t2[6], weight))
+    s = (_lerp(t1[7], t2[7], weight),
+         _lerp(t1[8], t2[8], weight),
+         _lerp(t1[9], t2[9], weight))
+    return q + l + s
+
+
+def _interpolate_transform(frames, frame_float: float):
+    """Interpolate between frames at a fractional frame index."""
+    if not frames:
+        return (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+
+    frame_low = int(frame_float)
+    frame_high = frame_low + 1
+    t = frame_float - frame_low
+
+    # Clamp indices
+    max_idx = len(frames) - 1
+    frame_low = min(frame_low, max_idx)
+    frame_high = min(frame_high, max_idx)
+
+    if frame_low == frame_high or t < 0.001:
+        return tuple(frames[frame_low])
+
+    return _blend_transform(frames[frame_low], frames[frame_high], t)
+
+
+def _sample_animation(anim_data: dict, anim_time: float, loop: bool = True):
+    """
+    Sample animation at a specific time.
+
+    Returns:
+        Dict[bone_name, Transform] - bone transforms at this time
+    """
+    duration = anim_data.get("duration", 0.0)
+    fps = anim_data.get("fps", 30.0)
+    bones_data = anim_data.get("bones", {})
+
+    if duration <= 0:
+        # Static pose - just return first frame
+        return {
+            name: tuple(frames[0]) if frames else (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            for name, frames in bones_data.items()
+        }
+
+    # Handle looping
+    if loop:
+        anim_time = anim_time % duration
+    else:
+        anim_time = max(0.0, min(anim_time, duration))
+
+    frame_float = anim_time * fps
+
+    # Sample each bone
+    result = {}
+    for bone_name, frames in bones_data.items():
+        if frames:
+            result[bone_name] = _interpolate_transform(frames, frame_float)
+
+    return result
+
+
+def _blend_bone_poses(poses_with_weights):
+    """
+    Blend multiple bone poses by weight.
+
+    Args:
+        poses_with_weights: List of (pose_dict, weight) tuples
+
+    Returns:
+        Blended pose dict {bone_name: Transform}
+    """
+    if not poses_with_weights:
+        return {}
+
+    if len(poses_with_weights) == 1:
+        return poses_with_weights[0][0]
+
+    # Normalize weights
+    total_weight = sum(w for _, w in poses_with_weights)
+    if total_weight <= 0:
+        return poses_with_weights[0][0]
+
+    # Collect all bone names
+    all_bones = set()
+    for pose, _ in poses_with_weights:
+        all_bones.update(pose.keys())
+
+    result = {}
+    for bone_name in all_bones:
+        bone_data = [(pose[bone_name], w / total_weight)
+                     for pose, w in poses_with_weights if bone_name in pose]
+
+        if not bone_data:
+            continue
+
+        if len(bone_data) == 1:
+            result[bone_name] = bone_data[0][0]
+            continue
+
+        # Iterative blending
+        blended = bone_data[0][0]
+        acc_weight = bone_data[0][1]
+
+        for transform, weight in bone_data[1:]:
+            if acc_weight + weight > 0:
+                blend_t = weight / (acc_weight + weight)
+                blended = _blend_transform(blended, transform, blend_t)
+                acc_weight += weight
+
+        result[bone_name] = blended
+
+    return result
+
+
+def _handle_animation_compute(job_data: dict) -> dict:
+    """
+    Handle ANIMATION_COMPUTE job - compute blended pose from playing animations.
+
+    Input job_data:
+        {
+            "object_name": str,
+            "playing": [
+                {"anim_name": str, "time": float, "weight": float, "looping": bool},
+                ...
+            ]
+        }
+
+    Returns:
+        {
+            "success": bool,
+            "bone_transforms": {bone_name: (10-float tuple), ...},
+            "bones_count": int,
+            "anims_blended": int,
+            "calc_time_us": float,
+            "logs": [(category, message), ...]
+        }
+    """
+    calc_start = time.perf_counter()
+    logs = []
+
+    object_name = job_data.get("object_name", "Unknown")
+    playing_list = job_data.get("playing", [])
+
+    if not playing_list:
+        return {
+            "success": True,
+            "bone_transforms": {},
+            "bones_count": 0,
+            "anims_blended": 0,
+            "calc_time_us": 0.0,
+            "logs": []
+        }
+
+    # Sample each playing animation
+    poses_with_weights = []
+    anim_names = []
+
+    for p in playing_list:
+        anim_name = p.get("anim_name")
+        anim_time = p.get("time", 0.0)
+        weight = p.get("weight", 1.0)
+        looping = p.get("looping", True)
+
+        if weight < 0.001:
+            continue
+
+        # Get cached animation
+        anim_data = _cached_animations.get(anim_name)
+        if anim_data is None:
+            continue
+
+        # Sample at current time
+        pose = _sample_animation(anim_data, anim_time, looping)
+        if pose:
+            poses_with_weights.append((pose, weight))
+            anim_names.append(f"{anim_name}:{weight:.0%}")
+
+    if not poses_with_weights:
+        return {
+            "success": True,
+            "bone_transforms": {},
+            "bones_count": 0,
+            "anims_blended": 0,
+            "calc_time_us": 0.0,
+            "logs": logs  # Include any debug logs (e.g., cache misses)
+        }
+
+    # Blend all poses
+    blended = _blend_bone_poses(poses_with_weights)
+
+    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+    # Build log message
+    anim_str = " + ".join(anim_names) if len(anim_names) <= 3 else f"{len(anim_names)} anims"
+    logs.append(("ANIMATIONS", f"{object_name}: {anim_str} | {len(blended)} bones | {calc_time_us:.0f}µs"))
+
+    return {
+        "success": True,
+        "bone_transforms": blended,
+        "bones_count": len(blended),
+        "anims_blended": len(poses_with_weights),
+        "calc_time_us": calc_time_us,
+        "logs": logs
+    }
+
 
 # ============================================================================
 # JOB DISPATCHER
@@ -342,6 +619,48 @@ def process_job(job) -> dict:
                 _cached_dynamic_meshes,
                 _cached_dynamic_transforms
             )
+
+        elif job.job_type == "CACHE_ANIMATIONS":
+            # Cache baked animations for subsequent ANIMATION_COMPUTE jobs
+            # Sent ONCE at game start. Per-frame, only times/weights are sent.
+            animations_data = job.data.get("animations", {})
+
+            if animations_data:
+                # Clear existing cache and store new animations
+                _cached_animations.clear()
+                for anim_name, anim_dict in animations_data.items():
+                    _cached_animations[anim_name] = anim_dict
+
+                anim_count = len(_cached_animations)
+                total_bones = sum(
+                    len(anim.get("bones", {}))
+                    for anim in _cached_animations.values()
+                )
+
+                if DEBUG_ENGINE:
+                    print(f"[Worker] Animations cached: {anim_count} anims, {total_bones} bone channels")
+
+                # Log for diagnostics
+                logs = [("ANIMATIONS", f"CACHED {anim_count} animations, {total_bones} bone channels")]
+
+                result_data = {
+                    "success": True,
+                    "animation_count": anim_count,
+                    "total_bone_channels": total_bones,
+                    "message": "Animations cached successfully",
+                    "logs": logs
+                }
+            else:
+                result_data = {
+                    "success": False,
+                    "error": "No animation data provided"
+                }
+
+        elif job.job_type == "ANIMATION_COMPUTE":
+            # Compute blended pose from multiple playing animations
+            # Input: list of {anim_name, time, weight} for each playing animation
+            # Output: blended bone transforms ready to apply via bpy
+            result_data = _handle_animation_compute(job.data)
 
         else:
             # Unknown job type - still succeed but note it

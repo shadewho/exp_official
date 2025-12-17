@@ -331,7 +331,7 @@ def print_sync_report(modal):
 
 def init_animations(modal, context) -> tuple[bool, str]:
     """
-    Initialize animation system - bake all actions.
+    Initialize animation system - bake all actions and cache in workers.
 
     Args:
         modal: ExpModal operator instance
@@ -349,6 +349,9 @@ def init_animations(modal, context) -> tuple[bool, str]:
 
     # Create fresh controller
     modal.anim_controller = AnimationController()
+
+    # Initialize pending animation jobs tracking
+    modal._pending_anim_jobs = {}
 
     if not armature:
         if startup_logs:
@@ -373,14 +376,79 @@ def init_animations(modal, context) -> tuple[bool, str]:
         except Exception as e:
             failed.append(f"{action.name}: {e}")
 
-    elapsed = (time.perf_counter() - start_time) * 1000
+    bake_elapsed = (time.perf_counter() - start_time) * 1000
 
     if startup_logs:
-        print(f"[ANIMATIONS] ✓ Baked {baked_count} actions in {elapsed:.0f}ms")
+        print(f"[ANIMATIONS] ✓ Baked {baked_count} actions in {bake_elapsed:.0f}ms")
         if failed:
             print(f"[ANIMATIONS] ⚠ {len(failed)} actions failed to bake")
 
+    # NOTE: Worker caching happens later via cache_animations_in_workers()
+    # This is called after init_engine() in exp_modal.py
+
     return True, f"Baked {baked_count} actions"
+
+
+def cache_animations_in_workers(modal, context) -> bool:
+    """
+    Cache baked animations in all workers.
+    MUST be called AFTER init_engine() since it needs workers to be running.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+
+    Returns:
+        True if caching succeeded
+    """
+    startup_logs = context.scene.dev_startup_logs
+
+    if not hasattr(modal, 'anim_controller') or not modal.anim_controller:
+        return True  # No animations to cache
+
+    if modal.anim_controller.cache.count == 0:
+        return True  # No animations baked
+
+    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
+        if startup_logs:
+            print("[ANIMATIONS] ⚠ Engine not available - skipping worker cache")
+        return False
+
+    cache_data = modal.anim_controller.get_cache_data_for_workers()
+    baked_count = modal.anim_controller.cache.count
+
+    if startup_logs:
+        print(f"[ANIMATIONS] Caching {baked_count} animations in workers...")
+
+    # Broadcast cache job to all workers (targeted delivery)
+    submitted = modal.engine.broadcast_job("CACHE_ANIMATIONS", cache_data)
+
+    # Wait for all cache jobs to complete
+    if submitted > 0:
+        confirmed_workers = set()
+        start_time = time.perf_counter()
+        timeout = 1.0
+
+        while len(confirmed_workers) < submitted:
+            if time.perf_counter() - start_time > timeout:
+                if startup_logs:
+                    print(f"[ANIMATIONS] ⚠ Timeout ({len(confirmed_workers)}/{submitted} workers)")
+                break
+
+            results = list(modal.engine.poll_results(max_results=50))
+            for result in results:
+                if result.job_type == "CACHE_ANIMATIONS" and result.success:
+                    confirmed_workers.add(result.worker_id)
+
+            if len(confirmed_workers) >= submitted:
+                break
+            time.sleep(0.002)
+
+        if startup_logs:
+            elapsed = (time.perf_counter() - start_time) * 1000
+            print(f"[ANIMATIONS] ✓ Cached in {len(confirmed_workers)}/{submitted} workers ({elapsed:.0f}ms)")
+
+    return True
 
 
 def shutdown_animations(modal, context):
@@ -404,10 +472,95 @@ def shutdown_animations(modal, context):
         if debug:
             print("[ANIMATIONS] Animation system shutdown complete")
 
+    # Clear pending jobs
+    if hasattr(modal, '_pending_anim_jobs'):
+        modal._pending_anim_jobs.clear()
+
+
+def update_animations_state(modal, delta_time: float):
+    """
+    Update animation state (times, fades). Call at start of frame.
+    This prepares data for worker submission.
+
+    Args:
+        modal: ExpModal operator instance
+        delta_time: Time since last frame in seconds
+    """
+    if hasattr(modal, 'anim_controller') and modal.anim_controller:
+        modal.anim_controller.update_state(delta_time)
+
+
+def submit_animation_jobs(modal) -> int:
+    """
+    Submit ANIMATION_COMPUTE jobs to engine for all active animations.
+    Call after update_animations_state().
+
+    Args:
+        modal: ExpModal operator instance
+
+    Returns:
+        Number of jobs submitted
+    """
+    if not hasattr(modal, 'anim_controller') or not modal.anim_controller:
+        return 0
+
+    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
+        return 0
+
+    # Get job data for all objects with active animations
+    jobs_data = modal.anim_controller.get_compute_job_data()
+
+    if not jobs_data:
+        return 0
+
+    # Submit jobs
+    count = 0
+    for object_name, job_data in jobs_data.items():
+        job_id = modal.engine.submit_job("ANIMATION_COMPUTE", job_data)
+        if job_id is not None and job_id >= 0:
+            modal._pending_anim_jobs[job_id] = object_name
+            count += 1
+
+    return count
+
+
+def process_animation_result(modal, result) -> bool:
+    """
+    Process an ANIMATION_COMPUTE result and apply to Blender.
+    Call when receiving result from engine.
+
+    Args:
+        modal: ExpModal operator instance
+        result: EngineResult object
+
+    Returns:
+        True if result was processed successfully
+    """
+    if not hasattr(modal, '_pending_anim_jobs'):
+        return False
+
+    job_id = result.job_id
+    if job_id not in modal._pending_anim_jobs:
+        return False
+
+    object_name = modal._pending_anim_jobs.pop(job_id)
+
+    if not result.success:
+        return False
+
+    result_data = result.result
+    bone_transforms = result_data.get("bone_transforms", {})
+
+    if bone_transforms and hasattr(modal, 'anim_controller') and modal.anim_controller:
+        modal.anim_controller.apply_worker_result(object_name, bone_transforms)
+
+    return True
+
 
 def update_animations(modal, delta_time: float):
     """
-    Update animation playback. Call once per frame.
+    Update animation playback (LOCAL FALLBACK). Call once per frame.
+    Use this when engine is not available.
 
     Args:
         modal: ExpModal operator instance
@@ -415,3 +568,68 @@ def update_animations(modal, delta_time: float):
     """
     if hasattr(modal, 'anim_controller') and modal.anim_controller:
         modal.anim_controller.update(delta_time)
+
+
+def poll_animation_results_with_timeout(modal, timeout: float = 0.002) -> int:
+    """
+    Poll for ANIMATION_COMPUTE results with short timeout for same-frame sync.
+    Similar to camera same-frame sync - worker is fast (~100µs) so we can wait.
+
+    Non-animation results that arrive during polling are cached for later processing
+    by _poll_and_apply_engine_results().
+
+    Args:
+        modal: ExpModal operator instance
+        timeout: Max time to wait in seconds (default 2ms)
+
+    Returns:
+        Number of animation results applied
+    """
+    if not hasattr(modal, 'engine') or not modal.engine:
+        return 0
+
+    if not hasattr(modal, '_pending_anim_jobs') or not modal._pending_anim_jobs:
+        return 0
+
+    # Initialize cached results list if needed (for non-animation results)
+    if not hasattr(modal, '_cached_other_results'):
+        modal._cached_other_results = []
+
+    # Small pre-poll delay to give worker time to start (like camera does)
+    time.sleep(0.00015)  # 150µs
+
+    start_time = time.perf_counter()
+    applied = 0
+
+    while time.perf_counter() - start_time < timeout:
+        # Non-blocking poll
+        results = list(modal.engine.poll_results(max_results=20))
+
+        for result in results:
+            if result.job_type == "ANIMATION_COMPUTE":
+                if process_animation_result(modal, result):
+                    applied += 1
+            else:
+                # Cache non-animation results for later processing
+                modal._cached_other_results.append(result)
+
+        # All pending animation jobs completed
+        if not modal._pending_anim_jobs:
+            break
+
+        # Brief sleep to avoid busy spin
+        time.sleep(0.0001)  # 100µs
+
+    return applied
+
+
+def get_cached_other_results(modal) -> list:
+    """
+    Get and clear any results cached during animation polling.
+    Call from _poll_and_apply_engine_results() to process these.
+    """
+    if not hasattr(modal, '_cached_other_results'):
+        return []
+    results = modal._cached_other_results
+    modal._cached_other_results = []
+    return results

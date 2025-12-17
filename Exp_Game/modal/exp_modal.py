@@ -15,7 +15,7 @@ from ..audio.exp_audio import (get_global_audio_state_manager, clean_audio_temp)
 from ..startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old_dynamic_references,
                           record_user_settings, apply_performance_settings, restore_user_settings,
                           move_armature_and_children_to_scene, revert_to_original_scene,
-                            ensure_timeline_at_zero, ensure_object_mode, clear_all_exp_custom_strips)  
+                            ensure_timeline_at_zero, ensure_object_mode)  
 from ..interactions.exp_interactions import set_interact_pressed, set_action_pressed, reset_all_interactions
 from ..reactions.exp_reactions import reset_all_tasks
 from ..props_and_utils.exp_time import init_time
@@ -43,6 +43,7 @@ from .exp_engine_bridge import (
     shutdown_engine,
     init_animations,
     shutdown_animations,
+    cache_animations_in_workers,
 )
 
 def _first_view3d_r3d():
@@ -353,13 +354,6 @@ class ExpModal(bpy.types.Operator):
             self.report({'ERROR'}, "No armature assigned to scene.target_armature! Cancelling game.")
             return {'CANCELLED'}
 
-        #--clear custom action strips--#
-        if not self.launched_from_ui:
-            try:
-                clear_all_exp_custom_strips()
-            except Exception as e:
-                print(f"[WARN] clear_all_exp_custom_strips failed: {e}")
-
         # A) Clean out old audio temp (skip when audio-lock is ON)
         if not context.scene.character_audio_lock:
             clean_audio_temp()
@@ -546,6 +540,9 @@ class ExpModal(bpy.types.Operator):
             if not success:
                 self.report({'ERROR'}, f"{error_msg} - aborting game")
                 return {'CANCELLED'}
+
+            # Cache animations in workers (must happen AFTER engine is running)
+            cache_animations_in_workers(self, context)
 
             # Initialize interaction offload tracking
             self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job

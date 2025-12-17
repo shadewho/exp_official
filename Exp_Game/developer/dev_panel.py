@@ -10,6 +10,13 @@ All physics logs show source (static/dynamic) - there is ONE system.
 
 import bpy
 
+# Animation 2.0 imports
+from ..animations.test_panel import (
+    get_test_controller,
+    reset_test_controller,
+    playback_update,
+)
+
 
 def _is_create_panel_enabled(scene, key: str) -> bool:
     """Check if a specific Create panel is enabled in the filter."""
@@ -174,6 +181,81 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(scene, "dev_debug_interactions", text="Interactions")
         col.prop(scene, "dev_debug_audio", text="Audio")
+
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
+        # Animation 2.0 (Test Tools)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        box.label(text="Animation 2.0", icon='ACTION')
+
+        # ─── Debug Toggle ───────────────────────────────────────────────
+        box.prop(scene, "dev_debug_animations", text="Animation Logs")
+
+        props = scene.anim2_test
+        ctrl = get_test_controller()
+        obj = context.active_object
+
+        # ─── Cache Status ───────────────────────────────────────────────
+        row = box.row()
+        row.label(text=f"Cache: {ctrl.cache.count} animations", icon='FILE_CACHE')
+        row.operator("anim2.clear_cache", text="", icon='X')
+
+        # ─── Bake ───────────────────────────────────────────────────────
+        sub_box = box.box()
+        sub_box.label(text="Bake", icon='IMPORT')
+
+        armature = scene.target_armature
+        if armature:
+            sub_box.operator("anim2.bake_all", text=f"Bake All ({len(bpy.data.actions)} actions)", icon='ACTION')
+        else:
+            sub_box.label(text="Set target armature first", icon='ERROR')
+
+        # ─── Playback ───────────────────────────────────────────────────
+        sub_box = box.box()
+        sub_box.label(text="Playback", icon='PLAY')
+
+        if ctrl.cache.count > 0:
+            sub_box.prop(props, "selected_animation", text="")
+
+            row = sub_box.row(align=True)
+            row.prop(props, "play_speed")
+            row.prop(props, "fade_time")
+
+            sub_box.prop(props, "loop_playback")
+
+            row = sub_box.row(align=True)
+            row.scale_y = 1.3
+            row.operator("anim2.play_animation", icon='PLAY')
+            row.operator("anim2.stop_animation", icon='SNAP_FACE')
+        else:
+            sub_box.label(text="Bake animations first", icon='INFO')
+
+        # ─── Blending ───────────────────────────────────────────────────
+        sub_box = box.box()
+        sub_box.label(text="Blend Test", icon='MOD_VERTEX_WEIGHT')
+
+        if ctrl.cache.count > 1:
+            sub_box.prop(props, "blend_animation", text="")
+            sub_box.prop(props, "blend_weight", slider=True)
+            sub_box.operator("anim2.blend_animation", icon='OVERLAY')
+        elif ctrl.cache.count == 1:
+            sub_box.label(text="Need 2+ animations to blend", icon='INFO')
+        else:
+            sub_box.label(text="Bake animations first", icon='INFO')
+
+        # ─── Status ─────────────────────────────────────────────────────
+        if obj and obj.name in ctrl._states:
+            state = ctrl._states[obj.name]
+            playing = [p for p in state.playing if not p.finished]
+            if playing:
+                sub_box = box.box()
+                sub_box.label(text="Now Playing:", icon='TIME')
+                for p in playing:
+                    row = sub_box.row()
+                    row.label(text=f"  {p.animation_name}")
+                    row.label(text=f"{p.weight * p.fade_progress:.0%}")
 
 
 

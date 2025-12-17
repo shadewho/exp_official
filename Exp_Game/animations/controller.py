@@ -2,14 +2,23 @@
 """
 AnimationController - Main thread animation orchestrator.
 
-This module uses bpy to apply animations to Blender objects.
-All heavy computation (sampling, blending) is done in engine/animations/ (worker-safe).
-This module only handles the final bpy writes.
+WORKER-OFFLOADED ARCHITECTURE:
+- Main thread: Manages playback state (times, weights, fades)
+- Worker: Computes blended poses (sampling + blending math)
+- Main thread: Applies final pose via bpy
 
 Usage:
     controller = AnimationController()
     controller.play("Player", "Walk")
-    controller.update(delta_time)  # Called each frame
+
+    # Each frame (worker flow):
+    controller.update_state(delta_time)          # Update times/fades
+    job_data = controller.get_compute_job_data() # Get data for worker
+    # ... submit job to engine ...
+    controller.apply_worker_result(result)       # Apply computed pose
+
+    # Or (local fallback):
+    controller.update(delta_time)                # Does everything locally
 """
 
 import bpy
@@ -386,3 +395,171 @@ class AnimationController:
         """Clear both states and cache."""
         self._states.clear()
         self.cache.clear()
+
+    # =========================================================================
+    # WORKER-OFFLOADED METHODS
+    # =========================================================================
+
+    def update_state(self, delta_time: float) -> None:
+        """
+        Update playback state only (times, fades). No pose computation.
+        Call this before get_compute_job_data() in the worker flow.
+
+        Args:
+            delta_time: Time since last frame in seconds
+        """
+        dt = delta_time * self.time_scale
+
+        for object_name, state in self._states.items():
+            for p in state.playing:
+                if p.finished:
+                    continue
+
+                anim = self.cache.get(p.animation_name)
+                if anim is None:
+                    p.finished = True
+                    continue
+
+                # Update time
+                p.time += dt * p.speed
+
+                # Handle looping
+                if p.time >= anim.duration:
+                    if p.looping:
+                        p.time = p.time % anim.duration
+                        p.play_count += 1
+                    else:
+                        p.time = anim.duration
+                        p.play_count = 1
+                        p.finished = True
+
+                # Update fade
+                if p.fading_out:
+                    if p.fade_out > 0:
+                        p.fade_progress -= dt / p.fade_out
+                        if p.fade_progress <= 0:
+                            p.fade_progress = 0
+                            p.finished = True
+                    else:
+                        p.finished = True
+                elif p.fade_progress < 1.0 and p.fade_in > 0:
+                    p.fade_progress += dt / p.fade_in
+                    if p.fade_progress > 1.0:
+                        p.fade_progress = 1.0
+
+        # Cleanup finished animations
+        self._cleanup()
+
+    def get_compute_job_data(self) -> Dict[str, dict]:
+        """
+        Get job data for all objects with active animations.
+        Call after update_state() to get data for ANIMATION_COMPUTE jobs.
+
+        Returns:
+            Dict[object_name, job_data] where job_data is:
+            {
+                "object_name": str,
+                "playing": [
+                    {"anim_name": str, "time": float, "weight": float, "looping": bool},
+                    ...
+                ]
+            }
+        """
+        result = {}
+
+        for object_name, state in self._states.items():
+            playing_data = []
+
+            for p in state.playing:
+                if p.finished:
+                    continue
+
+                effective_weight = p.weight * p.fade_progress
+                if effective_weight < 0.001:
+                    continue
+
+                playing_data.append({
+                    "anim_name": p.animation_name,
+                    "time": p.time,
+                    "weight": effective_weight,
+                    "looping": p.looping
+                })
+
+            if playing_data:
+                result[object_name] = {
+                    "object_name": object_name,
+                    "playing": playing_data
+                }
+
+        return result
+
+    def apply_worker_result(self, object_name: str, bone_transforms: Dict[str, tuple]) -> int:
+        """
+        Apply bone transforms computed by worker.
+        Call after receiving ANIMATION_COMPUTE result.
+
+        Args:
+            object_name: Name of the Blender object
+            bone_transforms: Dict[bone_name, Transform] from worker result
+
+        Returns:
+            Number of bones updated
+        """
+        if not bone_transforms:
+            return 0
+
+        obj = bpy.data.objects.get(object_name)
+        if obj is None or obj.type != 'ARMATURE':
+            return 0
+
+        pose_bones = obj.pose.bones
+        count = 0
+
+        for bone_name, transform in bone_transforms.items():
+            pose_bone = pose_bones.get(bone_name)
+            if pose_bone is None:
+                continue
+
+            # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
+            qw, qx, qy, qz = transform[0:4]
+            lx, ly, lz = transform[4:7]
+            sx, sy, sz = transform[7:10]
+
+            pose_bone.rotation_quaternion = (qw, qx, qy, qz)
+            pose_bone.location = (lx, ly, lz)
+            pose_bone.scale = (sx, sy, sz)
+            count += 1
+
+        return count
+
+    def get_cache_data_for_workers(self) -> dict:
+        """
+        Get animation cache data formatted for CACHE_ANIMATIONS job.
+        Call at game start to send animations to workers.
+
+        Returns:
+            Dict ready to send as CACHE_ANIMATIONS job data:
+            {"animations": {anim_name: {bones: {...}, duration, fps}, ...}}
+        """
+        animations_dict = {}
+
+        for name, anim in self.cache._animations.items():
+            # Convert BakedAnimation to plain dict for worker
+            animations_dict[name] = {
+                "name": anim.name,
+                "duration": anim.duration,
+                "fps": anim.fps,
+                "frame_count": anim.frame_count,
+                "bones": anim.bones,  # Already Dict[str, List[Transform]]
+                "looping": anim.looping
+            }
+
+        return {"animations": animations_dict}
+
+    def has_active_animations(self) -> bool:
+        """Check if any object has active (non-finished) animations."""
+        for state in self._states.values():
+            for p in state.playing:
+                if not p.finished:
+                    return True
+        return False

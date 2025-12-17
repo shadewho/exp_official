@@ -121,7 +121,7 @@ def set_viewport_shading(mode: str = "RENDERED"):
 def ensure_timeline_at_zero():
     """
     Ensures that the scene's current frame is 0.
-    This is important so that the NLA strips and animations are in sync when the modal starts.
+    This keeps the timeline at a consistent starting point when the game starts.
     """
     scene = bpy.context.scene
     if scene.frame_current != 0:
@@ -357,16 +357,6 @@ def disable_live_perf_overlay_next_tick():
         return None  # run once
 
     bpy.app.timers.register(_do_disable, first_interval=0.0)
-
-
-
-#---------clear custom actions in NLA --- LEGACY (no longer used)
-def clear_all_exp_custom_strips():
-    """
-    Legacy function - no longer needed with unified animation system.
-    The new system doesn't use NLA tracks; animations are applied directly.
-    """
-    pass
 
 
 #----------------------------------------------------------------------------------------

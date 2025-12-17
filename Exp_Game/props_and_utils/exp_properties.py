@@ -209,10 +209,9 @@ def add_scene_properties():
             ("PERF",   "Performance",                 "Live performance + culling tools"),
             ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
             ("DEV",    "Developer Tools",             "Debug toggles and diagnostic tools"),
-            ("ANIM2",  "Animation 2.0 (Test)",        "Animation 2.0 test panel"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'DEV', 'ANIM2'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'DEV'}
     )
 
     #---proxy mesh --#

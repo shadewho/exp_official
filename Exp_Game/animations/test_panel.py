@@ -1,14 +1,14 @@
 # Exp_Game/animations/test_panel.py
 """
-Animation 2.0 Test Panel - Phase 1 Testing UI.
+Animation 2.0 Test Operators & Properties.
 
-Temporary panel for testing the unified animation system.
-Located in the Exploratory N-panel > Create tab.
+Operators and properties for testing the unified animation system.
+UI is now in Developer Tools panel (dev_panel.py).
 """
 
 import bpy
-from bpy.types import Panel, Operator, PropertyGroup
-from bpy.props import StringProperty, FloatProperty, BoolProperty, EnumProperty
+from bpy.types import Operator, PropertyGroup
+from bpy.props import FloatProperty, BoolProperty, EnumProperty
 
 from ..engine.animations.baker import bake_action
 from ..engine.animations.data import BakedAnimation
@@ -318,105 +318,6 @@ class ANIM2_TestProperties(PropertyGroup):
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILTER HELPER (matches exp_ui.py)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _is_create_panel_enabled(scene, key: str) -> bool:
-    """Check if a Create panel is enabled in the filter."""
-    flags = getattr(scene, "create_panels_filter", None)
-    if flags is None:
-        return True
-    if hasattr(flags, "__len__") and len(flags) == 0:
-        return False
-    return (key in flags)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PANEL
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ANIM2_PT_TestPanel(Panel):
-    """Animation 2.0 Test Panel"""
-    bl_label = "Animation 2.0 (Test)"
-    bl_idname = "ANIM2_PT_test_panel"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Exploratory'
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        # Show in Create mode when ANIM2 filter is enabled
-        return (getattr(context.scene, "main_category", "EXPLORE") == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'ANIM2'))
-
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.anim2_test
-        ctrl = get_test_controller()
-        obj = context.active_object
-
-        # ─── Cache Status ───────────────────────────────────────────────
-        box = layout.box()
-        row = box.row()
-        row.label(text=f"Cache: {ctrl.cache.count} animations", icon='ACTION')
-        row.operator("anim2.clear_cache", text="", icon='X')
-
-        # ─── Bake ───────────────────────────────────────────────────────
-        box = layout.box()
-        box.label(text="Bake", icon='IMPORT')
-
-        armature = context.scene.target_armature
-        if armature:
-            box.operator("anim2.bake_all", text=f"Bake All ({len(bpy.data.actions)} actions)", icon='ACTION')
-        else:
-            box.label(text="Set target armature first", icon='ERROR')
-
-        # ─── Playback ───────────────────────────────────────────────────
-        box = layout.box()
-        box.label(text="Playback", icon='PLAY')
-
-        if ctrl.cache.count > 0:
-            box.prop(props, "selected_animation", text="")
-
-            row = box.row(align=True)
-            row.prop(props, "play_speed")
-            row.prop(props, "fade_time")
-
-            box.prop(props, "loop_playback")
-
-            row = box.row(align=True)
-            row.scale_y = 1.3
-            row.operator("anim2.play_animation", icon='PLAY')
-            row.operator("anim2.stop_animation", icon='SNAP_FACE')
-        else:
-            box.label(text="Bake animations first", icon='INFO')
-
-        # ─── Blending ───────────────────────────────────────────────────
-        box = layout.box()
-        box.label(text="Blend Test", icon='MOD_VERTEX_WEIGHT')
-
-        if ctrl.cache.count > 1:
-            box.prop(props, "blend_animation", text="")
-            box.prop(props, "blend_weight", slider=True)
-            box.operator("anim2.blend_animation", icon='OVERLAY')
-        elif ctrl.cache.count == 1:
-            box.label(text="Need 2+ animations to blend", icon='INFO')
-        else:
-            box.label(text="Bake animations first", icon='INFO')
-
-        # ─── Status ─────────────────────────────────────────────────────
-        if obj and obj.name in ctrl._states:
-            state = ctrl._states[obj.name]
-            playing = [p for p in state.playing if not p.finished]
-            if playing:
-                box = layout.box()
-                box.label(text="Now Playing:", icon='TIME')
-                for p in playing:
-                    row = box.row()
-                    row.label(text=f"  {p.animation_name}")
-                    row.label(text=f"{p.weight * p.fade_progress:.0%}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -430,7 +331,6 @@ classes = [
     ANIM2_OT_StopAnimation,
     ANIM2_OT_BlendAnimation,
     ANIM2_OT_ClearCache,
-    ANIM2_PT_TestPanel,
 ]
 
 

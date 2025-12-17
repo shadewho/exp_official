@@ -31,7 +31,6 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
         ("PERF",   "Performance"),
         ("PHYS",   "Character Physics & View"),
         ("DEV",    "Developer Tools"),
-        ("ANIM2",  "Animation 2.0 (Test)"),
     ]
 
     def invoke(self, context, event):

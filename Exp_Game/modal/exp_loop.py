@@ -4,7 +4,14 @@ import time
 import bpy
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time, get_game_time
 from ..animations.state_machine import AnimState
-from .exp_engine_bridge import update_animations
+from .exp_engine_bridge import (
+    update_animations,
+    update_animations_state,
+    submit_animation_jobs,
+    poll_animation_results_with_timeout,
+    get_cached_other_results,
+    process_animation_result,
+)
 from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_tasks
 from ..reactions.exp_transforms import update_transform_tasks
@@ -138,10 +145,12 @@ class GameLoop:
         """
         Update character animation state machine and play animations.
 
+        WORKER-OFFLOADED FLOW:
         1. Update state machine with current input/physics state
         2. If state changed, play new animation via controller
-        3. Advance animation playback
-        4. Update audio state
+        3. Update animation state (times, fades) - main thread only
+        4. Submit ANIMATION_COMPUTE jobs to engine
+        5. Results are processed in _poll_and_apply_engine_results()
         """
         # Skip if no state machine or controller
         if not hasattr(op, 'char_state_machine') or not op.char_state_machine:
@@ -197,8 +206,22 @@ class GameLoop:
                 audio_state_mgr.update_audio_state(new_state)
                 self._last_anim_state = new_state
 
-        # Advance animation playback
-        update_animations(op, agg_dt)
+        # WORKER-OFFLOADED ANIMATION FLOW:
+        # 1. Update state (times, fades) on main thread
+        update_animations_state(op, agg_dt)
+
+        # 2. Submit jobs to engine (if engine available)
+        engine = getattr(op, 'engine', None)
+        if engine and engine.is_alive():
+            submit_animation_jobs(op)
+
+            # 3. Same-frame sync: poll for results immediately
+            # Worker compute is fast (~100µs), so we wait up to 2ms
+            # This eliminates 1-frame latency like camera system does
+            poll_animation_results_with_timeout(op, timeout=0.002)
+        else:
+            # Fallback: use local computation if no engine
+            update_animations(op, agg_dt)
 
     def _poll_and_apply_engine_results(self):
         """
@@ -221,6 +244,10 @@ class GameLoop:
         if pc:
             cached_results = pc.get_cached_other_results()
             results.extend(cached_results)
+
+        # Include any results cached by animation polling during same-frame sync
+        anim_cached = get_cached_other_results(op)
+        results.extend(anim_cached)
 
         stats = get_stats_tracker()
 
@@ -359,11 +386,28 @@ class GameLoop:
                             from ..developer.dev_logger import log_worker_messages
                             log_worker_messages(worker_logs)
 
-                # TODO: Add handlers for other game logic job types
-                # elif result.job_type == "AI_PATHFIND":
-                #     self._apply_pathfinding_result(result)
-                # elif result.job_type == "PHYSICS_PREDICT":
-                #     self._apply_physics_prediction(result)
+                elif result.job_type == "CACHE_ANIMATIONS":
+                    # Animation caching confirmation
+                    if result.result.get("success"):
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
+
+                elif result.job_type == "ANIMATION_COMPUTE":
+                    # Apply computed bone transforms from worker
+                    try:
+                        process_animation_result(op, result)
+
+                        # Process worker logs (per-frame animation state)
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
+
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying animation result: {e}")
+
             else:
                 # Job failed - already logged in process_engine_result
                 # CRITICAL: Clear pending_job_id for camera jobs to prevent permanent stuck state

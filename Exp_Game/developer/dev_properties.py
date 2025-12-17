@@ -340,6 +340,19 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_animations = bpy.props.BoolProperty(
+        name="Animations",
+        description=(
+            "Animation system diagnostics (worker-offloaded):\n"
+            "• Cache status (animations cached in workers)\n"
+            "• Per-frame compute jobs submitted\n"
+            "• Blending: animations playing, weights, times\n"
+            "• Worker compute time (µs)\n"
+            "• Bones updated per frame"
+        ),
+        default=False
+    )
+
     # ══════════════════════════════════════════════════════════════════════════
     # SESSION LOG EXPORT
     # ══════════════════════════════════════════════════════════════════════════
@@ -400,7 +413,9 @@ def unregister_properties():
         'dev_debug_kcc_visual_vector_scale',
 
         # Game systems
+        'dev_debug_interactions',
         'dev_debug_audio',
+        'dev_debug_animations',
 
         # Session export
         'dev_export_session_log',
