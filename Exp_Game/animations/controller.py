@@ -2,7 +2,7 @@
 """
 AnimationController - Main thread animation orchestrator.
 
-WORKER-OFFLOADED ARCHITECTURE:
+WORKER-ONLY ARCHITECTURE:
 - Main thread: Manages playback state (times, weights, fades)
 - Worker: Computes blended poses (sampling + blending math)
 - Main thread: Applies final pose via bpy
@@ -11,14 +11,11 @@ Usage:
     controller = AnimationController()
     controller.play("Player", "Walk")
 
-    # Each frame (worker flow):
+    # Each frame:
     controller.update_state(delta_time)          # Update times/fades
     job_data = controller.get_compute_job_data() # Get data for worker
     # ... submit job to engine ...
     controller.apply_worker_result(result)       # Apply computed pose
-
-    # Or (local fallback):
-    controller.update(delta_time)                # Does everything locally
 """
 
 import bpy
@@ -28,7 +25,6 @@ from dataclasses import dataclass, field
 # Import worker-safe modules from engine
 from ..engine.animations.data import BakedAnimation, Transform
 from ..engine.animations.cache import AnimationCache
-from ..engine.animations.blend import sample_animation, blend_bone_poses, blend_object_transforms
 
 
 @dataclass
@@ -235,133 +231,6 @@ class AnimationController:
                     return True
 
         return False
-
-    # =========================================================================
-    # UPDATE LOOP
-    # =========================================================================
-
-    def update(self, delta_time: float) -> None:
-        """
-        Update all animations. Call once per frame.
-
-        Args:
-            delta_time: Time since last frame in seconds
-        """
-        dt = delta_time * self.time_scale
-
-        for object_name, state in self._states.items():
-            self._update_object(object_name, state, dt)
-
-        # Cleanup finished animations
-        self._cleanup()
-
-    def _update_object(self, object_name: str, state: ObjectAnimState, dt: float) -> None:
-        """Update animations for a single object."""
-        # Get the Blender object
-        obj = bpy.data.objects.get(object_name)
-        if obj is None:
-            return
-
-        # Update each playing animation
-        for p in state.playing:
-            if p.finished:
-                continue
-
-            anim = self.cache.get(p.animation_name)
-            if anim is None:
-                p.finished = True
-                continue
-
-            # Update time
-            p.time += dt * p.speed
-
-            # Handle looping
-            if p.time >= anim.duration:
-                if p.looping:
-                    p.time = p.time % anim.duration
-                    p.play_count += 1
-                else:
-                    p.time = anim.duration
-                    p.play_count = 1
-                    p.finished = True
-
-            # Update fade
-            if p.fading_out:
-                if p.fade_out > 0:
-                    p.fade_progress -= dt / p.fade_out
-                    if p.fade_progress <= 0:
-                        p.fade_progress = 0
-                        p.finished = True
-                else:
-                    p.finished = True
-            elif p.fade_progress < 1.0 and p.fade_in > 0:
-                p.fade_progress += dt / p.fade_in
-                if p.fade_progress > 1.0:
-                    p.fade_progress = 1.0
-
-        # Collect samples from all active animations
-        bone_samples = []
-        object_samples = []
-
-        for p in state.playing:
-            if p.finished:
-                continue
-
-            anim = self.cache.get(p.animation_name)
-            if anim is None:
-                continue
-
-            effective_weight = p.weight * p.fade_progress
-            if effective_weight < 0.001:
-                continue
-
-            # Sample animation at current time
-            bones, obj_transform = sample_animation(anim, p.time, p.looping)
-
-            if bones:
-                bone_samples.append((bones, effective_weight))
-
-            if obj_transform:
-                object_samples.append((obj_transform, effective_weight))
-
-        # Blend and apply
-        if bone_samples and obj.type == 'ARMATURE':
-            blended_bones = blend_bone_poses(bone_samples)
-            self._apply_bone_pose(obj, blended_bones)
-
-        if object_samples:
-            blended_obj = blend_object_transforms(object_samples)
-            if blended_obj:
-                self._apply_object_transform(obj, blended_obj)
-
-    def _apply_bone_pose(self, armature, bone_transforms: Dict[str, Transform]) -> None:
-        """Apply blended bone transforms to armature."""
-        pose_bones = armature.pose.bones
-
-        for bone_name, transform in bone_transforms.items():
-            pose_bone = pose_bones.get(bone_name)
-            if pose_bone is None:
-                continue
-
-            # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
-            qw, qx, qy, qz = transform[0:4]
-            lx, ly, lz = transform[4:7]
-            sx, sy, sz = transform[7:10]
-
-            pose_bone.rotation_quaternion = (qw, qx, qy, qz)
-            pose_bone.location = (lx, ly, lz)
-            pose_bone.scale = (sx, sy, sz)
-
-    def _apply_object_transform(self, obj, transform: Transform) -> None:
-        """Apply blended object transform to any object."""
-        qw, qx, qy, qz = transform[0:4]
-        lx, ly, lz = transform[4:7]
-        sx, sy, sz = transform[7:10]
-
-        obj.rotation_mode = 'QUATERNION'
-        obj.rotation_quaternion = (qw, qx, qy, qz)
-        obj.location = (lx, ly, lz)
-        obj.scale = (sx, sy, sz)
 
     def _cleanup(self) -> None:
         """Remove finished animations from states."""

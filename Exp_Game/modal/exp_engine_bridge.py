@@ -557,19 +557,6 @@ def process_animation_result(modal, result) -> bool:
     return True
 
 
-def update_animations(modal, delta_time: float):
-    """
-    Update animation playback (LOCAL FALLBACK). Call once per frame.
-    Use this when engine is not available.
-
-    Args:
-        modal: ExpModal operator instance
-        delta_time: Time since last frame in seconds
-    """
-    if hasattr(modal, 'anim_controller') and modal.anim_controller:
-        modal.anim_controller.update(delta_time)
-
-
 def poll_animation_results_with_timeout(modal, timeout: float = 0.002) -> int:
     """
     Poll for ANIMATION_COMPUTE results with short timeout for same-frame sync.

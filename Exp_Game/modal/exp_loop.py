@@ -5,7 +5,6 @@ import bpy
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time, get_game_time
 from ..animations.state_machine import AnimState
 from .exp_engine_bridge import (
-    update_animations,
     update_animations_state,
     submit_animation_jobs,
     poll_animation_results_with_timeout,
@@ -210,18 +209,12 @@ class GameLoop:
         # 1. Update state (times, fades) on main thread
         update_animations_state(op, agg_dt)
 
-        # 2. Submit jobs to engine (if engine available)
-        engine = getattr(op, 'engine', None)
-        if engine and engine.is_alive():
-            submit_animation_jobs(op)
+        # 2. Submit jobs to engine
+        submit_animation_jobs(op)
 
-            # 3. Same-frame sync: poll for results immediately
-            # Worker compute is fast (~100µs), so we wait up to 2ms
-            # This eliminates 1-frame latency like camera system does
-            poll_animation_results_with_timeout(op, timeout=0.002)
-        else:
-            # Fallback: use local computation if no engine
-            update_animations(op, agg_dt)
+        # 3. Same-frame sync: poll for results immediately
+        # Worker compute is fast (~100µs), so we wait up to 2ms
+        poll_animation_results_with_timeout(op, timeout=0.002)
 
     def _poll_and_apply_engine_results(self):
         """

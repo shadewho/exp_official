@@ -2,26 +2,39 @@
 """
 Animation 2.0 Test Operators & Properties.
 
-Operators and properties for testing the unified animation system.
-UI is now in Developer Tools panel (dev_panel.py).
+Uses the SAME worker-based animation system as the game.
+No duplicate logic - just UI driving the existing system.
+
+UI is in Developer Tools panel (dev_panel.py).
 """
 
 import bpy
+import time
 from bpy.types import Operator, PropertyGroup
 from bpy.props import FloatProperty, BoolProperty, EnumProperty
 
 from ..engine.animations.baker import bake_action
-from ..engine.animations.data import BakedAnimation
+from ..engine import EngineCore
 from .controller import AnimationController
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GLOBAL TEST CONTROLLER
+# TEST ENGINE & CONTROLLER (Shared instances for testing outside game)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Single controller instance for testing
+_test_engine = None
 _test_controller = None
-_playback_timer = None
+
+
+def get_test_engine() -> EngineCore:
+    """Get or create the test engine."""
+    global _test_engine
+    if _test_engine is None or not _test_engine.is_alive():
+        _test_engine = EngineCore()
+        _test_engine.start()
+        # Wait for workers to be ready
+        _test_engine.wait_for_readiness(timeout=2.0)
+    return _test_engine
 
 
 def get_test_controller() -> AnimationController:
@@ -33,11 +46,18 @@ def get_test_controller() -> AnimationController:
 
 
 def reset_test_controller():
-    """Reset the test controller."""
-    global _test_controller, _playback_timer
-    if _playback_timer is not None:
-        bpy.context.window_manager.event_timer_remove(_playback_timer)
-        _playback_timer = None
+    """Reset the test controller and engine."""
+    global _test_controller, _test_engine
+
+    # Stop timer if running
+    if bpy.app.timers.is_registered(playback_update):
+        bpy.app.timers.unregister(playback_update)
+
+    # Shutdown test engine
+    if _test_engine is not None:
+        _test_engine.shutdown()
+        _test_engine = None
+
     _test_controller = None
 
 
@@ -46,13 +66,12 @@ def reset_test_controller():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ANIM2_OT_BakeAll(Operator):
-    """Bake ALL actions in the blend file"""
+    """Bake ALL actions and cache in workers"""
     bl_idname = "anim2.bake_all"
     bl_label = "Bake All Actions"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        import time
         start_time = time.perf_counter()
 
         scene = context.scene
@@ -66,11 +85,12 @@ class ANIM2_OT_BakeAll(Operator):
             self.report({'WARNING'}, "Target armature is not an armature object")
             return {'CANCELLED'}
 
-        # Clear existing cache for fresh bake
+        # Reset for fresh bake
         reset_test_controller()
         ctrl = get_test_controller()
+        engine = get_test_engine()
 
-        # Bake ALL actions in the file
+        # Bake ALL actions
         baked_count = 0
         failed = []
 
@@ -81,6 +101,21 @@ class ANIM2_OT_BakeAll(Operator):
                 baked_count += 1
             except Exception as e:
                 failed.append(f"{action.name}: {e}")
+
+        # Cache in workers
+        if baked_count > 0 and engine.is_alive():
+            cache_data = ctrl.get_cache_data_for_workers()
+            engine.broadcast_job("CACHE_ANIMATIONS", cache_data)
+
+            # Wait for workers to confirm
+            confirmed = 0
+            wait_start = time.perf_counter()
+            while confirmed < 8 and (time.perf_counter() - wait_start) < 1.0:
+                results = list(engine.poll_results(max_results=20))
+                for r in results:
+                    if r.job_type == "CACHE_ANIMATIONS" and r.success:
+                        confirmed += 1
+                time.sleep(0.01)
 
         elapsed = (time.perf_counter() - start_time) * 1000
 
@@ -204,29 +239,33 @@ class ANIM2_OT_BlendAnimation(Operator):
 
 
 class ANIM2_OT_ClearCache(Operator):
-    """Clear all cached animations"""
+    """Clear all cached animations and shutdown test engine"""
     bl_idname = "anim2.clear_cache"
     bl_label = "Clear Cache"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
         reset_test_controller()
-        self.report({'INFO'}, "Animation cache cleared")
+        self.report({'INFO'}, "Animation cache cleared, engine stopped")
         return {'FINISHED'}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLAYBACK TIMER
+# PLAYBACK TIMER (Uses same worker flow as game)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _last_time = None
 
 def playback_update():
-    """Timer callback for animation playback."""
+    """Timer callback - uses worker-based animation system."""
     global _last_time
-    import time
 
     ctrl = get_test_controller()
+    engine = get_test_engine()
+
+    if not engine.is_alive():
+        _last_time = None
+        return None  # Stop timer
 
     # Calculate delta time
     current = time.perf_counter()
@@ -237,8 +276,31 @@ def playback_update():
         dt = current - _last_time
         _last_time = current
 
-    # Update all animations
-    ctrl.update(dt)
+    # 1. Update state (times, fades) - same as game
+    ctrl.update_state(dt)
+
+    # 2. Get job data and submit to engine
+    jobs_data = ctrl.get_compute_job_data()
+    pending_jobs = {}
+
+    for object_name, job_data in jobs_data.items():
+        job_id = engine.submit_job("ANIMATION_COMPUTE", job_data)
+        if job_id is not None and job_id >= 0:
+            pending_jobs[job_id] = object_name
+
+    # 3. Poll for results with short timeout (same-frame sync)
+    if pending_jobs:
+        poll_start = time.perf_counter()
+        while pending_jobs and (time.perf_counter() - poll_start) < 0.003:
+            results = list(engine.poll_results(max_results=20))
+            for result in results:
+                if result.job_type == "ANIMATION_COMPUTE" and result.job_id in pending_jobs:
+                    if result.success:
+                        object_name = pending_jobs.pop(result.job_id)
+                        bone_transforms = result.result.get("bone_transforms", {})
+                        if bone_transforms:
+                            ctrl.apply_worker_result(object_name, bone_transforms)
+            time.sleep(0.0001)
 
     # Force viewport redraw
     for area in bpy.context.screen.areas:
@@ -246,11 +308,7 @@ def playback_update():
             area.tag_redraw()
 
     # Check if anything is still playing
-    has_playing = False
-    for state in ctrl._states.values():
-        if any(not p.finished for p in state.playing):
-            has_playing = True
-            break
+    has_playing = ctrl.has_active_animations()
 
     if has_playing:
         return 1/60  # Continue at 60fps
@@ -318,8 +376,6 @@ class ANIM2_TestProperties(PropertyGroup):
     )
 
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # REGISTRATION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -342,10 +398,7 @@ def register():
 
 
 def unregister():
-    # Stop any running timer
-    if bpy.app.timers.is_registered(playback_update):
-        bpy.app.timers.unregister(playback_update)
-
+    # Stop timer and shutdown engine
     reset_test_controller()
 
     if hasattr(bpy.types.Scene, 'anim2_test'):

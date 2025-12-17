@@ -1,5 +1,26 @@
 # Animation System Vision
 
+## Animation 2.0 (Developer Tools Panel)
+
+The **Animation 2.0** section in Developer Tools is for testing and development of the animation system. It uses the same worker-based system as the game - no separate logic.
+
+**Purpose:**
+- Test baking, playback, and blending outside of gameplay
+- Toggle animation debug logs
+- Validate changes to the animation system
+
+**CRITICAL: Logging is Essential**
+
+The log system is absolutely critical for animation development. Always output results to the logger for feedback and debugging. Without logs, you're flying blind.
+
+- Animation logs use the `ANIMATIONS` category
+- Toggle via `dev_debug_animations` in Developer Tools
+- All animation compute results, cache events, and state changes must be logged
+- Never develop animation features without log output to verify behavior
+- read the logger files in /developer. always output to the output file, NEVEr ever send logs to the blender python console (very slow) 
+
+---
+
 ## Overview
 
 This animation system is a ground-up rework designed to replace the old NLA/timeline-based approach. The goal is to build something that works like real game engines do - fast, flexible, and user-friendly.
@@ -202,84 +223,45 @@ This is foundation work. The core is solid but there's significant development a
 
 ---
 
-## Context: 2025-12-17 (Worker Offloading Complete)
+## Context: 2025-12-17 (Optimization Phase)
 
-### Worker-Based Animation Architecture
+### Current State: EXPERIMENTAL
 
-**Animation sampling and blending is now fully offloaded to workers.**
+We are in active optimization mode. The animation system is **worker-only** - no main thread fallback.
 
-The main thread is now as thin as possible:
-1. **State management** - What's playing, times, weights, fades
-2. **Job submission** - Send minimal data to worker
-3. **Result application** - Apply bone transforms via bpy
+### Architecture Commitment
 
-### New Job Types
+- **Worker computes ALL animation math** (sampling, blending, interpolation)
+- **Main thread only manages state** (what's playing, times, weights)
+- **Main thread applies results** (bpy pose writes - unavoidable)
+- **No local fallback** - engine is required, not optional
 
-| Job Type | When | Data Sent | Data Returned |
-|----------|------|-----------|---------------|
-| `CACHE_ANIMATIONS` | Game start | All baked animation data | Confirmation |
-| `ANIMATION_COMPUTE` | Each frame | `{object_name, playing: [{anim_name, time, weight, looping}, ...]}` | `{bone_transforms: {bone: transform, ...}}` |
+### The Problem
 
-### Data Flow
+The system is **slow**. It needs to be **fast**. Very fast.
 
-```
-GAME START:
-  1. Bake all Actions → BakedAnimation (main thread, one-time)
-  2. Send CACHE_ANIMATIONS to all workers (one-time, ~140ms for 6 anims)
-  3. Workers store animations in _cached_animations dict
+Current implementation is brute-force:
+- Samples ALL bones every frame, even static ones
+- Recalculates poses even when nothing changed
+- No dirty detection or caching
+- One job per object (IPC overhead scales linearly)
 
-EACH FRAME:
-  1. State machine evaluates (main thread) → decide what to play
-  2. update_state() advances times/fades (main thread, ~10µs)
-  3. get_compute_job_data() collects {anim_name, time, weight} (main thread, ~5µs)
-  4. Submit ANIMATION_COMPUTE job to engine (main thread, ~50µs)
-  5. Worker samples + blends animations (worker, ~100-500µs depending on bone count)
-  6. apply_worker_result() writes to pose bones (main thread, ~50µs)
-```
+### Scale Requirements
 
-### Performance Impact
+This system must support:
+- **Many animated objects** - not just one character
+- **Any object type** - armatures, meshes, empties, anything with transforms
+- **Concurrent animations** - multiple objects animating simultaneously
+- **Blending everywhere** - crossfades are the norm, not exception
 
-| Operation | Before (Main Thread) | After (Worker) |
-|-----------|---------------------|----------------|
-| Sample animation | ~200µs | 0µs (worker) |
-| Blend N animations | ~150µs × N | 0µs (worker) |
-| Apply to bones | ~50µs | ~50µs (still required) |
-| **Total main thread** | ~400-800µs | ~100µs |
+A scene might have: 1 player + 20 NPCs + 50 animated objects (doors, platforms, pickups, UI elements). The system must handle this without choking.
 
-### Worker-Side Implementation (`engine/worker/entry.py`)
+### Optimization Priorities
 
-```python
-# Worker-side caches (persistent across jobs)
-_cached_animations = {}  # {anim_name: {bones: {...}, duration, fps, ...}}
-
-# Animation compute handler
-def _handle_animation_compute(job_data):
-    # 1. For each playing animation: sample at time
-    # 2. Blend all samples by weight
-    # 3. Return final bone transforms
-```
-
-### Logging
-
-Animation logging uses the `ANIMATIONS` category, controlled by `dev_debug_animations` toggle in Developer Tools panel.
-
-Log format:
-```
-[ANIMATIONS F0042 T1.400s] Armature: Walk:100% | 52 bones | 142µs
-[ANIMATIONS F0043 T1.433s] Armature: Walk:75% + Run:25% | 52 bones | 198µs
-```
-
-### Controller Changes
-
-`AnimationController` now has two update paths:
-
-1. **Worker path** (default when engine available):
-   - `update_state(dt)` - Update times/fades only
-   - `get_compute_job_data()` - Get data for job submission
-   - `apply_worker_result(object_name, bone_transforms)` - Apply result
-
-2. **Local fallback** (when no engine):
-   - `update(dt)` - Full local computation (original behavior)
+1. **Dirty detection** - Don't compute if nothing changed (paused, same frame, same weights)
+2. **Static bone detection** - At bake time, identify bones that don't move. Skip them at runtime.
+3. **Batching** - One job for ALL animated objects, not one per object
+4. **Sparse updates** - Only send/return bones that changed
+5. **LOD** - Distant objects update less frequently
 
 ---
-
