@@ -374,13 +374,14 @@ class KinematicCharacterController:
         self._jump_buf    = 0.0
 
         # ═══════════════════════════════════════════════════════════════════
-        # PLATFORM SYSTEM (Relative Position)
+        # PLATFORM SYSTEM (Relative Position + Rotation)
         # When on a dynamic platform, store position RELATIVE to the platform.
         # Each frame: worldPos = platform.matrix @ relativePos
         # Cost: One matrix multiply (~16 muls + 12 adds) - extremely fast
         # ═══════════════════════════════════════════════════════════════════
         self._platform_relative_pos = None  # (x, y, z) in platform's local space
         self._platform_obj_id = None        # id() of platform we're attached to
+        self._pending_platform_yaw_delta = 0.0  # Yaw delta from worker (applied in step)
 
         # Cached constants
         self._up = _UP
@@ -485,6 +486,10 @@ class KinematicCharacterController:
 
         if jump_consumed:
             self._jump_buf = 0.0
+
+        # PLATFORM ROTATION SYNC: Store yaw delta for application in step()
+        # (Cannot apply here because step() overwrites rotation_euler at the end)
+        self._pending_platform_yaw_delta = result.get("platform_yaw_delta", 0.0)
 
         # ─────────────────────────────────────────────────────────────────────
         # UNIFIED PHYSICS: Ground source from worker (static or dynamic)
@@ -689,15 +694,22 @@ class KinematicCharacterController:
         # ═══════════════════════════════════════════════════════════════════
 
         platform_attached = False
+        _depsgraph = None  # Lazy init - only fetch when needed
 
         if self.on_ground and self.ground_obj:
+            # VISUAL SYNC: Must use evaluated depsgraph to read current animation state.
+            # Without this, player visually lags behind moving platforms (physics still works).
+            _depsgraph = context.evaluated_depsgraph_get() if context else None
             current_platform_id = id(self.ground_obj)
 
             # Check if we just landed on a NEW platform
             if self._platform_obj_id != current_platform_id:
                 # LANDING: Compute relative position (one-time)
                 try:
-                    inv_matrix = self.ground_obj.matrix_world.inverted()
+                    # Use evaluated matrix for current animation state
+                    eval_obj = self.ground_obj.evaluated_get(_depsgraph) if _depsgraph else self.ground_obj
+                    eval_matrix = eval_obj.matrix_world
+                    inv_matrix = eval_matrix.inverted()
                     local_pos = inv_matrix @ self.pos
                     self._platform_relative_pos = (local_pos.x, local_pos.y, local_pos.z)
                     self._platform_obj_id = current_platform_id
@@ -714,7 +726,10 @@ class KinematicCharacterController:
             if self._platform_relative_pos is not None:
                 try:
                     rel = self._platform_relative_pos
-                    world_pos = self.ground_obj.matrix_world @ Vector((rel[0], rel[1], rel[2]))
+                    # Use evaluated matrix for current animation state
+                    eval_obj = self.ground_obj.evaluated_get(_depsgraph) if _depsgraph else self.ground_obj
+                    eval_matrix = eval_obj.matrix_world
+                    world_pos = eval_matrix @ Vector((rel[0], rel[1], rel[2]))
                     self.pos = world_pos
                     platform_attached = True
                 except Exception:
@@ -823,13 +838,24 @@ class KinematicCharacterController:
             self.obj.rotation_euler = rot
 
         # ─────────────────────────────────────────────────────────────────────
+        # 5a. PLATFORM ROTATION SYNC: Apply yaw delta AFTER rot is written
+        # ─────────────────────────────────────────────────────────────────────
+        # Must happen here because _apply_physics_result runs before rot is written
+        # Note: Negated because platform matrix yaw is opposite to character rotation
+        if abs(self._pending_platform_yaw_delta) > 0.0001:
+            self.obj.rotation_euler.z -= self._pending_platform_yaw_delta
+            self._pending_platform_yaw_delta = 0.0  # Clear after applying
+
+        # ─────────────────────────────────────────────────────────────────────
         # 5b. UPDATE relative position after physics (player moved on platform)
         # ─────────────────────────────────────────────────────────────────────
         # If player is on a platform and moved (walked, jumped, etc.), we need
         # to recompute their relative position so they stay in the new spot
         if self._platform_obj_id is not None and self.ground_obj:
             try:
-                inv_matrix = self.ground_obj.matrix_world.inverted()
+                # Use evaluated matrix for current animation state
+                eval_obj = self.ground_obj.evaluated_get(_depsgraph) if _depsgraph else self.ground_obj
+                inv_matrix = eval_obj.matrix_world.inverted()
                 local_pos = inv_matrix @ self.pos
                 self._platform_relative_pos = (local_pos.x, local_pos.y, local_pos.z)
             except Exception:

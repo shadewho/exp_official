@@ -31,7 +31,12 @@ from .math import (
     get_adaptive_grid_resolution,
     build_triangle_grid,
     ray_grid_traverse,
+    matrix_to_euler_z,
 )
+
+# Platform rotation tracking: {obj_id: prev_yaw}
+# Persists across frames for computing rotation delta
+_platform_prev_yaw = {}
 
 
 def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached_dynamic_transforms):
@@ -1284,13 +1289,57 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
             f"tris={total_tris} | "
             f"est_saved={rays_saved}rays"))
 
+    # ─────────────────────────────────────────────────────────────────────
+    # PLATFORM ROTATION SYNC: Compute yaw delta when on rotating platform
+    # ─────────────────────────────────────────────────────────────────────
+    global _platform_prev_yaw
+    platform_yaw_delta = 0.0
+
+    if ground_hit_source and ground_hit_source.startswith("dynamic_"):
+        try:
+            platform_obj_id = int(ground_hit_source[8:])  # Extract obj_id from "dynamic_123"
+            # Get platform's current transform matrix
+            if platform_obj_id in cached_dynamic_transforms:
+                matrix_16, _, _ = cached_dynamic_transforms[platform_obj_id]
+                current_yaw = matrix_to_euler_z(matrix_16)
+
+                # Compute delta from previous yaw
+                if platform_obj_id in _platform_prev_yaw:
+                    prev_yaw = _platform_prev_yaw[platform_obj_id]
+                    platform_yaw_delta = current_yaw - prev_yaw
+                    # Handle wrap-around at ±π
+                    if platform_yaw_delta > math.pi:
+                        platform_yaw_delta -= 2 * math.pi
+                    elif platform_yaw_delta < -math.pi:
+                        platform_yaw_delta += 2 * math.pi
+
+                    # Debug logging for rotation sync
+                    if debug_ground and abs(platform_yaw_delta) > 0.0001:
+                        worker_logs.append(("PLATFORM-ROT",
+                            f"yaw={math.degrees(current_yaw):.1f}° prev={math.degrees(prev_yaw):.1f}° "
+                            f"delta={math.degrees(platform_yaw_delta):.2f}°"))
+
+                # Store current yaw for next frame
+                _platform_prev_yaw[platform_obj_id] = current_yaw
+            else:
+                # Debug: platform not in cache
+                if debug_ground:
+                    worker_logs.append(("PLATFORM-ROT", f"obj_id={platform_obj_id} NOT in transform cache"))
+        except (ValueError, TypeError) as e:
+            if debug_ground:
+                worker_logs.append(("PLATFORM-ROT", f"ERROR parsing ID: {e}"))
+    else:
+        # Not on a dynamic platform - clear old entries to prevent stale data
+        _platform_prev_yaw.clear()
+
     result_data = {
         "pos": (px, py, pz),
         "vel": (vx, vy, vz),
         "on_ground": on_ground,
         "on_walkable": on_walkable,
         "ground_normal": (gn_x, gn_y, gn_z),
-        "ground_hit_source": ground_hit_source,  # "static", "dynamic_ObjectName", or None
+        "ground_hit_source": ground_hit_source,  # "static", "dynamic_{obj_id}", or None
+        "platform_yaw_delta": platform_yaw_delta,  # Rotation sync for moving platforms
         "coyote_remaining": coyote_remaining,
         "jump_consumed": jump_consumed,
         "logs": worker_logs,  # Fast buffer logs (sent to main thread)

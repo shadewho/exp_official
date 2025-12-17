@@ -874,3 +874,36 @@ def ray_grid_traverse(ray_origin, ray_direction, max_dist, grid, triangles, tris
     if best_tri_idx is not None:
         return (best_dist, best_tri_idx)
     return None
+
+
+# ============================================================================
+# MATRIX TO EULER Z (YAW EXTRACTION)
+# ============================================================================
+
+def matrix_to_euler_z(matrix_16):
+    """
+    Extract Z rotation (yaw) from a 4x4 matrix stored as 16-element tuple.
+
+    IMPORTANT: Blender matrices use column-major indexing: matrix[col][row]
+    The serialization in exp_kcc.py stores columns sequentially:
+        matrix[0][0], matrix[0][1], matrix[0][2], matrix[0][3],  # Column 0
+        matrix[1][0], matrix[1][1], ...
+
+    Args:
+        matrix_16: 16-element tuple in column-major order
+                   (m00, m10, m20, m30, m01, m11, m21, m31, ...)
+
+    Returns:
+        float: Z rotation in radians
+    """
+    # Matrix layout (COLUMN-MAJOR from Blender):
+    # [0]  [1]  [2]  [3]    m00 m10 m20 m30  (column 0)
+    # [4]  [5]  [6]  [7]    m01 m11 m21 m31  (column 1)
+    # [8]  [9]  [10] [11]   m02 m12 m22 m32  (column 2)
+    # [12] [13] [14] [15]   m03 m13 m23 m33  (column 3)
+    #
+    # For XYZ euler, yaw (Z rotation) can be extracted from:
+    # yaw = atan2(m10, m00) = atan2(matrix[1], matrix[0])
+    m00 = matrix_16[0]   # Column 0, row 0
+    m10 = matrix_16[1]   # Column 0, row 1
+    return math.atan2(m10, m00)
