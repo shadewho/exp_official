@@ -206,10 +206,13 @@ def _blend_transforms_numpy(t1: np.ndarray, t2: np.ndarray, weight: float) -> np
     return np.concatenate([q_blend, loc_blend, scale_blend], axis=-1)
 
 
-def _sample_animation_numpy(anim_data: dict, anim_time: float, loop: bool = True) -> np.ndarray:
+def _sample_animation_numpy(anim_data: dict, anim_time: float, loop: bool = True):
     """
     Sample animation at a specific time using numpy.
     Returns pose for ALL bones at once.
+
+    STATIC BONE OPTIMIZATION: Only interpolates animated bones.
+    Static bones use frame 0 directly (no slerp/lerp needed).
 
     Args:
         anim_data: Cached animation dict with numpy arrays
@@ -217,19 +220,34 @@ def _sample_animation_numpy(anim_data: dict, anim_time: float, loop: bool = True
         loop: Whether to loop
 
     Returns:
-        (num_bones, 10) pose array
+        tuple: (pose_array, stats_dict)
+        - pose_array: (num_bones, 10) numpy array
+        - stats_dict: {"total": int, "animated": int, "static": int, "skipped": bool}
     """
     bone_transforms = anim_data.get("bone_transforms")
     if bone_transforms is None or bone_transforms.size == 0:
-        return np.empty((0, 10), dtype=np.float32)
+        return np.empty((0, 10), dtype=np.float32), {"total": 0, "animated": 0, "static": 0, "skipped": False}
 
     duration = anim_data.get("duration", 0.0)
     fps = anim_data.get("fps", 30.0)
+    animated_mask = anim_data.get("animated_mask")  # (num_bones,) bool array
 
     num_frames = bone_transforms.shape[0]
+    num_bones = bone_transforms.shape[1] if len(bone_transforms.shape) > 1 else 0
+
+    # Count animated vs static bones
+    if animated_mask is not None and isinstance(animated_mask, np.ndarray):
+        num_animated = int(np.sum(animated_mask))
+        num_static = num_bones - num_animated
+    else:
+        num_animated = num_bones
+        num_static = 0
+        animated_mask = None  # Ensure it's None for logic below
+
+    stats = {"total": num_bones, "animated": num_animated, "static": num_static, "skipped": False}
 
     if duration <= 0 or num_frames <= 1:
-        return bone_transforms[0].copy()
+        return bone_transforms[0].copy(), stats
 
     # Handle looping
     if loop:
@@ -246,11 +264,32 @@ def _sample_animation_numpy(anim_data: dict, anim_time: float, loop: bool = True
     frame_low = min(frame_low, num_frames - 1)
     frame_high = min(frame_high, num_frames - 1)
 
+    # No interpolation needed - return exact frame
     if frame_low == frame_high or t < 0.001:
-        return bone_transforms[frame_low].copy()
+        return bone_transforms[frame_low].copy(), stats
 
-    # Interpolate ALL bones at once
-    return _blend_transforms_numpy(bone_transforms[frame_low], bone_transforms[frame_high], t)
+    # STATIC BONE OPTIMIZATION
+    # If we have animated_mask and there are static bones, only interpolate animated ones
+    if animated_mask is not None and num_static > 0:
+        # Start with frame 0 for ALL bones (static bones stay at rest pose)
+        pose = bone_transforms[0].copy()
+
+        # Get indices of animated bones
+        animated_indices = np.where(animated_mask)[0]
+
+        if len(animated_indices) > 0:
+            # Only interpolate the animated bones
+            pose[animated_indices] = _blend_transforms_numpy(
+                bone_transforms[frame_low, animated_indices],
+                bone_transforms[frame_high, animated_indices],
+                t
+            )
+
+        stats["skipped"] = True  # Confirm we used the optimization
+        return pose, stats
+
+    # No mask or all bones animated - interpolate everything
+    return _blend_transforms_numpy(bone_transforms[frame_low], bone_transforms[frame_high], t), stats
 
 
 def _blend_poses_numpy(poses: list, weights: list) -> np.ndarray:
@@ -294,6 +333,8 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
     Compute blended pose for a single object using NUMPY VECTORIZED operations.
     Processes ALL bones at once - no Python loops!
 
+    STATIC BONE OPTIMIZATION: Tracks and logs how many bones were skipped.
+
     Args:
         object_name: Name of the object
         playing_list: List of playing animation dicts
@@ -302,9 +343,10 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
     Returns:
         {
             "bone_transforms": {bone_name: (10-float tuple), ...},
-            "bone_names": list,  # For index-based lookup
+            "bone_names": list,
             "bones_count": int,
             "anims_blended": int,
+            "static_skipped": int,  # Number of static bones skipped
         }
     """
     if not playing_list:
@@ -313,6 +355,7 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             "bone_names": [],
             "bones_count": 0,
             "anims_blended": 0,
+            "static_skipped": 0,
         }
 
     # Ensure numpy arrays are ready (one-time conversion)
@@ -325,6 +368,8 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
     weights = []
     anim_names = []
     bone_names = None  # Will be set from first valid animation
+    total_static_skipped = 0
+    total_animated = 0
 
     for p in playing_list:
         anim_name = p.get("anim_name")
@@ -341,12 +386,17 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             logs.append(("ANIMATIONS", f"CACHE_MISS obj={object_name} anim='{anim_name}' cached={len(_cached_animations)}"))
             continue
 
-        # Sample at current time using numpy (returns full pose array)
-        pose = _sample_animation_numpy(anim_data, anim_time, looping)
+        # Sample at current time using numpy (returns pose array + stats)
+        pose, sample_stats = _sample_animation_numpy(anim_data, anim_time, looping)
         if pose.size > 0:
             poses.append(pose)
             weights.append(weight)
             anim_names.append(f"{anim_name}:{weight:.0%}")
+
+            # Track static bone skipping stats
+            if sample_stats.get("skipped"):
+                total_static_skipped = max(total_static_skipped, sample_stats.get("static", 0))
+                total_animated = max(total_animated, sample_stats.get("animated", 0))
 
             # Get bone names from first valid animation
             if bone_names is None:
@@ -358,6 +408,7 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             "bone_names": [],
             "bones_count": 0,
             "anims_blended": 0,
+            "static_skipped": 0,
         }
 
     # Blend all poses using numpy (vectorized - ALL bones at once)
@@ -377,6 +428,8 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
         "bones_count": len(bone_transforms),
         "anims_blended": len(poses),
         "anim_names": anim_names,  # For logging
+        "static_skipped": total_static_skipped,  # Number of static bones skipped
+        "animated_count": total_animated,  # Number of bones actually interpolated
     }
 
 
@@ -484,6 +537,8 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
     results = {}
     total_bones = 0
     total_anims = 0
+    total_static_skipped = 0
+    total_animated_interp = 0
     per_object_logs = []
 
     for object_name, obj_data in objects_data.items():
@@ -501,6 +556,8 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
 
         total_bones += obj_result["bones_count"]
         total_anims += obj_result["anims_blended"]
+        total_static_skipped += obj_result.get("static_skipped", 0)
+        total_animated_interp += obj_result.get("animated_count", obj_result["bones_count"])
 
         # Per-object log for detailed debugging
         anim_names = obj_result.get("anim_names", [])
@@ -512,7 +569,8 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
 
     calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
-    # Summary log: one line for entire batch - [NUMPY] confirms vectorized path
+    # Summary log: one line for entire batch
+    # [NUMPY] confirms vectorized path, shows static bone skipping stats
     obj_count = len(results)
     if per_object_logs:
         # Compact format: show up to 3 objects, then count
@@ -520,7 +578,14 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
             obj_summary = " ".join(per_object_logs)
         else:
             obj_summary = f"{per_object_logs[0]} +{len(per_object_logs)-1}more"
-        logs.append(("ANIMATIONS", f"[NUMPY] BATCH {obj_count}obj {total_bones}bones {total_anims}anims {calc_time_us:.0f}µs | {obj_summary}"))
+
+        # Include static bone skip info if any bones were skipped
+        if total_static_skipped > 0:
+            skip_info = f" [SKIP {total_static_skipped} static, interp {total_animated_interp}]"
+        else:
+            skip_info = ""
+
+        logs.append(("ANIMATIONS", f"[NUMPY] BATCH {obj_count}obj {total_bones}bones {total_anims}anims {calc_time_us:.0f}µs{skip_info} | {obj_summary}"))
 
     return {
         "success": True,

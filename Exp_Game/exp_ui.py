@@ -215,6 +215,11 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         anim_row("fall_action", "Fall")
         anim_row("land_action", "Land")
 
+        # ─── Blend Time ───
+        box.separator()
+        row = box.row()
+        row.prop(ca, "blend_time", text="Blend")
+
         # ─── Audio ───
         box = layout.box()
         box.label(text="Audio", icon='SOUND')

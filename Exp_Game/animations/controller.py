@@ -155,10 +155,12 @@ class AnimationController:
 
         state = self._states[object_name]
 
-        # Replace mode: fade out all current animations
+        # Replace mode: crossfade - fade out current animations over same duration as fade_in
         if replace:
             for p in state.playing:
                 if not p.finished and not p.fading_out:
+                    # Use fade_in duration for fade_out to create smooth crossfade
+                    p.fade_out = fade_in
                     p.fading_out = True
 
         # Check if already playing this animation

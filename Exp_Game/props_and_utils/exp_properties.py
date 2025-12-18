@@ -386,6 +386,17 @@ class CharacterActionsPG(bpy.types.PropertyGroup):
         description="Action to use for the land state"
     )
 
+    blend_time: bpy.props.FloatProperty(
+        name="Blend Time",
+        description="Crossfade duration between animation states (seconds). 0 = instant snap, 0.15 = smooth blend",
+        default=0.15,
+        min=0.0,
+        max=1.0,
+        step=1,
+        precision=2,
+        subtype='TIME'
+    )
+
 def remove_scene_properties():
     # Safe property deletion with hasattr checks
     if hasattr(bpy.types.Scene, 'target_armature'):
