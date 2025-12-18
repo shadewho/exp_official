@@ -16,6 +16,7 @@ from bpy.props import FloatProperty, BoolProperty, EnumProperty
 from ..engine.animations.baker import bake_action
 from ..engine import EngineCore
 from .controller import AnimationController
+from ..developer.dev_logger import start_session, log_worker_messages, export_game_log, clear_log
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -34,6 +35,8 @@ def get_test_engine() -> EngineCore:
         _test_engine.start()
         # Wait for workers to be ready
         _test_engine.wait_for_readiness(timeout=2.0)
+        # Start log session for animation testing
+        start_session()
     return _test_engine
 
 
@@ -52,6 +55,13 @@ def reset_test_controller():
     # Stop timer if running
     if bpy.app.timers.is_registered(playback_update):
         bpy.app.timers.unregister(playback_update)
+
+    # Export logs before shutdown
+    if _test_engine is not None:
+        import os
+        log_path = os.path.join(os.path.expanduser("~"), "Desktop", "engine_output_files", "anim_test_log.txt")
+        export_game_log(log_path)
+        clear_log()
 
     # Shutdown test engine
     if _test_engine is not None:
@@ -300,6 +310,10 @@ def playback_update():
                         bone_transforms = result.result.get("bone_transforms", {})
                         if bone_transforms:
                             ctrl.apply_worker_result(object_name, bone_transforms)
+                        # Process worker logs
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            log_worker_messages(worker_logs)
             time.sleep(0.0001)
 
     # Force viewport redraw

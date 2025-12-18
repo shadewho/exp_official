@@ -407,7 +407,14 @@ def cache_animations_in_workers(modal, context) -> bool:
         return True  # No animations to cache
 
     if modal.anim_controller.cache.count == 0:
+        # Log to confirm animation system is initialized but has no animations
+        print(f"[ANIM_DIAG] cache_animations_in_workers: No animations baked (cache.count=0)")
         return True  # No animations baked
+
+    # Diagnostic: List all cached animations
+    print(f"[ANIM_DIAG] cache_animations_in_workers: Caching {modal.anim_controller.cache.count} animations:")
+    for name in modal.anim_controller.cache.names:
+        print(f"[ANIM_DIAG]   - {name}")
 
     if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
         if startup_logs:
@@ -511,15 +518,25 @@ def submit_animation_jobs(modal) -> int:
     jobs_data = modal.anim_controller.get_compute_job_data()
 
     if not jobs_data:
+        # Log when no animation jobs (helps debug if controller has no active anims)
+        from ..developer.dev_logger import log_game
+        active_states = len(modal.anim_controller._states)
+        cache_count = modal.anim_controller.cache.count
+        log_game("ANIMATIONS", f"NO_JOBS: states={active_states} cache={cache_count}")
         return 0
 
     # Submit jobs
     count = 0
+    from ..developer.dev_logger import log_game
     for object_name, job_data in jobs_data.items():
         job_id = modal.engine.submit_job("ANIMATION_COMPUTE", job_data)
         if job_id is not None and job_id >= 0:
             modal._pending_anim_jobs[job_id] = object_name
             count += 1
+            # Log job submission details
+            playing = job_data.get("playing", [])
+            anim_names = [p["anim_name"] for p in playing]
+            log_game("ANIMATIONS", f"SUBMIT job={job_id} obj={object_name} anims={anim_names}")
 
     return count
 
@@ -596,6 +613,18 @@ def poll_animation_results_with_timeout(modal, timeout: float = 0.002) -> int:
             if result.job_type == "ANIMATION_COMPUTE":
                 if process_animation_result(modal, result):
                     applied += 1
+                # Process worker logs
+                if result.success:
+                    worker_logs = result.result.get("logs", [])
+                    bones_count = result.result.get("bones_count", 0)
+                    anims_blended = result.result.get("anims_blended", 0)
+                    calc_time = result.result.get("calc_time_us", 0.0)
+                    # Always log result received (diagnostics)
+                    from ..developer.dev_logger import log_game
+                    log_game("ANIMATIONS", f"RESULT job={result.job_id} bones={bones_count} anims={anims_blended} time={calc_time:.0f}µs logs={len(worker_logs)}")
+                    if worker_logs:
+                        from ..developer.dev_logger import log_worker_messages
+                        log_worker_messages(worker_logs)
             else:
                 # Cache non-animation results for later processing
                 modal._cached_other_results.append(result)

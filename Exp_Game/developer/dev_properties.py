@@ -427,8 +427,7 @@ def unregister_properties():
 
     # Clean up OLD properties from previous versions (migration)
     old_props = [
-        # Old animation system (replaced by new worker-based engine)
-        'dev_debug_animations',
+        # Old animation system properties (dev_debug_animations is CURRENT - don't delete!)
         'dev_debug_anim_engine',
         'dev_debug_anim_blending',
         'dev_debug_anim_baking',

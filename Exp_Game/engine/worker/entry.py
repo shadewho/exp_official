@@ -293,6 +293,7 @@ def _handle_animation_compute(job_data: dict) -> dict:
         # Get cached animation
         anim_data = _cached_animations.get(anim_name)
         if anim_data is None:
+            logs.append(("ANIMATIONS", f"CACHE MISS: '{anim_name}' not in worker cache ({len(_cached_animations)} cached)"))
             continue
 
         # Sample at current time

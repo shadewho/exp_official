@@ -17,7 +17,7 @@ The log system is absolutely critical for animation development. Always output r
 - Toggle via `dev_debug_animations` in Developer Tools
 - All animation compute results, cache events, and state changes must be logged
 - Never develop animation features without log output to verify behavior
-- read the logger files in /developer. always output to the output file, NEVEr ever send logs to the blender python console (very slow) 
+- read the logger files in /developer. always output to the output file, NEVEr ever send logs to the blender python console (very slow)
 
 ---
 
