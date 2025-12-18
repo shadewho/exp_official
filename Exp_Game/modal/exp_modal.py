@@ -283,7 +283,16 @@ class ExpModal(bpy.types.Operator):
                 except Exception as engine_error:
                     print(f"  ✗ Engine shutdown failed: {engine_error}")
 
-            # 3. Clear global operator reference
+            # 3. SECURITY: Clear downloaded world files on crash (only if launched from UI)
+            # This ensures .blend files are deleted even if cancel() failed
+            if getattr(self, 'launched_from_ui', False):
+                try:
+                    cleanup_downloaded_worlds()
+                    print("  ✓ Downloaded world files cleared")
+                except Exception as cleanup_error:
+                    print(f"  ✗ World cleanup failed: {cleanup_error}")
+
+            # 4. Clear global operator reference
             global _active_modal_operator
             _active_modal_operator = None
 
@@ -670,9 +679,12 @@ class ExpModal(bpy.types.Operator):
 
         #-----------------------------------------------
         ### Cleanup scene and temporary blend file ###
-        revert_to_original_scene(context)   #1
-        cleanup_downloaded_worlds()         #2
-        cleanup_downloaded_datablocks()     #3
+        # ONLY clean up downloaded worlds when launched from UI (exploring someone else's world)
+        # When launched locally, there's no downloaded .blend to clean up
+        if self.launched_from_ui:
+            revert_to_original_scene(context)   #1
+            cleanup_downloaded_worlds()         #2
+            cleanup_downloaded_datablocks()     #3
         #-----------------------------------------------
 
         clear_all_text()

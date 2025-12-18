@@ -57,7 +57,21 @@ All logging respects the **Master Hz** setting in Developer Tools panel:
 - `5 Hz` = Every 5th frame (~0.17s intervals)
 - `1 Hz` = Once per second (recommended for most debugging)
 
-The frequency gate prevents log spam while maintaining diagnostic visibility.
+**IMPORTANT: Per-Message-Type Gating**
+
+Frequency gating is applied per **message type**, not per category. The first word of each message is used as the gate key. This ensures different log types don't block each other:
+
+```
+# These have SEPARATE gates (both can log in same frame):
+log_game("ANIMATIONS", "BATCH_SUBMIT job=123")  # Gate: animations:BATCH_SUBMIT
+log_game("ANIMATIONS", "BATCH_RESULT job=123")  # Gate: animations:BATCH_RESULT
+
+# These share a gate (only one per Hz interval):
+log_game("ANIMATIONS", "BATCH_SUBMIT job=123")  # Gate: animations:BATCH_SUBMIT
+log_game("ANIMATIONS", "BATCH_SUBMIT job=456")  # Gate: animations:BATCH_SUBMIT (blocked)
+```
+
+This prevents important result logs from being blocked by submit logs when they occur in the same frame.
 
 ---
 
@@ -90,6 +104,9 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | **Game Systems** |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |
+| `ANIMATIONS` | `animations` | Animation batch jobs, blending, bone updates |
+| `ANIM-CACHE` | `anim_cache` | Animation caching in workers, cache timing |
+| `ANIM-WORKER` | `anim_worker` | Animation worker designation, job routing, worker compute times |
 
 ---
 

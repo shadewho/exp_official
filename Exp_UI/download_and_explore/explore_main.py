@@ -11,6 +11,50 @@ current_download_task = None
 download_progress_value = 0.0
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Security: Magic Byte Validation
+# ──────────────────────────────────────────────────────────────────────────────
+def validate_blend_header(file_path: str) -> tuple:
+    """
+    Validate .blend file magic bytes before loading.
+
+    Blender file header structure (12 bytes):
+    - Bytes 0-6: "BLENDER" (7 bytes)
+    - Byte 7: Pointer size ('_' = 32-bit, '-' = 64-bit)
+    - Byte 8: Endianness ('v' = little, 'V' = big)
+    - Bytes 9-11: Version (e.g., "401" for 4.01)
+
+    Returns:
+        (is_valid: bool, error_message: str)
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            header = f.read(12)
+
+        if len(header) < 12:
+            return False, "File too small to be a valid .blend"
+
+        # Check magic bytes "BLENDER"
+        if header[:7] != b'BLENDER':
+            return False, "Not a valid Blender file (missing BLENDER header)"
+
+        # Check pointer size marker ('_' for 32-bit, '-' for 64-bit)
+        if header[7:8] not in (b'_', b'-'):
+            return False, "Invalid Blender file header (bad pointer size)"
+
+        # Check endianness marker ('v' for little-endian, 'V' for big-endian)
+        if header[8:9] not in (b'v', b'V'):
+            return False, "Invalid Blender file header (bad endianness)"
+
+        # Check version is numeric
+        if not header[9:12].isdigit():
+            return False, "Invalid Blender file header (bad version)"
+
+        return True, ""
+    except Exception as e:
+        return False, f"Failed to read file: {str(e)}"
+
+
 def reset_download_progress():
     """
     Reset progress counters before a new download begins.
@@ -255,7 +299,15 @@ def timer_finish_download():
         current_download_task = None
         return None
 
-    # 3) Validate .blend header
+    # 3) Validate .blend magic bytes (quick security check)
+    is_valid, error_msg = validate_blend_header(current_download_task.local_blend_path)
+    if not is_valid:
+        bail_to_idle(f"Invalid file: {error_msg}")
+        clear_world_downloads_folder()
+        current_download_task = None
+        return None
+
+    # 4) Validate .blend can be loaded by Blender
     try:
         with bpy.data.libraries.load(current_download_task.local_blend_path, link=False) as (df, dt):
             _ = df.scenes
@@ -265,7 +317,7 @@ def timer_finish_download():
         current_download_task = None
         return None
 
-    # 4) Snapshot existing datablocks (before append)
+    # 5) Snapshot existing datablocks (before append)
     scene["initial_datablocks"] = {
         "actions": list(bpy.data.actions.keys()),
         "images":  list(bpy.data.images.keys()),
@@ -278,7 +330,7 @@ def timer_finish_download():
         "lights":    list(bpy.data.lights.keys()),
     }
 
-    # 5) Append the downloaded blend
+    # 6) Append the downloaded blend
     result, appended_scene_name = append_scene_from_blend(current_download_task.local_blend_path)
     if result != {'FINISHED'} or not appended_scene_name:
         bail_to_idle("Append failed or produced no scene.")
@@ -286,11 +338,11 @@ def timer_finish_download():
         current_download_task = None
         return None
 
-    # 6) Record scene metadata
+    # 7) Record scene metadata
     scene["appended_scene_name"] = appended_scene_name
     scene["world_blend_path"]    = current_download_task.local_blend_path
 
-    # 7) Compute which datablocks arrived with that append
+    # 8) Compute which datablocks arrived with that append
     init = scene["initial_datablocks"]
     scene["appended_datablocks"] = {
         "actions": [a for a in bpy.data.actions.keys() if a not in init["actions"]],
@@ -304,13 +356,30 @@ def timer_finish_download():
         "lights":    [l for l in bpy.data.lights.keys()    if l not in init["lights"]],
     }
 
-    
+    # 9) SECURITY: Immediately delete the .blend file now that it's loaded into memory
+    # This minimizes the window where the file can be copied
+    _blend_path = current_download_task.local_blend_path
+    if _blend_path and os.path.exists(_blend_path):
+        try:
+            os.remove(_blend_path)
+            print(f"[SECURITY] Deleted blend file immediately after append: {os.path.basename(_blend_path)}")
+        except Exception as e:
+            print(f"[SECURITY WARNING] Failed to delete blend file: {e}")
+            # Try clearing the whole folder as fallback
+            try:
+                clear_world_downloads_folder()
+            except Exception:
+                pass
+
+    # Clear the stored path since file no longer exists
+    scene["world_blend_path"] = None
+
     try:
         bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
     except Exception:
         pass
 
-    # 9) Switch into the appended scene and launch the game
+    # 10) Switch into the appended scene and launch the game
     def check_scene():
         scene_obj = bpy.data.scenes.get(appended_scene_name)
         if not scene_obj:
@@ -336,7 +405,7 @@ def timer_finish_download():
 
     bpy.app.timers.register(check_scene)
 
-    # 10) Done—clear the task so we don’t re-enter
+    # 11) Done—clear the task so we don't re-enter
     current_download_task = None
     return None
 

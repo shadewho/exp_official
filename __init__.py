@@ -64,6 +64,14 @@ if not _IS_WORKER_PROCESS:
     from . import Exp_Game, Exp_UI, Exp_Nodes, dev_refresh
 
     def register():
+        # 0) SECURITY: Clear any leftover downloaded world files from previous crashes
+        # This ensures .blend files don't persist across Blender sessions
+        try:
+            from .Exp_UI.download_and_explore.cleanup import cleanup_world_downloads
+            cleanup_world_downloads()
+        except Exception:
+            pass  # Folder may not exist on first run
+
         # 1) register core classes
         for cls in (
             EXPLORATORY_OT_SetKeybind,

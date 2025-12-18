@@ -190,8 +190,13 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         box = layout.box()
         box.label(text="Animation 2.0", icon='ACTION')
 
-        # ─── Debug Toggle ───────────────────────────────────────────────
-        box.prop(scene, "dev_debug_animations", text="Animation Logs")
+        # ─── Debug Toggles ──────────────────────────────────────────────
+        row = box.row(align=True)
+        row.prop(scene, "dev_debug_animations", text="Animation Logs")
+        row.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
+
+        row = box.row(align=True)
+        row.prop(scene, "dev_debug_anim_worker", text="Animation Worker")
 
         props = scene.anim2_test
         ctrl = get_test_controller()

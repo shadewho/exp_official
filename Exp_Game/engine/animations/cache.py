@@ -8,6 +8,11 @@ Provides:
 - Global animation storage by name
 - Per-object animation binding
 - Fast lookup for runtime playback
+
+NUMPY OPTIMIZATION (2025-12):
+  - BakedAnimation now uses numpy arrays for transforms
+  - Serialization (to_dict/from_dict) handles numpy conversion
+  - Worker reconstructs arrays lazily on first use
 """
 
 from typing import Dict, List, Optional, Set

@@ -387,19 +387,29 @@ class GameLoop:
                             from ..developer.dev_logger import log_worker_messages
                             log_worker_messages(worker_logs)
 
-                elif result.job_type == "ANIMATION_COMPUTE":
-                    # Apply computed bone transforms from worker
+                elif result.job_type == "ANIMATION_COMPUTE_BATCH":
+                    # Apply computed bone transforms from batched worker job
                     try:
-                        process_animation_result(op, result)
+                        objects_applied = process_animation_result(op, result)
 
-                        # Process worker logs (per-frame animation state)
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
+                        # Process worker logs and log result
+                        if result.result:
+                            result_data = result.result
+                            worker_logs = result_data.get("logs", [])
+                            total_objects = result_data.get("total_objects", 0)
+                            total_bones = result_data.get("total_bones", 0)
+                            total_anims = result_data.get("total_anims", 0)
+                            calc_time = result_data.get("calc_time_us", 0.0)
+
+                            from ..developer.dev_logger import log_game
+                            log_game("ANIMATIONS", f"BATCH_RESULT job={result.job_id} objs={total_objects} bones={total_bones} anims={total_anims} time={calc_time:.0f}µs")
+
+                            if worker_logs:
+                                from ..developer.dev_logger import log_worker_messages
+                                log_worker_messages(worker_logs)
 
                     except Exception as e:
-                        print(f"[GameLoop] Error applying animation result: {e}")
+                        print(f"[GameLoop] Error applying animation batch result: {e}")
 
             else:
                 # Job failed - already logged in process_engine_result

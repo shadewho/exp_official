@@ -2,16 +2,25 @@
 """
 Animation Baker - Unified Action to BakedAnimation conversion.
 
-Bakes Blender Actions to worker-safe BakedAnimation data.
+Bakes Blender Actions to worker-safe BakedAnimation data with numpy arrays.
 Supports both armature (bone) and object-level animations.
+
+NUMPY OPTIMIZATION:
+  - Outputs contiguous numpy arrays for maximum performance
+  - Detects static bones at bake time (skip at runtime)
+  - Shape: (num_frames, num_bones, 10) for bone transforms
 
 Blender 5.0+ only - uses layered action API.
 """
 
+import numpy as np
 from typing import Dict, List, Tuple, Optional, Set
-from .data import BakedAnimation, Transform
+from .data import BakedAnimation
 
 DEFAULT_FPS = 30.0
+
+# Threshold for detecting static bones (max variance across all frames)
+STATIC_BONE_THRESHOLD = 1e-6
 
 
 def bake_action(
@@ -21,11 +30,11 @@ def bake_action(
     bone_filter: Optional[Set[str]] = None
 ) -> BakedAnimation:
     """
-    Bake a Blender Action to a BakedAnimation.
+    Bake a Blender Action to a BakedAnimation with numpy arrays.
 
     Works with any object type:
-    - Armatures: bakes bone transforms
-    - Other objects: bakes object-level transforms (loc/rot/scale)
+    - Armatures: bakes bone transforms to (num_frames, num_bones, 10) array
+    - Other objects: bakes object-level transforms to (num_frames, 10) array
     - Can have both if action contains both types of FCurves
 
     Args:
@@ -35,7 +44,7 @@ def bake_action(
         bone_filter: Optional bone name filter (armatures only)
 
     Returns:
-        BakedAnimation with bones and/or object_transforms
+        BakedAnimation with numpy arrays and static bone detection
     """
     if action is None:
         raise ValueError("Cannot bake None action")
@@ -48,22 +57,27 @@ def bake_action(
     bone_fcurves, object_fcurves = _categorize_fcurves(all_fcurves)
 
     # Bake bone transforms (if armature and has bone FCurves)
-    bones_data = {}
+    bone_names = []
+    bone_transforms = None
+    animated_mask = None
+
     if target_object.type == 'ARMATURE' and bone_fcurves:
-        bones_data = _bake_bones(
+        bone_names, bone_transforms, animated_mask = _bake_bones_numpy(
             target_object, bone_fcurves, frame_start, frame_count, bone_filter
         )
 
     # Bake object transforms (if has object FCurves)
-    object_transforms = []
+    object_transforms = None
     if object_fcurves:
-        object_transforms = _bake_object(object_fcurves, frame_start, frame_count)
+        object_transforms = _bake_object_numpy(object_fcurves, frame_start, frame_count)
 
     return BakedAnimation(
         name=action.name,
         duration=duration,
         fps=fps,
-        bones=bones_data,
+        bone_names=bone_names,
+        bone_transforms=bone_transforms,
+        animated_mask=animated_mask,
         object_transforms=object_transforms,
         looping=True
     )
@@ -120,67 +134,104 @@ def _categorize_fcurves(fcurves) -> Tuple[Dict, Dict]:
     return bone_map, object_map
 
 
-def _bake_bones(
+def _bake_bones_numpy(
     armature,
     bone_fcurves: Dict,
     frame_start: float,
     frame_count: int,
     bone_filter: Optional[Set[str]]
-) -> Dict[str, List[Transform]]:
-    """Bake bone transforms from FCurves."""
-    bones_data = {}
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    """
+    Bake bone transforms to numpy arrays.
+
+    Returns:
+        (bone_names, bone_transforms, animated_mask)
+        - bone_names: List[str] of bone names in order
+        - bone_transforms: np.ndarray shape (num_frames, num_bones, 10)
+        - animated_mask: np.ndarray bool shape (num_bones,) - True if bone animates
+    """
     pose_bones = armature.pose.bones
 
-    for bone_name, fcurves in bone_fcurves.items():
+    # Determine which bones to bake (filtered or all with FCurves)
+    bones_to_bake = []
+    for bone_name in bone_fcurves.keys():
         if bone_filter is not None and bone_name not in bone_filter:
             continue
+        if bone_name in pose_bones:
+            bones_to_bake.append(bone_name)
 
-        pose_bone = pose_bones.get(bone_name)
-        if pose_bone is None:
-            continue
+    if not bones_to_bake:
+        return [], np.empty((0, 0, 10), dtype=np.float32), np.empty(0, dtype=bool)
 
-        frames = []
+    # Sort for consistent ordering
+    bones_to_bake.sort()
+    num_bones = len(bones_to_bake)
+
+    # Pre-allocate numpy array: (frames, bones, 10)
+    transforms = np.zeros((frame_count, num_bones, 10), dtype=np.float32)
+
+    # Set identity defaults (quat w=1, scale=1)
+    transforms[:, :, 0] = 1.0  # quat_w
+    transforms[:, :, 7] = 1.0  # scale_x
+    transforms[:, :, 8] = 1.0  # scale_y
+    transforms[:, :, 9] = 1.0  # scale_z
+
+    # Bake each bone
+    for bone_idx, bone_name in enumerate(bones_to_bake):
+        fcurves = bone_fcurves[bone_name]
+
         for frame_idx in range(frame_count):
             frame_num = frame_start + frame_idx
             transform = _sample_transform(fcurves, frame_num)
-            frames.append(transform)
+            transforms[frame_idx, bone_idx, :] = transform
 
-        if frames:
-            bones_data[bone_name] = frames
+    # Detect static bones (all frames identical within threshold)
+    animated_mask = _detect_animated_bones(transforms)
 
-    return bones_data
+    return bones_to_bake, transforms, animated_mask
 
 
-def _bake_object(
+def _bake_object_numpy(
     object_fcurves: Dict,
     frame_start: float,
     frame_count: int
-) -> List[Transform]:
-    """Bake object-level transforms from FCurves."""
-    frames = []
+) -> np.ndarray:
+    """
+    Bake object-level transforms to numpy array.
+
+    Returns:
+        np.ndarray shape (num_frames, 10)
+    """
+    transforms = np.zeros((frame_count, 10), dtype=np.float32)
+
+    # Set identity defaults
+    transforms[:, 0] = 1.0  # quat_w
+    transforms[:, 7] = 1.0  # scale_x
+    transforms[:, 8] = 1.0  # scale_y
+    transforms[:, 9] = 1.0  # scale_z
+
     for frame_idx in range(frame_count):
         frame_num = frame_start + frame_idx
         transform = _sample_transform(object_fcurves, frame_num)
-        frames.append(transform)
-    return frames
+        transforms[frame_idx, :] = transform
+
+    return transforms
 
 
-def _sample_transform(fcurves: Dict[str, Dict[int, any]], frame: float) -> Transform:
+def _sample_transform(fcurves: Dict[str, Dict[int, any]], frame: float) -> np.ndarray:
     """
     Sample transform at a specific frame.
 
     Returns:
-        (quat_w, quat_x, quat_y, quat_z, loc_x, loc_y, loc_z, scale_x, scale_y, scale_z)
+        np.ndarray shape (10,): [quat_w, quat_x, quat_y, quat_z, loc_x, loc_y, loc_z, scale_x, scale_y, scale_z]
     """
-    quat = [1.0, 0.0, 0.0, 0.0]
-    loc = [0.0, 0.0, 0.0]
-    scale = [1.0, 1.0, 1.0]
+    result = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float32)
 
     # Quaternion rotation
     if "rotation_quaternion" in fcurves:
         for i in range(4):
             if i in fcurves["rotation_quaternion"]:
-                quat[i] = fcurves["rotation_quaternion"][i].evaluate(frame)
+                result[i] = fcurves["rotation_quaternion"][i].evaluate(frame)
 
     # Euler rotation (convert to quaternion)
     elif "rotation_euler" in fcurves:
@@ -191,18 +242,47 @@ def _sample_transform(fcurves: Dict[str, Dict[int, any]], frame: float) -> Trans
                 euler[i] = fcurves["rotation_euler"][i].evaluate(frame)
         euler_obj = mathutils.Euler(euler, 'XYZ')
         quat_obj = euler_obj.to_quaternion()
-        quat = [quat_obj.w, quat_obj.x, quat_obj.y, quat_obj.z]
+        result[0:4] = [quat_obj.w, quat_obj.x, quat_obj.y, quat_obj.z]
 
     # Location
     if "location" in fcurves:
         for i in range(3):
             if i in fcurves["location"]:
-                loc[i] = fcurves["location"][i].evaluate(frame)
+                result[4 + i] = fcurves["location"][i].evaluate(frame)
 
     # Scale
     if "scale" in fcurves:
         for i in range(3):
             if i in fcurves["scale"]:
-                scale[i] = fcurves["scale"][i].evaluate(frame)
+                result[7 + i] = fcurves["scale"][i].evaluate(frame)
 
-    return tuple(quat + loc + scale)
+    return result
+
+
+def _detect_animated_bones(transforms: np.ndarray) -> np.ndarray:
+    """
+    Detect which bones actually animate (have varying transforms).
+
+    Args:
+        transforms: np.ndarray shape (num_frames, num_bones, 10)
+
+    Returns:
+        np.ndarray bool shape (num_bones,) - True if bone has movement
+    """
+    if transforms.shape[0] <= 1:
+        # Single frame - nothing animates
+        return np.zeros(transforms.shape[1], dtype=bool)
+
+    # Compute variance across frames for each bone
+    # A bone is static if ALL its transform components have near-zero variance
+    # Shape: (num_bones, 10)
+    variance = np.var(transforms, axis=0)
+
+    # Sum variance across all 10 transform components per bone
+    # Shape: (num_bones,)
+    total_variance = np.sum(variance, axis=1)
+
+    # Bone is animated if total variance exceeds threshold
+    animated = total_variance > STATIC_BONE_THRESHOLD
+
+    return animated

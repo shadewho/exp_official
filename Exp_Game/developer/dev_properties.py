@@ -344,11 +344,33 @@ def register_properties():
         name="Animations",
         description=(
             "Animation system diagnostics (worker-offloaded):\n"
-            "• Cache status (animations cached in workers)\n"
             "• Per-frame compute jobs submitted\n"
             "• Blending: animations playing, weights, times\n"
             "• Worker compute time (µs)\n"
             "• Bones updated per frame"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_anim_cache = bpy.props.BoolProperty(
+        name="Animation Cache",
+        description=(
+            "Animation cache diagnostics:\n"
+            "• Animations baked and cached in workers\n"
+            "• Cache timing and bone channel counts\n"
+            "• Worker cache confirmation"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_anim_worker = bpy.props.BoolProperty(
+        name="Animation Worker",
+        description=(
+            "Animation worker diagnostics:\n"
+            "• Shows designated animation worker ID\n"
+            "• Cache transfer to single worker (saves memory)\n"
+            "• Job routing to animation worker\n"
+            "• Compute times on animation worker"
         ),
         default=False
     )
@@ -416,6 +438,8 @@ def unregister_properties():
         'dev_debug_interactions',
         'dev_debug_audio',
         'dev_debug_animations',
+        'dev_debug_anim_cache',
+        'dev_debug_anim_worker',
 
         # Session export
         'dev_export_session_log',
@@ -427,52 +451,6 @@ def unregister_properties():
 
     # Clean up OLD properties from previous versions (migration)
     old_props = [
-        # Old animation system properties (dev_debug_animations is CURRENT - don't delete!)
-        'dev_debug_anim_engine',
-        'dev_debug_anim_blending',
-        'dev_debug_anim_baking',
-
-        # Old offload naming
-        'dev_debug_kcc_offload',
-        'dev_debug_camera_offload',
-        'dev_debug_performance',
-
-        # Old dynamic mesh properties (now unified)
-        'dev_debug_dynamic_mesh',
-        'dev_debug_dynamic_collision',
-        'dev_debug_dynamic_body_ray',
-        'dev_debug_dynamic_horizontal',
-
-        # Old physics properties
-        'dev_debug_unified_physics',
-        'dev_debug_physics_capsule',
-        'dev_debug_physics_body_integrity',
-        'dev_debug_physics_step_up',
-
-        # Old Hz properties
-        'dev_debug_engine_hz',
-        'dev_debug_kcc_offload_hz',
-        'dev_debug_frame_numbers_hz',
-        'dev_debug_camera_offload_hz',
-        'dev_debug_performance_hz',
-        'dev_debug_dynamic_offload_hz',
-        'dev_debug_physics_capsule_hz',
-        'dev_debug_physics_ground_hz',
-        'dev_debug_physics_step_up_hz',
-        'dev_debug_physics_slopes_hz',
-        'dev_debug_physics_slide_hz',
-        'dev_debug_interactions_hz',
-        'dev_debug_audio_hz',
-        'dev_debug_animations_hz',
-
-        # Other old properties
-        'dev_debug_forward_sweep',
-        'dev_debug_forward_sweep_hz',
-        'dev_debug_raycast_offload',
-        'dev_debug_raycast_offload_hz',
-        'dev_debug_physics',
-        'dev_debug_physics_hz',
-        'dev_run_sync_test',
     ]
 
     for prop in old_props:

@@ -408,20 +408,15 @@ class AnimationController:
 
         Returns:
             Dict ready to send as CACHE_ANIMATIONS job data:
-            {"animations": {anim_name: {bones: {...}, duration, fps}, ...}}
+            {"animations": {anim_name: {bone_transforms, bone_names, duration, fps, ...}, ...}}
+
+        NOTE: Uses BakedAnimation.to_dict() which handles numpy array conversion.
         """
         animations_dict = {}
 
         for name, anim in self.cache._animations.items():
-            # Convert BakedAnimation to plain dict for worker
-            animations_dict[name] = {
-                "name": anim.name,
-                "duration": anim.duration,
-                "fps": anim.fps,
-                "frame_count": anim.frame_count,
-                "bones": anim.bones,  # Already Dict[str, List[Transform]]
-                "looping": anim.looping
-            }
+            # Use to_dict() which properly serializes numpy arrays
+            animations_dict[name] = anim.to_dict()
 
         return {"animations": animations_dict}
 

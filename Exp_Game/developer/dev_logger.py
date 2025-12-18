@@ -75,6 +75,8 @@ _CATEGORY_MAP = {
     'INTERACTIONS': 'interactions',
     'AUDIO': 'audio',
     'ANIMATIONS': 'animations',
+    'ANIM-CACHE': 'anim_cache',
+    'ANIM-WORKER': 'anim_worker',
 }
 
 
@@ -96,6 +98,31 @@ def increment_frame():
     _current_frame += 1
 
 
+def _extract_message_key(category: str, message: str) -> str:
+    """
+    Extract a unique key for frequency gating from a log message.
+
+    The key is: "category:PREFIX" where PREFIX is the first word of the message.
+    This ensures different log types (e.g., BATCH_SUBMIT vs BATCH_RESULT) have
+    separate frequency gates and don't block each other.
+
+    Examples:
+        ("ANIMATIONS", "BATCH_SUBMIT job=123") -> "animations:BATCH_SUBMIT"
+        ("ANIMATIONS", "BATCH_RESULT job=123") -> "animations:BATCH_RESULT"
+        ("KCC", "GROUND pos=(1,2,3)") -> "kcc_physics:GROUND"
+    """
+    # Get first word (up to first space or end of string)
+    first_space = message.find(' ')
+    if first_space > 0:
+        prefix = message[:first_space]
+    else:
+        prefix = message[:20] if len(message) > 20 else message
+
+    # Build unique key
+    debug_property = _CATEGORY_MAP.get(category, category.lower())
+    return f"{debug_property}:{prefix}"
+
+
 def log_game(category: str, message: str):
     """
     Fast in-memory logging with frequency gating. Zero I/O during gameplay.
@@ -105,13 +132,19 @@ def log_game(category: str, message: str):
         message: The log message (should include source=static/dynamic for physics)
 
     Performance: ~1μs (just list append + dict creation) + frequency check
+
+    Note: Frequency gating is per MESSAGE TYPE, not per category. This ensures
+    that different log types (e.g., BATCH_SUBMIT vs BATCH_RESULT) don't block
+    each other even when they occur in the same frame.
     """
     global _log_buffer, _total_logs, _logs_per_category
 
     # Map category to debug property and check frequency gate
     debug_property = _CATEGORY_MAP.get(category)
     if debug_property:
-        if not should_print_debug(debug_property):
+        # Extract message key for per-type gating
+        message_key = _extract_message_key(category, message)
+        if not should_print_debug(debug_property, message_key):
             return  # Frequency gate blocked
 
     # Fast: just append to list (no I/O)
@@ -135,13 +168,18 @@ def log_worker_messages(worker_logs: list):
 
     Args:
         worker_logs: List of (category, message) tuples from worker
+
+    Note: Uses per-message-type gating (same as log_game) to prevent different
+    log types from blocking each other.
     """
     global _log_buffer, _total_logs, _logs_per_category
 
     for category, message in worker_logs:
         debug_property = _CATEGORY_MAP.get(category)
         if debug_property:
-            if not should_print_debug(debug_property):
+            # Extract message key for per-type gating
+            message_key = _extract_message_key(category, message)
+            if not should_print_debug(debug_property, message_key):
                 continue  # Frequency gate blocked
 
         _log_buffer.append({
