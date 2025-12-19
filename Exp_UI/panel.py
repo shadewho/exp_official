@@ -49,17 +49,14 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
         # Header
         code_box.label(text="Play Worlds & Games", icon='PLAY')
 
-        # Code field + Search button
+        # Code field (full width)
         code_box.label(text="Enter a download code to play:")
+        code_box.prop(context.scene, "download_code", text="")
+
+        # Paste and Search buttons side by side
         row = code_box.row(align=True)
-        row.prop(context.scene, "download_code", text="")
-        row.operator("webapp.show_detail_by_code", text="", icon='VIEWZOOM')
-
-        code_box.separator()
-
-        # Paste shortcut - separate section
-        code_box.label(text="Or paste from clipboard:")
-        code_box.operator("webapp.paste_and_search", text="Paste & Search", icon='PASTEDOWN')
+        row.operator("webapp.paste_code", text="Paste", icon='PASTEDOWN')
+        row.operator("webapp.show_detail_by_code", text="Search", icon='VIEWZOOM')
 
         layout.separator()
 

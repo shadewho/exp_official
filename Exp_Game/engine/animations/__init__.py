@@ -32,23 +32,14 @@ Main Thread Components (in Exp_Game/animations/):
 from .data import BakedAnimation, Transform, IDENTITY_TRANSFORM
 from .cache import AnimationCache
 from .blend import (
-    # Legacy tuple interface (backwards compatibility)
-    lerp,
-    slerp,
-    blend_transform,
-    interpolate_transform,
-    sample_animation,
-    blend_bone_poses,
-    blend_object_transforms,
-    # NEW: Numpy vectorized functions (high performance)
-    slerp_vectorized,
-    lerp_vectorized,
-    blend_transforms_vectorized,
-    interpolate_frames,
-    sample_animation_numpy,
-    blend_poses_numpy,
-    sample_and_blend_batch,
+    # Vectorized numpy functions
     normalize_quaternions,
+    slerp_vectorized,
+    blend_transforms,
+    sample_bone_animation,
+    blend_bone_poses,
+    sample_object_animation,
+    blend_object_transforms,
     IDENTITY,
 )
 
@@ -61,24 +52,14 @@ __all__ = [
     # Cache
     "AnimationCache",
 
-    # Legacy blending (tuple-based, backwards compatible)
-    "lerp",
-    "slerp",
-    "blend_transform",
-    "interpolate_transform",
-    "sample_animation",
-    "blend_bone_poses",
-    "blend_object_transforms",
-
-    # Numpy blending (high performance)
-    "slerp_vectorized",
-    "lerp_vectorized",
-    "blend_transforms_vectorized",
-    "interpolate_frames",
-    "sample_animation_numpy",
-    "blend_poses_numpy",
-    "sample_and_blend_batch",
+    # Numpy blending (vectorized, high performance)
     "normalize_quaternions",
+    "slerp_vectorized",
+    "blend_transforms",
+    "sample_bone_animation",
+    "blend_bone_poses",
+    "sample_object_animation",
+    "blend_object_transforms",
     "IDENTITY",
 ]
 

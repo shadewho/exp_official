@@ -5,6 +5,10 @@ Animation Baker - Unified Action to BakedAnimation conversion.
 Bakes Blender Actions to worker-safe BakedAnimation data with numpy arrays.
 Supports both armature (bone) and object-level animations.
 
+NO ARMATURE DEPENDENCY: Baking extracts data directly from FCurves.
+The action defines what bones/properties to animate - we just bake that data.
+At runtime, apply code handles missing bones gracefully.
+
 NUMPY OPTIMIZATION:
   - Outputs contiguous numpy arrays for maximum performance
   - Detects static bones at bake time (skip at runtime)
@@ -25,23 +29,22 @@ STATIC_BONE_THRESHOLD = 1e-6
 
 def bake_action(
     action,           # bpy.types.Action
-    target_object,    # bpy.types.Object (any type)
     fps: float = DEFAULT_FPS,
     bone_filter: Optional[Set[str]] = None
 ) -> BakedAnimation:
     """
     Bake a Blender Action to a BakedAnimation with numpy arrays.
 
-    Works with any object type:
-    - Armatures: bakes bone transforms to (num_frames, num_bones, 10) array
-    - Other objects: bakes object-level transforms to (num_frames, 10) array
-    - Can have both if action contains both types of FCurves
+    NO ARMATURE REQUIRED - extracts all data from FCurves directly.
+
+    Bakes:
+    - Bone transforms from pose.bones["..."] FCurves → (num_frames, num_bones, 10) array
+    - Object transforms from location/rotation/scale FCurves → (num_frames, 10) array
 
     Args:
         action: Blender Action to bake
-        target_object: Target object (armature or any object)
         fps: Frames per second (default 30)
-        bone_filter: Optional bone name filter (armatures only)
+        bone_filter: Optional set of bone names to include (None = all)
 
     Returns:
         BakedAnimation with numpy arrays and static bone detection
@@ -56,14 +59,14 @@ def bake_action(
     all_fcurves = _get_all_fcurves(action)
     bone_fcurves, object_fcurves = _categorize_fcurves(all_fcurves)
 
-    # Bake bone transforms (if armature and has bone FCurves)
+    # Bake bone transforms (if has bone FCurves)
     bone_names = []
     bone_transforms = None
     animated_mask = None
 
-    if target_object.type == 'ARMATURE' and bone_fcurves:
+    if bone_fcurves:
         bone_names, bone_transforms, animated_mask = _bake_bones_numpy(
-            target_object, bone_fcurves, frame_start, frame_count, bone_filter
+            bone_fcurves, frame_start, frame_count, bone_filter
         )
 
     # Bake object transforms (if has object FCurves)
@@ -135,7 +138,6 @@ def _categorize_fcurves(fcurves) -> Tuple[Dict, Dict]:
 
 
 def _bake_bones_numpy(
-    armature,
     bone_fcurves: Dict,
     frame_start: float,
     frame_count: int,
@@ -144,21 +146,21 @@ def _bake_bones_numpy(
     """
     Bake bone transforms to numpy arrays.
 
+    NO ARMATURE VALIDATION - bakes all bones from FCurves directly.
+    At runtime, apply code will skip bones that don't exist on target.
+
     Returns:
         (bone_names, bone_transforms, animated_mask)
         - bone_names: List[str] of bone names in order
         - bone_transforms: np.ndarray shape (num_frames, num_bones, 10)
         - animated_mask: np.ndarray bool shape (num_bones,) - True if bone animates
     """
-    pose_bones = armature.pose.bones
-
-    # Determine which bones to bake (filtered or all with FCurves)
+    # Get all bone names from FCurves (no armature validation)
     bones_to_bake = []
     for bone_name in bone_fcurves.keys():
         if bone_filter is not None and bone_name not in bone_filter:
             continue
-        if bone_name in pose_bones:
-            bones_to_bake.append(bone_name)
+        bones_to_bake.append(bone_name)
 
     if not bones_to_bake:
         return [], np.empty((0, 0, 10), dtype=np.float32), np.empty(0, dtype=bool)

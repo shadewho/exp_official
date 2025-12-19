@@ -333,6 +333,9 @@ def init_animations(modal, context) -> tuple[bool, str]:
     """
     Initialize animation system - bake all actions and cache in workers.
 
+    NO ARMATURE DEPENDENCY - bakes directly from FCurves.
+    Supports both bone animations and object animations.
+
     Args:
         modal: ExpModal operator instance
         context: Blender context
@@ -341,8 +344,6 @@ def init_animations(modal, context) -> tuple[bool, str]:
         (success: bool, message: str)
     """
     startup_logs = context.scene.dev_startup_logs
-    scene = context.scene
-    armature = scene.target_armature
 
     if startup_logs:
         print("\n[ANIMATIONS] Initializing animation system...")
@@ -353,21 +354,13 @@ def init_animations(modal, context) -> tuple[bool, str]:
     # Initialize pending animation batch job tracking (batched system)
     modal._pending_anim_batch_job = None
 
-    if not armature:
-        if startup_logs:
-            print("[ANIMATIONS] ⊘ No target armature - animations disabled")
-        return True, "No armature"
-
-    if armature.type != 'ARMATURE':
-        if startup_logs:
-            print("[ANIMATIONS] ⊘ Target is not an armature - animations disabled")
-        return True, "Invalid armature"
-
-    # Bake ALL actions in the blend file
+    # Bake ALL actions in the blend file - no armature dependency
     from ..developer.dev_logger import log_game
 
     total_start = time.perf_counter()
     baked_count = 0
+    baked_bones = 0
+    baked_objects = 0
     failed = []
     total_frames = 0
     total_bones = 0
@@ -375,7 +368,10 @@ def init_animations(modal, context) -> tuple[bool, str]:
     for action in bpy.data.actions:
         try:
             action_start = time.perf_counter()
-            anim = bake_action(action, armature)
+
+            # Bake action directly from FCurves - no armature needed
+            anim = bake_action(action)
+
             action_elapsed = (time.perf_counter() - action_start) * 1000
 
             modal.anim_controller.add_animation(anim)
@@ -383,23 +379,40 @@ def init_animations(modal, context) -> tuple[bool, str]:
 
             # Track stats
             frame_count = int(action.frame_range[1] - action.frame_range[0]) + 1
-            bone_count = anim.num_bones  # Use new numpy property
+            bone_count = anim.num_bones
             total_frames += frame_count
             total_bones += bone_count
 
-            # Log per-action timing
-            log_game("ANIM-CACHE", f"BAKED {action.name}: {bone_count}bones x {frame_count}frames = {action_elapsed:.0f}ms")
+            if anim.has_bones:
+                baked_bones += 1
+            if anim.has_object:
+                baked_objects += 1
+
+            # Log per-action timing with type info
+            anim_type = []
+            if anim.has_bones:
+                anim_type.append(f"{bone_count}bones")
+            if anim.has_object:
+                anim_type.append("obj")
+            type_str = "+".join(anim_type) if anim_type else "empty"
+
+            log_game("ANIM-CACHE", f"BAKED {action.name}: {type_str} x {frame_count}frames = {action_elapsed:.0f}ms")
 
         except Exception as e:
             failed.append(f"{action.name}: {e}")
 
     bake_elapsed = (time.perf_counter() - total_start) * 1000
 
-    # Summary log
-    log_game("ANIM-CACHE", f"BAKE_TOTAL {baked_count}actions {total_bones}bones {total_frames}frames = {bake_elapsed:.0f}ms")
+    # Summary log with bone/object breakdown
+    log_game("ANIM-CACHE", f"BAKE_TOTAL {baked_count}actions ({baked_bones}bone/{baked_objects}obj) {total_bones}bones {total_frames}frames = {bake_elapsed:.0f}ms")
 
     if startup_logs:
-        print(f"[ANIMATIONS] Baked {baked_count} actions in {bake_elapsed:.0f}ms")
+        parts = [f"{baked_count} actions"]
+        if baked_bones > 0:
+            parts.append(f"{baked_bones} with bones")
+        if baked_objects > 0:
+            parts.append(f"{baked_objects} with object transforms")
+        print(f"[ANIMATIONS] Baked {', '.join(parts)} in {bake_elapsed:.0f}ms")
         if failed:
             print(f"[ANIMATIONS] ⚠ {len(failed)} actions failed to bake")
 
@@ -647,8 +660,9 @@ def process_animation_result(modal, result) -> int:
     objects_processed = 0
     for object_name, obj_result in results_dict.items():
         bone_transforms = obj_result.get("bone_transforms", {})
-        if bone_transforms:
-            modal.anim_controller.apply_worker_result(object_name, bone_transforms)
+        object_transform = obj_result.get("object_transform")
+        if bone_transforms or object_transform:
+            modal.anim_controller.apply_worker_result(object_name, bone_transforms, object_transform)
             objects_processed += 1
 
     return objects_processed

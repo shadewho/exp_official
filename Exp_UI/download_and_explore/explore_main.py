@@ -18,11 +18,10 @@ def validate_blend_header(file_path: str) -> tuple:
     """
     Validate .blend file magic bytes before loading.
 
-    Blender file header structure (12 bytes):
-    - Bytes 0-6: "BLENDER" (7 bytes)
-    - Byte 7: Pointer size ('_' = 32-bit, '-' = 64-bit)
-    - Byte 8: Endianness ('v' = little, 'V' = big)
-    - Bytes 9-11: Version (e.g., "401" for 4.01)
+    Supports:
+    - Uncompressed: "BLENDER" + pointer size + endianness + version (12 bytes)
+    - zstd compressed (Blender 3.0+ default): 0x28 0xB5 0x2F 0xFD
+    - gzip compressed (legacy): 0x1F 0x8B
 
     Returns:
         (is_valid: bool, error_message: str)
@@ -31,28 +30,99 @@ def validate_blend_header(file_path: str) -> tuple:
         with open(file_path, 'rb') as f:
             header = f.read(12)
 
+        if len(header) < 4:
+            return False, "File too small to be a valid .blend"
+
+        # zstd compressed (Blender 3.0+/5.0 default)
+        if header[:4] == b'\x28\xB5\x2F\xFD':
+            return True, ""
+
+        # gzip compressed (legacy)
+        if header[:2] == b'\x1F\x8B':
+            return True, ""
+
+        # Uncompressed - need full 12 bytes
         if len(header) < 12:
             return False, "File too small to be a valid .blend"
 
-        # Check magic bytes "BLENDER"
         if header[:7] != b'BLENDER':
             return False, "Not a valid Blender file (missing BLENDER header)"
 
-        # Check pointer size marker ('_' for 32-bit, '-' for 64-bit)
         if header[7:8] not in (b'_', b'-'):
             return False, "Invalid Blender file header (bad pointer size)"
 
-        # Check endianness marker ('v' for little-endian, 'V' for big-endian)
         if header[8:9] not in (b'v', b'V'):
             return False, "Invalid Blender file header (bad endianness)"
 
-        # Check version is numeric
         if not header[9:12].isdigit():
             return False, "Invalid Blender file header (bad version)"
 
         return True, ""
     except Exception as e:
         return False, f"Failed to read file: {str(e)}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Security: Text Datablock / Script Scanner (Phase 2)
+# ──────────────────────────────────────────────────────────────────────────────
+GAME_WORLD_MAX_LINES = 20
+
+def scan_blend_for_scripts(file_path: str) -> tuple:
+    """
+    Scan .blend file for potentially dangerous text datablocks.
+
+    Security rules:
+    - GAME_WORLD text datablock is allowed (contains scene name), but max 20 lines
+    - ANY other text datablock is rejected (could contain Python scripts)
+
+    Returns:
+        (is_safe: bool, error_message: str)
+    """
+    try:
+        with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+            text_names = list(data_from.texts)
+
+        # Check for unauthorized text datablocks
+        unauthorized_texts = [t for t in text_names if t != "GAME_WORLD"]
+        if unauthorized_texts:
+            return False, f"File contains unauthorized text datablocks: {', '.join(unauthorized_texts)}"
+
+        # If GAME_WORLD exists, verify it's within size limit
+        if "GAME_WORLD" in text_names:
+            # Need to actually load it to check line count
+            # Temporarily load just the text datablock
+            old_game_world = bpy.data.texts.get("GAME_WORLD")
+            old_name_backup = None
+            if old_game_world:
+                old_name_backup = old_game_world.name
+                old_game_world.name = "_TEMP_GAME_WORLD_BACKUP_"
+
+            try:
+                with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+                    data_to.texts = ["GAME_WORLD"]
+
+                loaded_text = bpy.data.texts.get("GAME_WORLD")
+                if loaded_text:
+                    content = loaded_text.as_string()
+                    line_count = len(content.splitlines())
+
+                    # Clean up loaded text
+                    bpy.data.texts.remove(loaded_text)
+
+                    if line_count > GAME_WORLD_MAX_LINES:
+                        # Restore original GAME_WORLD name
+                        if old_game_world and old_name_backup:
+                            old_game_world.name = "GAME_WORLD"
+                        return False, f"GAME_WORLD exceeds {GAME_WORLD_MAX_LINES} lines ({line_count} lines found)"
+            finally:
+                # Restore original GAME_WORLD name
+                if old_game_world and old_name_backup:
+                    old_game_world.name = "GAME_WORLD"
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"Failed to scan file for scripts: {str(e)}"
 
 
 def reset_download_progress():
@@ -303,6 +373,14 @@ def timer_finish_download():
     is_valid, error_msg = validate_blend_header(current_download_task.local_blend_path)
     if not is_valid:
         bail_to_idle(f"Invalid file: {error_msg}")
+        clear_world_downloads_folder()
+        current_download_task = None
+        return None
+
+    # 3.5) Security: Scan for unauthorized text datablocks / scripts (Phase 2)
+    is_safe, security_msg = scan_blend_for_scripts(current_download_task.local_blend_path)
+    if not is_safe:
+        bail_to_idle(f"Security check failed: {security_msg}")
         clear_world_downloads_folder()
         current_download_task = None
         return None

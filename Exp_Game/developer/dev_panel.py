@@ -228,12 +228,19 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             row.prop(props, "play_speed")
             row.prop(props, "fade_time")
 
-            sub_box.prop(props, "loop_playback")
+            row = sub_box.row(align=True)
+            row.prop(props, "loop_playback")
+            row.prop(props, "playback_timeout")
 
             row = sub_box.row(align=True)
             row.scale_y = 1.3
             row.operator("anim2.play_animation", icon='PLAY')
             row.operator("anim2.stop_animation", icon='SNAP_FACE')
+
+            # Stop All button (separate row)
+            row = sub_box.row(align=True)
+            row.scale_y = 1.2
+            row.operator("anim2.stop_all", text="Stop All", icon='CANCEL')
         else:
             sub_box.label(text="Bake animations first", icon='INFO')
 

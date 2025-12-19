@@ -35,6 +35,14 @@ from worker.math import (
 from worker.physics import handle_kcc_physics_step
 from worker.jobs import handle_camera_occlusion
 
+# Import animation math from single source of truth (no duplicates!)
+from animations.blend import (
+    sample_bone_animation,
+    sample_object_animation,
+    blend_bone_poses,
+    blend_object_transforms,
+)
+
 
 # ============================================================================
 # DEBUG FLAG
@@ -121,217 +129,14 @@ def _ensure_numpy_arrays():
     return logs
 
 
-def _slerp_vectorized(q1: np.ndarray, q2: np.ndarray, t: float) -> np.ndarray:
-    """
-    Vectorized spherical linear interpolation for multiple quaternions.
-    Processes ALL bones at once - no Python loops!
-
-    Args:
-        q1: (num_bones, 4) array of quaternions [w, x, y, z]
-        q2: (num_bones, 4) array of quaternions [w, x, y, z]
-        t: Interpolation factor (0 = q1, 1 = q2)
-
-    Returns:
-        Interpolated quaternions (num_bones, 4)
-    """
-    q2 = q2.copy()  # Don't modify original
-
-    # Dot product for each quaternion pair: (num_bones,)
-    dot = np.sum(q1 * q2, axis=-1)
-
-    # Take shorter path: negate q2 where dot < 0
-    neg_mask = dot < 0
-    if np.any(neg_mask):
-        q2[neg_mask] = -q2[neg_mask]
-        dot = np.abs(dot)
-
-    # Clamp dot to valid range
-    dot = np.clip(dot, -1.0, 1.0)
-
-    # For nearly identical quaternions, use linear interpolation
-    linear_mask = dot > 0.9995
-
-    # Calculate slerp coefficients
-    theta_0 = np.arccos(dot)
-    theta = theta_0 * t
-    sin_theta = np.sin(theta)
-    sin_theta_0 = np.sin(theta_0)
-
-    # Avoid division by zero
-    safe_sin = np.maximum(np.abs(sin_theta_0), 1e-10)
-
-    s0 = np.cos(theta) - dot * sin_theta / safe_sin
-    s1 = sin_theta / safe_sin
-
-    # Expand for broadcasting: (num_bones,) -> (num_bones, 1)
-    s0 = s0[:, np.newaxis]
-    s1 = s1[:, np.newaxis]
-
-    # Compute slerp result
-    result = s0 * q1 + s1 * q2
-
-    # For linear cases, use simple lerp + normalize
-    if np.any(linear_mask):
-        lerp_result = q1[linear_mask] + t * (q2[linear_mask] - q1[linear_mask])
-        norms = np.linalg.norm(lerp_result, axis=-1, keepdims=True)
-        norms = np.maximum(norms, 1e-10)
-        lerp_result = lerp_result / norms
-        result[linear_mask] = lerp_result
-
-    return result
-
-
-def _blend_transforms_numpy(t1: np.ndarray, t2: np.ndarray, weight: float) -> np.ndarray:
-    """
-    Blend two transform arrays. Processes ALL bones at once.
-
-    Args:
-        t1: (num_bones, 10) transforms
-        t2: (num_bones, 10) transforms
-        weight: Blend factor (0 = t1, 1 = t2)
-
-    Returns:
-        Blended transforms (num_bones, 10)
-    """
-    # Split into components
-    q1, loc1, scale1 = t1[:, 0:4], t1[:, 4:7], t1[:, 7:10]
-    q2, loc2, scale2 = t2[:, 0:4], t2[:, 4:7], t2[:, 7:10]
-
-    # Slerp quaternions (vectorized), lerp location and scale
-    q_blend = _slerp_vectorized(q1, q2, weight)
-    loc_blend = loc1 + (loc2 - loc1) * weight
-    scale_blend = scale1 + (scale2 - scale1) * weight
-
-    # Concatenate back together
-    return np.concatenate([q_blend, loc_blend, scale_blend], axis=-1)
-
-
-def _sample_animation_numpy(anim_data: dict, anim_time: float, loop: bool = True):
-    """
-    Sample animation at a specific time using numpy.
-    Returns pose for ALL bones at once.
-
-    STATIC BONE OPTIMIZATION: Only interpolates animated bones.
-    Static bones use frame 0 directly (no slerp/lerp needed).
-
-    Args:
-        anim_data: Cached animation dict with numpy arrays
-        anim_time: Current time in seconds
-        loop: Whether to loop
-
-    Returns:
-        tuple: (pose_array, stats_dict)
-        - pose_array: (num_bones, 10) numpy array
-        - stats_dict: {"total": int, "animated": int, "static": int, "skipped": bool}
-    """
-    bone_transforms = anim_data.get("bone_transforms")
-    if bone_transforms is None or bone_transforms.size == 0:
-        return np.empty((0, 10), dtype=np.float32), {"total": 0, "animated": 0, "static": 0, "skipped": False}
-
-    duration = anim_data.get("duration", 0.0)
-    fps = anim_data.get("fps", 30.0)
-    animated_mask = anim_data.get("animated_mask")  # (num_bones,) bool array
-
-    num_frames = bone_transforms.shape[0]
-    num_bones = bone_transforms.shape[1] if len(bone_transforms.shape) > 1 else 0
-
-    # Count animated vs static bones
-    if animated_mask is not None and isinstance(animated_mask, np.ndarray):
-        num_animated = int(np.sum(animated_mask))
-        num_static = num_bones - num_animated
-    else:
-        num_animated = num_bones
-        num_static = 0
-        animated_mask = None  # Ensure it's None for logic below
-
-    stats = {"total": num_bones, "animated": num_animated, "static": num_static, "skipped": False}
-
-    if duration <= 0 or num_frames <= 1:
-        return bone_transforms[0].copy(), stats
-
-    # Handle looping
-    if loop:
-        anim_time = anim_time % duration
-    else:
-        anim_time = max(0.0, min(anim_time, duration))
-
-    frame_float = anim_time * fps
-    frame_low = int(frame_float)
-    frame_high = frame_low + 1
-    t = frame_float - frame_low
-
-    # Clamp indices
-    frame_low = min(frame_low, num_frames - 1)
-    frame_high = min(frame_high, num_frames - 1)
-
-    # No interpolation needed - return exact frame
-    if frame_low == frame_high or t < 0.001:
-        return bone_transforms[frame_low].copy(), stats
-
-    # STATIC BONE OPTIMIZATION
-    # If we have animated_mask and there are static bones, only interpolate animated ones
-    if animated_mask is not None and num_static > 0:
-        # Start with frame 0 for ALL bones (static bones stay at rest pose)
-        pose = bone_transforms[0].copy()
-
-        # Get indices of animated bones
-        animated_indices = np.where(animated_mask)[0]
-
-        if len(animated_indices) > 0:
-            # Only interpolate the animated bones
-            pose[animated_indices] = _blend_transforms_numpy(
-                bone_transforms[frame_low, animated_indices],
-                bone_transforms[frame_high, animated_indices],
-                t
-            )
-
-        stats["skipped"] = True  # Confirm we used the optimization
-        return pose, stats
-
-    # No mask or all bones animated - interpolate everything
-    return _blend_transforms_numpy(bone_transforms[frame_low], bone_transforms[frame_high], t), stats
-
-
-def _blend_poses_numpy(poses: list, weights: list) -> np.ndarray:
-    """
-    Blend multiple poses by weight using numpy.
-
-    Args:
-        poses: List of (num_bones, 10) numpy arrays
-        weights: List of weights
-
-    Returns:
-        Blended pose (num_bones, 10)
-    """
-    if not poses:
-        return np.empty((0, 10), dtype=np.float32)
-
-    if len(poses) == 1:
-        return poses[0].copy()
-
-    # Normalize weights
-    total_weight = sum(weights)
-    if total_weight <= 0:
-        return poses[0].copy()
-
-    # Iterative blending (needed for correct quaternion slerp accumulation)
-    result = poses[0].copy()
-    accumulated_weight = weights[0] / total_weight
-
-    for i in range(1, len(poses)):
-        w = weights[i] / total_weight
-        if accumulated_weight + w > 0:
-            blend_t = w / (accumulated_weight + w)
-            result = _blend_transforms_numpy(result, poses[i], blend_t)
-            accumulated_weight += w
-
-    return result
-
-
 def _compute_single_object_pose(object_name: str, playing_list: list, logs: list) -> dict:
     """
     Compute blended pose for a single object using NUMPY VECTORIZED operations.
     Processes ALL bones at once - no Python loops!
+
+    Supports both:
+    - Armatures: returns bone_transforms dict
+    - Objects: returns object_transform tuple (for mesh, empty, etc.)
 
     STATIC BONE OPTIMIZATION: Tracks and logs how many bones were skipped.
 
@@ -345,8 +150,9 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             "bone_transforms": {bone_name: (10-float tuple), ...},
             "bone_names": list,
             "bones_count": int,
+            "object_transform": (10-float tuple) or None,  # For non-armature objects
             "anims_blended": int,
-            "static_skipped": int,  # Number of static bones skipped
+            "static_skipped": int,
         }
     """
     if not playing_list:
@@ -354,6 +160,7 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             "bone_transforms": {},
             "bone_names": [],
             "bones_count": 0,
+            "object_transform": None,
             "anims_blended": 0,
             "static_skipped": 0,
         }
@@ -364,8 +171,13 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
     logs.extend(numpy_logs)
 
     # Sample each playing animation using numpy
+    # For bones (armatures)
     poses = []
-    weights = []
+    bone_weights = []
+    # For object-level transforms (mesh, empty, etc.)
+    object_transforms = []
+    object_weights = []
+
     anim_names = []
     bone_names = None  # Will be set from first valid animation
     total_static_skipped = 0
@@ -386,12 +198,13 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             logs.append(("ANIMATIONS", f"CACHE_MISS obj={object_name} anim='{anim_name}' cached={len(_cached_animations)}"))
             continue
 
-        # Sample at current time using numpy (returns pose array + stats)
-        pose, sample_stats = _sample_animation_numpy(anim_data, anim_time, looping)
+        anim_names.append(f"{anim_name}:{weight:.0%}")
+
+        # Sample BONE transforms (for armatures) - uses imported function
+        pose, sample_stats = sample_bone_animation(anim_data, anim_time, looping)
         if pose.size > 0:
             poses.append(pose)
-            weights.append(weight)
-            anim_names.append(f"{anim_name}:{weight:.0%}")
+            bone_weights.append(weight)
 
             # Track static bone skipping stats
             if sample_stats.get("skipped"):
@@ -402,35 +215,45 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             if bone_names is None:
                 bone_names = anim_data.get("bone_names", [])
 
-    if not poses:
-        return {
-            "bone_transforms": {},
-            "bone_names": [],
-            "bones_count": 0,
-            "anims_blended": 0,
-            "static_skipped": 0,
-        }
+        # Sample OBJECT transforms (for mesh, empty, etc.) - uses imported function
+        obj_transform = sample_object_animation(anim_data, anim_time, looping)
+        if obj_transform is not None:
+            object_transforms.append(obj_transform)
+            object_weights.append(weight)
 
-    # Blend all poses using numpy (vectorized - ALL bones at once)
-    blended = _blend_poses_numpy(poses, weights)
-
-    # Convert numpy array to dict for compatibility with apply code
-    # This is the only per-bone loop, but it's just building the output dict
-    bone_transforms = {}
-    if bone_names and blended.size > 0:
-        for i, name in enumerate(bone_names):
-            if i < len(blended):
-                bone_transforms[name] = tuple(blended[i].tolist())
-
-    return {
-        "bone_transforms": bone_transforms,
+    # Build result
+    result = {
+        "bone_transforms": {},
         "bone_names": bone_names or [],
-        "bones_count": len(bone_transforms),
-        "anims_blended": len(poses),
-        "anim_names": anim_names,  # For logging
-        "static_skipped": total_static_skipped,  # Number of static bones skipped
-        "animated_count": total_animated,  # Number of bones actually interpolated
+        "bones_count": 0,
+        "object_transform": None,
+        "anims_blended": max(len(poses), len(object_transforms)),
+        "anim_names": anim_names,
+        "static_skipped": total_static_skipped,
+        "animated_count": total_animated,
     }
+
+    # Blend bone poses (for armatures) - uses imported function
+    if poses:
+        blended = blend_bone_poses(poses, bone_weights)
+
+        # Convert numpy array to dict for compatibility with apply code
+        bone_transforms = {}
+        if bone_names and blended.size > 0:
+            for i, name in enumerate(bone_names):
+                if i < len(blended):
+                    bone_transforms[name] = tuple(blended[i].tolist())
+
+        result["bone_transforms"] = bone_transforms
+        result["bones_count"] = len(bone_transforms)
+
+    # Blend object transforms (for non-armature objects) - uses imported function
+    if object_transforms:
+        blended_obj = blend_object_transforms(object_transforms, object_weights)
+        if blended_obj is not None:
+            result["object_transform"] = tuple(blended_obj.tolist())
+
+    return result
 
 
 def _handle_animation_compute(job_data: dict) -> dict:
@@ -470,12 +293,20 @@ def _handle_animation_compute(job_data: dict) -> dict:
     # Build log message
     anim_names = result.get("anim_names", [])
     anim_str = " + ".join(anim_names) if anim_names and len(anim_names) <= 3 else f"{len(anim_names)} anims"
-    if result["bones_count"] > 0:
-        logs.append(("ANIMATIONS", f"{object_name}: {anim_str} | {result['bones_count']} bones | {calc_time_us:.0f}µs"))
+    has_bones = result["bones_count"] > 0
+    has_obj = result.get("object_transform") is not None
+    if has_bones or has_obj:
+        parts = []
+        if has_bones:
+            parts.append(f"{result['bones_count']} bones")
+        if has_obj:
+            parts.append("obj_xform")
+        logs.append(("ANIMATIONS", f"{object_name}: {anim_str} | {' + '.join(parts)} | {calc_time_us:.0f}µs"))
 
     return {
         "success": True,
         "bone_transforms": result["bone_transforms"],
+        "object_transform": result.get("object_transform"),
         "bones_count": result["bones_count"],
         "anims_blended": result["anims_blended"],
         "calc_time_us": calc_time_us,
@@ -547,10 +378,11 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
         # Compute pose for this object
         obj_result = _compute_single_object_pose(object_name, playing_list, logs)
 
-        # Store result
+        # Store result (includes object_transform for non-armature objects)
         results[object_name] = {
             "bone_transforms": obj_result["bone_transforms"],
             "bones_count": obj_result["bones_count"],
+            "object_transform": obj_result.get("object_transform"),
             "anims_blended": obj_result["anims_blended"],
         }
 

@@ -53,7 +53,7 @@ if not _IS_WORKER_PROCESS:
         BROWSE_WORLD_OT, BROWSE_SHOP_OT, BROWSE_EVENTS_OT)
 
     #interface operators
-    from .interface.operators.display import PACKAGE_OT_Display, WEBAPP_OT_ShowDetailByCode, REMOVE_PACKAGE_OT_Display, WEBAPP_OT_PasteAndSearch
+    from .interface.operators.display import PACKAGE_OT_Display, WEBAPP_OT_ShowDetailByCode, REMOVE_PACKAGE_OT_Display, WEBAPP_OT_PasteCode
 
     #evemts operators
     from .events.operators import VOTE_MAP_OT_WebApp
@@ -89,7 +89,7 @@ if not _IS_WORKER_PROCESS:
         PACKAGE_OT_Display,
         VIEW3D_PT_ExploreByCode,
         WEBAPP_OT_ShowDetailByCode,
-        WEBAPP_OT_PasteAndSearch,
+        WEBAPP_OT_PasteCode,
         REMOVE_PACKAGE_OT_Display
     )
 

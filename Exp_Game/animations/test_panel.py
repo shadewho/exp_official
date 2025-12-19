@@ -84,31 +84,27 @@ class ANIM2_OT_BakeAll(Operator):
     def execute(self, context):
         start_time = time.perf_counter()
 
-        scene = context.scene
-        armature = scene.target_armature
-
-        if armature is None:
-            self.report({'WARNING'}, "No target armature set in scene")
-            return {'CANCELLED'}
-
-        if armature.type != 'ARMATURE':
-            self.report({'WARNING'}, "Target armature is not an armature object")
-            return {'CANCELLED'}
-
         # Reset for fresh bake
         reset_test_controller()
         ctrl = get_test_controller()
         engine = get_test_engine()
 
-        # Bake ALL actions
+        # Bake ALL actions - no armature dependency
+        # Baker extracts data directly from FCurves
         baked_count = 0
+        baked_bones = 0
+        baked_objects = 0
         failed = []
 
         for action in bpy.data.actions:
             try:
-                anim = bake_action(action, armature)
+                anim = bake_action(action)
                 ctrl.add_animation(anim)
                 baked_count += 1
+                if anim.has_bones:
+                    baked_bones += 1
+                if anim.has_object:
+                    baked_objects += 1
             except Exception as e:
                 failed.append(f"{action.name}: {e}")
 
@@ -129,10 +125,17 @@ class ANIM2_OT_BakeAll(Operator):
 
         elapsed = (time.perf_counter() - start_time) * 1000
 
+        # Build detailed report
+        parts = [f"{baked_count} actions"]
+        if baked_bones > 0:
+            parts.append(f"{baked_bones} with bones")
+        if baked_objects > 0:
+            parts.append(f"{baked_objects} with object transforms")
+
         if failed:
-            self.report({'WARNING'}, f"Baked {baked_count} actions ({elapsed:.0f}ms). {len(failed)} failed.")
+            self.report({'WARNING'}, f"Baked {', '.join(parts)} ({elapsed:.0f}ms). {len(failed)} failed.")
         else:
-            self.report({'INFO'}, f"Baked {baked_count} actions in {elapsed:.0f}ms")
+            self.report({'INFO'}, f"Baked {', '.join(parts)} in {elapsed:.0f}ms")
 
         return {'FINISHED'}
 
@@ -204,6 +207,29 @@ class ANIM2_OT_StopAnimation(Operator):
         return {'FINISHED'}
 
 
+class ANIM2_OT_StopAll(Operator):
+    """Stop ALL animations on ALL objects"""
+    bl_idname = "anim2.stop_all"
+    bl_label = "Stop All"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        global _last_time, _playback_start_time
+
+        stop_all_animations()
+
+        # Reset timer state
+        _last_time = None
+        _playback_start_time = None
+
+        # Unregister timer if running
+        if bpy.app.timers.is_registered(playback_update):
+            bpy.app.timers.unregister(playback_update)
+
+        self.report({'INFO'}, "Stopped all animations")
+        return {'FINISHED'}
+
+
 class ANIM2_OT_BlendAnimation(Operator):
     """Blend in a second animation"""
     bl_idname = "anim2.blend_animation"
@@ -265,26 +291,45 @@ class ANIM2_OT_ClearCache(Operator):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _last_time = None
+_playback_start_time = None
 
 def playback_update():
     """Timer callback - uses worker-based animation system."""
-    global _last_time
+    global _last_time, _playback_start_time
 
     ctrl = get_test_controller()
     engine = get_test_engine()
 
     if not engine.is_alive():
         _last_time = None
+        _playback_start_time = None
         return None  # Stop timer
 
     # Calculate delta time
     current = time.perf_counter()
     if _last_time is None:
         _last_time = current
+        _playback_start_time = current
         dt = 1/60
     else:
         dt = current - _last_time
         _last_time = current
+
+    # Check timeout
+    timeout = 20.0  # Default 20 second timeout
+    try:
+        timeout = bpy.context.scene.anim2_test.playback_timeout
+    except:
+        pass
+
+    if timeout > 0 and _playback_start_time is not None:
+        elapsed = current - _playback_start_time
+        if elapsed >= timeout:
+            # Stop all animations
+            stop_all_animations()
+            _last_time = None
+            _playback_start_time = None
+            return None  # Stop timer
 
     # 1. Update state (times, fades) - same as game
     ctrl.update_state(dt)
@@ -308,8 +353,9 @@ def playback_update():
                     if result.success:
                         object_name = pending_jobs.pop(result.job_id)
                         bone_transforms = result.result.get("bone_transforms", {})
-                        if bone_transforms:
-                            ctrl.apply_worker_result(object_name, bone_transforms)
+                        object_transform = result.result.get("object_transform")
+                        if bone_transforms or object_transform:
+                            ctrl.apply_worker_result(object_name, bone_transforms, object_transform)
                         # Process worker logs
                         worker_logs = result.result.get("logs", [])
                         if worker_logs:
@@ -328,7 +374,16 @@ def playback_update():
         return 1/60  # Continue at 60fps
     else:
         _last_time = None
+        _playback_start_time = None
         return None  # Stop timer
+
+
+def stop_all_animations():
+    """Stop animations on ALL objects."""
+    ctrl = get_test_controller()
+    # Stop each object's animations with fade
+    for object_name in list(ctrl._states.keys()):
+        ctrl.stop(object_name, fade_out=0.2)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -389,6 +444,14 @@ class ANIM2_TestProperties(PropertyGroup):
         default=True
     )
 
+    playback_timeout: FloatProperty(
+        name="Timeout",
+        description="Auto-stop playback after this many seconds (0 = no timeout)",
+        default=20.0,
+        min=0.0,
+        max=300.0
+    )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # REGISTRATION
@@ -399,6 +462,7 @@ classes = [
     ANIM2_OT_BakeAll,
     ANIM2_OT_PlayAnimation,
     ANIM2_OT_StopAnimation,
+    ANIM2_OT_StopAll,
     ANIM2_OT_BlendAnimation,
     ANIM2_OT_ClearCache,
 ]

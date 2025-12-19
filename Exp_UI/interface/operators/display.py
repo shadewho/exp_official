@@ -340,14 +340,15 @@ class WEBAPP_OT_ShowDetailByCode(bpy.types.Operator):
 
 
 
-class WEBAPP_OT_PasteAndSearch(bpy.types.Operator):
-    """Paste & Search. Uses your clipboard data to find world"""
-    bl_idname = "webapp.paste_and_search"
-    bl_label  = "Paste & Search. Uses your clipboard data to find world"
+class WEBAPP_OT_PasteCode(bpy.types.Operator):
+    """Paste download code from clipboard"""
+    bl_idname = "webapp.paste_code"
+    bl_label  = "Paste download code from clipboard"
     bl_options = {'REGISTER', 'INTERNAL'}
 
+    MAX_PASTE_LENGTH = 20
+
     def execute(self, context):
-        # 1) Read clipboard
         try:
             clip = (context.window_manager.clipboard or "").strip()
         except Exception:
@@ -356,24 +357,18 @@ class WEBAPP_OT_PasteAndSearch(bpy.types.Operator):
             self.report({'ERROR'}, "Clipboard is empty.")
             return {'CANCELLED'}
 
-        # 2) Put into the download_code field
+        if len(clip) > self.MAX_PASTE_LENGTH:
+            self.report({'ERROR'}, "Invalid paste: too long.")
+            return {'CANCELLED'}
+
         try:
             context.scene.download_code = clip
         except Exception:
             self.report({'ERROR'}, "Scene.download_code is missing.")
             return {'CANCELLED'}
 
-        # 3) Reuse the existing flow
-        try:
-            res = bpy.ops.webapp.show_detail_by_code('EXEC_DEFAULT')
-        except Exception as e:
-            self.report({'ERROR'}, f"Search failed: {e}")
-            return {'CANCELLED'}
-
-        # If the underlying op handled things, we’re done
-        if {'FINISHED', 'RUNNING_MODAL'} & set(res):
-            return {'FINISHED'}
-        return {'CANCELLED'}
+        self.report({'INFO'}, "Code pasted.")
+        return {'FINISHED'}
 
 
 

@@ -364,41 +364,64 @@ class AnimationController:
 
         return result
 
-    def apply_worker_result(self, object_name: str, bone_transforms: Dict[str, tuple]) -> int:
+    def apply_worker_result(
+        self,
+        object_name: str,
+        bone_transforms: Dict[str, tuple],
+        object_transform: tuple = None
+    ) -> int:
         """
-        Apply bone transforms computed by worker.
+        Apply transforms computed by worker.
         Call after receiving ANIMATION_COMPUTE result.
+
+        Supports both:
+        - Armatures: applies bone_transforms to pose bones
+        - Objects: applies object_transform to object location/rotation/scale
 
         Args:
             object_name: Name of the Blender object
-            bone_transforms: Dict[bone_name, Transform] from worker result
+            bone_transforms: Dict[bone_name, Transform] from worker result (for armatures)
+            object_transform: (10-float tuple) for object-level transforms (mesh, empty, etc.)
 
         Returns:
-            Number of bones updated
+            Number of transforms applied (bones + 1 if object transform)
         """
-        if not bone_transforms:
-            return 0
-
         obj = bpy.data.objects.get(object_name)
-        if obj is None or obj.type != 'ARMATURE':
+        if obj is None:
             return 0
 
-        pose_bones = obj.pose.bones
         count = 0
 
-        for bone_name, transform in bone_transforms.items():
-            pose_bone = pose_bones.get(bone_name)
-            if pose_bone is None:
-                continue
+        # Apply bone transforms (for armatures)
+        if obj.type == 'ARMATURE' and bone_transforms:
+            pose_bones = obj.pose.bones
 
+            for bone_name, transform in bone_transforms.items():
+                pose_bone = pose_bones.get(bone_name)
+                if pose_bone is None:
+                    continue
+
+                # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
+                qw, qx, qy, qz = transform[0:4]
+                lx, ly, lz = transform[4:7]
+                sx, sy, sz = transform[7:10]
+
+                pose_bone.rotation_quaternion = (qw, qx, qy, qz)
+                pose_bone.location = (lx, ly, lz)
+                pose_bone.scale = (sx, sy, sz)
+                count += 1
+
+        # Apply object-level transform (for mesh, empty, etc. OR armature root motion)
+        if object_transform is not None:
             # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
-            qw, qx, qy, qz = transform[0:4]
-            lx, ly, lz = transform[4:7]
-            sx, sy, sz = transform[7:10]
+            qw, qx, qy, qz = object_transform[0:4]
+            lx, ly, lz = object_transform[4:7]
+            sx, sy, sz = object_transform[7:10]
 
-            pose_bone.rotation_quaternion = (qw, qx, qy, qz)
-            pose_bone.location = (lx, ly, lz)
-            pose_bone.scale = (sx, sy, sz)
+            obj.rotation_mode = 'QUATERNION'
+            obj.rotation_quaternion = (qw, qx, qy, qz)
+            obj.location = (lx, ly, lz)
+            obj.scale = (sx, sy, sz)
             count += 1
 
         return count

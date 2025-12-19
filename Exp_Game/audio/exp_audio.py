@@ -78,7 +78,7 @@ class ExpAudioManager:
     def play_sound_datablock(self, sound_data: bpy.types.Sound):
         """Plays a sound datablock's factory (if it has one)."""
         prefs = bpy.context.preferences.addons["Exploratory"].preferences
-        if not prefs.enable_audio or not sound_data or not sound_data.factory:
+        if not prefs.enable_audio or prefs.audio_level <= 0 or not sound_data or not sound_data.factory:
             return None
 
         handle = self.device.play(sound_data.factory)
@@ -107,7 +107,7 @@ class CharacterAudioStateManager:
 
     def update_audio_state(self, new_state):
         prefs = bpy.context.preferences.addons["Exploratory"].preferences
-        if not prefs.enable_audio:
+        if not prefs.enable_audio or prefs.audio_level <= 0:
             self.stop_current_sound()
             self.last_state = None
             return
@@ -144,7 +144,7 @@ class CharacterAudioStateManager:
 
     def play_sound_for_state(self, state):
         prefs = bpy.context.preferences.addons["Exploratory"].preferences
-        if not prefs.enable_audio:
+        if not prefs.enable_audio or prefs.audio_level <= 0:
             return
 
         # 1) Resolve the sound pointer for this state

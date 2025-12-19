@@ -329,13 +329,13 @@ def execute_custom_action_reaction(r):
     if not op or not hasattr(op, 'anim_controller') or not op.anim_controller:
         return
 
-    # Get target object from reaction
-    target_obj = getattr(r, "custom_action_object", None)
+    # Get target object from reaction (property: custom_action_target)
+    target_obj = getattr(r, "custom_action_target", None)
     if not target_obj:
         return
 
-    # Get action to play
-    action = getattr(r, "custom_action_ref", None)
+    # Get action to play (property: custom_action_action)
+    action = getattr(r, "custom_action_action", None)
     if not action:
         return
 
@@ -347,9 +347,8 @@ def execute_custom_action_reaction(r):
         print(f"[CustomAction] Action '{action_name}' not baked in animation controller")
         return
 
-    # Get playback settings
-    mode = getattr(r, "custom_action_mode", "PLAY_ONCE")
-    loop = (mode == "LOOP")
+    # Get playback settings (property: custom_action_loop is a bool)
+    loop = bool(getattr(r, "custom_action_loop", False))
     speed = max(0.05, float(getattr(r, "custom_action_speed", 1.0) or 1.0))
 
     # Play the animation on the target object
@@ -481,8 +480,7 @@ def execute_sound_reaction(r):
 
     # 3) Global mute check & master volume from prefs
     prefs = bpy.context.preferences.addons["Exploratory"].preferences
-    if not prefs.enable_audio:
-        print("[execute_sound_reaction] Audio is disabled in Preferences.")
+    if not prefs.enable_audio or prefs.audio_level <= 0:
         return
 
     # 4) Prepare extraction folder (temp_sounds)
