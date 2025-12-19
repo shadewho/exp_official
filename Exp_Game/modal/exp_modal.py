@@ -19,7 +19,7 @@ from ..startup_and_reset.exp_startup import (center_cursor_in_3d_view, clear_old
 from ..interactions.exp_interactions import set_interact_pressed, set_action_pressed, reset_all_interactions
 from ..reactions.exp_reactions import reset_all_tasks
 from ..props_and_utils.exp_time import init_time
-from ..reactions.exp_custom_ui import register_ui_draw, clear_all_text, show_controls_info
+from ..reactions.exp_custom_ui import register_ui_draw, unregister_ui_draw, clear_all_text, show_controls_info
 from ..systems.exp_objectives import reset_all_objectives
 from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
@@ -292,9 +292,10 @@ class ExpModal(bpy.types.Operator):
                 except Exception as cleanup_error:
                     print(f"  ✗ World cleanup failed: {cleanup_error}")
 
-            # 4. Clear global operator reference
+            # 4. Clear global operator references
             global _active_modal_operator
             _active_modal_operator = None
+            exp_globals.ACTIVE_MODAL_OP = None
 
         print("="*60 + "\n")
 
@@ -687,8 +688,8 @@ class ExpModal(bpy.types.Operator):
             cleanup_downloaded_datablocks()     #3
         #-----------------------------------------------
 
-        clear_all_text()
-
+        # Unregister UI draw handler (also clears text)
+        unregister_ui_draw()
 
         #reset --------------------reset --------#
         if not self.launched_from_ui:
@@ -738,9 +739,10 @@ class ExpModal(bpy.types.Operator):
             # Register the timer to delay UI calls.
             bpy.app.timers.register(delayed_ui_popups, first_interval=0.5)
 
-        # Clear global modal operator reference
+        # Clear global modal operator references
         global _active_modal_operator
         _active_modal_operator = None
+        exp_globals.ACTIVE_MODAL_OP = None
 
     # ---------------------------
     # Update / Logic Methods
