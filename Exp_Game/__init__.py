@@ -107,6 +107,51 @@ if not _IS_WORKER_PROCESS:
     # --- Animation 2.0 Operators & Properties ---
     from .animations import test_panel as anim2_test_panel
 
+    # ============================================================================
+    # START GAME KEYMAP MANAGEMENT
+    # ============================================================================
+    _addon_keymaps = []
+
+    def register_start_game_keymap():
+        """Register the Start Game keymap for VIEW_3D."""
+        wm = bpy.context.window_manager
+        kc = wm.keyconfigs.addon
+        if kc is None:
+            return
+
+        # Get the preferred key from addon preferences
+        try:
+            prefs = bpy.context.preferences.addons["Exploratory"].preferences
+            key = getattr(prefs, "key_start_game", "P")
+        except Exception:
+            key = "P"
+
+        # Create keymap for 3D View
+        km = kc.keymaps.new(name='3D View', space_type='VIEW_3D')
+        kmi = km.keymap_items.new(
+            "exploratory.start_game",
+            type=key,
+            value='PRESS'
+        )
+        _addon_keymaps.append((km, kmi))
+
+    def unregister_start_game_keymap():
+        """Unregister all addon keymaps."""
+        for km, kmi in _addon_keymaps:
+            try:
+                km.keymap_items.remove(kmi)
+            except Exception:
+                pass
+        _addon_keymaps.clear()
+
+    def update_start_game_keymap():
+        """
+        Called when the user changes the keybind in preferences.
+        Removes old keymap and registers new one with updated key.
+        """
+        unregister_start_game_keymap()
+        register_start_game_keymap()
+
     def register():
         # --- Developer Properties (early registration) ---
         register_dev_properties()
@@ -211,8 +256,13 @@ if not _IS_WORKER_PROCESS:
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.register()
 
+        # ─── Start Game Keymap ──────────────────────────────
+        register_start_game_keymap()
+
 
     def unregister():
+        # ─── Start Game Keymap (unregister first) ──────────────────────────────
+        unregister_start_game_keymap()
         remove_scene_properties()
         unregister_interaction_properties()
         unregister_objective_properties()

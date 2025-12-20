@@ -1,6 +1,6 @@
 # Dynamic Mesh System - Current State
 
-**Last Updated**: 2025-12-16
+**Last Updated**: 2025-12-20
 
 ---
 
@@ -92,6 +92,25 @@ Worker handles ALL physics decisions. Main thread is I/O only.
 - `platform_delta_quat_map` - computed but never read
 - `platform_motion_map` - populated but never read
 - 4 deprecated `cache_*` methods in exp_kcc.py
+
+### Bug Fix (2025-12-20): Stationary Dynamic Mesh Never Active
+
+**Problem:** Stationary dynamic meshes (ones that never move) would never interact with physics until manually moved. The mesh would show `transform_cache=3` when 4 meshes existed.
+
+**Root Cause:** Race condition + dirty check interaction:
+1. Frame 1: All transforms sent, but physics job times out or worker hasn't cached mesh triangles yet
+2. Worker discards transforms for meshes not yet in `cached_dynamic_meshes`
+3. Main thread already updated `_prev_dynamic_transforms` (thinks transform was sent)
+4. Frame 2+: Stationary mesh passes dirty check (`prev == current`), transform NOT resent
+5. Mesh never gets its transform in worker cache → invisible to physics forever
+
+**Fix:** Added 30-frame warmup period where all transforms are always sent:
+- `_transform_warmup_frames = 30` counter in exp_kcc.py
+- During warmup: skip dirty check, send all transforms every frame
+- After warmup: resume normal dirty checking for efficiency
+- This ensures worker receives transforms after mesh cache is fully populated
+
+**Files changed:** `exp_kcc.py`
 
 ---
 

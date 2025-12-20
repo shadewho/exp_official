@@ -244,6 +244,20 @@ def update_land_sound_settings(self, context):
     _ensure_enum_valid(self, "land_sound_enum_prop", self.land_sound_items)
 
 # ------------------------------------------------------------------------
+# Update Callback: Start Game Keymap
+# ------------------------------------------------------------------------
+def _update_start_game_keymap(self, context):
+    """
+    Called when the user changes the Start Game keybind in preferences.
+    Updates the VIEW_3D keymap to use the new key.
+    """
+    try:
+        from .Exp_Game import update_start_game_keymap
+        update_start_game_keymap()
+    except Exception as e:
+        print(f"[Exploratory] Failed to update start game keymap: {e}")
+
+# ------------------------------------------------------------------------
 # 3) The actual Addon Preferences
 # ------------------------------------------------------------------------
 class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
@@ -267,6 +281,12 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     key_interact: bpy.props.StringProperty(default="E",          name="Interact Key")
     key_end_game: bpy.props.StringProperty(default="ESC",         name="End Game Key")
     key_reset:    bpy.props.StringProperty(default="R", name="Reset Key")
+    key_start_game: bpy.props.StringProperty(
+        default="P",
+        name="Start Game Key (3D Viewport)",
+        description="Key to start the game in the 3D Viewport",
+        update=lambda self, ctx: _update_start_game_keymap(self, ctx)
+    )
 
     mouse_sensitivity: bpy.props.FloatProperty(
         name="Mouse Sensitivity", default=2.0, min=0.0, max=10.0
@@ -603,6 +623,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         box = layout.box()
         box.label(text="Keybinds")
         for label_txt, prop_nm in [
+            ("Start Game:", "key_start_game"),
             ("Forward:", "key_forward"),
             ("Backward:", "key_backward"),
             ("Left:",     "key_left"),

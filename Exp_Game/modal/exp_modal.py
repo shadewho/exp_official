@@ -33,6 +33,9 @@ from ..mouse_and_movement.exp_cursor import (
     release_cursor_clip,
     ensure_cursor_hidden_if_mac,
     force_restore_cursor,
+    cache_blender_hwnd,
+    is_blender_focused,
+    is_delta_sane,
 )
 from ..physics.exp_kcc import KinematicCharacterController
 from ..startup_and_reset.exp_fullscreen import exit_fullscreen_once
@@ -195,6 +198,17 @@ class ExpModal(bpy.types.Operator):
     _test_manager = None
     # ====================================================
 
+    # ========== CURSOR/FOCUS STATE MACHINE (Windows only for now) ==========
+    # States
+    STATE_RUNNING = 'RUNNING'
+    STATE_PAUSED = 'PAUSED'
+
+    _game_state: str = 'RUNNING'
+    _last_focus_check: float = 0.0
+    _focus_check_interval: float = 1.0  # Check focus once per second
+    _focus_lost_logged: bool = False    # Prevent log spam
+    _delta_anomaly_logged: bool = False # Prevent log spam
+    # =====================================================================
 
     # store the user-chosen keys from preferences only
     pref_forward_key:  str = "W"
@@ -473,12 +487,17 @@ class ExpModal(bpy.types.Operator):
 
 
         # 7) Setup modal cursor region and hide the system cursor
+        cache_blender_hwnd()  # Cache window handle for focus detection
+        self._last_focus_check = time.perf_counter()
+        self._focus_lost_logged = False
+        self._delta_anomaly_logged = False
+        self._game_state = self.STATE_RUNNING  # Start in running state
         setup_cursor_region(context, self)
         # 8) Create a timer (runs as fast as possible, interval=0.0)
         self._timer = context.window_manager.event_timer_add(1.0/30.0, window=context.window)
         self._last_time = time.perf_counter()
 
-        # 9) Add ourselves to Blender’s modal event loop
+        # 9) Add ourselves to Blender's modal event loop
         exp_globals.ACTIVE_MODAL_OP = self
         context.window_manager.modal_handler_add(self)
 
@@ -574,16 +593,115 @@ class ExpModal(bpy.types.Operator):
         # This ensures failed invoke() never leaves a dangling reference
         _active_modal_operator = self
 
+        # ========== CRITICAL: Reset timing AFTER all init to prevent startup stutter ==========
+        # This must be the LAST thing before return, after engine init, to avoid catch-up bursts
+        now = time.perf_counter()
+        self._last_time = now
+        self._next_physics_tick = now + self.physics_dt
+        # ======================================================================================
+
         return {'RUNNING_MODAL'}
+
+    # ========== PAUSE/RESUME (Windows only for now) ==========
+
+    def _pause_game(self, context):
+        """
+        Pause the game when focus is lost. Windows only.
+        Releases cursor confinement, shows cursor, clears input state.
+        """
+        if sys.platform != 'win32':
+            return  # No-op on Mac/Linux for now
+
+        if self._game_state == self.STATE_PAUSED:
+            return  # Already paused
+
+        print("[CURSOR_STATE] Pausing game - releasing cursor")
+
+        # Release cursor confinement and show cursor
+        release_cursor_clip()
+        try:
+            context.window.cursor_modal_restore()
+        except Exception:
+            pass
+
+        # Clear all pressed keys to prevent stuck input
+        self.keys_pressed.clear()
+        self._axis_last = {'x': None, 'y': None}
+        self._axis_candidates = {'x': {}, 'y': {}}
+
+        self._game_state = self.STATE_PAUSED
+
+    def _resume_game(self, context):
+        """
+        Resume the game when user clicks back. Windows only.
+        Re-applies cursor confinement, hides cursor, resets mouse tracking.
+        """
+        if sys.platform != 'win32':
+            return  # No-op on Mac/Linux for now
+
+        if self._game_state == self.STATE_RUNNING:
+            return  # Already running
+
+        print("[CURSOR_STATE] Resuming game - re-confining cursor")
+
+        # Re-confine cursor and hide it
+        from ..mouse_and_movement.exp_cursor import confine_cursor_to_window
+        confine_cursor_to_window()
+        try:
+            context.window.cursor_modal_set('NONE')
+        except Exception:
+            pass
+
+        # Reset mouse tracking to prevent delta anomaly on first move
+        self.last_mouse_x = None
+        self.last_mouse_y = None
+
+        # ========== CRITICAL: Reset timing to prevent catch-up stutter ==========
+        now = time.perf_counter()
+        self._last_time = now                      # Reset delta_time calculation
+        self._next_physics_tick = now + self.physics_dt  # Reset physics scheduler
+        # ========================================================================
+
+        # Reset detection flags
+        self._delta_anomaly_logged = False
+        self._focus_lost_logged = False
+
+        self._game_state = self.STATE_RUNNING
+
+    # =========================================================
 
     def modal(self, context, event):
         try:
-            # End game hotkey
+            # End game hotkey - always works, even when paused
             if event.type == self.pref_end_game_key and event.value == 'PRESS':
                 self.cancel(context)
                 return {'CANCELLED'}
 
+            # ========== PAUSED STATE HANDLING (Windows only) ==========
+            if self._game_state == self.STATE_PAUSED:
+                # When paused, only listen for click to resume
+                if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+                    # Check if Blender is now focused before resuming
+                    if is_blender_focused():
+                        self._resume_game(context)
+                    else:
+                        print("[CURSOR_STATE] Click detected but Blender not focused, waiting...")
+                # Skip all game logic while paused
+                return {'RUNNING_MODAL'}
+            # ==========================================================
+
             if event.type == 'TIMER':
+                # ========== FOCUS DETECTION (1/sec, Windows only) ==========
+                if sys.platform == 'win32':
+                    now = time.perf_counter()
+                    if now - self._last_focus_check >= self._focus_check_interval:
+                        self._last_focus_check = now
+                        if not is_blender_focused():
+                            # Focus lost - pause the game
+                            self._pause_game(context)
+                            return {'RUNNING_MODAL'}
+                # ===========================================================
+
                 if self._loop:
                     self._loop.on_timer(context)
 
@@ -610,6 +728,19 @@ class ExpModal(bpy.types.Operator):
 
             # Mouse -> camera rotation
             elif event.type == 'MOUSEMOVE':
+                # ========== DELTA SANITY CHECK (logging only for now) ==========
+                if not is_delta_sane(self.last_mouse_x, self.last_mouse_y,
+                                     event.mouse_x, event.mouse_y):
+                    if not self._delta_anomaly_logged:
+                        dx = abs(event.mouse_x - (self.last_mouse_x or 0))
+                        dy = abs(event.mouse_y - (self.last_mouse_y or 0))
+                        print(f"[CURSOR_DEBUG] Delta anomaly - mouse jumped dx={dx}, dy={dy}")
+                        self._delta_anomaly_logged = True
+                else:
+                    # Reset anomaly flag when deltas are sane again
+                    self._delta_anomaly_logged = False
+                # ========================================================
+
                 # Update yaw/pitch only — keep camera/FPV on the TIMER clock.
                 handle_mouse_move(self, context, event)
                 ensure_cursor_hidden_if_mac(context)

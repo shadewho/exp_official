@@ -42,6 +42,20 @@ from .blend import (
     blend_object_transforms,
     IDENTITY,
 )
+from .ik import (
+    # Two-bone IK solver
+    solve_two_bone_ik,
+    solve_leg_ik,
+    solve_arm_ik,
+    apply_ik_to_pose,
+    # Pole/target helpers
+    compute_foot_ground_target,
+    compute_knee_pole_position,
+    compute_elbow_pole_position,
+    # Chain definitions
+    LEG_IK,
+    ARM_IK,
+)
 
 __all__ = [
     # Data
@@ -61,6 +75,17 @@ __all__ = [
     "sample_object_animation",
     "blend_object_transforms",
     "IDENTITY",
+
+    # IK solver
+    "solve_two_bone_ik",
+    "solve_leg_ik",
+    "solve_arm_ik",
+    "apply_ik_to_pose",
+    "compute_foot_ground_target",
+    "compute_knee_pole_position",
+    "compute_elbow_pole_position",
+    "LEG_IK",
+    "ARM_IK",
 ]
 
 

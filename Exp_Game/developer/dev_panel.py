@@ -269,6 +269,60 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     row.label(text=f"  {p.animation_name}")
                     row.label(text=f"{p.weight * p.fade_progress:.0%}")
 
+        layout.separator()
+
+        # ═══════════════════════════════════════════════════════════════
+        # IK Test (Separate from Animation 2.0)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.label(text="IK Test", icon='CON_KINEMATIC')
+        row.prop(props, "ik_advanced_mode", text="Advanced", toggle=True)
+
+        # Check if armature is selected
+        if obj and obj.type == 'ARMATURE':
+            # Chain selector
+            box.prop(props, "ik_chain", text="")
+
+            # ─── Target Controls ───────────────────────────────────────
+            sub = box.box()
+            sub.label(text="Target", icon='EMPTY_AXIS')
+
+            # Target object picker
+            sub.prop(props, "ik_target_object", text="")
+
+            if props.ik_target_object is not None:
+                # Show target object's position
+                loc = props.ik_target_object.matrix_world.translation
+                sub.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
+            elif props.ik_advanced_mode:
+                # Full XYZ control
+                col = sub.column(align=True)
+                col.prop(props, "ik_target", index=0, text="X")
+                col.prop(props, "ik_target", index=1, text="Y")
+                col.prop(props, "ik_target", index=2, text="Z")
+            else:
+                # Simple mode - legacy sliders
+                if props.ik_chain.startswith("leg"):
+                    sub.prop(props, "ik_target_z", slider=True)
+                else:
+                    sub.prop(props, "ik_arm_forward", slider=True)
+
+            # ─── Pole Vector Controls ──────────────────────────────────
+            sub = box.box()
+            sub.label(text="Pole Vector", icon='ORIENTATION_NORMAL')
+            row = sub.row(align=True)
+            row.prop(props, "ik_pole_direction", text="")
+            row.prop(props, "ik_pole_offset", text="Dist")
+
+            # ─── Action Buttons ────────────────────────────────────────
+            row = box.row(align=True)
+            row.scale_y = 1.3
+            row.operator("anim2.test_ik", text="Apply IK", icon='CON_KINEMATIC')
+            row.operator("anim2.reset_pose", text="Reset", icon='LOOP_BACK')
+
+        else:
+            box.label(text="Select an armature", icon='INFO')
 
 
 def register():

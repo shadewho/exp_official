@@ -1,0 +1,455 @@
+# Exploratory Standard Rig
+
+**Last Updated**: 2025-12-20
+
+This is the official humanoid rig for the Exploratory game engine. All default animations, IK systems, and procedural features target this exact bone structure.
+
+---
+
+## Quick Reference
+
+| Stat | Value |
+|------|-------|
+| **Total Bones** | 53 |
+| **Naming Convention** | Mixamo-style (LeftArm, RightArm, etc.) |
+| **Rest Pose** | T-Pose (arms horizontal) |
+| **Total Height** | ~1.97m (head top) |
+| **Hips Height** | 1.001m |
+| **Floor Level** | Z = 0 |
+| **Arm Span** | ~1.4m |
+| **Units** | Meters |
+
+---
+
+## Hierarchy Tree
+
+```
+Hips (ROOT)
+├── Spine
+│   └── Spine1
+│       └── Spine2
+│           ├── NeckLower
+│           │   └── NeckUpper
+│           │       └── Head
+│           ├── LeftShoulder
+│           │   └── LeftArm
+│           │       └── LeftForeArm
+│           │           └── LeftHand
+│           │               ├── LeftHandThumb1 → Thumb2 → Thumb3
+│           │               ├── LeftHandIndex1 → Index2 → Index3
+│           │               ├── LeftHandMiddle1 → Middle2 → Middle3
+│           │               ├── LeftHandRing1 → Ring2 → Ring3
+│           │               └── LeftHandPinky1 → Pinky2 → Pinky3
+│           └── RightShoulder
+│               └── RightArm
+│                   └── RightForeArm
+│                       └── RightHand
+│                           └── [Same finger structure as left]
+├── LeftThigh
+│   └── LeftShin
+│       └── LeftFoot
+│           └── LeftToeBase
+└── RightThigh
+    └── RightShin
+        └── RightFoot
+            └── RightToeBase
+```
+
+---
+
+## Bone Groups
+
+### Core/Spine Bones (9)
+
+| Bone | Parent | Length | Position (Head) | Purpose |
+|------|--------|--------|-----------------|---------|
+| `Hips` | ROOT | 0.136m | (0, 0.056, 1.001) | Root of skeleton, center of mass |
+| `Spine` | Hips | 0.145m | (0, 0.056, 1.137) | Lower back |
+| `Spine1` | Spine | 0.191m | (0, 0.051, 1.282) | Mid back |
+| `Spine2` | Spine1 | 0.149m | (0, 0.050, 1.473) | Upper back / chest |
+| `NeckLower` | Spine2 | 0.039m | (0, 0.047, 1.623) | Base of neck |
+| `NeckUpper` | NeckLower | 0.039m | (0, 0.047, 1.662) | Upper neck |
+| `Head` | NeckUpper | 0.272m | (0, 0.047, 1.701) | Head (ends at ~1.97m) |
+| `LeftShoulder` | Spine2 | 0.097m | (-0.045, 0.047, 1.605) | Clavicle left |
+| `RightShoulder` | Spine2 | 0.097m | (0.045, 0.047, 1.605) | Clavicle right |
+
+### Leg Bones (8)
+
+| Bone | Parent | Length | Position (Head) |
+|------|--------|--------|-----------------|
+| `LeftThigh` | Hips | 0.495m | (-0.075, 0.054, 1.065) |
+| `LeftShin` | LeftThigh | 0.478m | (-0.106, 0.054, 0.571) |
+| `LeftFoot` | LeftShin | 0.175m | (-0.110, -0.016, 0.098) |
+| `LeftToeBase` | LeftFoot | 0.066m | (-0.111, 0.132, 0.006) |
+| `RightThigh` | Hips | 0.495m | (0.075, 0.054, 1.065) |
+| `RightShin` | RightThigh | 0.478m | (0.106, 0.054, 0.571) |
+| `RightFoot` | RightShin | 0.169m | (0.110, -0.010, 0.098) |
+| `RightToeBase` | RightFoot | 0.063m | (0.111, 0.131, 0.006) |
+
+### Arm Bones (6)
+
+| Bone | Parent | Length | Position (Head) |
+|------|--------|--------|-----------------|
+| `LeftArm` | LeftShoulder | 0.278m | (-0.136, 0.047, 1.570) |
+| `LeftForeArm` | LeftArm | 0.286m | (-0.414, 0.044, 1.557) |
+| `LeftHand` | LeftForeArm | 0.072m | (-0.700, 0.044, 1.557) |
+| `RightArm` | RightShoulder | 0.278m | (0.136, 0.048, 1.570) |
+| `RightForeArm` | RightArm | 0.286m | (0.414, 0.044, 1.557) |
+| `RightHand` | RightForeArm | 0.072m | (0.700, 0.045, 1.557) |
+
+### Finger Bones (30)
+
+Each hand has 5 fingers with 3 bones each:
+
+**Left Hand:**
+| Finger | Bone 1 | Bone 2 | Bone 3 |
+|--------|--------|--------|--------|
+| Thumb | `LeftHandThumb1` | `LeftHandThumb2` | `LeftHandThumb3` |
+| Index | `LeftHandIndex1` | `LeftHandIndex2` | `LeftHandIndex3` |
+| Middle | `LeftHandMiddle1` | `LeftHandMiddle2` | `LeftHandMiddle3` |
+| Ring | `LeftHandRing1` | `LeftHandRing2` | `LeftHandRing3` |
+| Pinky | `LeftHandPinky1` | `LeftHandPinky2` | `LeftHandPinky3` |
+
+**Right Hand:** Same structure with `Right` prefix.
+
+---
+
+## IK Chain Definitions
+
+### Leg IK (Two-Bone Solver)
+
+Used for foot grounding and stepping.
+
+```python
+LEG_IK = {
+    "leg_L": {
+        "root": "LeftThigh",       # Hip pivot
+        "mid": "LeftShin",         # Knee pivot
+        "tip": "LeftFoot",         # Ankle (IK target)
+        "end": "LeftToeBase",      # Toe (for ground alignment)
+        "len_upper": 0.4947,       # Thigh length
+        "len_lower": 0.4784,       # Shin length
+        "reach": 0.9731,           # Max reach (thigh + shin)
+        "pole_forward": (0, 1, 0), # Knee bends forward (+Y)
+        "rest_foot_z": 0.098,      # Foot height in rest pose
+    },
+    "leg_R": {
+        "root": "RightThigh",
+        "mid": "RightShin",
+        "tip": "RightFoot",
+        "end": "RightToeBase",
+        "len_upper": 0.4947,
+        "len_lower": 0.4775,
+        "reach": 0.9722,
+        "pole_forward": (0, 1, 0),
+        "rest_foot_z": 0.098,
+    },
+}
+```
+
+### Arm IK (Two-Bone Solver)
+
+Used for reaching, grabbing, pointing.
+
+```python
+ARM_IK = {
+    "arm_L": {
+        "root": "LeftArm",         # Shoulder pivot
+        "mid": "LeftForeArm",      # Elbow pivot
+        "tip": "LeftHand",         # Wrist (IK target)
+        "len_upper": 0.2782,       # Upper arm length
+        "len_lower": 0.2863,       # Forearm length
+        "reach": 0.5645,           # Max reach (upper + lower)
+        "pole_back": (0, -1, 0),   # Elbow bends backward (-Y)
+    },
+    "arm_R": {
+        "root": "RightArm",
+        "mid": "RightForeArm",
+        "tip": "RightHand",
+        "len_upper": 0.2782,
+        "len_lower": 0.2863,
+        "reach": 0.5645,
+        "pole_back": (0, -1, 0),
+    },
+}
+```
+
+### Look-At Chain
+
+Used for head tracking and eye contact.
+
+```python
+LOOK_AT = {
+    "bones": ["NeckLower", "NeckUpper", "Head"],
+    "weights": [0.15, 0.25, 0.60],  # Head contributes most
+    "limits": {
+        "yaw": (-70, 70),           # Left/right degrees
+        "pitch": (-40, 60),         # Down/up degrees
+    },
+}
+```
+
+### Spine Chain
+
+Used for procedural leaning, twisting, breathing.
+
+```python
+SPINE = {
+    "bones": ["Hips", "Spine", "Spine1", "Spine2"],
+    "lengths": [0.136, 0.145, 0.191, 0.149],
+    "total_length": 0.621,
+}
+```
+
+### Finger Chains
+
+Used for grip poses and procedural hand shapes.
+
+```python
+FINGERS = {
+    # Left hand
+    "thumb_L":  ["LeftHandThumb1", "LeftHandThumb2", "LeftHandThumb3"],
+    "index_L":  ["LeftHandIndex1", "LeftHandIndex2", "LeftHandIndex3"],
+    "middle_L": ["LeftHandMiddle1", "LeftHandMiddle2", "LeftHandMiddle3"],
+    "ring_L":   ["LeftHandRing1", "LeftHandRing2", "LeftHandRing3"],
+    "pinky_L":  ["LeftHandPinky1", "LeftHandPinky2", "LeftHandPinky3"],
+    # Right hand
+    "thumb_R":  ["RightHandThumb1", "RightHandThumb2", "RightHandThumb3"],
+    "index_R":  ["RightHandIndex1", "RightHandIndex2", "RightHandIndex3"],
+    "middle_R": ["RightHandMiddle1", "RightHandMiddle2", "RightHandMiddle3"],
+    "ring_R":   ["RightHandRing1", "RightHandRing2", "RightHandRing3"],
+    "pinky_R":  ["RightHandPinky1", "RightHandPinky2", "RightHandPinky3"],
+}
+```
+
+---
+
+## Key Measurements
+
+### Character Proportions
+
+```
+                    ┌─────┐ 1.97m (Head top)
+                    │HEAD │
+                    └──┬──┘ 1.70m (Head base)
+                       │
+                    ┌──┴──┐ 1.62m (Neck)
+    ┌───────────────┤CHEST├───────────────┐
+    │   SHOULDER    └──┬──┘   SHOULDER    │ 1.57m (Arms)
+    │                  │                  │
+   ARM               SPINE               ARM
+    │                  │                  │
+ FOREARM               │              FOREARM
+    │                  │                  │
+   HAND             ┌──┴──┐             HAND  ±0.70m X
+                    │HIPS │ 1.00m
+                    └──┬──┘
+               ┌───────┴───────┐
+             THIGH           THIGH
+               │               │
+             SHIN            SHIN
+               │               │
+             FOOT            FOOT  0.10m Z
+               │               │
+             ──┴──           ──┴──  0.00m (Floor)
+```
+
+### Critical Distances
+
+| Measurement | Value | Use Case |
+|-------------|-------|----------|
+| Hip height | 1.001m | Character origin reference |
+| Shoulder width | 0.27m | Collision capsule width hint |
+| Arm reach (from shoulder) | 0.73m | Grab distance calculations |
+| Leg length (hip to ankle) | 0.97m | Step height limits |
+| Foot to floor (rest) | 0.098m | Ground offset for IK |
+| Eye height (approx) | ~1.65m | Camera placement |
+| Total height | 1.97m | Collision capsule height |
+
+### IK Reach Limits
+
+| Chain | Max Reach | Notes |
+|-------|-----------|-------|
+| Left Leg | 0.973m | Thigh (0.495) + Shin (0.478) |
+| Right Leg | 0.972m | Thigh (0.495) + Shin (0.478) |
+| Left Arm | 0.565m | UpperArm (0.278) + ForeArm (0.286) |
+| Right Arm | 0.565m | UpperArm (0.278) + ForeArm (0.286) |
+
+---
+
+## Bone Index Map (Alphabetical)
+
+For numpy array operations, bones are indexed alphabetically:
+
+```python
+BONE_INDEX = {
+    "Head": 0,
+    "Hips": 1,
+    "LeftArm": 2,
+    "LeftFoot": 3,
+    "LeftForeArm": 4,
+    "LeftHand": 5,
+    "LeftHandIndex1": 6,
+    "LeftHandIndex2": 7,
+    "LeftHandIndex3": 8,
+    "LeftHandMiddle1": 9,
+    "LeftHandMiddle2": 10,
+    "LeftHandMiddle3": 11,
+    "LeftHandPinky1": 12,
+    "LeftHandPinky2": 13,
+    "LeftHandPinky3": 14,
+    "LeftHandRing1": 15,
+    "LeftHandRing2": 16,
+    "LeftHandRing3": 17,
+    "LeftHandThumb1": 18,
+    "LeftHandThumb2": 19,
+    "LeftHandThumb3": 20,
+    "LeftShin": 21,
+    "LeftShoulder": 22,
+    "LeftThigh": 23,
+    "LeftToeBase": 24,
+    "NeckLower": 25,
+    "NeckUpper": 26,
+    "RightArm": 27,
+    "RightFoot": 28,
+    "RightForeArm": 29,
+    "RightHand": 30,
+    "RightHandIndex1": 31,
+    "RightHandIndex2": 32,
+    "RightHandIndex3": 33,
+    "RightHandMiddle1": 34,
+    "RightHandMiddle2": 35,
+    "RightHandMiddle3": 36,
+    "RightHandPinky1": 37,
+    "RightHandPinky2": 38,
+    "RightHandPinky3": 39,
+    "RightHandRing1": 40,
+    "RightHandRing2": 41,
+    "RightHandRing3": 42,
+    "RightHandThumb1": 43,
+    "RightHandThumb2": 44,
+    "RightHandThumb3": 45,
+    "RightShin": 46,
+    "RightShoulder": 47,
+    "RightThigh": 48,
+    "RightToeBase": 49,
+    "Spine": 50,
+    "Spine1": 51,
+    "Spine2": 52,
+}
+```
+
+---
+
+## Animation Bone Masks
+
+For animation layers and masking:
+
+```python
+BONE_MASKS = {
+    "full_body": ["*"],  # All 53 bones
+
+    "upper_body": [
+        "Spine", "Spine1", "Spine2",
+        "NeckLower", "NeckUpper", "Head",
+        "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+        "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+        # + all finger bones
+    ],
+
+    "lower_body": [
+        "Hips",
+        "LeftThigh", "LeftShin", "LeftFoot", "LeftToeBase",
+        "RightThigh", "RightShin", "RightFoot", "RightToeBase",
+    ],
+
+    "arms_only": [
+        "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+        "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+        # + all finger bones
+    ],
+
+    "legs_only": [
+        "LeftThigh", "LeftShin", "LeftFoot", "LeftToeBase",
+        "RightThigh", "RightShin", "RightFoot", "RightToeBase",
+    ],
+
+    "spine_and_head": [
+        "Spine", "Spine1", "Spine2",
+        "NeckLower", "NeckUpper", "Head",
+    ],
+
+    "left_arm": [
+        "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+        # + left finger bones
+    ],
+
+    "right_arm": [
+        "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+        # + right finger bones
+    ],
+}
+```
+
+---
+
+## Rest Pose Reference
+
+Key bone positions in rest (T-pose):
+
+| Bone | Position (X, Y, Z) |
+|------|-------------------|
+| Hips | (0, 0.056, 1.001) |
+| Head | (0, 0.047, 1.701) |
+| LeftHand | (-0.700, 0.044, 1.557) |
+| RightHand | (0.700, 0.045, 1.557) |
+| LeftFoot | (-0.110, -0.016, 0.098) |
+| RightFoot | (0.110, -0.010, 0.098) |
+| LeftToeBase | (-0.111, 0.132, 0.006) |
+| RightToeBase | (0.111, 0.131, 0.006) |
+
+---
+
+## Usage Notes
+
+### For Users
+
+- All characters must use this exact rig
+- Weight paint your mesh to the provided armature
+- Default animations will work automatically
+- IK and procedural systems are pre-configured
+
+### For Animation
+
+- All animations use these exact bone names
+- Rest pose is T-pose with palms facing down
+- Root motion uses Hips bone
+- Baked animations store 10 floats per bone (quat + loc + scale)
+
+### For IK System
+
+- Two-bone IK uses analytical solver (law of cosines)
+- Pole vectors: knees bend forward (+Y), elbows bend backward (-Y)
+- Foot IK target = ankle position, toe aligns to ground normal
+- Hand IK target = wrist position
+
+### For Procedural Animation
+
+- Spine chain: additive leaning, breathing, recoil
+- Neck/Head chain: look-at tracking
+- Finger chains: procedural grip (curl based on object size)
+
+### For Physics/Ragdoll
+
+- Each bone can map to a rigidbody capsule
+- Key ragdoll joints: Hips, Spine2, Head, UpperArms, ForeArms, Thighs, Shins
+- Joint limits should match natural human range of motion
+
+---
+
+## Version History
+
+| Date | Change |
+|------|--------|
+| 2025-12-20 | Initial comprehensive documentation |
+wwwwwwwad

@@ -384,6 +384,8 @@ class KinematicCharacterController:
         self._pending_platform_yaw_delta = 0.0  # Yaw delta from worker (applied in step)
         self._platform_prev_yaws = {}       # {obj_id: prev_yaw} - MAIN THREAD tracking (not worker!)
         self._prev_dynamic_transforms = {}  # {obj_id: matrix_tuple} - dirty checking for transforms
+        self._transform_warmup_frames = 30  # Send ALL transforms for first 30 frames (1 sec at 30Hz)
+                                            # This ensures worker has transforms after mesh cache is ready
 
         # Cached constants
         self._up = _UP
@@ -597,8 +599,16 @@ class KinematicCharacterController:
         # Serialize dynamic mesh transforms - ONLY send changed transforms (dirty checking)
         # Worker has persistent cache, so unchanged meshes keep using cached transforms
         # This reduces serialization when only 1 of N meshes is moving
+        #
+        # WARMUP FIX: During first 30 frames, always send all transforms.
+        # This ensures stationary meshes get their transforms cached after worker
+        # finishes processing CACHE_DYNAMIC_MESH jobs (race condition fix).
         dynamic_transforms = {}
         dynamic_velocities = {}  # Mesh velocities for proximity diagnostics (12 bytes per mesh)
+        in_warmup = self._transform_warmup_frames > 0
+        if in_warmup:
+            self._transform_warmup_frames -= 1
+
         if dynamic_map:
             for dyn_obj in dynamic_map.keys():
                 try:
@@ -612,9 +622,10 @@ class KinematicCharacterController:
                         matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3],
                     )
 
-                    # Only send if transform changed from previous frame
+                    # During warmup: always send (ensures worker gets transform after mesh cache ready)
+                    # After warmup: only send if transform changed from previous frame
                     prev_transform = self._prev_dynamic_transforms.get(obj_id)
-                    if prev_transform != current_transform:
+                    if in_warmup or prev_transform != current_transform:
                         dynamic_transforms[obj_id] = current_transform
                         self._prev_dynamic_transforms[obj_id] = current_transform
 

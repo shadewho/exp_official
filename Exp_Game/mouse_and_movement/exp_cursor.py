@@ -80,11 +80,78 @@ if sys.platform == 'win32':
         ctypes.windll.user32.ClipCursor(None)
         _cursor_captured = False
 
+    # ─── Focus Detection (Windows) ──────────────────────────────────────────────
+    _cached_blender_hwnd = None
+
+    def cache_blender_hwnd():
+        """
+        Cache Blender's window handle at modal start.
+        Call this once in invoke() before any focus checks.
+        """
+        global _cached_blender_hwnd
+
+        # Try GetActiveWindow first (works when called from direct user action)
+        _cached_blender_hwnd = ctypes.windll.user32.GetActiveWindow()
+
+        # Fallback: If GetActiveWindow returns 0 (timer/callback context),
+        # use GetForegroundWindow - Blender should be foreground during game start
+        if _cached_blender_hwnd == 0:
+            _cached_blender_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if _cached_blender_hwnd != 0:
+                print(f"[CURSOR_DEBUG] Cached Blender HWND via fallback: {_cached_blender_hwnd}")
+            else:
+                print("[CURSOR_DEBUG] WARNING: Could not get Blender HWND (both methods failed)")
+        else:
+            print(f"[CURSOR_DEBUG] Cached Blender HWND: {_cached_blender_hwnd}")
+
+    def is_blender_focused() -> bool:
+        """
+        Check if Blender is the foreground window.
+        Returns True if focused or if we can't determine (fail-safe).
+        """
+        global _cached_blender_hwnd
+        if _cached_blender_hwnd is None or _cached_blender_hwnd == 0:
+            return True  # Can't check, assume OK
+        foreground = ctypes.windll.user32.GetForegroundWindow()
+        return foreground == _cached_blender_hwnd
+
 else:
     def confine_cursor_to_window(): pass
     def release_cursor_clip():
         global _cursor_captured
         _cursor_captured = False
+
+    # ─── Focus Detection (Mac/Linux stubs) ──────────────────────────────────────
+    def cache_blender_hwnd():
+        """No-op on non-Windows platforms."""
+        pass
+
+    def is_blender_focused() -> bool:
+        """Can't check on non-Windows, assume focused (fallbacks will catch issues)."""
+        return True
+
+
+# ─── Cross-Platform Delta Sanity Check ──────────────────────────────────────────
+
+def is_delta_sane(last_x, last_y, current_x, current_y, threshold=300) -> bool:
+    """
+    Check if mouse movement delta is reasonable.
+    Returns False if cursor jumped impossibly far (likely escaped and re-entered).
+
+    Args:
+        last_x, last_y: Previous mouse position
+        current_x, current_y: Current mouse position
+        threshold: Max reasonable delta in pixels (default 300)
+
+    Returns:
+        True if delta is sane, False if anomaly detected
+    """
+    if last_x is None or last_y is None:
+        return True  # First move, can't check
+
+    dx = abs(current_x - last_x)
+    dy = abs(current_y - last_y)
+    return dx < threshold and dy < threshold
 
 
 def ensure_cursor_hidden_if_mac(context):
