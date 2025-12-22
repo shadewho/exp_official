@@ -6,8 +6,104 @@ from bpy.types import PropertyGroup
 
 
 # ─────────────────────────────────────────────────────────
-# Scene-level registry for Utility Nodes (FloatVector first)
+# Scene-level registry for Utility Data Nodes
+# Core types: Float, Int, Bool, FloatVector, Object, ObjectCollection
 # ─────────────────────────────────────────────────────────
+
+
+# ═══════════════════════════════════════════════════════════
+# FLOAT
+# ═══════════════════════════════════════════════════════════
+
+class UtilityFloatSlotPG(PropertyGroup):
+    """Storage slot for a single float value."""
+    uid: bpy.props.StringProperty(name="UID", default="")
+    name: bpy.props.StringProperty(name="Name", default="Float")
+    has_value: bpy.props.BoolProperty(name="Has Value", default=False)
+    value: bpy.props.FloatProperty(name="Value", default=0.0)
+    updated_at: bpy.props.FloatProperty(name="Updated At", default=0.0)
+
+
+# ═══════════════════════════════════════════════════════════
+# INTEGER
+# ═══════════════════════════════════════════════════════════
+
+class UtilityIntSlotPG(PropertyGroup):
+    """Storage slot for a single integer value."""
+    uid: bpy.props.StringProperty(name="UID", default="")
+    name: bpy.props.StringProperty(name="Name", default="Integer")
+    has_value: bpy.props.BoolProperty(name="Has Value", default=False)
+    value: bpy.props.IntProperty(name="Value", default=0)
+    updated_at: bpy.props.FloatProperty(name="Updated At", default=0.0)
+
+
+# ═══════════════════════════════════════════════════════════
+# BOOLEAN
+# ═══════════════════════════════════════════════════════════
+
+class UtilityBoolSlotPG(PropertyGroup):
+    """Storage slot for a boolean value."""
+    uid: bpy.props.StringProperty(name="UID", default="")
+    name: bpy.props.StringProperty(name="Name", default="Boolean")
+    has_value: bpy.props.BoolProperty(name="Has Value", default=False)
+    value: bpy.props.BoolProperty(name="Value", default=False)
+    updated_at: bpy.props.FloatProperty(name="Updated At", default=0.0)
+
+
+# ═══════════════════════════════════════════════════════════
+# OBJECT REFERENCE
+# ═══════════════════════════════════════════════════════════
+
+class UtilityObjectSlotPG(PropertyGroup):
+    """Storage slot for an object reference (by name)."""
+    uid: bpy.props.StringProperty(name="UID", default="")
+    name: bpy.props.StringProperty(name="Name", default="Object")
+    has_value: bpy.props.BoolProperty(name="Has Value", default=False)
+    object_name: bpy.props.StringProperty(
+        name="Object Name",
+        default="",
+        description="Name of the referenced object"
+    )
+    updated_at: bpy.props.FloatProperty(name="Updated At", default=0.0)
+
+
+# ═══════════════════════════════════════════════════════════
+# OBJECT COLLECTION REFERENCE
+# ═══════════════════════════════════════════════════════════
+
+class UtilityObjectCollectionSlotPG(PropertyGroup):
+    """Storage slot for a collection reference (by name)."""
+    uid: bpy.props.StringProperty(name="UID", default="")
+    name: bpy.props.StringProperty(name="Name", default="Collection")
+    has_value: bpy.props.BoolProperty(name="Has Value", default=False)
+    collection_name: bpy.props.StringProperty(
+        name="Collection Name",
+        default="",
+        description="Name of the referenced collection"
+    )
+    updated_at: bpy.props.FloatProperty(name="Updated At", default=0.0)
+
+
+# ═══════════════════════════════════════════════════════════
+# ACTION REFERENCE
+# ═══════════════════════════════════════════════════════════
+
+class UtilityActionSlotPG(PropertyGroup):
+    """Storage slot for an action reference (by name)."""
+    uid: bpy.props.StringProperty(name="UID", default="")
+    name: bpy.props.StringProperty(name="Name", default="Action")
+    has_value: bpy.props.BoolProperty(name="Has Value", default=False)
+    action_name: bpy.props.StringProperty(
+        name="Action Name",
+        default="",
+        description="Name of the referenced action"
+    )
+    updated_at: bpy.props.FloatProperty(name="Updated At", default=0.0)
+
+
+# ═══════════════════════════════════════════════════════════
+# FLOAT VECTOR (existing)
+# ═══════════════════════════════════════════════════════════
 
 class UtilityFloatVectorSlotPG(PropertyGroup):
     """
@@ -44,18 +140,20 @@ class UtilityFloatVectorSlotPG(PropertyGroup):
 
 
 # ─────────────────────────────────────────────────────────
-# Internal helpers
+# Internal helpers (generic)
 # ─────────────────────────────────────────────────────────
 
-def _ensure_uid(slot: UtilityFloatVectorSlotPG) -> None:
+def _ensure_uid(slot) -> None:
     if not getattr(slot, "uid", ""):
         slot.uid = str(uuid4())
 
-def _slots(scn: bpy.types.Scene):
-    return getattr(scn, "utility_float_vectors", None)
 
-def _find_slot_by_uid(scn: bpy.types.Scene, uid: str):
-    coll = _slots(scn)
+def _get_collection(scn: bpy.types.Scene, attr_name: str):
+    return getattr(scn, attr_name, None)
+
+
+def _find_by_uid(scn: bpy.types.Scene, attr_name: str, uid: str):
+    coll = _get_collection(scn, attr_name)
     if not coll:
         return None
     for it in coll:
@@ -64,36 +162,331 @@ def _find_slot_by_uid(scn: bpy.types.Scene, uid: str):
     return None
 
 
-# ─────────────────────────────────────────────────────────
-# Public API (import from anywhere)
-# ─────────────────────────────────────────────────────────
+def _slot_exists(attr_name: str, uid: str) -> bool:
+    scn = bpy.context.scene
+    return _find_by_uid(scn, attr_name, uid) is not None
 
-def create_floatvec_slot(scn: bpy.types.Scene, name: str = "Capture Vector") -> str:
-    """
-    Create a new float-vector capture slot. Returns its UID.
-    """
-    coll = _slots(scn)
+
+# ═══════════════════════════════════════════════════════════
+# FLOAT API
+# ═══════════════════════════════════════════════════════════
+
+def create_float_slot(scn: bpy.types.Scene, name: str = "Float") -> str:
+    coll = _get_collection(scn, "utility_floats")
     if coll is None:
         return ""
     item = coll.add()
-    item.name = name or "Capture Vector"
+    item.name = name or "Float"
+    _ensure_uid(item)
+    item.has_value = False
+    item.value = 0.0
+    item.updated_at = 0.0
+    return item.uid
+
+
+def set_float(uid: str, value: float, timestamp: float | None = None) -> bool:
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_floats", uid)
+    if not slot:
+        return False
+    slot.value = float(value)
+    slot.has_value = True
+    slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
+    return True
+
+
+def get_float(uid: str):
+    """Returns (has_value, value, updated_at)."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_floats", uid)
+    if not slot:
+        return (False, 0.0, 0.0)
+    return (bool(slot.has_value), float(slot.value), float(slot.updated_at))
+
+
+def float_slot_exists(uid: str) -> bool:
+    return _slot_exists("utility_floats", uid)
+
+
+# ═══════════════════════════════════════════════════════════
+# INTEGER API
+# ═══════════════════════════════════════════════════════════
+
+def create_int_slot(scn: bpy.types.Scene, name: str = "Integer") -> str:
+    coll = _get_collection(scn, "utility_ints")
+    if coll is None:
+        return ""
+    item = coll.add()
+    item.name = name or "Integer"
+    _ensure_uid(item)
+    item.has_value = False
+    item.value = 0
+    item.updated_at = 0.0
+    return item.uid
+
+
+def set_int(uid: str, value: int, timestamp: float | None = None) -> bool:
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_ints", uid)
+    if not slot:
+        return False
+    slot.value = int(value)
+    slot.has_value = True
+    slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
+    return True
+
+
+def get_int(uid: str):
+    """Returns (has_value, value, updated_at)."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_ints", uid)
+    if not slot:
+        return (False, 0, 0.0)
+    return (bool(slot.has_value), int(slot.value), float(slot.updated_at))
+
+
+def int_slot_exists(uid: str) -> bool:
+    return _slot_exists("utility_ints", uid)
+
+
+# ═══════════════════════════════════════════════════════════
+# BOOLEAN API
+# ═══════════════════════════════════════════════════════════
+
+def create_bool_slot(scn: bpy.types.Scene, name: str = "Boolean") -> str:
+    coll = _get_collection(scn, "utility_bools")
+    if coll is None:
+        return ""
+    item = coll.add()
+    item.name = name or "Boolean"
+    _ensure_uid(item)
+    item.has_value = False
+    item.value = False
+    item.updated_at = 0.0
+    return item.uid
+
+
+def set_bool(uid: str, value: bool, timestamp: float | None = None) -> bool:
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_bools", uid)
+    if not slot:
+        return False
+    slot.value = bool(value)
+    slot.has_value = True
+    slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
+    return True
+
+
+def get_bool(uid: str):
+    """Returns (has_value, value, updated_at)."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_bools", uid)
+    if not slot:
+        return (False, False, 0.0)
+    return (bool(slot.has_value), bool(slot.value), float(slot.updated_at))
+
+
+def bool_slot_exists(uid: str) -> bool:
+    return _slot_exists("utility_bools", uid)
+
+
+# ═══════════════════════════════════════════════════════════
+# OBJECT REFERENCE API
+# ═══════════════════════════════════════════════════════════
+
+def create_object_slot(scn: bpy.types.Scene, name: str = "Object") -> str:
+    coll = _get_collection(scn, "utility_objects")
+    if coll is None:
+        return ""
+    item = coll.add()
+    item.name = name or "Object"
+    _ensure_uid(item)
+    item.has_value = False
+    item.object_name = ""
+    item.updated_at = 0.0
+    return item.uid
+
+
+def set_object(uid: str, obj, timestamp: float | None = None) -> bool:
+    """Set object reference. Accepts bpy.types.Object or object name string."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_objects", uid)
+    if not slot:
+        return False
+    if obj is None:
+        slot.object_name = ""
+        slot.has_value = False
+    elif isinstance(obj, str):
+        slot.object_name = obj
+        slot.has_value = True
+    else:
+        slot.object_name = getattr(obj, "name", "")
+        slot.has_value = bool(slot.object_name)
+    slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
+    return True
+
+
+def get_object(uid: str):
+    """Returns (has_value, object_or_None, updated_at)."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_objects", uid)
+    if not slot:
+        return (False, None, 0.0)
+    obj = bpy.data.objects.get(slot.object_name) if slot.object_name else None
+    return (bool(slot.has_value), obj, float(slot.updated_at))
+
+
+def get_object_name(uid: str):
+    """Returns (has_value, object_name, updated_at) - for engine worker use."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_objects", uid)
+    if not slot:
+        return (False, "", 0.0)
+    return (bool(slot.has_value), slot.object_name, float(slot.updated_at))
+
+
+def object_slot_exists(uid: str) -> bool:
+    return _slot_exists("utility_objects", uid)
+
+
+# ═══════════════════════════════════════════════════════════
+# OBJECT COLLECTION REFERENCE API
+# ═══════════════════════════════════════════════════════════
+
+def create_collection_slot(scn: bpy.types.Scene, name: str = "Collection") -> str:
+    coll = _get_collection(scn, "utility_collections")
+    if coll is None:
+        return ""
+    item = coll.add()
+    item.name = name or "Collection"
+    _ensure_uid(item)
+    item.has_value = False
+    item.collection_name = ""
+    item.updated_at = 0.0
+    return item.uid
+
+
+def set_collection(uid: str, collection, timestamp: float | None = None) -> bool:
+    """Set collection reference. Accepts bpy.types.Collection or collection name string."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_collections", uid)
+    if not slot:
+        return False
+    if collection is None:
+        slot.collection_name = ""
+        slot.has_value = False
+    elif isinstance(collection, str):
+        slot.collection_name = collection
+        slot.has_value = True
+    else:
+        slot.collection_name = getattr(collection, "name", "")
+        slot.has_value = bool(slot.collection_name)
+    slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
+    return True
+
+
+def get_collection(uid: str):
+    """Returns (has_value, collection_or_None, updated_at)."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_collections", uid)
+    if not slot:
+        return (False, None, 0.0)
+    coll = bpy.data.collections.get(slot.collection_name) if slot.collection_name else None
+    return (bool(slot.has_value), coll, float(slot.updated_at))
+
+
+def get_collection_name(uid: str):
+    """Returns (has_value, collection_name, updated_at) - for engine worker use."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_collections", uid)
+    if not slot:
+        return (False, "", 0.0)
+    return (bool(slot.has_value), slot.collection_name, float(slot.updated_at))
+
+
+def collection_slot_exists(uid: str) -> bool:
+    return _slot_exists("utility_collections", uid)
+
+
+# ═══════════════════════════════════════════════════════════
+# ACTION REFERENCE API
+# ═══════════════════════════════════════════════════════════
+
+def create_action_slot(scn: bpy.types.Scene, name: str = "Action") -> str:
+    coll = _get_collection(scn, "utility_actions")
+    if coll is None:
+        return ""
+    item = coll.add()
+    item.name = name or "Action"
+    _ensure_uid(item)
+    item.has_value = False
+    item.action_name = ""
+    item.updated_at = 0.0
+    return item.uid
+
+
+def set_action(uid: str, action, timestamp: float | None = None) -> bool:
+    """Set action reference. Accepts bpy.types.Action or action name string."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_actions", uid)
+    if not slot:
+        return False
+    if action is None:
+        slot.action_name = ""
+        slot.has_value = False
+    elif isinstance(action, str):
+        slot.action_name = action
+        slot.has_value = True
+    else:
+        slot.action_name = getattr(action, "name", "")
+        slot.has_value = bool(slot.action_name)
+    slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
+    return True
+
+
+def get_action(uid: str):
+    """Returns (has_value, action_or_None, updated_at)."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_actions", uid)
+    if not slot:
+        return (False, None, 0.0)
+    action = bpy.data.actions.get(slot.action_name) if slot.action_name else None
+    return (bool(slot.has_value), action, float(slot.updated_at))
+
+
+def get_action_name(uid: str):
+    """Returns (has_value, action_name, updated_at) - for engine worker use."""
+    scn = bpy.context.scene
+    slot = _find_by_uid(scn, "utility_actions", uid)
+    if not slot:
+        return (False, "", 0.0)
+    return (bool(slot.has_value), slot.action_name, float(slot.updated_at))
+
+
+def action_slot_exists(uid: str) -> bool:
+    return _slot_exists("utility_actions", uid)
+
+
+# ═══════════════════════════════════════════════════════════
+# FLOAT VECTOR API (existing, refactored)
+# ═══════════════════════════════════════════════════════════
+
+def create_floatvec_slot(scn: bpy.types.Scene, name: str = "Float Vector") -> str:
+    coll = _get_collection(scn, "utility_float_vectors")
+    if coll is None:
+        return ""
+    item = coll.add()
+    item.name = name or "Float Vector"
     _ensure_uid(item)
     item.has_value = False
     item.value = (0.0, 0.0, 0.0)
     item.updated_at = 0.0
-    try:
-        scn.utility_float_vectors_index = len(coll) - 1
-    except Exception:
-        pass
     return item.uid
 
+
 def set_floatvec(uid: str, vec3, timestamp: float | None = None) -> bool:
-    """
-    Store a new vector into the slot with 'uid'.
-    Returns True on success.
-    """
     scn = bpy.context.scene
-    slot = _find_slot_by_uid(scn, uid)
+    slot = _find_by_uid(scn, "utility_float_vectors", uid)
     if not slot:
         return False
     try:
@@ -105,23 +498,20 @@ def set_floatvec(uid: str, vec3, timestamp: float | None = None) -> bool:
     slot.updated_at = float(timestamp) if timestamp is not None else time.perf_counter()
     return True
 
+
 def get_floatvec(uid: str):
-    """
-    Returns (has_value: bool, (x, y, z): tuple[float,float,float], updated_at: float) or (False,(0,0,0),0).
-    """
+    """Returns (has_value, (x,y,z), updated_at)."""
     scn = bpy.context.scene
-    slot = _find_slot_by_uid(scn, uid)
+    slot = _find_by_uid(scn, "utility_float_vectors", uid)
     if not slot:
         return (False, (0.0, 0.0, 0.0), 0.0)
     v = tuple(slot.value) if slot.value else (0.0, 0.0, 0.0)
     return (bool(slot.has_value), (float(v[0]), float(v[1]), float(v[2])), float(slot.updated_at))
 
+
 def clear_floatvec(uid: str) -> bool:
-    """
-    Clears the stored value (marks has_value False, zeroes vector).
-    """
     scn = bpy.context.scene
-    slot = _find_slot_by_uid(scn, uid)
+    slot = _find_by_uid(scn, "utility_float_vectors", uid)
     if not slot:
         return False
     slot.value = (0.0, 0.0, 0.0)
@@ -129,29 +519,72 @@ def clear_floatvec(uid: str) -> bool:
     slot.updated_at = 0.0
     return True
 
+
 def slot_exists(uid: str) -> bool:
-    """
-    Return True if a float-vector capture slot with this UID exists on the current scene.
-    """
-    scn = bpy.context.scene
-    return _find_slot_by_uid(scn, uid) is not None
+    """Legacy: check if float vector slot exists."""
+    return _slot_exists("utility_float_vectors", uid)
 
 # ─────────────────────────────────────────────────────────
 # Register / attach to Scene
 # ─────────────────────────────────────────────────────────
 
+_SLOT_CLASSES = [
+    UtilityFloatSlotPG,
+    UtilityIntSlotPG,
+    UtilityBoolSlotPG,
+    UtilityObjectSlotPG,
+    UtilityObjectCollectionSlotPG,
+    UtilityActionSlotPG,
+    UtilityFloatVectorSlotPG,
+]
+
+
 def register_utility_store_properties():
-    bpy.utils.register_class(UtilityFloatVectorSlotPG)
+    for cls in _SLOT_CLASSES:
+        bpy.utils.register_class(cls)
+
+    # Float
+    bpy.types.Scene.utility_floats = bpy.props.CollectionProperty(type=UtilityFloatSlotPG)
+
+    # Integer
+    bpy.types.Scene.utility_ints = bpy.props.CollectionProperty(type=UtilityIntSlotPG)
+
+    # Boolean
+    bpy.types.Scene.utility_bools = bpy.props.CollectionProperty(type=UtilityBoolSlotPG)
+
+    # Object Reference
+    bpy.types.Scene.utility_objects = bpy.props.CollectionProperty(type=UtilityObjectSlotPG)
+
+    # Object Collection Reference
+    bpy.types.Scene.utility_collections = bpy.props.CollectionProperty(type=UtilityObjectCollectionSlotPG)
+
+    # Action Reference
+    bpy.types.Scene.utility_actions = bpy.props.CollectionProperty(type=UtilityActionSlotPG)
+
+    # Float Vector (existing)
     bpy.types.Scene.utility_float_vectors = bpy.props.CollectionProperty(type=UtilityFloatVectorSlotPG)
     bpy.types.Scene.utility_float_vectors_index = bpy.props.IntProperty(default=0)
 
+
 def unregister_utility_store_properties():
-    try:
-        del bpy.types.Scene.utility_float_vectors
-        del bpy.types.Scene.utility_float_vectors_index
-    except Exception:
-        pass
-    try:
-        bpy.utils.unregister_class(UtilityFloatVectorSlotPG)
-    except Exception:
-        pass
+    attrs = [
+        "utility_floats",
+        "utility_ints",
+        "utility_bools",
+        "utility_objects",
+        "utility_collections",
+        "utility_actions",
+        "utility_float_vectors",
+        "utility_float_vectors_index",
+    ]
+    for attr in attrs:
+        try:
+            delattr(bpy.types.Scene, attr)
+        except Exception:
+            pass
+
+    for cls in reversed(_SLOT_CLASSES):
+        try:
+            bpy.utils.unregister_class(cls)
+        except Exception:
+            pass

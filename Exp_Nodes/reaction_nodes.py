@@ -147,12 +147,13 @@ def _draw_common_fields(layout, r, kind: str):
 
     elif t == "CHAR_ACTION":
         header.prop_search(r, "char_action_ref", bpy.data, "actions", text="Action")
+        header.prop(r, "char_action_bone_group", text="Body Part")
         header.prop(r, "char_action_mode", text="Mode")
         if getattr(r, "char_action_mode", "") == "LOOP":
             header.prop(r, "char_action_loop_duration", text="Loop Duration")
-        # NEW: per-reaction speed
         header.prop(r, "char_action_speed", text="Speed Multiplier")
-        header.prop(r, "char_action_blend", text="Blend (overlay track)")
+        header.prop(r, "char_action_blend_time", text="Blend Time")
+        header.prop(r, "char_action_force", text="Force (Lock Locomotion)")
 
     elif t == "SOUND":
         # Sound pointer
@@ -359,6 +360,7 @@ def _draw_common_fields(layout, r, kind: str):
         header.label(text="Reset Game on trigger", icon='FILE_REFRESH')
 
 
+
 # ───────────────────────── sockets ─────────────────────────
 
 class ReactionTriggerInputSocket(bpy.types.NodeSocket):
@@ -434,6 +436,108 @@ class ImpactLocationOutputSocket(bpy.types.NodeSocket):
 
     def draw_color(self, context, node):
         return self._PURPLE
+
+
+# ─────────────────────────────────────────────────────────
+# Dynamic Property Sockets - draw reaction properties inline
+# ─────────────────────────────────────────────────────────
+
+def _get_reaction_for_node(node):
+    """Get the ReactionDefinition for a reaction node."""
+    scn = _scene()
+    idx = getattr(node, "reaction_index", -1)
+    if scn and 0 <= idx < len(getattr(scn, "reactions", [])):
+        return scn.reactions[idx]
+    return None
+
+
+class DynamicObjectInputSocket(bpy.types.NodeSocket):
+    """Object input that draws prop_search inline when not connected."""
+    bl_idname = "DynamicObjectInputSocketType"
+    bl_label = "Object (Dynamic)"
+
+    prop_name: bpy.props.StringProperty(default="")
+    _COLOR = (0.90, 0.50, 0.20, 1.0)  # Orange
+
+    def draw(self, context, layout, node, text):
+        if self.is_linked:
+            layout.label(text=text)
+        else:
+            r = _get_reaction_for_node(node)
+            if r and self.prop_name:
+                layout.prop_search(r, self.prop_name, bpy.context.scene, "objects", text=text)
+            else:
+                layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._COLOR
+
+
+class DynamicBoolInputSocket(bpy.types.NodeSocket):
+    """Bool input that draws checkbox inline when not connected."""
+    bl_idname = "DynamicBoolInputSocketType"
+    bl_label = "Bool (Dynamic)"
+
+    prop_name: bpy.props.StringProperty(default="")
+    _COLOR = (0.78, 0.55, 0.78, 1.0)  # Light pink (Blender standard)
+
+    def draw(self, context, layout, node, text):
+        if self.is_linked:
+            layout.label(text=text)
+        else:
+            r = _get_reaction_for_node(node)
+            if r and self.prop_name:
+                layout.prop(r, self.prop_name, text=text)
+            else:
+                layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._COLOR
+
+
+class DynamicFloatInputSocket(bpy.types.NodeSocket):
+    """Float input that draws float field inline when not connected."""
+    bl_idname = "DynamicFloatInputSocketType"
+    bl_label = "Float (Dynamic)"
+
+    prop_name: bpy.props.StringProperty(default="")
+    _COLOR = (0.63, 0.63, 0.63, 1.0)  # Gray
+
+    def draw(self, context, layout, node, text):
+        if self.is_linked:
+            layout.label(text=text)
+        else:
+            r = _get_reaction_for_node(node)
+            if r and self.prop_name:
+                layout.prop(r, self.prop_name, text=text)
+            else:
+                layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._COLOR
+
+
+class DynamicActionInputSocket(bpy.types.NodeSocket):
+    """Action input that draws action picker inline when not connected."""
+    bl_idname = "DynamicActionInputSocketType"
+    bl_label = "Action (Dynamic)"
+
+    prop_name: bpy.props.StringProperty(default="")
+    _COLOR = (0.95, 0.85, 0.30, 1.0)  # Yellow (action color)
+
+    def draw(self, context, layout, node, text):
+        if self.is_linked:
+            layout.label(text=text)
+        else:
+            r = _get_reaction_for_node(node)
+            if r and self.prop_name:
+                layout.prop_search(r, self.prop_name, bpy.data, "actions", text=text)
+            else:
+                layout.label(text=text)
+
+    def draw_color(self, context, node):
+        return self._COLOR
+
 
 # ───────────────────────── base class ─────────────────────────
 
@@ -836,6 +940,39 @@ class ReactionCustomActionNode(_ReactionNodeKind):
     bl_idname = "ReactionCustomActionNodeType"
     bl_label  = "Custom Action"
     KIND = "CUSTOM_ACTION"
+
+    def init(self, context):
+        super().init(context)
+        # Dynamic property sockets - draw inline with fields
+        s_action = self.inputs.new("DynamicActionInputSocketType", "Action")
+        s_action.prop_name = "custom_action_action"
+
+        s_obj = self.inputs.new("DynamicObjectInputSocketType", "Object")
+        s_obj.prop_name = "custom_action_target"
+
+        s_loop = self.inputs.new("DynamicBoolInputSocketType", "Loop?")
+        s_loop.prop_name = "custom_action_loop"
+
+        s_dur = self.inputs.new("DynamicFloatInputSocketType", "Loop Duration")
+        s_dur.prop_name = "custom_action_loop_duration"
+
+        s_speed = self.inputs.new("DynamicFloatInputSocketType", "Speed")
+        s_speed.prop_name = "custom_action_speed"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(scn.reactions)):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "custom_action_message", text="Notes")
+        # Action, Object, Loop, Loop Duration, Speed are drawn by sockets
+
 
 class ReactionCharActionNode(_ReactionNodeKind):
     bl_idname = "ReactionCharActionNodeType"

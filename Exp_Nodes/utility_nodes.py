@@ -4,274 +4,777 @@ from bpy.types import Node
 
 # Store API (central registry)
 from ..Exp_Game.props_and_utils.exp_utility_store import (
-    create_floatvec_slot, set_floatvec, get_floatvec, slot_exists
+    # Float
+    create_float_slot, set_float, get_float, float_slot_exists,
+    # Integer
+    create_int_slot, set_int, get_int, int_slot_exists,
+    # Boolean
+    create_bool_slot, set_bool, get_bool, bool_slot_exists,
+    # Object
+    create_object_slot, set_object, get_object, get_object_name, object_slot_exists,
+    # Collection
+    create_collection_slot, set_collection, get_collection, get_collection_name, collection_slot_exists,
+    # Action
+    create_action_slot, set_action, get_action, get_action_name, action_slot_exists,
+    # Float Vector
+    create_floatvec_slot, set_floatvec, get_floatvec, slot_exists,
 )
+from .base_nodes import _ExploratoryNodeOnly
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
 
 
-# ─────────────────────────────────────────────────────────
-# Gate to our custom node tree
-# ─────────────────────────────────────────────────────────
-class _ExploratoryNodeOnly:
-    bl_tree = EXPL_TREE_ID
+# ═══════════════════════════════════════════════════════════
+# SOCKET TYPES
+# ═══════════════════════════════════════════════════════════
 
-    @classmethod
-    def poll(cls, ntree):
-        return bool(ntree) and getattr(ntree, "bl_idname", "") == EXPL_TREE_ID
+# Colors for socket types (consistent visual language)
+_COLOR_FLOAT      = (0.63, 0.63, 0.63, 1.0)  # Gray
+_COLOR_INT        = (0.35, 0.55, 0.80, 1.0)  # Blue
+_COLOR_BOOL       = (0.78, 0.55, 0.78, 1.0)  # Light pink (Blender standard)
+_COLOR_OBJECT     = (0.90, 0.50, 0.20, 1.0)  # Orange
+_COLOR_COLLECTION = (0.95, 0.95, 0.30, 1.0)  # Yellow
+_COLOR_ACTION     = (0.95, 0.85, 0.30, 1.0)  # Yellow (actions)
+_COLOR_VECTOR     = (0.65, 0.40, 0.95, 1.0)  # Purple
 
 
 # ─────────────────────────────────────────────────────────
-# Data sockets (Float Vector)
+# Float Sockets
+# ─────────────────────────────────────────────────────────
+class FloatInputSocket(bpy.types.NodeSocket):
+    bl_idname = "FloatInputSocketType"
+    bl_label = "Float (In)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Float In")
+
+    def draw_color(self, context, node):
+        return _COLOR_FLOAT
+
+
+class FloatOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "FloatOutputSocketType"
+    bl_label = "Float (Out)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Float Out")
+
+    def draw_color(self, context, node):
+        return _COLOR_FLOAT
+
+
+# ─────────────────────────────────────────────────────────
+# Integer Sockets
+# ─────────────────────────────────────────────────────────
+class IntInputSocket(bpy.types.NodeSocket):
+    bl_idname = "IntInputSocketType"
+    bl_label = "Integer (In)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Int In")
+
+    def draw_color(self, context, node):
+        return _COLOR_INT
+
+
+class IntOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "IntOutputSocketType"
+    bl_label = "Integer (Out)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Int Out")
+
+    def draw_color(self, context, node):
+        return _COLOR_INT
+
+
+# ─────────────────────────────────────────────────────────
+# Boolean Sockets
+# ─────────────────────────────────────────────────────────
+class BoolInputSocket(bpy.types.NodeSocket):
+    bl_idname = "BoolInputSocketType"
+    bl_label = "Boolean (In)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Bool In")
+
+    def draw_color(self, context, node):
+        return _COLOR_BOOL
+
+
+class BoolOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "BoolOutputSocketType"
+    bl_label = "Boolean (Out)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Bool Out")
+
+    def draw_color(self, context, node):
+        return _COLOR_BOOL
+
+
+# ─────────────────────────────────────────────────────────
+# Object Sockets
+# ─────────────────────────────────────────────────────────
+class ObjectInputSocket(bpy.types.NodeSocket):
+    bl_idname = "ObjectInputSocketType"
+    bl_label = "Object (In)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Object In")
+
+    def draw_color(self, context, node):
+        return _COLOR_OBJECT
+
+
+class ObjectOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "ObjectOutputSocketType"
+    bl_label = "Object (Out)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Object Out")
+
+    def draw_color(self, context, node):
+        return _COLOR_OBJECT
+
+
+# ─────────────────────────────────────────────────────────
+# Collection Sockets
+# ─────────────────────────────────────────────────────────
+class CollectionInputSocket(bpy.types.NodeSocket):
+    bl_idname = "CollectionInputSocketType"
+    bl_label = "Collection (In)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Collection In")
+
+    def draw_color(self, context, node):
+        return _COLOR_COLLECTION
+
+
+class CollectionOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "CollectionOutputSocketType"
+    bl_label = "Collection (Out)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Collection Out")
+
+    def draw_color(self, context, node):
+        return _COLOR_COLLECTION
+
+
+# ─────────────────────────────────────────────────────────
+# Action Sockets
+# ─────────────────────────────────────────────────────────
+class ActionInputSocket(bpy.types.NodeSocket):
+    bl_idname = "ActionInputSocketType"
+    bl_label = "Action (In)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Action In")
+
+    def draw_color(self, context, node):
+        return _COLOR_ACTION
+
+
+class ActionOutputSocket(bpy.types.NodeSocket):
+    bl_idname = "ActionOutputSocketType"
+    bl_label = "Action (Out)"
+
+    def draw(self, context, layout, node, text):
+        layout.label(text=text or "Action Out")
+
+    def draw_color(self, context, node):
+        return _COLOR_ACTION
+
+
+# ─────────────────────────────────────────────────────────
+# Float Vector Sockets (existing)
 # ─────────────────────────────────────────────────────────
 class FloatVectorInputSocket(bpy.types.NodeSocket):
     bl_idname = "FloatVectorInputSocketType"
-    bl_label  = "Float Vector (In)"
-    _PURPLE   = (0.65, 0.40, 0.95, 1.0)
+    bl_label = "Float Vector (In)"
 
     def draw(self, context, layout, node, text):
         layout.label(text=text or "Vector In")
 
     def draw_color(self, context, node):
-        return self._PURPLE
+        return _COLOR_VECTOR
 
 
 class FloatVectorOutputSocket(bpy.types.NodeSocket):
     bl_idname = "FloatVectorOutputSocketType"
-    bl_label  = "Float Vector (Out)"
-    _PURPLE   = (0.65, 0.40, 0.95, 1.0)
+    bl_label = "Float Vector (Out)"
 
     def draw(self, context, layout, node, text):
         layout.label(text=text or "Vector Out")
 
     def draw_color(self, context, node):
-        return self._PURPLE
+        return _COLOR_VECTOR
+
+
+# ═══════════════════════════════════════════════════════════
+# DATA NODES - Core procedural elements
+# Each node has input + output. If input is linked, use incoming value.
+# If not linked, show manual value field.
+# ═══════════════════════════════════════════════════════════
+
+
+def _input_linked(node, socket_name):
+    """Check if an input socket is linked."""
+    inp = node.inputs.get(socket_name)
+    return inp and inp.is_linked
+
+
+def _resolve_upstream_float(node, socket_name):
+    """Get float value from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    # Check for export method
+    if hasattr(src_node, "export_float"):
+        return src_node.export_float()
+    return None
+
+
+def _resolve_upstream_int(node, socket_name):
+    """Get int value from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    if hasattr(src_node, "export_int"):
+        return src_node.export_int()
+    return None
+
+
+def _resolve_upstream_bool(node, socket_name):
+    """Get bool value from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    if hasattr(src_node, "export_bool"):
+        return src_node.export_bool()
+    return None
+
+
+def _resolve_upstream_object(node, socket_name):
+    """Get object from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    if hasattr(src_node, "export_object"):
+        return src_node.export_object()
+    return None
+
+
+def _resolve_upstream_collection(node, socket_name):
+    """Get collection from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    if hasattr(src_node, "export_collection"):
+        return src_node.export_collection()
+    return None
+
+
+def _resolve_upstream_vector(node, socket_name):
+    """Get vector from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    if hasattr(src_node, "export_vector"):
+        return src_node.export_vector()
+    return None
+
+
+def _resolve_upstream_action(node, socket_name):
+    """Get action from upstream node if linked."""
+    inp = node.inputs.get(socket_name)
+    if not inp or not inp.is_linked:
+        return None
+    link = inp.links[0]
+    src_node = link.from_node
+    if hasattr(src_node, "export_action"):
+        return src_node.export_action()
+    return None
 
 
 # ─────────────────────────────────────────────────────────
-# Node: Capture Float Vector (read-only UI)
+# Float Data Node
 # ─────────────────────────────────────────────────────────
-class UtilityCaptureFloatVectorNode(_ExploratoryNodeOnly, Node):
-    """
-    Unique utility node that owns a storage slot for a 3-float vector.
-    Holds the last written value until overwritten by the graph.
-    Not an Interaction or Reaction. No manual write/clear controls.
-    """
-    bl_idname = "UtilityCaptureFloatVectorNodeType"
-    bl_label  = "Capture Float Vector"
-    bl_icon   = 'EMPTY_SINGLE_ARROW'
+class FloatDataNode(_ExploratoryNodeOnly, Node):
+    """Float value node - input or manual value, outputs to other nodes."""
+    bl_idname = "FloatDataNodeType"
+    bl_label = "Float"
+    bl_icon = 'PREFERENCES'
 
-    # Bind to scene store by UID; show/edit friendly name via property mirror
-    capture_uid: bpy.props.StringProperty(name="UID", default="")
-    capture_name: bpy.props.StringProperty(
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
         name="Name",
-        default="Capture Vector",
-        description="Friendly name for this capture slot",
-        update=lambda self, ctx: self._on_name_changed(ctx)
+        default="Float",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    value: bpy.props.FloatProperty(
+        name="Value",
+        default=0.0,
+        update=lambda self, ctx: self._sync_value(ctx)
     )
 
-    # ---------------- internals ----------------
-
     def _ensure_uid(self, context):
-        """Ensure a valid storage slot exists."""
         scn = context.scene if context else bpy.context.scene
-        if not self.capture_uid or not slot_exists(self.capture_uid):
-            self.capture_uid = create_floatvec_slot(scn, name=self.capture_name or "Capture Vector")
+        if not self.slot_uid or not float_slot_exists(self.slot_uid):
+            self.slot_uid = create_float_slot(scn, name=self.slot_name or "Float")
 
-    # --------------- node lifetime ---------------
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_floats", None)
+        if coll:
+            for it in coll:
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Float"
+                    break
+
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_float(self.slot_uid, self.value)
 
     def init(self, context):
-        self.width = 280
-        self.inputs.new("FloatVectorInputSocketType",   "Vector In")
-        self.outputs.new("FloatVectorOutputSocketType", "Vector Out")
+        self.width = 180
+        self.inputs.new("FloatInputSocketType", "Input")
+        self.outputs.new("FloatOutputSocketType", "Value")
         self._ensure_uid(context)
-
-    def free(self):
-        # Don’t auto-delete the slot to avoid accidental loss during undo/redo.
-        pass
+        self._sync_value(context)
 
     def update(self):
-        # Heal missing UID/slot on any graph edit.
         self._ensure_uid(bpy.context)
-
-    # --------------- drawing / UI ----------------
 
     def draw_buttons(self, context, layout):
-        self._ensure_uid(context)
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        # Only show value field if input not connected
+        if not _input_linked(self, "Input"):
+            layout.prop(self, "value", text="Value")
 
-        box = layout.box()
-        box.prop(self, "capture_name", text="Name")
+    def export_float(self):
+        """API for other nodes to read this value."""
+        # If input is linked, use upstream value
+        upstream = _resolve_upstream_float(self, "Input")
+        if upstream is not None:
+            return upstream
+        # Otherwise use stored/manual value
+        has_val, val, _ = get_float(self.slot_uid)
+        return val if has_val else self.value
 
-        row = box.row(align=True); row.enabled = False
-        row.prop(self, "capture_uid", text="UID")
 
-        has_val, vec, ts = get_floatvec(self.capture_uid) if self.capture_uid else (False, (0.0,0.0,0.0), 0.0)
-        stat = layout.box()
-        stat.label(text="Current Value")
-        col = stat.column(align=True)
-        col.label(text=f"X: {vec[0]:.4f}")
-        col.label(text=f"Y: {vec[1]:.4f}")
-        col.label(text=f"Z: {vec[2]:.4f}")
-        col = stat.column(align=True)
-        col.label(text=f"Has Value: {'Yes' if has_val else 'No'}")
+# ─────────────────────────────────────────────────────────
+# Integer Data Node
+# ─────────────────────────────────────────────────────────
+class IntDataNode(_ExploratoryNodeOnly, Node):
+    """Integer value node - input or manual value, outputs to other nodes."""
+    bl_idname = "IntDataNodeType"
+    bl_label = "Integer"
+    bl_icon = 'LINENUMBERS_ON'
 
-    # Keep store name in sync when renamed in the node
-    def _on_name_changed(self, context):
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
+        name="Name",
+        default="Integer",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    value: bpy.props.IntProperty(
+        name="Value",
+        default=0,
+        update=lambda self, ctx: self._sync_value(ctx)
+    )
+
+    def _ensure_uid(self, context):
         scn = context.scene if context else bpy.context.scene
-        try:
-            coll = getattr(scn, "utility_float_vectors", None)
-            if not coll:
-                return
+        if not self.slot_uid or not int_slot_exists(self.slot_uid):
+            self.slot_uid = create_int_slot(scn, name=self.slot_name or "Integer")
+
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_ints", None)
+        if coll:
             for it in coll:
-                if getattr(it, "uid", "") == self.capture_uid:
-                    it.name = self.capture_name or "Capture Vector"
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Integer"
                     break
-        except Exception:
-            pass
 
-    # ---------------- generic sync layer ----------------
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_int(self.slot_uid, self.value)
 
-    def _coerce_vec3(self, vec3):
-        try:
-            x, y, z = float(vec3[0]), float(vec3[1]), float(vec3[2])
-            return (x, y, z)
-        except Exception:
-            return None
+    def init(self, context):
+        self.width = 180
+        self.inputs.new("IntInputSocketType", "Input")
+        self.outputs.new("IntOutputSocketType", "Value")
+        self._ensure_uid(context)
+        self._sync_value(context)
 
-    def _upstream_endpoint(self, node, socket):
-        """
-        Follow reroutes upstream. Return (node, socket) at the first non-reroute.
-        """
-        cur_node, cur_sock = node, socket
-        # Handle Blender's native Reroute node
-        while getattr(cur_node, "bl_idname", "") == "NodeReroute":
-            in_socks = getattr(cur_node, "inputs", [])
-            if not in_socks or not in_socks[0].is_linked:
-                return (cur_node, cur_sock)
-            lk = in_socks[0].links[0]
-            cur_node = getattr(lk, "from_node", cur_node)
-            cur_sock = getattr(lk, "from_socket", cur_sock)
-        return (cur_node, cur_sock)
-
-    def _resolve_vec_from_input_socket(self, in_sock):
-        """
-        Try to get a 3-float vector for a FloatVectorInputSocket by walking one link upstream.
-        Supports:
-          • Another node that defines export_vector() -> (x,y,z)
-          • Another Capture node (reads its stored value)
-        """
-        if not getattr(in_sock, "is_linked", False):
-            return None
-        # Use first link (deterministic). If you want last, swap [-1].
-        lk = in_sock.links[0]
-        src_node = getattr(lk, "from_node", None)
-        src_sock = getattr(lk, "from_socket", None)
-        if not src_node:
-            return None
-
-        src_node, src_sock = self._upstream_endpoint(src_node, src_sock)
-
-        # 1) Generic provider contract
-        provider = getattr(src_node, "export_vector", None)
-        if callable(provider):
-            try:
-                v = provider()
-                return self._coerce_vec3(v)
-            except Exception:
-                pass
-
-        # 2) Capture → read store
-        if getattr(src_node, "bl_idname", "") == "UtilityCaptureFloatVectorNodeType":
-            has_v, v, _ts = get_floatvec(getattr(src_node, "capture_uid", ""))
-            if has_v:
-                return self._coerce_vec3(v)
-
-        # Unknown provider
-        return None
-
-    def _sync_all_vector_inputs_to_reactions(self):
-        """
-        Generic pass over all Exploratory node trees:
-        For any node that has FloatVectorInput sockets with an 'exp_vec_target'
-        metadata string on the socket, resolve the upstream vector and write it
-        into that node's ReactionDefinition property before executors run.
-        """
-        import bpy
-        scn = bpy.context.scene
-        if not scn or not hasattr(scn, "reactions"):
-            return
-
-        for nt in bpy.data.node_groups:
-            if getattr(nt, "bl_idname", "") != EXPL_TREE_ID:
-                continue
-
-            for node in nt.nodes:
-                # Only nodes tied to a ReactionDefinition need syncing
-                r_idx = getattr(node, "reaction_index", -1)
-                if r_idx < 0 or r_idx >= len(getattr(scn, "reactions", [])):
-                    continue
-                reaction = scn.reactions[r_idx]
-
-                for in_sock in getattr(node, "inputs", []):
-                    if getattr(in_sock, "bl_idname", "") != "FloatVectorInputSocketType":
-                        continue
-                    if not getattr(in_sock, "is_linked", False):
-                        continue
-
-                    # Socket-level metadata declares which field to set
-                    try:
-                        target_prop = in_sock.get("exp_vec_target", "")
-                    except Exception:
-                        target_prop = ""
-                    if not target_prop:
-                        continue
-                    if not hasattr(reaction, target_prop):
-                        continue
-
-                    vec = self._resolve_vec_from_input_socket(in_sock)
-                    if vec is None:
-                        continue
-
-                    try:
-                        setattr(reaction, target_prop, vec)
-                    except Exception:
-                        # Defensive: ignore bad writes but keep other sockets going
-                        pass
-
-    # Programmatic write hook (used by hitscan/projectile impact location, etc.)
-    # Stores the value, then runs a GENERIC sync (no node-type branching).
-    def write_from_graph(self, vec3, timestamp: float | None = None) -> bool:
+    def update(self):
         self._ensure_uid(bpy.context)
 
-        v = self._coerce_vec3(vec3)
-        if v is None:
-            return False
+    def draw_buttons(self, context, layout):
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        if not _input_linked(self, "Input"):
+            layout.prop(self, "value", text="Value")
 
-        ok = set_floatvec(self.capture_uid, v, timestamp=timestamp)
-        if not ok:
-            return False
-
-        # Generic: push to any bound vector inputs across the whole graph.
-        self._sync_all_vector_inputs_to_reactions()
-        return True
+    def export_int(self):
+        """API for other nodes to read this value."""
+        upstream = _resolve_upstream_int(self, "Input")
+        if upstream is not None:
+            return upstream
+        has_val, val, _ = get_int(self.slot_uid)
+        return val if has_val else self.value
 
 
 # ─────────────────────────────────────────────────────────
-# Registration
+# Boolean Data Node
 # ─────────────────────────────────────────────────────────
-_CLASSES = [
-    FloatVectorInputSocket,
-    FloatVectorOutputSocket,
-    UtilityCaptureFloatVectorNode,
-]
+class BoolDataNode(_ExploratoryNodeOnly, Node):
+    """Boolean value node - input or manual value, outputs to other nodes."""
+    bl_idname = "BoolDataNodeType"
+    bl_label = "Boolean"
+    bl_icon = 'CHECKBOX_HLT'
 
-def register():
-    for c in _CLASSES:
-        bpy.utils.register_class(c)
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
+        name="Name",
+        default="Boolean",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    value: bpy.props.BoolProperty(
+        name="Value",
+        default=False,
+        update=lambda self, ctx: self._sync_value(ctx)
+    )
 
-def unregister():
-    for c in reversed(_CLASSES):
-        try:
-            bpy.utils.unregister_class(c)
-        except Exception:
-            pass
+    def _ensure_uid(self, context):
+        scn = context.scene if context else bpy.context.scene
+        if not self.slot_uid or not bool_slot_exists(self.slot_uid):
+            self.slot_uid = create_bool_slot(scn, name=self.slot_name or "Boolean")
+
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_bools", None)
+        if coll:
+            for it in coll:
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Boolean"
+                    break
+
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_bool(self.slot_uid, self.value)
+
+    def init(self, context):
+        self.width = 180
+        self.inputs.new("BoolInputSocketType", "Input")
+        self.outputs.new("BoolOutputSocketType", "Value")
+        self._ensure_uid(context)
+        self._sync_value(context)
+
+    def update(self):
+        self._ensure_uid(bpy.context)
+
+    def draw_buttons(self, context, layout):
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        if not _input_linked(self, "Input"):
+            layout.prop(self, "value", text="Value")
+
+    def export_bool(self):
+        """API for other nodes to read this value."""
+        upstream = _resolve_upstream_bool(self, "Input")
+        if upstream is not None:
+            return upstream
+        has_val, val, _ = get_bool(self.slot_uid)
+        return val if has_val else self.value
+
+
+# ─────────────────────────────────────────────────────────
+# Object Data Node
+# ─────────────────────────────────────────────────────────
+class ObjectDataNode(_ExploratoryNodeOnly, Node):
+    """Object reference node - input or manual selection, outputs to other nodes."""
+    bl_idname = "ObjectDataNodeType"
+    bl_label = "Object"
+    bl_icon = 'OBJECT_DATA'
+
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
+        name="Name",
+        default="Object",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    target_object: bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        name="Object",
+        update=lambda self, ctx: self._sync_value(ctx)
+    )
+
+    def _ensure_uid(self, context):
+        scn = context.scene if context else bpy.context.scene
+        if not self.slot_uid or not object_slot_exists(self.slot_uid):
+            self.slot_uid = create_object_slot(scn, name=self.slot_name or "Object")
+
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_objects", None)
+        if coll:
+            for it in coll:
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Object"
+                    break
+
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_object(self.slot_uid, self.target_object)
+
+    def init(self, context):
+        self.width = 200
+        self.inputs.new("ObjectInputSocketType", "Input")
+        self.outputs.new("ObjectOutputSocketType", "Object")
+        self._ensure_uid(context)
+        self._sync_value(context)
+
+    def update(self):
+        self._ensure_uid(bpy.context)
+
+    def draw_buttons(self, context, layout):
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        if not _input_linked(self, "Input"):
+            layout.prop(self, "target_object", text="")
+
+    def export_object(self):
+        """API for other nodes to read this object."""
+        upstream = _resolve_upstream_object(self, "Input")
+        if upstream is not None:
+            return upstream
+        has_val, obj, _ = get_object(self.slot_uid)
+        return obj if has_val else self.target_object
+
+    def export_object_name(self):
+        """API for engine worker (string-based)."""
+        obj = self.export_object()
+        return obj.name if obj else ""
+
+
+# ─────────────────────────────────────────────────────────
+# Collection Data Node
+# ─────────────────────────────────────────────────────────
+class CollectionDataNode(_ExploratoryNodeOnly, Node):
+    """Collection reference node - input or manual selection, outputs to other nodes."""
+    bl_idname = "CollectionDataNodeType"
+    bl_label = "Collection"
+    bl_icon = 'OUTLINER_COLLECTION'
+
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
+        name="Name",
+        default="Collection",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    target_collection: bpy.props.PointerProperty(
+        type=bpy.types.Collection,
+        name="Collection",
+        update=lambda self, ctx: self._sync_value(ctx)
+    )
+
+    def _ensure_uid(self, context):
+        scn = context.scene if context else bpy.context.scene
+        if not self.slot_uid or not collection_slot_exists(self.slot_uid):
+            self.slot_uid = create_collection_slot(scn, name=self.slot_name or "Collection")
+
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_collections", None)
+        if coll:
+            for it in coll:
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Collection"
+                    break
+
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_collection(self.slot_uid, self.target_collection)
+
+    def init(self, context):
+        self.width = 200
+        self.inputs.new("CollectionInputSocketType", "Input")
+        self.outputs.new("CollectionOutputSocketType", "Collection")
+        self._ensure_uid(context)
+        self._sync_value(context)
+
+    def update(self):
+        self._ensure_uid(bpy.context)
+
+    def draw_buttons(self, context, layout):
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        if not _input_linked(self, "Input"):
+            layout.prop(self, "target_collection", text="")
+
+    def export_collection(self):
+        """API for other nodes to read this collection."""
+        upstream = _resolve_upstream_collection(self, "Input")
+        if upstream is not None:
+            return upstream
+        has_val, coll, _ = get_collection(self.slot_uid)
+        return coll if has_val else self.target_collection
+
+    def export_collection_name(self):
+        """API for engine worker (string-based)."""
+        coll = self.export_collection()
+        return coll.name if coll else ""
+
+
+# ─────────────────────────────────────────────────────────
+# Float Vector Data Node
+# ─────────────────────────────────────────────────────────
+class FloatVectorDataNode(_ExploratoryNodeOnly, Node):
+    """Float Vector value node - input or manual value, outputs to other nodes."""
+    bl_idname = "FloatVectorDataNodeType"
+    bl_label = "Float Vector"
+    bl_icon = 'EMPTY_SINGLE_ARROW'
+
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
+        name="Name",
+        default="Vector",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    value: bpy.props.FloatVectorProperty(
+        name="Value",
+        size=3,
+        subtype='TRANSLATION',
+        default=(0.0, 0.0, 0.0),
+        update=lambda self, ctx: self._sync_value(ctx)
+    )
+
+    def _ensure_uid(self, context):
+        scn = context.scene if context else bpy.context.scene
+        if not self.slot_uid or not slot_exists(self.slot_uid):
+            self.slot_uid = create_floatvec_slot(scn, name=self.slot_name or "Vector")
+
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_float_vectors", None)
+        if coll:
+            for it in coll:
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Vector"
+                    break
+
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_floatvec(self.slot_uid, self.value)
+
+    def init(self, context):
+        self.width = 200
+        self.inputs.new("FloatVectorInputSocketType", "Input")
+        self.outputs.new("FloatVectorOutputSocketType", "Vector")
+        self._ensure_uid(context)
+        self._sync_value(context)
+
+    def update(self):
+        self._ensure_uid(bpy.context)
+
+    def draw_buttons(self, context, layout):
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        if not _input_linked(self, "Input"):
+            col = layout.column(align=True)
+            col.prop(self, "value", text="")
+
+    def export_vector(self):
+        """API for other nodes to read this vector."""
+        upstream = _resolve_upstream_vector(self, "Input")
+        if upstream is not None:
+            return upstream
+        has_val, vec, _ = get_floatvec(self.slot_uid)
+        return vec if has_val else tuple(self.value)
+
+
+# ─────────────────────────────────────────────────────────
+# Action Data Node
+# ─────────────────────────────────────────────────────────
+class ActionDataNode(_ExploratoryNodeOnly, Node):
+    """Action reference node - input or manual selection, outputs to other nodes."""
+    bl_idname = "ActionDataNodeType"
+    bl_label = "Action"
+    bl_icon = 'ACTION'
+
+    slot_uid: bpy.props.StringProperty(name="UID", default="")
+    slot_name: bpy.props.StringProperty(
+        name="Name",
+        default="Action",
+        update=lambda self, ctx: self._sync_name(ctx)
+    )
+    target_action: bpy.props.PointerProperty(
+        type=bpy.types.Action,
+        name="Action",
+        update=lambda self, ctx: self._sync_value(ctx)
+    )
+
+    def _ensure_uid(self, context):
+        scn = context.scene if context else bpy.context.scene
+        if not self.slot_uid or not action_slot_exists(self.slot_uid):
+            self.slot_uid = create_action_slot(scn, name=self.slot_name or "Action")
+
+    def _sync_name(self, context):
+        scn = context.scene if context else bpy.context.scene
+        coll = getattr(scn, "utility_actions", None)
+        if coll:
+            for it in coll:
+                if getattr(it, "uid", "") == self.slot_uid:
+                    it.name = self.slot_name or "Action"
+                    break
+
+    def _sync_value(self, context):
+        if self.slot_uid:
+            set_action(self.slot_uid, self.target_action)
+
+    def init(self, context):
+        self.width = 200
+        self.inputs.new("ActionInputSocketType", "Input")
+        self.outputs.new("ActionOutputSocketType", "Action")
+        self._ensure_uid(context)
+        self._sync_value(context)
+
+    def update(self):
+        self._ensure_uid(bpy.context)
+
+    def draw_buttons(self, context, layout):
+        # Don't call _ensure_uid here - writing not allowed in draw context
+        layout.prop(self, "slot_name", text="Name")
+        if not _input_linked(self, "Input"):
+            layout.prop(self, "target_action", text="")
+
+    def export_action(self):
+        """API for other nodes to read this action."""
+        upstream = _resolve_upstream_action(self, "Input")
+        if upstream is not None:
+            return upstream
+        has_val, action, _ = get_action(self.slot_uid)
+        return action if has_val else self.target_action
+
+    def export_action_name(self):
+        """API for engine worker (string-based)."""
+        action = self.export_action()
+        return action.name if action else ""

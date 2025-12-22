@@ -464,6 +464,17 @@ def timer_finish_download():
             print("Waiting for appended scene…")
             return 1.0
 
+        # Wait for Blender to be focused before starting game (Windows only)
+        # This ensures cache_blender_hwnd() gets the correct HWND for recovery
+        # Note: .blend file is already deleted at this point (step 9)
+        import sys
+        if sys.platform == 'win32':
+            import ctypes
+            foreground = ctypes.windll.user32.GetForegroundWindow()
+            active = ctypes.windll.user32.GetActiveWindow()
+            if foreground != active or active == 0:
+                return 0.2  # Poll until user returns to Blender
+
         bpy.context.window.scene = scene_obj
         scene_obj.ui_current_mode = "GAME"
 

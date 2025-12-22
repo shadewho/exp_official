@@ -60,7 +60,8 @@ class TriggerInputSocket(NodeSocket):
     bl_idname = "TriggerInputSocketType"
     bl_label  = "Trigger Input Socket"
 
-    _COLOR = (0.85, 0.6, 0.8, 1.0)
+    # Match TrackerBoolOutputSocket color exactly
+    _COLOR = (0.78, 0.55, 0.78, 1.0)
 
     def draw(self, context, layout, node, text):
         layout.label(text=text)
@@ -157,8 +158,51 @@ class NODE_MT_exploratory_add_utilities(Menu):
             op.type = idname
             op.use_transform = True
 
+        # Data Nodes - Core procedural elements
+        layout.label(text="Data")
+        add("Float", "FloatDataNodeType")
+        add("Integer", "IntDataNodeType")
+        add("Boolean", "BoolDataNodeType")
+        add("Object", "ObjectDataNodeType")
+        add("Collection", "CollectionDataNodeType")
+        add("Action", "ActionDataNodeType")
+        add("Float Vector", "FloatVectorDataNodeType")
+
+        layout.separator()
+
+        # Utility Nodes
+        layout.label(text="Utility")
         add("Delay", "UtilityDelayNodeType")
-        add("Capture Float Vector",  "UtilityCaptureFloatVectorNodeType")
+
+
+class NODE_MT_exploratory_add_trackers(Menu):
+    bl_idname = "NODE_MT_exploratory_add_trackers"
+    bl_label  = "Trackers"
+
+    def draw(self, context):
+        layout = self.layout
+
+        def add(lbl, idname):
+            op = layout.operator("node.add_node", text=lbl, icon='NONE')
+            op.type = idname
+            op.use_transform = True
+
+        # Condition Trackers (output Bool)
+        layout.label(text="Conditions")
+        add("Distance Tracker", "DistanceTrackerNodeType")
+        add("State Tracker", "StateTrackerNodeType")
+        add("Contact Tracker", "ContactTrackerNodeType")
+        add("Input Tracker", "InputTrackerNodeType")
+        add("Game Time", "GameTimeTrackerNodeType")
+
+        layout.separator()
+
+        # Logic Gates
+        layout.label(text="Logic")
+        add("AND", "LogicAndNodeType")
+        add("OR", "LogicOrNodeType")
+        add("NOT", "LogicNotNodeType")
+
 
 # Append hook the init module will attach to NODE_MT_add:
 # it inserts our three categories directly into Shift+A (no icons).
@@ -166,6 +210,7 @@ def _append_exploratory_entry(self, context):
     if _in_exploratory_editor(context):
         self.layout.menu("NODE_MT_exploratory_add_triggers",   text="Triggers")
         self.layout.menu("NODE_MT_exploratory_add_reactions",  text="Reactions")
+        self.layout.menu("NODE_MT_exploratory_add_trackers",   text="Trackers")
         self.layout.menu("NODE_MT_exploratory_add_actions",    text="Action Keys")
         self.layout.menu("NODE_MT_exploratory_add_objectives", text="Objectives")
         self.layout.menu("NODE_MT_exploratory_add_utilities",  text="Utilities")

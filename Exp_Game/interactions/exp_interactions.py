@@ -29,10 +29,65 @@ from ..reactions.exp_action_keys import (
 )
 from ..reactions.exp_parenting import execute_parenting_reaction
 from ..reactions.exp_tracking import execute_tracking_reaction
+from .exp_tracker_eval import reset_tracker_state
 
 # Global list to hold pending trigger tasks.
 _pending_reaction_batches = []
 _pending_trigger_tasks = []
+
+EXPL_TREE_ID = "ExploratoryNodesTreeType"
+
+
+def _sync_dynamic_inputs_to_reaction(r, reaction_index):
+    """
+    Before executing a reaction, resolve any linked data node inputs
+    and write them to the reaction definition.
+
+    Mapping for CUSTOM_ACTION:
+      - "Action" socket → custom_action_action
+      - "Object" socket → custom_action_target
+      - "Loop?" socket → custom_action_loop
+      - "Loop Duration" socket → custom_action_loop_duration
+      - "Speed" socket → custom_action_speed
+    """
+    # Find the node that owns this reaction
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+            continue
+        for node in ng.nodes:
+            if getattr(node, "reaction_index", -1) != reaction_index:
+                continue
+
+            # Found the node - check its inputs
+            for inp in getattr(node, "inputs", []):
+                if not getattr(inp, "is_linked", False):
+                    continue
+
+                socket_name = inp.name
+                link = inp.links[0]
+                src_node = link.from_node
+
+                # Resolve based on socket name and node type
+                if socket_name == "Action" and hasattr(src_node, "export_action"):
+                    action = src_node.export_action()
+                    if action:
+                        r.custom_action_action = action.name
+
+                elif socket_name == "Object" and hasattr(src_node, "export_object"):
+                    obj = src_node.export_object()
+                    if obj:
+                        r.custom_action_target = obj
+
+                elif socket_name == "Loop?" and hasattr(src_node, "export_bool"):
+                    r.custom_action_loop = src_node.export_bool()
+
+                elif socket_name == "Loop Duration" and hasattr(src_node, "export_float"):
+                    r.custom_action_loop_duration = src_node.export_float()
+
+                elif socket_name == "Speed" and hasattr(src_node, "export_float"):
+                    r.custom_action_speed = src_node.export_float()
+
+            return  # Found the node, done
 
 
 def _execute_reaction_now(r):
@@ -44,6 +99,14 @@ def _execute_reaction_now(r):
 
     if t == "DELAY":
         return  # sequencing-only marker
+
+    # Sync any dynamic node inputs before execution
+    scn = bpy.context.scene
+    reactions = getattr(scn, "reactions", [])
+    for idx, rx in enumerate(reactions):
+        if rx == r:
+            _sync_dynamic_inputs_to_reaction(r, idx)
+            break
 
     # --- map reaction types to executors (same mapping you already use) ---
     if t == "CUSTOM_ACTION":
@@ -843,6 +906,9 @@ def handle_collision_trigger(inter, current_time):
 def reset_all_interactions(scene):
 
     seed_defaults_from_scene(scene)
+
+    # Reset tracker evaluation state
+    reset_tracker_state()
 
     # Clear any queued triggers and delayed reaction batches
     global _pending_trigger_tasks, _pending_reaction_batches

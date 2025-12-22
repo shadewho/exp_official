@@ -181,6 +181,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(scene, "dev_debug_interactions", text="Interactions")
         col.prop(scene, "dev_debug_audio", text="Audio")
+        col.prop(scene, "dev_debug_trackers", text="Trackers")
 
         layout.separator()
 
@@ -269,18 +270,42 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     row.label(text=f"  {p.animation_name}")
                     row.label(text=f"{p.weight * p.fade_progress:.0%}")
 
+        # ─── Runtime IK (Gameplay) ─────────────────────────────────────
+        sub_box = box.box()
+        row = sub_box.row()
+        row.label(text="Runtime IK", icon='CON_KINEMATIC')
+        row.prop(scene, "runtime_ik_enabled", text="", icon='PLAY' if scene.runtime_ik_enabled else 'PAUSE')
+
+        if scene.runtime_ik_enabled:
+            col = sub_box.column(align=True)
+            col.prop(scene, "runtime_ik_chain", text="")
+            col.prop(scene, "runtime_ik_target", text="Target")
+            col.prop(scene, "runtime_ik_influence", slider=True)
+
+            # Show target position if set
+            if scene.runtime_ik_target:
+                loc = scene.runtime_ik_target.location
+                col.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
+
+            # IK debug logs toggle
+            row = sub_box.row()
+            row.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
+
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # IK Test (Separate from Animation 2.0)
+        # IK Test
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
         row = box.row()
         row.label(text="IK Test", icon='CON_KINEMATIC')
         row.prop(props, "ik_advanced_mode", text="Advanced", toggle=True)
 
-        # Check if armature is selected
-        if obj and obj.type == 'ARMATURE':
+        # Armature picker (no need to select the armature)
+        box.prop(props, "ik_armature", text="Armature")
+
+        ik_arm = props.ik_armature
+        if ik_arm and ik_arm.type == 'ARMATURE':
             # Chain selector
             box.prop(props, "ik_chain", text="")
 
@@ -321,8 +346,23 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             row.operator("anim2.test_ik", text="Apply IK", icon='CON_KINEMATIC')
             row.operator("anim2.reset_pose", text="Reset", icon='LOOP_BACK')
 
+            # ─── Visual Debug ──────────────────────────────────────────
+            sub = box.box()
+            row = sub.row()
+            row.label(text="Visual Debug", icon='SHADING_WIRE')
+            row.prop(scene, "dev_debug_ik_visual", text="", icon='HIDE_OFF' if scene.dev_debug_ik_visual else 'HIDE_ON')
+
+            if scene.dev_debug_ik_visual:
+                col = sub.column(align=True)
+                col.prop(scene, "dev_debug_ik_visual_targets", text="Targets")
+                col.prop(scene, "dev_debug_ik_visual_chains", text="Chains")
+                col.prop(scene, "dev_debug_ik_visual_reach", text="Reach")
+                col.prop(scene, "dev_debug_ik_visual_poles", text="Poles")
+                col.prop(scene, "dev_debug_ik_visual_joints", text="Joints")
+                sub.prop(scene, "dev_debug_ik_line_width", text="Line Width")
+
         else:
-            box.label(text="Select an armature", icon='INFO')
+            box.label(text="Set an armature above", icon='INFO')
 
 
 def register():

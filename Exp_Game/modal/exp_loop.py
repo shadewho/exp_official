@@ -24,10 +24,22 @@ from ..physics.exp_view import (
     cache_camera_worker_result,
 )
 from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result
+from ..interactions.exp_tracker_eval import (
+    set_current_operator,
+    submit_tracker_evaluation,
+    process_tracker_result,
+    cache_trackers_in_worker,
+)
 from ..reactions.exp_custom_ui import update_text_reactions
 from ..audio.exp_globals import update_sound_tasks
 from ..audio.exp_audio import get_global_audio_state_manager
 from ..developer.dev_stats import get_stats_tracker
+from ..animations.runtime_ik import apply_runtime_ik
+from ..animations.blend_system import (
+    init_blend_system,
+    shutdown_blend_system,
+    get_blend_system,
+)
 
 
 class GameLoop:
@@ -47,6 +59,20 @@ class GameLoop:
 
         # Reset stats tracker on game start
         get_stats_tracker().reset_all()
+
+        # Initialize blend system with animation cache from controller
+        anim_cache = None
+        if hasattr(op, 'anim_controller') and op.anim_controller:
+            anim_cache = op.anim_controller.cache
+        init_blend_system(anim_cache)
+
+        # Cache tracker node graph in workers
+        import bpy
+        cache_trackers_in_worker(op, bpy.context)
+
+    def shutdown(self):
+        """Clean up game loop resources (called when game stops)."""
+        shutdown_blend_system()
     # ---------- Public API ----------
 
     def on_timer(self, context):
@@ -125,6 +151,13 @@ class GameLoop:
 
         # F) Interactions/UI/SFX (only if sim actually advanced)
         if steps:
+            # Set operator for input state access
+            set_current_operator(op)
+
+            # Submit tracker evaluation to worker (async)
+            # Results are processed in _poll_and_apply_engine_results
+            submit_tracker_evaluation(op, context)
+
             check_interactions(context)
             update_text_reactions()
             update_sound_tasks()
@@ -164,60 +197,83 @@ class GameLoop:
         if not armature:
             return
 
-        # Get current game time for one-shot timing
-        game_time = get_game_time()
+        # Check if locomotion is locked by BlendSystem (forced animation playing)
+        blend_system = get_blend_system()
+        locomotion_locked = blend_system and blend_system.is_locomotion_locked()
 
-        # Update state machine
-        new_state, state_changed = sm.update(
-            keys_pressed=op.keys_pressed,
-            delta_time=agg_dt,
-            is_grounded=op.is_grounded,
-            vertical_velocity=op.z_velocity,
-            game_time=game_time
-        )
+        # Only update state machine if not locked
+        if not locomotion_locked:
+            # Get current game time for one-shot timing
+            game_time = get_game_time()
 
-        # If state changed, play the new animation
-        if state_changed:
-            action_name = sm.get_action_name()
-            if action_name and ctrl.has_animation(action_name):
-                props = sm.get_state_properties()
+            # Update state machine
+            new_state, state_changed = sm.update(
+                keys_pressed=op.keys_pressed,
+                delta_time=agg_dt,
+                is_grounded=op.is_grounded,
+                vertical_velocity=op.z_velocity,
+                game_time=game_time
+            )
 
-                # Get blend time from scene property (default 0.15s)
-                blend_time = bpy.context.scene.character_actions.blend_time
+            # If state changed, play the new animation
+            if state_changed:
+                action_name = sm.get_action_name()
+                if action_name and ctrl.has_animation(action_name):
+                    props = sm.get_state_properties()
 
-                # Play on armature with crossfade
-                ctrl.play(
-                    armature.name,
-                    action_name,
-                    weight=1.0,
-                    speed=props['speed'],
-                    looping=props['loop'],
-                    fade_in=blend_time,
-                    replace=True
-                )
+                    # Get blend time from scene property (default 0.15s)
+                    blend_time = bpy.context.scene.character_actions.blend_time
 
-                # Start one-shot tracking if needed
-                if props['is_one_shot']:
-                    anim = ctrl.cache.get(action_name)
-                    if anim:
-                        sm.start_one_shot(anim.duration / props['speed'], game_time)
+                    # Play on armature with crossfade
+                    ctrl.play(
+                        armature.name,
+                        action_name,
+                        weight=1.0,
+                        speed=props['speed'],
+                        looping=props['loop'],
+                        fade_in=blend_time,
+                        replace=True
+                    )
 
-            # Update audio state
-            if new_state != self._last_anim_state:
-                audio_state_mgr = get_global_audio_state_manager()
-                audio_state_mgr.update_audio_state(new_state)
-                self._last_anim_state = new_state
+                    # Start one-shot tracking if needed
+                    if props['is_one_shot']:
+                        anim = ctrl.cache.get(action_name)
+                        if anim:
+                            sm.start_one_shot(anim.duration / props['speed'], game_time)
+
+                # Update audio state
+                if new_state != self._last_anim_state:
+                    audio_state_mgr = get_global_audio_state_manager()
+                    audio_state_mgr.update_audio_state(new_state)
+                    self._last_anim_state = new_state
 
         # WORKER-OFFLOADED ANIMATION FLOW:
         # 1. Update state (times, fades) on main thread
         update_animations_state(op, agg_dt)
+
+        # 1b. Update blend system layer timings (but don't apply yet)
+        blend_system = get_blend_system()
+        if blend_system:
+            blend_system.update(agg_dt)
 
         # 2. Submit jobs to engine
         submit_animation_jobs(op)
 
         # 3. Same-frame sync: poll for results immediately
         # Worker compute is fast (~100µs), so we wait up to 2ms
+        # This applies the base locomotion animation to the armature
         poll_animation_results_with_timeout(op, timeout=0.002)
+
+        # 4. Apply blend system OVERLAY on top of locomotion
+        # This must happen AFTER worker results are applied so overlays work correctly
+        armature = bpy.context.scene.target_armature
+        if blend_system and armature:
+            blend_system.apply_to_armature(armature)
+
+        # 5. Runtime IK overlay (after all animation poses are applied)
+        # IK modifies bones on top of animation - only if enabled in scene
+        if armature:
+            apply_runtime_ik(armature, agg_dt)
 
     def _poll_and_apply_engine_results(self):
         """
@@ -413,6 +469,22 @@ class GameLoop:
 
                     except Exception as e:
                         print(f"[GameLoop] Error applying animation batch result: {e}")
+
+                elif result.job_type == "EVALUATE_TRACKERS":
+                    # Apply tracker evaluation results from worker
+                    try:
+                        process_tracker_result(result)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying tracker result: {e}")
+
+                elif result.job_type == "CACHE_TRACKERS":
+                    # Tracker cache confirmation from worker
+                    if result.result:
+                        count = result.result.get("tracker_count", 0)
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
 
             else:
                 # Job failed - already logged in process_engine_result

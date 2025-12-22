@@ -24,10 +24,41 @@ from ..Exp_Game.props_and_utils.exp_utility_store import (
     unregister_utility_store_properties,
 )
 
+from ..Exp_Game.props_and_utils.trackers import (
+    register_tracker_properties,
+    unregister_tracker_properties,
+)
+
 from .utility_nodes import (
+    # Sockets - Float
+    FloatInputSocket,
+    FloatOutputSocket,
+    # Sockets - Integer
+    IntInputSocket,
+    IntOutputSocket,
+    # Sockets - Boolean
+    BoolInputSocket,
+    BoolOutputSocket,
+    # Sockets - Object
+    ObjectInputSocket,
+    ObjectOutputSocket,
+    # Sockets - Collection
+    CollectionInputSocket,
+    CollectionOutputSocket,
+    # Sockets - Action
+    ActionInputSocket,
+    ActionOutputSocket,
+    # Sockets - Float Vector
     FloatVectorInputSocket,
     FloatVectorOutputSocket,
-    UtilityCaptureFloatVectorNode,
+    # Data Nodes
+    FloatDataNode,
+    IntDataNode,
+    BoolDataNode,
+    ObjectDataNode,
+    CollectionDataNode,
+    ActionDataNode,
+    FloatVectorDataNode,
 )
 
 from .node_editor import (
@@ -49,10 +80,26 @@ from .node_editor import (
     NODE_MT_exploratory_add_objectives,
     NODE_MT_exploratory_add_actions,
     NODE_MT_exploratory_add_utilities,
+    NODE_MT_exploratory_add_trackers,
     # hook used to append menu entry to NODE_MT_add
     _append_exploratory_entry,
 )
 from .action_key_nodes import CreateActionKeyNode
+
+# ── TRACKERS ──
+from .tracker_nodes import (
+    TrackerObjectInputSocket,
+    TrackerFloatInputSocket,
+    TrackerBoolSocket,
+    DistanceTrackerNode,
+    StateTrackerNode,
+    ContactTrackerNode,
+    InputTrackerNode,
+    GameTimeTrackerNode,
+    LogicAndNode,
+    LogicOrNode,
+    LogicNotNode,
+)
 
 # ── TRIGGERS ──
 from .trigger_nodes import (
@@ -72,6 +119,11 @@ from .reaction_nodes import (
     ReactionOutputSocket,
     ImpactEventOutputSocket,
     ImpactLocationOutputSocket,
+    # Dynamic property sockets (draw inline with fields)
+    DynamicObjectInputSocket,
+    DynamicBoolInputSocket,
+    DynamicFloatInputSocket,
+    DynamicActionInputSocket,
     ReactionCustomActionNode,
     ReactionCharActionNode,
     ReactionSoundNode,
@@ -93,15 +145,10 @@ from .reaction_nodes import (
 )
 
 from .trig_react_obj_lists import(
+    EXPL_OT_delete_orphaned,
     VIEW3D_PT_Exploratory_Studio,
-    EXPLORATORY_UL_CustomInteractions,
-    EXPLORATORY_UL_ReactionsInInteraction,
-    EXPLORATORY_UL_ReactionLibrary,
-    EXPLORATORY_OT_AddGlobalReaction,
-    EXPLORATORY_OT_RemoveGlobalReaction,
     VIEW3D_PT_Exploratory_Reactions,
     VIEW3D_PT_Objectives,
-    EXPLORATORY_UL_Objectives,
 )
 
 # ── OBJECTIVES ──
@@ -125,17 +172,43 @@ classes = [
 
 
 
-    # utilities
-    UtilityDelayNode, 
+    # utilities - sockets
+    FloatInputSocket,
+    FloatOutputSocket,
+    IntInputSocket,
+    IntOutputSocket,
+    BoolInputSocket,
+    BoolOutputSocket,
+    ObjectInputSocket,
+    ObjectOutputSocket,
+    CollectionInputSocket,
+    CollectionOutputSocket,
+    ActionInputSocket,
+    ActionOutputSocket,
     FloatVectorInputSocket,
     FloatVectorOutputSocket,
-    UtilityCaptureFloatVectorNode,
+    # utilities - data nodes
+    FloatDataNode,
+    IntDataNode,
+    BoolDataNode,
+    ObjectDataNode,
+    CollectionDataNode,
+    ActionDataNode,
+    FloatVectorDataNode,
+    # utilities - delay
+    UtilityDelayNode,
     
-    # reactions
+    # reaction sockets
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
     ImpactEventOutputSocket,
-    ImpactLocationOutputSocket, 
+    ImpactLocationOutputSocket,
+    # dynamic property sockets (draw inline)
+    DynamicObjectInputSocket,
+    DynamicBoolInputSocket,
+    DynamicFloatInputSocket,
+    DynamicActionInputSocket,
+    # reaction nodes
     ReactionCustomActionNode,
     ReactionCharActionNode,
     ReactionSoundNode,
@@ -153,7 +226,6 @@ classes = [
     ReactionActionKeysNode,
     ReactionParentingNode,
     ReactionTrackingNode,
-
 
     # objective
     ObjectiveNode,
@@ -174,17 +246,27 @@ classes = [
     NODE_MT_exploratory_add_reactions,
     NODE_MT_exploratory_add_objectives,
     NODE_MT_exploratory_add_actions,
+    NODE_MT_exploratory_add_utilities,
+    NODE_MT_exploratory_add_trackers,
 
+    # tracker sockets (must register before nodes)
+    TrackerObjectInputSocket,
+    TrackerFloatInputSocket,
+    TrackerBoolSocket,
+    # tracker nodes
+    DistanceTrackerNode,
+    StateTrackerNode,
+    ContactTrackerNode,
+    InputTrackerNode,
+    GameTimeTrackerNode,
+    LogicAndNode,
+    LogicOrNode,
+    LogicNotNode,
+
+    EXPL_OT_delete_orphaned,
     VIEW3D_PT_Exploratory_Studio,
-    EXPLORATORY_UL_CustomInteractions,
-    EXPLORATORY_UL_ReactionsInInteraction,
-    EXPLORATORY_UL_ReactionLibrary,
-    EXPLORATORY_OT_AddGlobalReaction,
-    EXPLORATORY_OT_RemoveGlobalReaction,
     VIEW3D_PT_Exploratory_Reactions,
     VIEW3D_PT_Objectives,
-    EXPLORATORY_UL_Objectives,
-    NODE_MT_exploratory_add_utilities,
 ]
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
@@ -227,7 +309,8 @@ def _sanitize_open_node_editors_before_unload():
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    register_utility_store_properties()                      # ← add
+    register_utility_store_properties()
+    register_tracker_properties()
     from bpy.types import NODE_MT_add
     NODE_MT_add.append(_append_exploratory_entry)
 
@@ -239,7 +322,8 @@ def unregister():
     for cls in reversed(classes):
         try: bpy.utils.unregister_class(cls)
         except Exception: pass
-    unregister_utility_store_properties()                    # ← add
+    unregister_utility_store_properties()
+    unregister_tracker_properties()
 
 
 

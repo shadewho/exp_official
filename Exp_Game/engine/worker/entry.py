@@ -75,6 +75,15 @@ _cached_animations = {}
 # Flag to track if numpy arrays have been reconstructed from lists
 _animations_numpy_ready = False
 
+# Tracker cache: list of serialized tracker definitions from main thread
+_cached_trackers = []
+
+# Tracker state: {interaction_index: last_bool_value} for edge detection
+_tracker_states = {}
+
+# Tracker Hz throttling: {interaction_index: last_eval_time}
+_tracker_last_eval = {}
+
 
 # ============================================================================
 # NUMPY ANIMATION COMPUTE (Vectorized worker-side blending)
@@ -431,6 +440,218 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
 
 
 # ============================================================================
+# TRACKER EVALUATION (Worker-side condition checking)
+# ============================================================================
+
+def _compare(value: float, op: str, threshold: float) -> bool:
+    """Compare value against threshold using operator."""
+    if op == 'LT': return value < threshold
+    if op == 'LE': return value <= threshold
+    if op == 'EQ': return abs(value - threshold) < 0.001
+    if op == 'NE': return abs(value - threshold) >= 0.001
+    if op == 'GE': return value >= threshold
+    if op == 'GT': return value > threshold
+    return False
+
+
+def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
+    """
+    Recursively evaluate a serialized condition tree.
+    This is the WORKER-SIDE evaluation - no bpy access!
+    """
+    node_type = tree.get('type', '')
+    positions = world_state.get('positions', {})
+    inputs = world_state.get('inputs', {})
+    char_state = world_state.get('char_state', 'IDLE')
+    game_time = world_state.get('game_time', 0.0)
+    contacts = world_state.get('contacts', {})
+
+    # ─── Distance Tracker ───
+    if node_type == 'DistanceTrackerNodeType':
+        obj_a = tree.get('object_a', '')
+        obj_b = tree.get('object_b', '')
+        pos_a = positions.get(obj_a)
+        pos_b = positions.get(obj_b)
+
+        if not pos_a or not pos_b:
+            return False
+
+        # Calculate distance
+        dx = pos_a[0] - pos_b[0]
+        dy = pos_a[1] - pos_b[1]
+        dz = pos_a[2] - pos_b[2]
+        dist = (dx*dx + dy*dy + dz*dz) ** 0.5
+
+        return _compare(dist, tree.get('op', 'LT'), tree.get('value', 5.0))
+
+    # ─── State Tracker ───
+    elif node_type == 'StateTrackerNodeType':
+        target_state = tree.get('state', 'GROUNDED')
+        equals = tree.get('equals', True)
+
+        # Map GROUNDED to actual ground state
+        if target_state == 'GROUNDED':
+            is_match = char_state in ('IDLE', 'WALKING', 'RUNNING', 'SPRINTING', 'CROUCHING')
+        else:
+            is_match = (char_state == target_state)
+
+        return is_match if equals else not is_match
+
+    # ─── Contact Tracker ───
+    elif node_type == 'ContactTrackerNodeType':
+        obj = tree.get('object', '')
+        targets = tree.get('targets', [])
+
+        obj_contacts = contacts.get(obj, [])
+        for target in targets:
+            if target in obj_contacts:
+                return True
+        return False
+
+    # ─── Input Tracker ───
+    elif node_type == 'InputTrackerNodeType':
+        action = tree.get('action', '')
+        is_pressed = tree.get('is_pressed', True)
+        current = inputs.get(action, False)
+        return current if is_pressed else not current
+
+    # ─── Game Time Tracker ───
+    elif node_type == 'GameTimeTrackerNodeType':
+        if not tree.get('compare_enabled', True):
+            return True  # Always true when comparison disabled
+
+        return _compare(game_time, tree.get('op', 'GE'), tree.get('value', 10.0))
+
+    # ─── Logic AND ───
+    elif node_type == 'LogicAndNodeType':
+        children = tree.get('inputs', [])
+        if not children:
+            return True  # Empty AND is true
+        for child in children:
+            if not _eval_condition_tree(child, world_state):
+                return False
+        return True
+
+    # ─── Logic OR ───
+    elif node_type == 'LogicOrNodeType':
+        children = tree.get('inputs', [])
+        if not children:
+            return True  # Empty OR is true
+        for child in children:
+            if _eval_condition_tree(child, world_state):
+                return True
+        return False
+
+    # ─── Logic NOT ───
+    elif node_type == 'LogicNotNodeType':
+        children = tree.get('inputs', [])
+        if not children:
+            return True  # NOT with no input is true
+        return not _eval_condition_tree(children[0], world_state)
+
+    return False
+
+
+def _handle_cache_trackers(job_data: dict) -> dict:
+    """
+    Handle CACHE_TRACKERS job - store tracker definitions from main thread.
+    Called once at game start.
+    """
+    global _cached_trackers, _tracker_states, _tracker_last_eval
+
+    trackers = job_data.get("trackers", [])
+    _cached_trackers = list(trackers)
+    _tracker_states.clear()
+    _tracker_last_eval.clear()
+
+    logs = [("TRACKERS", f"WORKER_CACHED {len(_cached_trackers)} tracker chains")]
+
+    return {
+        "success": True,
+        "tracker_count": len(_cached_trackers),
+        "message": "Trackers cached successfully",
+        "logs": logs,
+    }
+
+
+def _handle_evaluate_trackers(job_data: dict) -> dict:
+    """
+    Handle EVALUATE_TRACKERS job - evaluate all cached trackers with world state.
+    Called each frame from main thread.
+    """
+    global _cached_trackers, _tracker_states, _tracker_last_eval
+
+    calc_start = time.perf_counter()
+    logs = []
+
+    world_state = job_data.get("world_state", {})
+    game_time = job_data.get("game_time", 0.0)
+
+    if not _cached_trackers:
+        return {
+            "success": True,
+            "signal_updates": {},
+            "fired_indices": [],
+            "trackers_evaluated": 0,
+            "calc_time_us": 0,
+            "logs": [],
+        }
+
+    signal_updates = {}
+    fired_indices = []
+    evaluated = 0
+
+    for tracker in _cached_trackers:
+        inter_idx = tracker.get('interaction_index', -1)
+        if inter_idx < 0:
+            continue
+
+        # Hz throttling
+        eval_hz = 10  # Default
+        tree = tracker.get('condition_tree', {})
+        if tree:
+            eval_hz = tree.get('eval_hz', 10)
+
+        eval_interval = 1.0 / max(1, eval_hz)
+        last_eval = _tracker_last_eval.get(inter_idx, 0.0)
+
+        if game_time - last_eval < eval_interval:
+            continue  # Skip this frame (throttled)
+
+        _tracker_last_eval[inter_idx] = game_time
+
+        # Evaluate condition tree
+        new_value = _eval_condition_tree(tree, world_state)
+        old_value = _tracker_states.get(inter_idx, False)
+        evaluated += 1
+
+        # Track state change
+        if new_value != old_value:
+            _tracker_states[inter_idx] = new_value
+            signal_updates[str(inter_idx)] = new_value
+
+            if new_value:
+                fired_indices.append(inter_idx)
+
+            state_str = "TRUE" if new_value else "FALSE"
+            logs.append(("TRACKERS", f"FIRE inter={inter_idx} -> {state_str}"))
+
+    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+    if evaluated > 0:
+        logs.append(("TRACKERS", f"EVAL {evaluated} trackers, {len(signal_updates)} changed, {calc_time_us:.0f}µs"))
+
+    return {
+        "success": True,
+        "signal_updates": signal_updates,
+        "fired_indices": fired_indices,
+        "trackers_evaluated": evaluated,
+        "calc_time_us": calc_time_us,
+        "logs": logs,
+    }
+
+
+# ============================================================================
 # JOB DISPATCHER
 # ============================================================================
 
@@ -771,6 +992,16 @@ def process_job(job) -> dict:
             # Output: {"results": {obj_name: {bone_transforms: {...}}, ...}}
             # This eliminates O(n) IPC overhead - one round trip regardless of object count
             result_data = _handle_animation_compute_batch(job.data)
+
+        elif job.job_type == "CACHE_TRACKERS":
+            # Cache serialized tracker definitions from main thread
+            # Sent ONCE at game start. Per-frame, only world state is sent.
+            result_data = _handle_cache_trackers(job.data)
+
+        elif job.job_type == "EVALUATE_TRACKERS":
+            # Evaluate all cached trackers with current world state
+            # Returns which interaction signals changed
+            result_data = _handle_evaluate_trackers(job.data)
 
         else:
             # Unknown job type - still succeed but note it

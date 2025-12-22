@@ -1,246 +1,307 @@
 # Dynamic Animation System
 
-**Status**: Foundation phase - IK solver built, testing tools in progress
+**Status**: Rigid foundation built - needs procedural layer and node integration
+
+**Backend Reference**: See `Exp_Game/engine/animations/CLAUDE_ANIM.md` for low-level animation architecture (numpy arrays, worker threading, blend math).
 
 ---
 
-## The Vision
+## Current State
 
-The current locomotion system (walk, run, jump, idle) is **effective but rigid**. Animations play exactly as authored regardless of the environment. Character feet float over slopes, hands clip through walls, there's no reaction to impacts.
+We have a **functional but rigid** animation system:
 
-The Dynamic Animation System is a **reactive layer on top of base locomotion** that adapts the character to the world around them. It bridges the gap from rigid to fluid.
+### What Works Now
+- **Locomotion state machine** - walk, run, jump, idle, fall, land
+- **BlendSystem overlays** - additive and override layers on top of locomotion
+- **Body group masking** - target specific bones (UPPER_BODY, LEG_L, ARMS, etc.)
+- **Character Action node** - play animations via reactions with blend time, speed, force lock
+- **Vectorized blending** - numpy operations, ~10-20us per layer (fast)
 
-**Core Principle**: The world informs the animation, not the other way around.
-
----
-
-## What This System Does
-
-### Receives Input From:
-- **Physics system** - ground height, slope angle, wall collisions, platform motion
-- **Interaction system** - objects to grab, buttons to press, ledges to climb
-- **Reaction system** - impacts, trips, stumbles, environmental hazards
-- **Game state** - carrying objects, injury state, fatigue
-
-### Outputs:
-- **Bone corrections** via IK (feet plant on actual ground, hands reach actual targets)
-- **Additive animations** (stumble when hit, brace when falling)
-- **Blend weight adjustments** (override part or all of base locomotion)
-- **Procedural motion** (breathing, weight shifting, look-at)
+### What's Missing
+- **No procedural motion** - everything requires pre-made animation data
+- **No variance** - same animation plays identically every time
+- **Weak node integration** - reactions trigger animations but no smart selection
+- **No built-in library** - users must create all animations from scratch
+- **No world reactivity** - character doesn't respond to physics/environment
 
 ---
 
-## Architecture
+## The Problem
+
+**Current workflow is too manual:**
+
+1. User wants "flinch when hit"
+2. User must create flinch animation in Blender
+3. User must bake animation
+4. User must set up Collision Trigger + Character Action reaction
+5. Animation plays identically regardless of hit direction, force, etc.
+
+**Target workflow:**
+
+1. User wants "flinch when hit"
+2. User adds Collision Trigger + "Dynamic Flinch" reaction
+3. System selects appropriate flinch variant based on impact direction
+4. Procedural adjustments add variance and world-responsiveness
+
+---
+
+## Architecture Goal
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         FINAL POSE                              │
-│              (What gets applied to the armature)                │
+│              (Applied to armature each frame)                   │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
-                              │ Blend
+                              │
 ┌─────────────────────────────────────────────────────────────────┐
-│                    DYNAMIC LAYER (Optional)                     │
+│                    PROCEDURAL LAYER                             │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │   Foot IK   │  │   Arm IK    │  │  Look-At    │             │
-│  │ (grounding) │  │ (reaching)  │  │  (head)     │             │
-│  └─────────────┘  └─────────────┘  └─────────────┘             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │  Reactions  │  │  Additive   │  │ Procedural  │             │
-│  │ (stumble)   │  │  (breathe)  │  │  (balance)  │             │
+│  │  Variance   │  │   Noise     │  │  Physics    │             │
+│  │ (per-play)  │  │  (micro)    │  │  Response   │             │
 │  └─────────────┘  └─────────────┘  └─────────────┘             │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
-                              │ Base pose
 ┌─────────────────────────────────────────────────────────────────┐
-│                    BASE LOCOMOTION LAYER                        │
-│         Walk, Run, Jump, Idle, Crouch (existing system)         │
-│                   Plays regardless of world                     │
+│                    REACTION LAYER (BlendSystem)                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │  Override   │  │  Additive   │  │    IK       │             │
+│  │ (flinch)    │  │  (breathe)  │  │  (reach)    │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+│                                                                 │
+│         Triggered by: Nodes (Interactions/Reactions)            │
+└─────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────┐
+│                    BASE LOCOMOTION                              │
+│         Walk, Run, Jump, Idle (AnimationController)             │
+│                   Worker-computed, always running               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Key**: Dynamic layer is **100% optional**. Users can enable/disable individual features. Base locomotion always works.
+---
+
+## Node System Integration
+
+The animation system connects to gameplay through **Exp_Nodes**:
+
+### Current Connection
+```
+Trigger Node (Collision, Proximity, Action, etc.)
+       │
+       ▼
+Reaction Node (Character Action)
+       │
+       ▼
+BlendSystem.play_override() / play_additive()
+       │
+       ▼
+Animation plays on masked bones
+```
+
+### Problem: Too Manual
+- User must specify exact animation
+- No automatic selection based on context
+- No variance between plays
+- No smart bone group selection
+
+### Target Connection
+```
+Trigger Node (Collision, Proximity, Action, etc.)
+       │
+       ├─── Context data (direction, force, object type)
+       ▼
+Dynamic Reaction Node (Smart selection)
+       │
+       ├─── Selects from animation pool based on context
+       ├─── Applies variance (speed, intensity, timing)
+       ├─── Chooses appropriate bone group
+       ▼
+BlendSystem with procedural modifiers
+       │
+       ▼
+Unique, context-appropriate animation
+```
 
 ---
 
-## The Standard Rig
+## Built-In Animation Library
 
-All dynamic features target one armature: **the Exploratory standard rig**.
+**Concept**: Ship a library of pre-made animations for the standard rig that users can use out of the box.
 
-See: `rig.md` (same directory)
+### Location
+```
+Exp_Game/
+  animations/
+    library/                    # Built-in animation data
+      reactions/
+        flinch_front.blend
+        flinch_back.blend
+        flinch_left.blend
+        flinch_right.blend
+        stumble_forward.blend
+        stumble_backward.blend
+      interactions/
+        grab_high.blend
+        grab_low.blend
+        push.blend
+        pull.blend
+      locomotion/
+        swim_idle.blend
+        swim_forward.blend
+        climb_up.blend
+        climb_down.blend
+      emotes/
+        wave.blend
+        point.blend
+        shrug.blend
+```
 
-- 53 bones, Mixamo-style naming
-- Fixed bone lengths and hierarchy
-- Pre-defined IK chains (legs, arms, spine, look-at)
-- This rig never changes - all characters conform to it
+### How It Works
+1. Animations are baked at game start (like user animations)
+2. Dynamic nodes reference library animations by name
+3. Users can override with custom animations
+4. Library grows over time with common actions
 
-**Why one rig?**
-- IK chain lengths are known constants
-- Animation data is transferable between characters
-- Procedural systems don't need per-character configuration
-- Users just weight paint their mesh, everything else works
-
----
-
-## IK System (Foundation)
-
-IK is the core mechanism for world-reactive animation.
-
-### What We Have:
-- **Two-bone analytical solver** (`engine/animations/ik.py`)
-  - Law of cosines for joint angles
-  - Works for legs (thigh→shin→foot) and arms (upper→fore→hand)
-  - Returns world positions for joints (knee, elbow)
-
-- **Bone rotation conversion** (`animations/test_panel.py`)
-  - `point_bone_at_target()` - rotates bone to face a world position
-  - Handles parent chains and bone roll correctly
-  - Works for both legs and arms
-
-- **Test panel** (Developer Tools > IK Test)
-  - Chain selector (left/right leg/arm)
-  - Target sliders (foot height, arm reach)
-  - Apply/Reset buttons
-
-### What We Need:
-- **Full XYZ target control** - not just height/forward
-- **3D cursor as target** - place cursor, arm reaches for it
-- **Pole vector control** - knee/elbow bend direction
-- **Reach limit visualization** - show max extent spheres
-- **Live update mode** - IK updates as you drag sliders
-- **Edge case testing** - unreachable targets, hyperextension
-
-### Integration Points:
-- Physics ground raycast → foot IK target Z
-- Interaction object position → hand IK target XYZ
-- Character velocity → procedural lean/balance
+### Benefits
+- Users get working reactions immediately
+- No animation software required for basic games
+- Consistent quality baseline
+- Can be extended/customized
 
 ---
 
-## Testing Philosophy
+## Variance System
 
-**Test thoroughly before gameplay integration.**
+**Goal**: Same trigger produces different results each time.
 
-The N panel test suite must verify:
+### Types of Variance
 
-| Test | What It Validates |
-|------|-------------------|
-| Leg reaches target Z | Basic IK math works |
-| Knee bends forward | Pole vector correct |
-| Arm reaches XYZ | 3D targeting works |
-| Elbow bends backward | Arm pole vector correct |
-| Target at max reach | Extension behavior |
-| Target beyond reach | Clamping/failure handling |
-| Target too close | Hyperflexion behavior |
-| Both legs simultaneously | Multi-chain IK |
-| IK + animation blend | Layering works |wa
+**1. Animation Selection Variance**
+```python
+# Instead of playing one animation:
+play_animation("flinch")
 
-**Visualizer integration:**
-- IK targets (spheres)
-- Bone chains (lines)
-- Reach limits (transparent spheres)
-- Pole directions (arrows)
+# Select from pool:
+pool = ["flinch_01", "flinch_02", "flinch_03"]
+play_animation(random.choice(pool))
+```
 
-This can live alongside or within the KCC Visual Debug system.
+**2. Playback Variance**
+```python
+# Speed variation: 0.85x to 1.15x
+speed = base_speed * random.uniform(0.85, 1.15)
 
----
+# Intensity variation (blend weight)
+weight = base_weight * random.uniform(0.8, 1.0)
 
-## User Experience Goal
+# Timing offset
+delay = random.uniform(0.0, 0.05)  # 0-50ms random delay
+```
 
-**Make dynamic animation hands-free for world builders.**
+**3. Bone Group Variance**
+```python
+# Sometimes full upper body, sometimes just arms
+groups = ["UPPER_BODY", "ARMS", "ARM_L", "ARM_R"]
+weights = [0.5, 0.3, 0.1, 0.1]  # Probability distribution
+selected = random.choices(groups, weights)[0]
+```
 
-Current pain point: Users want characters that react to the world, but creating those animations requires:
-- Animation software knowledge
-- Understanding of blend trees
-- Manual setup per interaction
+**4. Procedural Noise**
+- Micro-movements on idle (weight shifting)
+- Breathing cycle (chest additive)
+- Head micro-sway
+- Hand tremor (fatigue/injury state)
 
-**Target experience:**
-1. User places a weapon in the world
-2. User marks it as "grabbable"
-3. Character walks up, arm automatically reaches and grabs
-4. No animation authoring required
-
-The system uses:
-- Pre-made reaction animations (stumble, grab, brace)
-- IK to adapt those animations to actual world positions
-- Physics data to trigger appropriate reactions
-
----
-
-## What We Might Include
-
-### Animation Library (bundled or downloadable):
-- Stumble/trip variations
-- Grab/reach poses
-- Impact reactions (front, back, sides)
-- Throw/drop motions
-- Climb/vault transitions
-- Fall/land sequences
-
-These serve as **templates** that IK and blending adapt to specific situations.
-
-### Procedural Layers:
-- Breathing (chest expansion cycle)
-- Weight shifting (idle micro-movements)
-- Look-at (head tracks points of interest)
-- Balance adjustment (lean into velocity)
-
-### Physics Integration:
-- Foot grounding (IK feet to actual ground)
-- Wall bracing (hand reaches toward nearby wall)
-- Platform riding (body adjusts to moving surface)
-- Impact reactions (stumble direction based on collision normal)
+### Node Exposure
+```
+[Character Action (Dynamic)]
+├── Animation Pool: [flinch_01, flinch_02, flinch_03]
+├── Speed Variance: 0.15 (±15%)
+├── Weight Variance: 0.2 (±20%)
+├── Delay Variance: 0.05s
+└── Bone Group: Auto / Specific
+```
 
 ---
 
-## Performance Requirements
+## Context-Aware Selection
 
-**Must not impact frame rate.**
+**Goal**: System chooses appropriate animation based on game state.
 
-- All IK computation runs in **worker threads** (not main thread)
-- Bone transforms are **numpy arrays** (vectorized math)
-- Raycasts for foot grounding reuse **existing physics raycasts** where possible
-- Features are **individually toggleable** (disable what you don't need)
-- Logging uses **fast buffer system** (no console prints during gameplay)
+### Impact Direction
+```python
+# Collision provides impact normal
+impact_direction = collision.normal
 
-Log output: `C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt`
+# Select flinch based on direction relative to character
+if facing_dot(impact_direction) > 0.5:
+    animation = "flinch_front"
+elif facing_dot(impact_direction) < -0.5:
+    animation = "flinch_back"
+elif right_dot(impact_direction) > 0:
+    animation = "flinch_right"
+else:
+    animation = "flinch_left"
+```
+
+### Object Height (for grabs/interactions)
+```python
+# Interaction target height relative to character
+relative_height = target.z - character.z
+
+if relative_height > 1.5:
+    animation = "grab_high"
+elif relative_height > 0.5:
+    animation = "grab_mid"
+else:
+    animation = "grab_low"
+```
+
+### Character State
+```python
+# Modify based on current state
+if character.is_injured:
+    speed *= 0.7
+    weight *= 1.2  # More dramatic
+
+if character.is_exhausted:
+    add_procedural_sway()
+```
 
 ---
 
-## Development Phases
+## What Needs Building
 
-### Phase 1: IK Foundation (Current)
-- [x] Two-bone IK solver
-- [x] Bone rotation conversion
-- [x] Basic test panel
-- [ ] Expanded test panel (XYZ, 3D cursor, pole control)
-- [ ] IK visualizer (targets, chains, limits)
-- [ ] Edge case handling
+### Phase 1: Animation Library Infrastructure
+- [ ] Create library folder structure
+- [ ] Build library loader (bakes library anims at startup)
+- [ ] Library animation browser UI
+- [ ] Fallback system (use library if user anim missing)
 
-### Phase 2: Foot Grounding
-- [ ] Ground raycast per foot (from animation foot position)
-- [ ] IK target from raycast hit
-- [ ] Pelvis height adjustment
-- [ ] Blend with walk/run animation
-- [ ] Slope adaptation
+### Phase 2: Variance System
+- [ ] Animation pool data structure
+- [ ] Playback variance parameters on layer
+- [ ] Random selection with weighting
+- [ ] Seed control for reproducibility
 
-### Phase 3: Arm Reaching
-- [ ] Interaction system integration
-- [ ] Hand IK to object position
-- [ ] Grab pose blending
-- [ ] Two-handed grabs
+### Phase 3: Dynamic Reaction Nodes
+- [ ] "Dynamic Character Action" node type
+- [ ] Context inputs (direction, force, height)
+- [ ] Auto bone group selection
+- [ ] Pool-based animation selection UI
 
-### Phase 4: Reactions
-- [ ] Impact detection from physics
-- [ ] Reaction animation selection
-- [ ] Procedural stumble direction
-- [ ] Recovery blending
+### Phase 4: Procedural Modifiers
+- [ ] Noise generator (Perlin/simplex)
+- [ ] Breathing additive layer
+- [ ] Micro-movement system
+- [ ] State-based modification (injury, fatigue)
 
-### Phase 5: Procedural Polish
-- [ ] Look-at system
-- [ ] Breathing/idle variation
-- [ ] Balance/lean from velocity
-- [ ] Ragdoll transition
+### Phase 5: Context Integration
+- [ ] Collision normal → flinch direction
+- [ ] Interaction height → reach animation
+- [ ] Velocity → lean/balance
+- [ ] Physics impact → stumble intensity
 
 ---
 
@@ -248,23 +309,44 @@ Log output: `C:\Users\spenc\Desktop\engine_output_files\diagnostics_latest.txt`
 
 | File | Purpose |
 |------|---------|
-| `rig.md` | Standard rig specification (bone names, lengths, chains) |
-| `engine/animations/ik.py` | Two-bone IK solver (worker-safe, numpy) |
-| `animations/test_panel.py` | IK test operators and properties |
-| `developer/dev_panel.py` | IK Test UI section |
-| `developer/dev_properties.py` | Debug properties (add IK visualizer here) |
+| `blend_system.py` | Layer management, vectorized blending |
+| `controller.py` | Base locomotion, worker integration |
+| `bone_groups.py` | Body part masks (UPPER_BODY, LEGS, etc.) |
+| `Exp_Nodes/reaction_nodes.py` | Character Action node UI |
+| `reactions/exp_reactions.py` | Reaction executors |
+| `engine/animations/blend.py` | Vectorized blend math |
+| `engine/animations/CLAUDE_ANIM.md` | Backend architecture docs |
 
 ---
 
-## Remember
+## Design Principles
 
-1. **Optional** - Every dynamic feature can be disabled
-2. **Layered** - Dynamic sits on top of base locomotion, doesn't replace it
-3. **Reactive** - World informs animation, not the reverse
-4. **Tested** - Validate in N panel before gameplay integration
-5. **Fast** - Worker threads, numpy, no main thread physics
-6. **Simple for users** - Complexity hidden, results automatic
+1. **Rigid by default, fluid when enabled** - Base system always works, procedural is opt-in
+2. **Node-driven** - All dynamic behavior configured through visual nodes
+3. **Library-first** - Ship animations users can use immediately
+4. **Variance everywhere** - Nothing should look identical twice
+5. **Context-aware** - System uses available data to make smart choices
+6. **Performance-safe** - All heavy math in workers, main thread stays light
 
 ---
 
-**Last Updated**: 2025-12-20
+## Success Criteria
+
+**A user should be able to:**
+
+1. Add a "flinch on hit" reaction in under 30 seconds
+2. See different flinch variations each time character is hit
+3. Have flinch direction match impact direction automatically
+4. Never need to open animation software for basic reactions
+5. Optionally override with custom animations when desired
+
+**The system should feel:**
+
+- Alive (subtle constant motion)
+- Responsive (reactions match context)
+- Varied (no two plays identical)
+- Effortless (minimal setup required)
+
+---
+
+**Last Updated**: 2025-12-21

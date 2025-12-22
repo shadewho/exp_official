@@ -224,7 +224,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
-
         ],
         default="CUSTOM_ACTION"
     )
@@ -261,10 +260,35 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         ],
         default="PLAY_ONCE"
     )
-    char_action_blend: bpy.props.BoolProperty(
-        name="Blend animation",
+    char_action_blend_time: bpy.props.FloatProperty(
+        name="Blend Time",
+        default=0.15,
+        min=0.0,
+        max=2.0,
+        description="Fade/transition time in seconds when starting this animation"
+    )
+    char_action_bone_group: bpy.props.EnumProperty(
+        name="Bone Group",
+        items=[
+            ("ALL", "Full Body", "Apply to entire body"),
+            ("UPPER_BODY", "Upper Body", "Spine, arms, head, neck"),
+            ("LOWER_BODY", "Lower Body", "Hips, legs"),
+            ("ARM_L", "Left Arm", "Left arm only"),
+            ("ARM_R", "Right Arm", "Right arm only"),
+            ("ARMS", "Both Arms", "Both arms"),
+            ("LEG_L", "Left Leg", "Left leg only"),
+            ("LEG_R", "Right Leg", "Right leg only"),
+            ("LEGS", "Both Legs", "Both legs"),
+            ("HEAD_NECK", "Head & Neck", "Head and neck only"),
+            ("SPINE", "Spine Only", "Spine bones only"),
+        ],
+        default="ALL",
+        description="Which body part to affect with this animation"
+    )
+    char_action_force: bpy.props.BoolProperty(
+        name="Force Animation",
         default=False,
-        description="If enabled, this action blends with existing animations instead of replacing them."
+        description="Lock locomotion while this animation plays (prevents walk/run/jump from interrupting)"
     )
 
     #--------------------------------------------------------
@@ -972,8 +996,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         default=0.0, min=0.0, soft_max=120.0,
         description="0 = unlimited. Stops automatically after this many seconds"
     )
-
-
 
 
 def register_reaction_library_properties():

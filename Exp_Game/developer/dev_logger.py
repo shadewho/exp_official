@@ -77,6 +77,12 @@ _CATEGORY_MAP = {
     'ANIMATIONS': 'animations',
     'ANIM-CACHE': 'anim_cache',
     'ANIM-WORKER': 'anim_worker',
+
+    # IK System
+    'IK': 'runtime_ik',
+
+    # Tracker System
+    'TRACKERS': 'trackers',
 }
 
 

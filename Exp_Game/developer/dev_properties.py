@@ -325,6 +325,61 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # IK VISUAL DEBUG (3D Viewport Overlay)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_ik_visual = bpy.props.BoolProperty(
+        name="Enable IK Visual Debug",
+        description=(
+            "Real-time 3D visualization of IK system:\n"
+            "• IK targets (spheres at goal positions)\n"
+            "• Bone chains (lines from root to tip)\n"
+            "• Reach limits (transparent spheres)\n"
+            "• Pole vectors (arrows showing bend direction)\n"
+            "• Joint positions (knee/elbow markers)"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_ik_visual_targets = bpy.props.BoolProperty(
+        name="IK Targets",
+        description="Draw IK target positions as spheres (green = reachable, red = out of reach)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_debug_ik_visual_chains = bpy.props.BoolProperty(
+        name="Bone Chains",
+        description="Draw bone chains as lines (cyan = upper bone, magenta = lower bone)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_debug_ik_visual_reach = bpy.props.BoolProperty(
+        name="Reach Limits",
+        description="Draw maximum reach sphere from root joint (transparent yellow)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_debug_ik_visual_poles = bpy.props.BoolProperty(
+        name="Pole Vectors",
+        description="Draw pole direction arrows (orange = bend direction hint)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_debug_ik_visual_joints = bpy.props.BoolProperty(
+        name="Joint Markers",
+        description="Draw markers at joint positions (root, mid, tip)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_debug_ik_line_width = bpy.props.FloatProperty(
+        name="Line Width",
+        description="IK visual debug line thickness (1.0-10.0)",
+        default=2.5,
+        min=1.0,
+        max=10.0
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
     # GAME SYSTEMS
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -337,6 +392,18 @@ def register_properties():
     bpy.types.Scene.dev_debug_audio = bpy.props.BoolProperty(
         name="Audio",
         description="Audio playback and state",
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_trackers = bpy.props.BoolProperty(
+        name="Trackers",
+        description=(
+            "Tracker system diagnostics (worker-offloaded):\n"
+            "• Condition evaluations and results\n"
+            "• Fire events with tracker UID\n"
+            "• Edge detection transitions\n"
+            "• Cooldown and rate limiting"
+        ),
         default=False
     )
 
@@ -373,6 +440,55 @@ def register_properties():
             "• Compute times on animation worker"
         ),
         default=False
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RUNTIME IK SYSTEM
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_runtime_ik = bpy.props.BoolProperty(
+        name="Runtime IK",
+        description=(
+            "Runtime IK system diagnostics:\n"
+            "• IK job submission (target, chain, influence)\n"
+            "• Worker solve time (µs)\n"
+            "• Joint positions computed\n"
+            "• Blend with animation"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.runtime_ik_enabled = bpy.props.BoolProperty(
+        name="Enable Runtime IK",
+        description="Enable real-time IK solving during gameplay",
+        default=False
+    )
+
+    bpy.types.Scene.runtime_ik_chain = bpy.props.EnumProperty(
+        name="IK Chain",
+        description="Which limb chain to solve IK for",
+        items=[
+            ("leg_L", "Left Leg", "Left leg IK (thigh → shin → foot)"),
+            ("leg_R", "Right Leg", "Right leg IK (thigh → shin → foot)"),
+            ("arm_L", "Left Arm", "Left arm IK (upper → forearm → hand)"),
+            ("arm_R", "Right Arm", "Right arm IK (upper → forearm → hand)"),
+        ],
+        default="arm_R"
+    )
+
+    bpy.types.Scene.runtime_ik_influence = bpy.props.FloatProperty(
+        name="IK Influence",
+        description="How much IK affects the final pose (0 = animation only, 1 = IK only)",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR'
+    )
+
+    bpy.types.Scene.runtime_ik_target = bpy.props.PointerProperty(
+        name="IK Target",
+        description="Object to use as IK target. If set, arm/leg will reach toward this object during gameplay",
+        type=bpy.types.Object
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -434,12 +550,29 @@ def unregister_properties():
         'dev_debug_kcc_visual_line_width',
         'dev_debug_kcc_visual_vector_scale',
 
+        # IK visual debug
+        'dev_debug_ik_visual',
+        'dev_debug_ik_visual_targets',
+        'dev_debug_ik_visual_chains',
+        'dev_debug_ik_visual_reach',
+        'dev_debug_ik_visual_poles',
+        'dev_debug_ik_visual_joints',
+        'dev_debug_ik_line_width',
+
         # Game systems
         'dev_debug_interactions',
         'dev_debug_audio',
+        'dev_debug_trackers',
         'dev_debug_animations',
         'dev_debug_anim_cache',
         'dev_debug_anim_worker',
+
+        # Runtime IK
+        'dev_debug_runtime_ik',
+        'runtime_ik_enabled',
+        'runtime_ik_chain',
+        'runtime_ik_influence',
+        'runtime_ik_target',
 
         # Session export
         'dev_export_session_log',

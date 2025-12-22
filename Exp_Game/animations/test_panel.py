@@ -25,6 +25,414 @@ from .controller import AnimationController
 from ..developer.dev_logger import start_session, log_worker_messages, export_game_log, clear_log
 import numpy as np
 import mathutils
+import math
+import gpu
+from gpu_extras.batch import batch_for_shader
+
+# Optimized GPU utilities
+from ..developer.gpu_utils import (
+    get_cached_shader,
+    CIRCLE_8,
+    sphere_wire_verts,
+    layered_sphere_verts,
+    extend_batch_data,
+    crosshair_verts,
+    arrow_head_verts,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IK VISUALIZER (GPU Draw Handler - Optimized)
+#
+# PERFORMANCE OPTIMIZATIONS:
+# 1. Cached shader (no gpu.shader.from_builtin() every frame)
+# 2. Pre-computed circle lookup tables (no trig in draw loops)
+# 3. Reduced segment counts (8 instead of 16)
+# 4. Reduced reach sphere layers (3 instead of 5)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ik_draw_handler = None
+_ik_vis_data = None  # Shared visualization data
+
+
+def _build_runtime_ik_vis_data(state: dict) -> dict:
+    """
+    Build visualization data from runtime IK state.
+
+    Args:
+        state: Runtime IK state from runtime_ik.get_ik_state()
+
+    Returns:
+        Visualization data dict compatible with _draw_ik_visual()
+    """
+    from ..engine.animations.ik import LEG_IK, ARM_IK
+
+    vis_data = {
+        'targets': [],
+        'chains': [],
+        'reach_spheres': [],
+        'poles': [],
+        'joints': [],
+    }
+
+    # Get state values
+    target = state.get('last_target')
+    mid_pos = state.get('last_mid_pos')
+    root_pos = state.get('root_pos')
+    pole_pos = state.get('pole_pos')
+    chain_name = state.get('chain', 'arm_R')
+    reachable = state.get('reachable', True)
+
+    if target is None or root_pos is None:
+        return vis_data
+
+    # Get chain definition for reach
+    if chain_name.startswith("leg"):
+        chain_def = LEG_IK.get(chain_name, {})
+    else:
+        chain_def = ARM_IK.get(chain_name, {})
+
+    max_reach = chain_def.get('reach', 0.5)
+
+    # Target sphere
+    vis_data['targets'].append({
+        'pos': tuple(target),
+        'reachable': reachable,
+        'at_limit': not reachable,
+    })
+
+    # Chain lines (if we have mid position)
+    if mid_pos is not None:
+        # We need the tip position - estimate from target
+        vis_data['chains'].append({
+            'root': tuple(root_pos),
+            'mid': tuple(mid_pos),
+            'tip': tuple(target),
+        })
+
+    # Reach sphere
+    vis_data['reach_spheres'].append({
+        'center': tuple(root_pos),
+        'radius': max_reach,
+    })
+
+    # Pole vector
+    if pole_pos is not None and mid_pos is not None:
+        vis_data['poles'].append({
+            'origin': tuple(mid_pos),
+            'target': tuple(pole_pos),
+        })
+
+    # Joint markers
+    vis_data['joints'].append({'pos': tuple(root_pos), 'type': 'root'})
+    if mid_pos is not None:
+        vis_data['joints'].append({'pos': tuple(mid_pos), 'type': 'mid'})
+    vis_data['joints'].append({'pos': tuple(target), 'type': 'tip'})
+
+    return vis_data
+
+
+def _draw_ik_visual():
+    """GPU draw callback for IK visualization (optimized)."""
+    global _ik_vis_data
+
+    scene = bpy.context.scene
+    if not getattr(scene, 'dev_debug_ik_visual', False):
+        return
+
+    # Check for runtime IK state first (during gameplay)
+    from .runtime_ik import get_ik_state, is_ik_active
+    runtime_state = get_ik_state()
+
+    # Use runtime IK state if active, otherwise fall back to test data
+    if is_ik_active() and runtime_state.get("active"):
+        vis_data = _build_runtime_ik_vis_data(runtime_state)
+    elif _ik_vis_data is not None:
+        vis_data = _ik_vis_data
+    else:
+        return  # Nothing to draw
+
+    # Read toggles once (with safe defaults)
+    show_targets = getattr(scene, 'dev_debug_ik_visual_targets', True)
+    show_chains = getattr(scene, 'dev_debug_ik_visual_chains', True)
+    show_reach = getattr(scene, 'dev_debug_ik_visual_reach', True)
+    show_poles = getattr(scene, 'dev_debug_ik_visual_poles', True)
+    show_joints = getattr(scene, 'dev_debug_ik_visual_joints', True)
+
+    # Set GPU state - ALWAYS ON TOP (no depth test)
+    gpu.state.depth_test_set('NONE')  # Render on top of everything
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(getattr(scene, 'dev_debug_ik_line_width', 2.5))
+
+    # CACHED shader (major optimization)
+    shader = get_cached_shader()
+
+    all_verts = []
+    all_colors = []
+
+    # ─────────────────────────────────────────────────────────────────────
+    # IK TARGETS (Wireframe spheres at goal positions)
+    # Green = reachable, Yellow = at limit, Red = out of reach
+    # Uses pre-computed circle LUT (no trig calls)
+    # ─────────────────────────────────────────────────────────────────────
+    if show_targets and 'targets' in vis_data:
+        for target_info in vis_data['targets']:
+            pos = target_info['pos']
+            reachable = target_info.get('reachable', True)
+            at_limit = target_info.get('at_limit', False)
+
+            if not reachable:
+                color = (1.0, 0.2, 0.2, 0.9)  # Red
+            elif at_limit:
+                color = (1.0, 1.0, 0.0, 0.9)  # Yellow
+            else:
+                color = (0.2, 1.0, 0.2, 0.9)  # Green
+
+            # Wireframe sphere (3 circles in XY, XZ, YZ planes)
+            extend_batch_data(
+                all_verts, all_colors,
+                sphere_wire_verts(pos, 0.05, CIRCLE_8),
+                color
+            )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # BONE CHAINS (Lines from root to mid to tip)
+    # Cyan = upper bone, Magenta = lower bone
+    # ─────────────────────────────────────────────────────────────────────
+    if show_chains and 'chains' in vis_data:
+        upper_color = (0.0, 1.0, 1.0, 0.9)  # Cyan
+        lower_color = (1.0, 0.0, 1.0, 0.9)  # Magenta
+
+        for chain_info in vis_data['chains']:
+            root = chain_info['root']
+            mid = chain_info['mid']
+            tip = chain_info['tip']
+
+            all_verts.extend([root, mid])
+            all_colors.extend([upper_color, upper_color])
+            all_verts.extend([mid, tip])
+            all_colors.extend([lower_color, lower_color])
+
+    # ─────────────────────────────────────────────────────────────────────
+    # REACH LIMITS (Layered sphere from root)
+    # Transparent yellow, 3 layers instead of 5 for performance
+    # ─────────────────────────────────────────────────────────────────────
+    if show_reach and 'reach_spheres' in vis_data:
+        reach_color = (1.0, 0.8, 0.0, 0.25)
+
+        for reach_info in vis_data['reach_spheres']:
+            # 3 layers: bottom, middle, top (reduced from 5)
+            extend_batch_data(
+                all_verts, all_colors,
+                layered_sphere_verts(
+                    reach_info['center'],
+                    reach_info['radius'],
+                    height_ratios=(-0.5, 0.0, 0.5),
+                    lut=CIRCLE_8
+                ),
+                reach_color
+            )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # POLE VECTORS (Arrows showing bend direction)
+    # Orange arrows from mid-point toward pole target
+    # ─────────────────────────────────────────────────────────────────────
+    if show_poles and 'poles' in vis_data:
+        pole_color = (1.0, 0.5, 0.0, 0.9)
+
+        for pole_info in vis_data['poles']:
+            origin = pole_info['origin']
+            target = pole_info['target']
+
+            # Main line
+            all_verts.extend([origin, target])
+            all_colors.extend([pole_color, pole_color])
+
+            # Arrow head (uses helper function)
+            dx = target[0] - origin[0]
+            dy = target[1] - origin[1]
+            dz = target[2] - origin[2]
+            length = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+            if length > 0.01:
+                direction = (dx/length, dy/length, dz/length)
+                arrow_size = min(0.08, length * 0.3)
+                extend_batch_data(
+                    all_verts, all_colors,
+                    arrow_head_verts(target, direction, arrow_size),
+                    pole_color
+                )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # JOINT MARKERS (Crosshairs at root, mid, tip)
+    # White = root, Cyan = mid (knee/elbow), Green = tip
+    # ─────────────────────────────────────────────────────────────────────
+    if show_joints and 'joints' in vis_data:
+        for joint_info in vis_data['joints']:
+            pos = joint_info['pos']
+            joint_type = joint_info.get('type', 'mid')
+
+            if joint_type == 'root':
+                color = (1.0, 1.0, 1.0, 0.9)
+            elif joint_type == 'tip':
+                color = (0.2, 1.0, 0.2, 0.9)
+            else:
+                color = (0.0, 1.0, 1.0, 0.9)
+
+            extend_batch_data(
+                all_verts, all_colors,
+                crosshair_verts(pos, 0.03),
+                color
+            )
+
+    # ═════════════════════════════════════════════════════════════════════
+    # SINGLE BATCHED DRAW CALL
+    # ═════════════════════════════════════════════════════════════════════
+    if all_verts:
+        batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
+        shader.bind()
+        batch.draw(shader)
+
+    # Reset GPU state
+    gpu.state.line_width_set(1.0)
+    gpu.state.depth_test_set('NONE')
+    gpu.state.blend_set('NONE')
+
+
+def enable_ik_visualizer():
+    """Register the IK visualization draw handler."""
+    global _ik_draw_handler
+
+    if _ik_draw_handler is None:
+        _ik_draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_ik_visual, (), 'WINDOW', 'POST_VIEW'
+        )
+        _tag_all_view3d_for_redraw()
+
+
+def disable_ik_visualizer():
+    """Unregister the IK visualization draw handler."""
+    global _ik_draw_handler, _ik_vis_data
+
+    if _ik_draw_handler is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_ik_draw_handler, 'WINDOW')
+        except Exception:
+            pass
+        _ik_draw_handler = None
+
+    _ik_vis_data = None
+    _tag_all_view3d_for_redraw()
+
+
+def _tag_all_view3d_for_redraw():
+    """Tag all VIEW_3D areas for redraw."""
+    wm = getattr(bpy.context, "window_manager", None)
+    if not wm:
+        return
+    for win in wm.windows:
+        scr = win.screen
+        if not scr:
+            continue
+        for area in scr.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def update_ik_visualization(
+    obj,
+    chain: str,
+    target_pos: tuple,
+    pole_pos: tuple,
+    joint_world_pos: tuple = None,
+    is_reachable: bool = True,
+    at_limit: bool = False
+):
+    """
+    Update IK visualization data.
+
+    Args:
+        obj: Armature object
+        chain: Chain name (e.g., "leg_L", "arm_R")
+        target_pos: IK target position (world space)
+        pole_pos: Pole target position (world space)
+        joint_world_pos: Computed mid-joint position (knee/elbow)
+        is_reachable: Whether target is within reach
+        at_limit: Whether target is at max extension
+    """
+    global _ik_vis_data
+
+    scene = bpy.context.scene
+    if not getattr(scene, 'dev_debug_ik_visual', False):
+        return
+
+    # Enable visualizer if needed
+    if _ik_draw_handler is None:
+        enable_ik_visualizer()
+
+    # Get chain definition
+    is_leg = chain.startswith("leg")
+    if is_leg:
+        chain_def = LEG_IK[chain]
+    else:
+        chain_def = ARM_IK[chain]
+
+    # Get bone positions from armature
+    pose_bones = obj.pose.bones
+    root_bone = pose_bones.get(chain_def["root"])
+    mid_bone = pose_bones.get(chain_def["mid"])
+    tip_bone = pose_bones.get(chain_def["tip"])
+
+    if not all([root_bone, mid_bone, tip_bone]):
+        return
+
+    # World positions
+    root_pos = tuple((obj.matrix_world @ root_bone.head)[:])
+    mid_pos = tuple((obj.matrix_world @ mid_bone.head)[:])
+    tip_pos = tuple((obj.matrix_world @ tip_bone.head)[:])
+
+    # Use computed joint position if provided, otherwise use current bone position
+    if joint_world_pos is not None:
+        computed_mid = tuple(joint_world_pos[:])
+    else:
+        computed_mid = mid_pos
+
+    # Build visualization data
+    _ik_vis_data = {
+        'targets': [
+            {
+                'pos': target_pos,
+                'reachable': is_reachable,
+                'at_limit': at_limit
+            }
+        ],
+        'chains': [
+            {
+                'root': root_pos,
+                'mid': computed_mid,
+                'tip': target_pos  # Show where IK is trying to reach
+            }
+        ],
+        'reach_spheres': [
+            {
+                'center': root_pos,
+                'radius': chain_def['reach']
+            }
+        ],
+        'poles': [
+            {
+                'origin': computed_mid,
+                'target': pole_pos
+            }
+        ],
+        'joints': [
+            {'pos': root_pos, 'type': 'root'},
+            {'pos': computed_mid, 'type': 'mid'},
+            {'pos': tip_pos, 'type': 'tip'}
+        ]
+    }
+
+    _tag_all_view3d_for_redraw()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -75,6 +483,9 @@ def reset_test_controller():
     if _test_engine is not None:
         _test_engine.shutdown()
         _test_engine = None
+
+    # Disable IK visualizer
+    disable_ik_visualizer()
 
     _test_controller = None
 
@@ -379,18 +790,17 @@ def get_pole_direction_vector(pole_dir: str, is_leg: bool) -> np.ndarray:
 
 
 class ANIM2_OT_TestIK(Operator):
-    """Test IK solver on the selected armature"""
+    """Test IK solver on the IK armature"""
     bl_idname = "anim2.test_ik"
     bl_label = "Apply IK"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        obj = context.active_object
-        if obj is None or obj.type != 'ARMATURE':
-            self.report({'WARNING'}, "Select an armature")
-            return {'CANCELLED'}
-
         props = context.scene.anim2_test
+        obj = props.ik_armature
+        if obj is None or obj.type != 'ARMATURE':
+            self.report({'WARNING'}, "Set an armature in the IK Test panel")
+            return {'CANCELLED'}
         chain = props.ik_chain
         is_leg = chain.startswith("leg")
         is_arm = chain.startswith("arm")
@@ -460,6 +870,23 @@ class ANIM2_OT_TestIK(Operator):
         else:
             _, _, joint_world = solve_arm_ik(root_pos, target_pos, pole_pos, side)
 
+        # Check reachability for visualization
+        target_dist = float(np.linalg.norm(target_pos - root_pos))
+        max_reach = chain_def['reach']
+        is_reachable = target_dist <= max_reach
+        at_limit = target_dist > (max_reach * 0.95)  # Within 5% of max
+
+        # Update IK visualization (if enabled)
+        update_ik_visualization(
+            obj=obj,
+            chain=chain,
+            target_pos=tuple(target_pos),
+            pole_pos=tuple(pole_pos),
+            joint_world_pos=joint_world,
+            is_reachable=is_reachable,
+            at_limit=at_limit
+        )
+
         # Point upper bone at joint (knee/elbow)
         root_rot = point_bone_at_target(obj, root_bone, joint_world)
         root_bone.rotation_quaternion = root_rot
@@ -479,15 +906,16 @@ class ANIM2_OT_TestIK(Operator):
 
 
 class ANIM2_OT_ResetPose(Operator):
-    """Reset armature to rest pose"""
+    """Reset IK armature to rest pose"""
     bl_idname = "anim2.reset_pose"
     bl_label = "Reset Pose"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        obj = context.active_object
+        props = context.scene.anim2_test
+        obj = props.ik_armature
         if obj is None or obj.type != 'ARMATURE':
-            self.report({'WARNING'}, "Select an armature")
+            self.report({'WARNING'}, "Set an armature in the IK Test panel")
             return {'CANCELLED'}
 
         # Reset all pose bones to rest
@@ -496,6 +924,9 @@ class ANIM2_OT_ResetPose(Operator):
             pbone.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
             pbone.location = mathutils.Vector((0, 0, 0))
             pbone.scale = mathutils.Vector((1, 1, 1))
+
+        # Clear IK visualization
+        disable_ik_visualizer()
 
         context.view_layer.update()
         self.report({'INFO'}, "Reset to rest pose")
@@ -753,6 +1184,14 @@ class ANIM2_TestProperties(PropertyGroup):
         name="Live Update",
         description="Update IK in real-time as you adjust sliders (can be slow)",
         default=False
+    )
+
+    # Armature pointer (so you don't have to keep it selected)
+    ik_armature: PointerProperty(
+        name="IK Armature",
+        description="Armature to apply IK to (no need to select it)",
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'ARMATURE'
     )
 
 

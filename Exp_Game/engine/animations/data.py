@@ -127,6 +127,52 @@ class BakedAnimation:
         """Get array index for a bone name. Returns -1 if not found."""
         return self.bone_index.get(bone_name, -1)
 
+    def sample(self, time: float) -> np.ndarray:
+        """
+        Sample bone transforms at a specific time.
+
+        Args:
+            time: Time in seconds
+
+        Returns:
+            np.ndarray of shape (num_bones, 10) with interpolated transforms
+        """
+        if not self.has_bones or self.bone_transforms.size == 0:
+            return np.empty((0, 10), dtype=np.float32)
+
+        # Handle looping
+        if self.looping and self.duration > 0:
+            time = time % self.duration
+
+        # Clamp to valid range
+        time = max(0.0, min(time, self.duration))
+
+        # Convert to frame
+        frame_float = time * self.fps
+        frame_int = int(frame_float)
+        frac = frame_float - frame_int
+
+        # Clamp frame to valid range
+        max_frame = self.bone_transforms.shape[0] - 1
+        frame_int = min(frame_int, max_frame)
+
+        if frac < 0.001 or frame_int >= max_frame:
+            # No interpolation needed
+            return self.bone_transforms[frame_int].copy()
+
+        # Interpolate between frames
+        frame_a = self.bone_transforms[frame_int]
+        frame_b = self.bone_transforms[frame_int + 1]
+
+        # Simple lerp (quaternion lerp + normalize would be more correct)
+        result = frame_a * (1.0 - frac) + frame_b * frac
+
+        # Normalize quaternions (first 4 components)
+        quat_norms = np.linalg.norm(result[:, 0:4], axis=1, keepdims=True)
+        result[:, 0:4] /= (quat_norms + 1e-10)
+
+        return result
+
     def to_dict(self) -> dict:
         """
         Convert to plain dict for serialization/pickling to worker.

@@ -219,9 +219,8 @@ def _dest_nodes_from_impact_event_outputs(src_node):
 def _push_impact_location_to_links(r, vec):
     """
     Send 'vec' (x,y,z) ONLY through the 'Impact Location' socket wiring.
-    If a link goes to a UtilityCaptureFloatVector node, we write straight to its store.
-    No reaction chains, no triggers. If the target node exposes write_from_graph(vec),
-    we call it (generic hook for future capture nodes).
+    If the target node exposes write_from_graph(vec), we call it
+    (generic hook for capture/data nodes).
     """
     r_idx = _reaction_index_of(r)
     if r_idx < 0:
@@ -236,15 +235,7 @@ def _push_impact_location_to_links(r, vec):
                 if not to_node:
                     continue
 
-                # Preferred: our capture node
-                if getattr(to_node, "bl_idname", "") == "UtilityCaptureFloatVectorNodeType":
-                    try:
-                        to_node.write_from_graph(vec, timestamp=get_game_time())
-                    except Exception:
-                        pass
-                    continue
-
-                # Generic fallback: if node advertises a writer, use it
+                # Generic: if node advertises a writer, use it
                 writer = getattr(to_node, "write_from_graph", None)
                 if callable(writer):
                     try:

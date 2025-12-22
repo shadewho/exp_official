@@ -758,6 +758,11 @@ class ExpModal(bpy.types.Operator):
 
     def cancel(self, context):
 
+        # ========== GAME LOOP SHUTDOWN ==========
+        if hasattr(self, '_loop') and self._loop:
+            self._loop.shutdown()
+        # ========================================
+
         # ========== ANIMATION SHUTDOWN ==========
         shutdown_animations(self, context)
         # ========================================
