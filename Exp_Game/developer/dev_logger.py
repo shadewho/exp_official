@@ -77,6 +77,8 @@ _CATEGORY_MAP = {
     'ANIMATIONS': 'animations',
     'ANIM-CACHE': 'anim_cache',
     'ANIM-WORKER': 'anim_worker',
+    'PROJECTILE': 'projectiles',
+    'HITSCAN': 'hitscans',
 
     # IK System
     'IK': 'runtime_ik',

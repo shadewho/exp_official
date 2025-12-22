@@ -6,6 +6,14 @@ This module handles IK overlay on top of animations during gameplay.
 For initial testing, IK solves on main thread (~50μs per solve).
 Can be offloaded to workers later if needed.
 
+ARCHITECTURE:
+    1. BlendSystem IK targets (PRODUCTION) - programmatic IK from code/reactions
+       - blend_sys.set_ik_target("arm_R", position)
+       - blend_sys.set_ik_target_object("arm_R", "TargetCube")
+
+    2. Scene property IK (TESTING) - manual testing via Developer Tools panel
+       - scene.runtime_ik_enabled, runtime_ik_chain, runtime_ik_target
+
 Usage:
     from Exp_Game.animations.runtime_ik import apply_runtime_ik
 
@@ -15,7 +23,7 @@ Usage:
 
 import bpy
 import numpy as np
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, TYPE_CHECKING
 from mathutils import Vector, Quaternion
 
 # Import worker-safe IK solver
@@ -29,16 +37,17 @@ from ..engine.animations.ik import (
 # Import logger
 from ..developer.dev_logger import log_game
 
+if TYPE_CHECKING:
+    from .blend_system import IKTarget
+
 
 # =============================================================================
 # RUNTIME STATE
 # =============================================================================
 
-# Cached state for smooth IK transitions
+# Cached state for visualization (per-chain)
 _ik_state: Dict = {
-    "last_target": None,
-    "last_mid_pos": None,
-    "last_influence": 0.0,
+    "chains": {},  # chain_name -> {last_target, last_mid_pos, ...}
     "active": False,
 }
 
@@ -49,7 +58,14 @@ _ik_state: Dict = {
 
 def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> bool:
     """
-    Apply runtime IK to armature based on scene properties.
+    Apply runtime IK to armature.
+
+    Checks two sources for IK targets (in order):
+    1. BlendSystem IK targets (production/programmatic)
+    2. Scene properties (testing/development) - only if "Use BlendSystem" is OFF
+
+    When "Use BlendSystem" toggle is ON in the UI, scene properties are routed
+    through BlendSystem to test the production code path.
 
     Call this AFTER animation pose is applied but BEFORE final render.
 
@@ -60,30 +76,130 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
     Returns:
         True if IK was applied, False if skipped
     """
-    scene = bpy.context.scene
-
-    # Check if runtime IK is enabled
-    if not getattr(scene, 'runtime_ik_enabled', False):
-        _ik_state["active"] = False
+    if not armature or armature.type != 'ARMATURE':
         return False
+
+    scene = bpy.context.scene
+    applied_any = False
 
     # Enable visualizer if IK visual debug is on
     if getattr(scene, 'dev_debug_ik_visual', False):
         from .test_panel import enable_ik_visualizer
         enable_ik_visualizer()
 
-    if not armature or armature.type != 'ARMATURE':
-        log_game("IK", "SKIP no_armature")
-        return False
+    # =========================================================================
+    # SCENE PROPERTY → BLENDSYSTEM BRIDGE (for UI testing)
+    # When "Use BlendSystem" is enabled, route scene props through BlendSystem
+    # =========================================================================
+    from .blend_system import get_blend_system
 
-    # Get IK parameters from scene
-    chain = getattr(scene, 'runtime_ik_chain', 'arm_R')
-    influence = getattr(scene, 'runtime_ik_influence', 1.0)
+    blend_sys = get_blend_system()
+    use_blend_system = getattr(scene, 'runtime_ik_use_blend_system', False)
+    scene_ik_enabled = getattr(scene, 'runtime_ik_enabled', False)
 
-    if influence < 0.001:
-        log_game("IK", f"SKIP influence={influence:.3f}")
-        return False
+    if blend_sys and use_blend_system and scene_ik_enabled:
+        # Route scene properties through BlendSystem
+        chain = getattr(scene, 'runtime_ik_chain', 'arm_R')
+        influence = getattr(scene, 'runtime_ik_influence', 1.0)
+        target_obj = getattr(scene, 'runtime_ik_target', None)
 
+        if target_obj is not None and influence >= 0.001:
+            # Set BlendSystem IK target from scene properties
+            blend_sys.set_ik_target_object(chain, target_obj.name, influence)
+        elif target_obj is None:
+            # Clear BlendSystem target if no target object
+            blend_sys.clear_ik_target(chain)
+
+    # =========================================================================
+    # SOURCE 1: BlendSystem IK targets (PRODUCTION)
+    # =========================================================================
+    if blend_sys:
+        active_targets = blend_sys.get_active_ik_targets()
+
+        for chain, ik_target in active_targets.items():
+            # Resolve target position
+            if ik_target.target_object:
+                # Track object position
+                obj = bpy.data.objects.get(ik_target.target_object)
+                if obj:
+                    target_pos = np.array(obj.matrix_world.translation, dtype=np.float32)
+                else:
+                    log_game("IK", f"SKIP object_not_found chain={chain} obj={ik_target.target_object}")
+                    continue
+            else:
+                # Use stored position
+                target_pos = ik_target.target_position
+
+            # Solve and apply
+            success = _solve_and_apply_chain(
+                armature=armature,
+                chain=chain,
+                target_pos=target_pos,
+                influence=ik_target.influence,
+                pole_pos=ik_target.pole_position,
+                source="BlendSystem"
+            )
+
+            if success:
+                applied_any = True
+
+    # =========================================================================
+    # SOURCE 2: Scene properties (TESTING - direct path)
+    # Only used if "Use BlendSystem" is OFF and scene testing is enabled
+    # =========================================================================
+    if not applied_any and scene_ik_enabled and not use_blend_system:
+        chain = getattr(scene, 'runtime_ik_chain', 'arm_R')
+        influence = getattr(scene, 'runtime_ik_influence', 1.0)
+
+        if influence >= 0.001:
+            # Get target position from scene
+            target_obj = getattr(scene, 'runtime_ik_target', None)
+            if target_obj is not None:
+                target_pos = np.array(target_obj.matrix_world.translation, dtype=np.float32)
+            else:
+                # Compute test target
+                target_pos = _compute_test_target_for_chain(chain, armature)
+
+            if target_pos is not None:
+                success = _solve_and_apply_chain(
+                    armature=armature,
+                    chain=chain,
+                    target_pos=target_pos,
+                    influence=influence,
+                    pole_pos=None,
+                    source="SceneProps"
+                )
+                if success:
+                    applied_any = True
+
+    # Update global state
+    _ik_state["active"] = applied_any
+
+    return applied_any
+
+
+def _solve_and_apply_chain(
+    armature: bpy.types.Object,
+    chain: str,
+    target_pos: np.ndarray,
+    influence: float,
+    pole_pos: Optional[np.ndarray] = None,
+    source: str = "unknown"
+) -> bool:
+    """
+    Solve IK for a single chain and apply to bones.
+
+    Args:
+        armature: The armature object
+        chain: Chain name ("arm_L", "arm_R", "leg_L", "leg_R")
+        target_pos: World-space target position
+        influence: IK influence (0-1)
+        pole_pos: Optional pole position (computed if None)
+        source: Source identifier for logging
+
+    Returns:
+        True if IK was applied successfully
+    """
     # Get chain definition
     if chain.startswith("leg"):
         chain_def = LEG_IK.get(chain)
@@ -109,30 +225,39 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
     # Get world positions from current pose
     arm_matrix = armature.matrix_world
     root_pos = np.array(arm_matrix @ root_bone.head, dtype=np.float32)
-    tip_pos = np.array(arm_matrix @ tip_bone.head, dtype=np.float32)
 
-    # Get IK target position
-    target_obj = getattr(scene, 'runtime_ik_target', None)
-    if target_obj is not None:
-        # Use target object's world position
-        target_pos = np.array(target_obj.matrix_world.translation, dtype=np.float32)
-    else:
-        # Fallback to computed test target
-        target_pos = _compute_test_target(chain, root_pos, tip_pos, armature)
+    # Extract character orientation from armature matrix
+    # In Blender: Y = forward, X = right, Z = up
+    char_forward = np.array([arm_matrix[0][1], arm_matrix[1][1], arm_matrix[2][1]], dtype=np.float32)
+    char_right = np.array([arm_matrix[0][0], arm_matrix[1][0], arm_matrix[2][0]], dtype=np.float32)
+    char_up = np.array([arm_matrix[0][2], arm_matrix[1][2], arm_matrix[2][2]], dtype=np.float32)
 
-    # Compute pole position
-    if chain.startswith("leg"):
-        pole_pos = compute_knee_pole_position(
-            root_pos, target_pos,
-            forward=np.array([0.0, 1.0, 0.0], dtype=np.float32),
-            offset=0.5
-        )
-    else:
-        pole_pos = compute_elbow_pole_position(
-            root_pos, target_pos,
-            backward=np.array([0.0, -1.0, 0.0], dtype=np.float32),
-            offset=0.3
-        )
+    # Normalize (in case armature has scale)
+    char_forward = char_forward / (np.linalg.norm(char_forward) + 1e-10)
+    char_right = char_right / (np.linalg.norm(char_right) + 1e-10)
+    char_up = char_up / (np.linalg.norm(char_up) + 1e-10)
+
+    # Determine side from chain name
+    side = "L" if chain.endswith("_L") or chain.endswith("_l") else "R"
+
+    # Compute pole position if not provided (character-relative)
+    if pole_pos is None:
+        if chain.startswith("leg"):
+            pole_pos = compute_knee_pole_position(
+                root_pos, target_pos,
+                char_forward=char_forward,
+                char_right=char_right,
+                side=side,
+                offset=0.5
+            )
+        else:
+            pole_pos = compute_elbow_pole_position(
+                root_pos, target_pos,
+                char_forward=char_forward,
+                char_up=char_up,
+                side=side,
+                offset=0.3
+            )
 
     # Solve IK
     upper_len = chain_def["len_upper"]
@@ -153,11 +278,9 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
     )
 
     # Compute bone directions from IK solution
-    # Upper bone points from root to mid
     upper_dir = mid_pos - root_pos
     upper_dir_norm = upper_dir / (np.linalg.norm(upper_dir) + 1e-10)
 
-    # Lower bone points from mid to target
     lower_dir = target_pos - mid_pos
     lower_dir_norm = lower_dir / (np.linalg.norm(lower_dir) + 1e-10)
 
@@ -165,11 +288,20 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
     _apply_ik_to_bone(root_bone, upper_dir_norm, influence, armature)
     _apply_ik_to_bone(mid_bone, lower_dir_norm, influence, armature)
 
-    # Update state for visualization
+    # Update per-chain state for visualization
+    _ik_state["chains"][chain] = {
+        "last_target": target_pos.copy(),
+        "last_mid_pos": mid_pos.copy(),
+        "root_pos": root_pos.copy(),
+        "pole_pos": pole_pos.copy(),
+        "influence": influence,
+        "reachable": reachable,
+    }
+
+    # Also set legacy state for visualizer compatibility
     _ik_state["last_target"] = target_pos.copy()
     _ik_state["last_mid_pos"] = mid_pos.copy()
     _ik_state["last_influence"] = influence
-    _ik_state["active"] = True
     _ik_state["chain"] = chain
     _ik_state["root_pos"] = root_pos.copy()
     _ik_state["pole_pos"] = pole_pos.copy()
@@ -177,11 +309,42 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
 
     # Log result
     log_game("IK",
-        f"SOLVE chain={chain} target=({target_pos[0]:.2f},{target_pos[1]:.2f},{target_pos[2]:.2f}) "
-        f"dist={target_dist:.3f}m reach={max_reach:.3f}m reachable={reachable} influence={influence:.2f}"
+        f"SOLVE src={source} chain={chain} target=({target_pos[0]:.2f},{target_pos[1]:.2f},{target_pos[2]:.2f}) "
+        f"dist={target_dist:.3f}m reach={max_reach:.3f}m ok={reachable} inf={influence:.2f}"
     )
 
     return True
+
+
+def _compute_test_target_for_chain(chain: str, armature: bpy.types.Object) -> Optional[np.ndarray]:
+    """
+    Compute a test target position for a chain.
+
+    Used by scene property testing mode.
+    """
+    # Get chain definition
+    if chain.startswith("leg"):
+        chain_def = LEG_IK.get(chain)
+    elif chain.startswith("arm"):
+        chain_def = ARM_IK.get(chain)
+    else:
+        return None
+
+    if not chain_def:
+        return None
+
+    pose_bones = armature.pose.bones
+    root_bone = pose_bones.get(chain_def["root"])
+    tip_bone = pose_bones.get(chain_def["tip"])
+
+    if not root_bone or not tip_bone:
+        return None
+
+    arm_matrix = armature.matrix_world
+    root_pos = np.array(arm_matrix @ root_bone.head, dtype=np.float32)
+    tip_pos = np.array(arm_matrix @ tip_bone.head, dtype=np.float32)
+
+    return _compute_test_target(chain, root_pos, tip_pos, armature)
 
 
 def _compute_test_target(
@@ -237,11 +400,8 @@ def _apply_ik_to_bone(
     """
     Apply IK rotation to a pose bone by pointing it toward a target direction.
 
-    The IK solver gives us world-space directions. We need to convert these
-    to local bone rotations that account for:
-    - The armature's world transform
-    - The bone's rest pose orientation
-    - The parent bone's current rotation
+    Computes the rotation needed to point bone Y-axis toward target,
+    working in the bone's local coordinate space.
 
     Args:
         bone: The pose bone to modify
@@ -249,42 +409,41 @@ def _apply_ik_to_bone(
         influence: Blend factor (0 = animation only, 1 = IK only)
         armature: The armature object (for world transform)
     """
-    from mathutils import Matrix
-
-    # Get current rotation for blending
+    # Get current rotation for blending (this is animation + any previous IK)
     current = bone.rotation_quaternion.copy()
 
-    # Get the bone's rest direction in armature space
-    # Bones point along their Y axis in Blender
-    bone_rest_matrix = bone.bone.matrix_local
-    rest_direction = bone_rest_matrix.to_3x3() @ Vector((0, 1, 0))
-
     # Convert world target direction to armature space
-    arm_inv = armature.matrix_world.inverted()
-    target_arm_space = (arm_inv.to_3x3() @ Vector(target_direction)).normalized()
+    arm_matrix_inv = armature.matrix_world.inverted()
+    target_arm = Vector((arm_matrix_inv.to_3x3() @ Vector(target_direction))).normalized()
 
-    # If bone has a parent, we need to account for parent's current pose
+    # Get target direction in bone's LOCAL space
+    # We need to transform through the parent chain
     if bone.parent:
-        # Get parent's pose-space matrix
-        parent_pose_matrix = bone.parent.matrix
-        # Convert target to parent's local space
-        parent_inv = parent_pose_matrix.inverted()
-        target_local = (parent_inv.to_3x3() @ target_arm_space).normalized()
+        # Parent's posed matrix transforms from parent-local to armature space
+        # We need the inverse to go armature -> parent-local
+        parent_matrix_inv = bone.parent.matrix.inverted()
+        target_parent = (parent_matrix_inv.to_3x3() @ target_arm).normalized()
     else:
-        target_local = target_arm_space
+        target_parent = target_arm
 
-    # Compute rotation from rest direction to target direction
-    # Both should now be in the same coordinate space
-    rest_local = bone_rest_matrix.to_3x3().inverted() @ rest_direction
+    # Now transform from parent space to bone-local space using rest pose
+    # bone.bone.matrix_local is bone rest pose in armature space
+    # We need just the rotation part relative to parent
     if bone.parent:
-        rest_local = (bone.parent.matrix.inverted().to_3x3() @ rest_direction).normalized()
+        # Get bone's rest orientation relative to parent's rest
+        parent_rest = bone.parent.bone.matrix_local
+        bone_rest = bone.bone.matrix_local
+        bone_rest_local = parent_rest.inverted() @ bone_rest
+        rest_rot_inv = bone_rest_local.to_3x3().inverted()
+    else:
+        rest_rot_inv = bone.bone.matrix_local.to_3x3().inverted()
 
-    # Use rotation_difference to get the quaternion that rotates rest to target
-    rest_vec = Vector(rest_local).normalized()
-    target_vec = Vector(target_local).normalized()
+    target_local = (rest_rot_inv @ target_parent).normalized()
 
-    # Compute the rotation quaternion
-    ik_rotation = rest_vec.rotation_difference(target_vec)
+    # In bone-local space, Y is the bone direction
+    # Find rotation from Y-axis to target direction
+    bone_y = Vector((0, 1, 0))
+    ik_rotation = bone_y.rotation_difference(target_local)
 
     # Slerp between current and IK based on influence
     if influence >= 0.999:
@@ -316,4 +475,5 @@ def is_ik_active() -> bool:
 def clear_ik_state() -> None:
     """Clear IK state (call when game stops)."""
     _ik_state.clear()
+    _ik_state["chains"] = {}
     _ik_state["active"] = False

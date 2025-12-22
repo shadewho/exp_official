@@ -101,47 +101,17 @@ def execute_action_key_reaction(r) -> None:
 
 def _update_action_key_name(self, context):
     """
-    When a user renames the Action on the Action Keys reaction node:
-      • Update the Scene's action_keys list entry at self.action_key_index
+    When the reaction's action_key_name changes (user selects from dropdown):
       • Keep legacy r.action_key_id in sync
-      • Propagate rename to any Interactions using the old name
-    """
-    import bpy
-    scn = getattr(context, "scene", None) or bpy.context.scene
-    if not scn:
-        return
 
-    idx = getattr(self, "action_key_index", -1)
+    NOTE: This callback should NOT write to scene.action_keys!
+    The scene.action_keys list is managed exclusively by CreateActionKeyNode.
+    This callback only syncs the legacy action_key_id field.
+    """
     new_name = (getattr(self, "action_key_name", "") or "").strip()
 
-    if idx < 0 or not hasattr(scn, "action_keys") or idx >= len(scn.action_keys):
-        # Nothing to sync, but still mirror legacy field for safety
-        try:
-            self.action_key_id = new_name
-        except Exception:
-            pass
-        return
-
+    # Keep legacy id mirrored - this is the only thing we should do
     try:
-        old_name = scn.action_keys[idx].name
-    except Exception:
-        old_name = ""
-
-    # Update Scene registry entry
-    try:
-        if new_name:
-            scn.action_keys[idx].name = new_name
-        # Keep legacy id mirrored
-        self.action_key_id = scn.action_keys[idx].name
-    except Exception:
-        pass
-
-    # Propagate rename into Interactions that referenced the old string
-    try:
-        if old_name and new_name and old_name != new_name and hasattr(scn, "custom_interactions"):
-            for inter in scn.custom_interactions:
-                if getattr(inter, "trigger_type", "") == "ACTION":
-                    if getattr(inter, "action_key_id", "") == old_name:
-                        inter.action_key_id = new_name
+        self.action_key_id = new_name
     except Exception:
         pass

@@ -12,7 +12,14 @@ from .exp_engine_bridge import (
     process_animation_result,
 )
 from ..reactions.exp_reactions import update_property_tasks
-from ..reactions.exp_projectiles import update_projectile_tasks, update_hitscan_tasks
+from ..reactions.exp_projectiles import (
+    update_hitscan_tasks,  # Just despawns visual clones
+    submit_hitscan_batch,
+    submit_projectile_update,
+    process_hitscan_results,
+    process_projectile_results,
+    interpolate_projectile_visuals,
+)
 from ..reactions.exp_transforms import update_transform_tasks
 from ..reactions.exp_tracking import update_tracking_tasks
 from ..systems.exp_performance import update_performance_culling, apply_cull_result
@@ -90,6 +97,14 @@ class GameLoop:
         op.update_time()        # scaled per-frame dt (UI / interpolation)
         _ = update_real_time()  # wall-clock (kept for diagnostics/overlays)
 
+        # A2) Local projectile visual interpolation (every frame for smooth motion)
+        # This runs before physics ticks to keep visuals smooth between worker updates
+        frame_dt = op.dt * float(op.time_scale) if hasattr(op, 'dt') else 0.016
+        interpolate_projectile_visuals(frame_dt)
+
+        # A3) Hitscan visual cleanup (every frame for immediate despawn)
+        update_hitscan_tasks()
+
         # B) Decide how many 30 Hz physics steps are due (bounded catch-up)
         steps = op._physics_steps_due()
         op._perf_last_physics_steps = steps
@@ -106,12 +121,22 @@ class GameLoop:
             for _ in range(steps):
                 update_transform_tasks()
                 update_property_tasks()
-                update_projectile_tasks(dt_sim)
-                update_hitscan_tasks()
+                # NOTE: Projectile physics now handled by worker (PROJECTILE_UPDATE_BATCH)
+                # update_projectile_tasks() removed - worker-only mode
+                # NOTE: update_hitscan_tasks() moved to A3 (runs every frame)
                 update_tracking_tasks(dt_sim)
 
-            # B2) Dynamic proxies + platform v/ω (heavy): once per frame
+            # B1b) Dynamic proxies + mesh caching (MUST run before hitscan/projectile)
+            # This ensures:
+            # 1. CACHE_DYNAMIC_MESH jobs are submitted to worker (mesh triangles)
+            # 2. dynamic_objects_map is populated (for get_dynamic_transforms())
             update_dynamic_meshes(op)
+
+            # B1c) Submit projectile/hitscan worker jobs (after dynamic meshes ready)
+            engine = getattr(op, "engine", None)
+            if engine and engine.is_alive():
+                submit_hitscan_batch(engine)
+                submit_projectile_update(engine, dt_sim)
 
             # B3) Distance-based culling (has its own throttling): once
             update_performance_culling(op, context)
@@ -485,6 +510,30 @@ class GameLoop:
                         if worker_logs:
                             from ..developer.dev_logger import log_worker_messages
                             log_worker_messages(worker_logs)
+
+                elif result.job_type == "HITSCAN_BATCH":
+                    # Process hitscan results from worker
+                    try:
+                        process_hitscan_results(result)
+                        # Process worker logs
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
+                    except Exception as e:
+                        print(f"[GameLoop] Error processing hitscan results: {e}")
+
+                elif result.job_type == "PROJECTILE_UPDATE_BATCH":
+                    # Process projectile update results from worker
+                    try:
+                        process_projectile_results(result)
+                        # Process worker logs
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
+                    except Exception as e:
+                        print(f"[GameLoop] Error processing projectile results: {e}")
 
             else:
                 # Job failed - already logged in process_engine_result

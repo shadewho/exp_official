@@ -424,45 +424,159 @@ def compute_foot_ground_target(
 def compute_knee_pole_position(
     hip_pos: np.ndarray,
     foot_pos: np.ndarray,
-    forward: np.ndarray = np.array([0.0, 1.0, 0.0]),
+    char_forward: np.ndarray = None,
+    char_right: np.ndarray = None,
+    side: str = "L",
     offset: float = 0.5,
 ) -> np.ndarray:
     """
-    Compute a default knee pole position in front of the leg.
+    Compute anatomically-correct knee pole position.
+
+    Human knees ALWAYS bend forward relative to the pelvis - this is anatomical,
+    not dependent on where the foot is. Even when kicking backward, the knee
+    bends forward.
 
     Args:
         hip_pos: Hip joint position
         foot_pos: Foot position (or target)
-        forward: Character's forward direction
+        char_forward: Character's forward direction (from pelvis/armature)
+        char_right: Character's right direction
+        side: "L" for left leg, "R" for right leg
         offset: Distance in front of the knee
 
     Returns:
-        Pole target position
+        Pole target position (world space)
     """
+    hip_pos = np.asarray(hip_pos, dtype=np.float32)
+    foot_pos = np.asarray(foot_pos, dtype=np.float32)
+
+    # Fallback to world Y if no character orientation provided
+    if char_forward is None:
+        char_forward = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    if char_right is None:
+        char_right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    char_forward = np.asarray(char_forward, dtype=np.float32)
+    char_right = np.asarray(char_right, dtype=np.float32)
+
+    # SIMPLE APPROACH: Knee always bends forward + slightly outward
+    # This is anatomically correct - knees don't bend sideways or backward
+
+    # Slight outward bias (anatomical valgus - knees track over toes)
+    outward_bias = 0.1
+    if side == "L":
+        outward = -char_right  # Left knee goes slightly left
+    else:
+        outward = char_right   # Right knee goes slightly right
+
+    # Pole direction: forward + slight outward
+    pole_dir = normalize(char_forward + outward * outward_bias)
+
+    # Position pole in front of the knee area
+    # Use hip position + forward offset (not midpoint, as that moves with target)
+    # But we do want some vertical offset based on target height
     mid = (hip_pos + foot_pos) * 0.5
-    return mid + forward * offset
+
+    # Pole is ALWAYS in front of character, at roughly knee height
+    pole_pos = np.array([
+        mid[0] + pole_dir[0] * offset,
+        mid[1] + pole_dir[1] * offset,
+        mid[2]  # Keep Z at midpoint height
+    ], dtype=np.float32)
+
+    return pole_pos
 
 
 def compute_elbow_pole_position(
     shoulder_pos: np.ndarray,
     hand_pos: np.ndarray,
-    backward: np.ndarray = np.array([0.0, -1.0, 0.0]),
+    char_forward: np.ndarray = None,
+    char_up: np.ndarray = None,
+    side: str = "L",
     offset: float = 0.3,
 ) -> np.ndarray:
     """
-    Compute a default elbow pole position behind the arm.
+    Compute anatomically-correct elbow pole position.
+
+    Human elbows bend AWAY from the reach direction:
+    - Reaching forward → elbow goes back
+    - Reaching up → elbow goes down/back
+    - Reaching sideways → elbow goes back
+    - Natural resting: elbow points back and slightly down
 
     Args:
         shoulder_pos: Shoulder joint position
         hand_pos: Hand position (or target)
-        backward: Direction behind the character
-        offset: Distance behind the elbow
+        char_forward: Character's forward direction
+        char_up: Character's up direction (usually world Z)
+        side: "L" for left arm, "R" for right arm
+        offset: Distance from elbow midpoint
 
     Returns:
-        Pole target position
+        Pole target position (world space)
     """
+    shoulder_pos = np.asarray(shoulder_pos, dtype=np.float32)
+    hand_pos = np.asarray(hand_pos, dtype=np.float32)
+
+    # Fallbacks
+    if char_forward is None:
+        char_forward = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    if char_up is None:
+        char_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+    char_forward = np.asarray(char_forward, dtype=np.float32)
+    char_up = np.asarray(char_up, dtype=np.float32)
+    char_back = -char_forward
+    char_down = -char_up
+
+    # Reach direction (shoulder to hand)
+    reach_vec = hand_pos - shoulder_pos
+    reach_length = np.linalg.norm(reach_vec)
+
+    if reach_length < 0.001:
+        # Arm collapsed - use default back/down position
+        mid = (shoulder_pos + hand_pos) * 0.5
+        return mid + (char_back * 0.7 + char_down * 0.3) * offset
+
+    reach_dir = reach_vec / reach_length
+
+    # Compute "away" direction - perpendicular to reach, biased back/down
+    # Cross reach with up to get a sideways vector, then cross again to get back-ish
+    sideways = np.cross(reach_dir, char_up)
+    sideways_norm = np.linalg.norm(sideways)
+
+    if sideways_norm > 0.1:
+        sideways = sideways / sideways_norm
+        # "Away" is perpendicular to reach, in the plane containing reach and up
+        away = np.cross(sideways, reach_dir)
+        away = normalize(away)
+    else:
+        # Reaching straight up or down - elbow goes backward
+        away = char_back
+
+    # Bias the away direction toward character's back
+    # This makes elbows prefer to bend backward naturally
+    back_bias = 0.4
+    pole_dir = normalize(away + char_back * back_bias + char_down * 0.2)
+
+    # Ensure pole is on correct side for each arm (prevents elbow flip)
+    char_right = np.cross(char_forward, char_up)
+    if side == "L":
+        # Left elbow should be on left side or back
+        if np.dot(pole_dir, char_right) > 0.3:
+            # Pole is too far right, flip it
+            pole_dir = pole_dir - char_right * np.dot(pole_dir, char_right) * 1.5
+            pole_dir = normalize(pole_dir)
+    else:
+        # Right elbow should be on right side or back
+        if np.dot(pole_dir, char_right) < -0.3:
+            # Pole is too far left, flip it
+            pole_dir = pole_dir - char_right * np.dot(pole_dir, char_right) * 1.5
+            pole_dir = normalize(pole_dir)
+
+    # Position: midpoint of arm + offset in pole direction
     mid = (shoulder_pos + hand_pos) * 0.5
-    return mid + backward * offset
+    return mid + pole_dir * offset
 
 
 # =============================================================================

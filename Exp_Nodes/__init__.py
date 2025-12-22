@@ -149,6 +149,9 @@ from .trig_react_obj_lists import(
     VIEW3D_PT_Exploratory_Studio,
     VIEW3D_PT_Exploratory_Reactions,
     VIEW3D_PT_Objectives,
+    VIEW3D_PT_ActionKeys,
+    VIEW3D_PT_Trackers,
+    VIEW3D_PT_Utilities,
 )
 
 # ── OBJECTIVES ──
@@ -267,6 +270,9 @@ classes = [
     VIEW3D_PT_Exploratory_Studio,
     VIEW3D_PT_Exploratory_Reactions,
     VIEW3D_PT_Objectives,
+    VIEW3D_PT_ActionKeys,
+    VIEW3D_PT_Trackers,
+    VIEW3D_PT_Utilities,
 ]
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"

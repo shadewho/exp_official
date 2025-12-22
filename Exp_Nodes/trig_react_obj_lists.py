@@ -324,3 +324,193 @@ class VIEW3D_PT_Objectives(bpy.types.Panel):
             icon = 'ORPHAN_DATA' if is_orphan else base_icon
             row.label(text=f"{i}: {obj.name}", icon=icon)
             row.label(text=f"({obj_type})")
+
+
+# ─────────────────────────────────────────────────────────
+# Action Keys Panel (Read-Only)
+# ─────────────────────────────────────────────────────────
+
+class VIEW3D_PT_ActionKeys(bpy.types.Panel):
+    bl_label = "Action Keys"
+    bl_idname = "VIEW3D_PT_action_keys"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _in_exploratory_editor(context)
+
+    def draw(self, context):
+        layout = self.layout
+        scn = context.scene
+
+        action_keys = getattr(scn, "action_keys", [])
+        referenced = _collect_referenced_indices()
+        ref_ak = referenced["action_keys"]
+
+        if not action_keys:
+            layout.label(text="No action keys defined.", icon='INFO')
+            return
+
+        # Count orphans
+        orphan_count = sum(1 for i in range(len(action_keys)) if i not in ref_ak)
+
+        header = f"{len(action_keys)} action key(s)"
+        if orphan_count:
+            header += f" ({orphan_count} orphaned)"
+        layout.label(text=header)
+
+        for i, ak in enumerate(action_keys):
+            is_orphan = i not in ref_ak
+
+            row = layout.row()
+            if is_orphan:
+                row.alert = True
+
+            icon = 'ORPHAN_DATA' if is_orphan else 'EVENT_A'
+            enabled = getattr(ak, "enabled_default", False)
+            enabled_txt = "ON" if enabled else "OFF"
+            row.label(text=f"{i}: {ak.name}", icon=icon)
+            row.label(text=f"(default: {enabled_txt})")
+
+
+# ─────────────────────────────────────────────────────────
+# Trackers Panel (Read-Only)
+# ─────────────────────────────────────────────────────────
+
+def _collect_tracker_nodes():
+    """Collect all tracker nodes from all Exploratory trees."""
+    trackers = []
+    tracker_types = {
+        "DistanceTrackerNodeType": "Distance",
+        "StateTrackerNodeType": "State",
+        "ContactTrackerNodeType": "Contact",
+        "InputTrackerNodeType": "Input",
+        "GameTimeTrackerNodeType": "Game Time",
+        "LogicAndNodeType": "AND Gate",
+        "LogicOrNodeType": "OR Gate",
+        "LogicNotNodeType": "NOT Gate",
+    }
+
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+            continue
+        for node in ng.nodes:
+            bl_id = getattr(node, "bl_idname", "")
+            if bl_id in tracker_types:
+                trackers.append({
+                    "tree": ng.name,
+                    "node": node.name,
+                    "type": tracker_types[bl_id],
+                    "bl_idname": bl_id,
+                })
+    return trackers
+
+
+class VIEW3D_PT_Trackers(bpy.types.Panel):
+    bl_label = "Trackers"
+    bl_idname = "VIEW3D_PT_trackers"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _in_exploratory_editor(context)
+
+    def draw(self, context):
+        layout = self.layout
+
+        trackers = _collect_tracker_nodes()
+
+        if not trackers:
+            layout.label(text="No trackers defined.", icon='INFO')
+            return
+
+        # Group by type
+        by_type = {}
+        for t in trackers:
+            by_type.setdefault(t["type"], []).append(t)
+
+        layout.label(text=f"{len(trackers)} tracker(s)")
+
+        for tracker_type, items in sorted(by_type.items()):
+            box = layout.box()
+            box.label(text=f"{tracker_type} ({len(items)})", icon='VIEWZOOM')
+            for item in items:
+                row = box.row()
+                row.label(text=f"  {item['node']}")
+                row.label(text=f"[{item['tree']}]")
+
+
+# ─────────────────────────────────────────────────────────
+# Utilities Panel (Read-Only)
+# ─────────────────────────────────────────────────────────
+
+def _collect_utility_nodes():
+    """Collect all utility nodes (Delay, Data nodes) from all Exploratory trees."""
+    utilities = []
+    utility_types = {
+        "UtilityDelayNodeType": "Delay",
+        "FloatDataNodeType": "Float",
+        "IntDataNodeType": "Integer",
+        "BoolDataNodeType": "Boolean",
+        "ObjectDataNodeType": "Object",
+        "CollectionDataNodeType": "Collection",
+        "ActionDataNodeType": "Action",
+        "FloatVectorDataNodeType": "Float Vector",
+    }
+
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+            continue
+        for node in ng.nodes:
+            bl_id = getattr(node, "bl_idname", "")
+            if bl_id in utility_types:
+                utilities.append({
+                    "tree": ng.name,
+                    "node": node.name,
+                    "type": utility_types[bl_id],
+                    "bl_idname": bl_id,
+                })
+    return utilities
+
+
+class VIEW3D_PT_Utilities(bpy.types.Panel):
+    bl_label = "Utilities"
+    bl_idname = "VIEW3D_PT_utilities"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _in_exploratory_editor(context)
+
+    def draw(self, context):
+        layout = self.layout
+
+        utilities = _collect_utility_nodes()
+
+        if not utilities:
+            layout.label(text="No utility nodes defined.", icon='INFO')
+            return
+
+        # Group by type
+        by_type = {}
+        for u in utilities:
+            by_type.setdefault(u["type"], []).append(u)
+
+        layout.label(text=f"{len(utilities)} utility node(s)")
+
+        for util_type, items in sorted(by_type.items()):
+            box = layout.box()
+            box.label(text=f"{util_type} ({len(items)})", icon='MODIFIER')
+            for item in items:
+                row = box.row()
+                row.label(text=f"  {item['node']}")
+                row.label(text=f"[{item['tree']}]")

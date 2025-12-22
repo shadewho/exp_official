@@ -135,9 +135,19 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
     # (plain Python attribute; not an RNA prop)
     _ak_guard = False
 
+    # Class-level set to track nodes currently being initialized
+    # This catches the window between Blender property copy and copy() call
+    _initializing_pointers: set = set()
+
     def _name_changed(self, context):
         # prevent re-entrant loops
         if getattr(self, "_ak_guard", False):
+            return
+
+        # CRITICAL: Check if we're mid-copy (index not yet updated)
+        # During node duplication, Blender copies properties BEFORE calling copy().
+        # If _copying is set, skip all updates - copy() will handle it.
+        if getattr(self, "_copying", False):
             return
 
         scn = _scene()
@@ -145,6 +155,11 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
             return
         idx = getattr(self, "action_key_index", -1)
         if not (0 <= idx < len(scn.action_keys)):
+            return
+
+        # SAFETY: Verify this node actually owns this action key index.
+        # Multiple nodes pointing to the same index is a bug state.
+        if not self._verify_ownership(scn, idx):
             return
 
         new_name = (getattr(self, "action_key_name", "") or "").strip()
@@ -170,16 +185,67 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
 
         _propagate_rename(old_name, new_name)
 
+    def _verify_ownership(self, scn, idx) -> bool:
+        """
+        Verify this node is the rightful owner of action_key_index.
+        Returns False if another node with MATCHING name already owns this index.
+
+        During duplication, the copy temporarily has the original's index but
+        hasn't been through copy() yet. We detect this by checking if the OTHER
+        node's name matches the scene entry - if so, THAT node is the real owner.
+        """
+        if not (0 <= idx < len(scn.action_keys)):
+            return False
+
+        scene_name = scn.action_keys[idx].name
+        my_ptr = self.as_pointer()
+        my_name = getattr(self, "action_key_name", "")
+
+        for ng in bpy.data.node_groups:
+            if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+                continue
+            for node in ng.nodes:
+                if getattr(node, "bl_idname", "") != "CreateActionKeyNodeType":
+                    continue
+                if node.as_pointer() == my_ptr:
+                    continue  # Skip self
+                if getattr(node, "action_key_index", -1) == idx:
+                    # Another node has this index. Check who's the real owner.
+                    other_name = getattr(node, "action_key_name", "")
+
+                    # If OTHER node's name matches scene, it's the owner - we're stale
+                    if other_name == scene_name and my_name != scene_name:
+                        return False
+
+                    # If OUR name matches scene, we're the owner - other is stale
+                    if my_name == scene_name and other_name != scene_name:
+                        continue  # Ignore stale copy
+
+                    # If both match or neither match, it's a true conflict
+                    if other_name == my_name:
+                        return False
+        return True
+
     def _enabled_changed(self, context):
+        # Skip if we're mid-copy
+        if getattr(self, "_copying", False):
+            return
+
         scn = _scene()
         if not scn or not hasattr(scn, "action_keys"):
             return
         idx = getattr(self, "action_key_index", -1)
-        if 0 <= idx < len(scn.action_keys):
-            try:
-                scn.action_keys[idx].enabled_default = bool(self.enabled_default)
-            except Exception:
-                pass
+        if not (0 <= idx < len(scn.action_keys)):
+            return
+
+        # Verify ownership before modifying
+        if not self._verify_ownership(scn, idx):
+            return
+
+        try:
+            scn.action_keys[idx].enabled_default = bool(self.enabled_default)
+        except Exception:
+            pass
 
     action_key_name: StringProperty(
         name="Name",
@@ -223,23 +289,42 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
             pass
 
     def copy(self, node):
-        self.width = getattr(node, "width", 220)
-        scn = _scene()
-        if not scn or not hasattr(scn, "action_keys"):
-            self.action_key_index = -1
-            self.action_key_name = ""
-            self.enabled_default = False
-            return
-        base = getattr(node, "action_key_name", "") or "Action"
-        default_flag = bool(getattr(node, "enabled_default", False))
-        idx, nm = _create_action_key(scn, base=base, enabled_default=default_flag)
-        self.action_key_index = idx
+        """
+        Called when node is duplicated. MUST create a NEW unique action key.
+        Blender copies all properties BEFORE calling this, so self already has
+        the original's action_key_index/name. We MUST override them.
+        """
+        # Mark that we're mid-copy to prevent callbacks from messing with state
+        self._copying = True
+
         try:
-            self._ak_guard = True
-            self.action_key_name = nm
+            self.width = getattr(node, "width", 220)
+            scn = _scene()
+            if not scn or not hasattr(scn, "action_keys"):
+                self.action_key_index = -1
+                self.action_key_name = ""
+                self.enabled_default = False
+                return
+
+            base = getattr(node, "action_key_name", "") or "Action"
+            default_flag = bool(getattr(node, "enabled_default", False))
+
+            # Create NEW action key - this MUST return a unique name
+            idx, nm = _create_action_key(scn, base=base, enabled_default=default_flag)
+
+            # Update our index to point to the NEW action key
+            self.action_key_index = idx
+
+            # Update our name (guarded to prevent _name_changed callback)
+            try:
+                self._ak_guard = True
+                self.action_key_name = nm
+            finally:
+                self._ak_guard = False
+
+            self.enabled_default = default_flag
         finally:
-            self._ak_guard = False
-        self.enabled_default = default_flag
+            self._copying = False
 
     def free(self):
         scn = _scene()
@@ -259,30 +344,58 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
         self.action_key_name = ""
 
     def update(self):
-        """Keep node mirrors in sync with Scene list without recursive loops."""
+        """
+        Called when node graph changes.
+        NODE is source of truth - push node state TO scene, never pull FROM scene.
+        """
+        # Skip if mid-copy
+        if getattr(self, "_copying", False):
+            return
+
         scn = _scene()
         if not scn or not hasattr(scn, "action_keys"):
             return
+
         idx = getattr(self, "action_key_index", -1)
-        if 0 <= idx < len(scn.action_keys):
-            # Sync name to canonical Scene value (guarded)
-            try:
-                name = scn.action_keys[idx].name
-            except Exception:
-                name = ""
-            if name and name != getattr(self, "action_key_name", ""):
+        if not (0 <= idx < len(scn.action_keys)):
+            return
+
+        # CRITICAL: Verify ownership before modifying scene data
+        if not self._verify_ownership(scn, idx):
+            return
+
+        # Push node name TO scene (node is source of truth)
+        node_name = getattr(self, "action_key_name", "")
+        scene_name = scn.action_keys[idx].name
+
+        if node_name and node_name != scene_name:
+            # Ensure uniqueness before writing
+            exist = {it.name for i, it in enumerate(scn.action_keys) if i != idx}
+            if node_name in exist:
+                # Name conflict - generate unique name
+                node_name = _unique_action_key_name(scn, base=node_name)
                 try:
                     self._ak_guard = True
-                    self.action_key_name = name
+                    self.action_key_name = node_name
                 finally:
                     self._ak_guard = False
-            # Sync default toggle (triggers _enabled_changed but not cyclic)
+
             try:
-                flag = bool(getattr(scn.action_keys[idx], "enabled_default", False))
-                if bool(getattr(self, "enabled_default", False)) != flag:
-                    self.enabled_default = flag
+                old_name = scene_name
+                scn.action_keys[idx].name = node_name
+                if old_name != node_name:
+                    _propagate_rename(old_name, node_name)
             except Exception:
                 pass
+
+        # Push enabled_default TO scene
+        try:
+            node_flag = bool(getattr(self, "enabled_default", False))
+            scene_flag = bool(getattr(scn.action_keys[idx], "enabled_default", False))
+            if node_flag != scene_flag:
+                scn.action_keys[idx].enabled_default = node_flag
+        except Exception:
+            pass
 
     def draw_buttons(self, context, layout):
         box = layout.box()

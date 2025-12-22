@@ -719,13 +719,11 @@ class ReactionActionKeysNode(_ReactionNodeKind):
             return
         r = scn.reactions[idx]
         name = getattr(self, "node_action_key", "") or ""
-        # mirror into ReactionDefinition for executor
-        try:
-            r.action_key_name = name
-            r.action_key_id   = name
-        except Exception:
-            pass
-        # best-effort index mirror for reindexing on list edits
+
+        # CRITICAL: Find and set action_key_index FIRST, before setting action_key_name!
+        # The _update_action_key_name callback fires when action_key_name changes and
+        # uses action_key_index to write to scene.action_keys. If we set name first,
+        # the callback uses the OLD index and corrupts the wrong scene entry.
         if hasattr(scn, "action_keys"):
             match = -1
             try:
@@ -740,22 +738,50 @@ class ReactionActionKeysNode(_ReactionNodeKind):
             except Exception:
                 pass
 
+        # NOW set the name - callback will use the correct index we just set
+        try:
+            r.action_key_name = name
+            r.action_key_id   = name
+        except Exception:
+            pass
+
     def update(self):
-        # keep chooser in sync with ReactionDefinition (no base update required)
+        # Keep node_action_key and r.action_key_name in sync (both directions)
         scn = _scene()
         idx = getattr(self, "reaction_index", -1)
         if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
             return
 
         r = scn.reactions[idx]
-        want = getattr(r, "action_key_name", "") or getattr(r, "action_key_id", "")
-        if not want:
-            return
+        reaction_name = getattr(r, "action_key_name", "") or getattr(r, "action_key_id", "")
+        node_name = getattr(self, "node_action_key", "") or ""
 
         try:
             valid = {it[0] for it in _enum_action_key_items(self, bpy.context)}
-            if want in valid and getattr(self, "node_action_key", "") != want:
-                self.node_action_key = want
+
+            # If reaction has a name but node doesn't match, sync node FROM reaction
+            if reaction_name and reaction_name in valid:
+                if node_name != reaction_name:
+                    self.node_action_key = reaction_name
+
+            # If reaction is EMPTY but node has a valid selection, sync reaction FROM node
+            elif not reaction_name and node_name and node_name in valid:
+                # Find the action_key_index
+                if hasattr(scn, "action_keys"):
+                    match = -1
+                    for i, it in enumerate(scn.action_keys):
+                        if getattr(it, "name", "") == node_name:
+                            match = i
+                            break
+                    try:
+                        r.action_key_index = match
+                    except Exception:
+                        pass
+                try:
+                    r.action_key_name = node_name
+                    r.action_key_id = node_name
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -767,6 +793,17 @@ class ReactionActionKeysNode(_ReactionNodeKind):
             return
         r = scn.reactions[idx]
 
+        # Ensure action_key_name is synced whenever the node is drawn
+        node_name = getattr(self, "node_action_key", "") or ""
+        reaction_name = getattr(r, "action_key_name", "") or ""
+        if node_name and not reaction_name:
+            # Node has a selection but reaction doesn't - sync it
+            try:
+                r.action_key_name = node_name
+                r.action_key_id = node_name
+            except Exception:
+                pass
+
         box = layout.box()
         box.prop(r, "name", text="Name")
 
@@ -774,9 +811,6 @@ class ReactionActionKeysNode(_ReactionNodeKind):
         row.prop(r, "action_key_op", text="Operation")
 
         layout.prop(self, "node_action_key", text="Action")
-
-        info = layout.box()
-        info.label(text="Pick an existing Action Key. No creation here.", icon='INFO')
 
 
 class UtilityDelayNode(_ReactionNodeKind):

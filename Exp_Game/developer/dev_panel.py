@@ -182,6 +182,8 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         col.prop(scene, "dev_debug_interactions", text="Interactions")
         col.prop(scene, "dev_debug_audio", text="Audio")
         col.prop(scene, "dev_debug_trackers", text="Trackers")
+        col.prop(scene, "dev_debug_projectiles", text="Projectiles")
+        col.prop(scene, "dev_debug_hitscans", text="Hitscans")
 
         layout.separator()
 
@@ -191,13 +193,77 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         box = layout.box()
         box.label(text="Animation 2.0", icon='ACTION')
 
-        # ─── Debug Toggles ──────────────────────────────────────────────
-        row = box.row(align=True)
-        row.prop(scene, "dev_debug_animations", text="Animation Logs")
-        row.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
+        # ─── Rig Visualizer (3D Viewport) ─────────────────────────────
+        sub_box = box.box()
+        row = sub_box.row()
+        row.label(text="Rig Visualizer", icon='ARMATURE_DATA')
+        row.prop(scene, "dev_rig_visualizer_enabled", text="", icon='HIDE_OFF' if scene.dev_rig_visualizer_enabled else 'HIDE_ON')
 
-        row = box.row(align=True)
-        row.prop(scene, "dev_debug_anim_worker", text="Animation Worker")
+        if scene.dev_rig_visualizer_enabled:
+            col = sub_box.column(align=True)
+
+            # Bone groups
+            row = col.row(align=True)
+            row.prop(scene, "dev_rig_vis_bone_groups", text="Bone Groups")
+            if scene.dev_rig_vis_bone_groups:
+                col.prop(scene, "dev_rig_vis_selected_group", text="")
+
+            col.separator(factor=0.5)
+
+            # IK visualization
+            col.label(text="IK Display:", icon='CON_KINEMATIC')
+            sub = col.column(align=True)
+            sub.prop(scene, "dev_rig_vis_ik_chains", text="Chains")
+            sub.prop(scene, "dev_rig_vis_ik_targets", text="Targets")
+            sub.prop(scene, "dev_rig_vis_ik_poles", text="Poles")
+            sub.prop(scene, "dev_rig_vis_ik_reach", text="Reach Spheres")
+
+            col.separator(factor=0.5)
+
+            # Advanced
+            col.label(text="Advanced:", icon='PREFERENCES')
+            sub = col.column(align=True)
+            sub.prop(scene, "dev_rig_vis_bone_axes", text="Bone Axes (X/Y/Z)")
+            sub.prop(scene, "dev_rig_vis_active_mask", text="Active Blend Mask")
+
+            col.separator(factor=0.5)
+
+            # Text overlay
+            col.label(text="Text Overlay:", icon='SMALL_CAPS')
+            sub = col.column(align=True)
+            sub.prop(scene, "dev_rig_vis_text_overlay", text="Show State Text")
+            if scene.dev_rig_vis_text_overlay:
+                row = sub.row(align=True)
+                row.prop(scene, "dev_rig_vis_text_size", text="Size")
+                row.prop(scene, "dev_rig_vis_text_background", text="", icon='TEXTURE')
+
+            col.separator(factor=0.5)
+            col.prop(scene, "dev_rig_vis_line_width", text="Line Width")
+            if scene.dev_rig_vis_bone_axes:
+                col.prop(scene, "dev_rig_vis_axis_length", text="Axis Length")
+
+            # Status display
+            from .rig_visualizer import get_visualizer_state
+            vis_state = get_visualizer_state()
+
+            if vis_state["ik_chains"]:
+                col.separator(factor=0.5)
+                col.label(text=f"Active IK: {', '.join(vis_state['ik_chains'])}", icon='CHECKMARK')
+
+            if vis_state["layers"]["additive"] or vis_state["layers"]["override"]:
+                layers_info = []
+                if vis_state["layers"]["additive"]:
+                    layers_info.append(f"{len(vis_state['layers']['additive'])} add")
+                if vis_state["layers"]["override"]:
+                    layers_info.append(f"{len(vis_state['layers']['override'])} ovr")
+                col.label(text=f"Layers: {', '.join(layers_info)}", icon='RENDERLAYERS')
+
+        # ─── Debug Toggles (stacked vertically) ─────────────────────────
+        col = box.column(align=True)
+        col.prop(scene, "dev_debug_animations", text="Animation Logs")
+        col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
+        col.prop(scene, "dev_debug_anim_worker", text="Worker Logs")
+        col.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
 
         props = scene.anim2_test
         ctrl = get_test_controller()
@@ -287,9 +353,11 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                 loc = scene.runtime_ik_target.location
                 col.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
 
-            # IK debug logs toggle
+            # BlendSystem toggle (tests production code path)
             row = sub_box.row()
-            row.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
+            row.prop(scene, "runtime_ik_use_blend_system", text="Use BlendSystem", toggle=True)
+            if scene.runtime_ik_use_blend_system:
+                row.label(text="", icon='CHECKMARK')
 
         layout.separator()
 
@@ -345,21 +413,6 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             row.scale_y = 1.3
             row.operator("anim2.test_ik", text="Apply IK", icon='CON_KINEMATIC')
             row.operator("anim2.reset_pose", text="Reset", icon='LOOP_BACK')
-
-            # ─── Visual Debug ──────────────────────────────────────────
-            sub = box.box()
-            row = sub.row()
-            row.label(text="Visual Debug", icon='SHADING_WIRE')
-            row.prop(scene, "dev_debug_ik_visual", text="", icon='HIDE_OFF' if scene.dev_debug_ik_visual else 'HIDE_ON')
-
-            if scene.dev_debug_ik_visual:
-                col = sub.column(align=True)
-                col.prop(scene, "dev_debug_ik_visual_targets", text="Targets")
-                col.prop(scene, "dev_debug_ik_visual_chains", text="Chains")
-                col.prop(scene, "dev_debug_ik_visual_reach", text="Reach")
-                col.prop(scene, "dev_debug_ik_visual_poles", text="Poles")
-                col.prop(scene, "dev_debug_ik_visual_joints", text="Joints")
-                sub.prop(scene, "dev_debug_ik_line_width", text="Line Width")
 
         else:
             box.label(text="Set an armature above", icon='INFO')

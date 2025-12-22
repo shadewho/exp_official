@@ -2,6 +2,20 @@
 """
 Worker process modules - ISOLATED from Blender imports.
 These modules run in separate worker processes and do NOT import bpy.
+
+Structure:
+    worker/
+    ├── math.py          # Geometric algorithms
+    ├── raycast.py       # Unified raycast system
+    ├── physics.py       # KCC physics step
+    ├── jobs.py          # Camera occlusion, etc.
+    ├── entry.py         # Job dispatcher + worker loop
+    ├── interactions/    # Trigger evaluation
+    │   ├── triggers.py  # PROXIMITY, COLLISION checks
+    │   └── trackers.py  # Condition tree evaluation
+    └── reactions/       # Reaction execution
+        ├── projectiles.py  # Physics simulation
+        └── hitscan.py      # Instant raycasting
 """
 
 # Math utilities available for import
@@ -36,6 +50,21 @@ from .physics import handle_kcc_physics_step
 # Job handlers
 from .jobs import handle_camera_occlusion
 
+# Interaction handlers
+from .interactions import (
+    handle_interaction_check_batch,
+    handle_cache_trackers,
+    handle_evaluate_trackers,
+    reset_tracker_state,
+)
+
+# Reaction handlers
+from .reactions import (
+    handle_projectile_update_batch,
+    reset_projectile_state,
+    handle_hitscan_batch,
+)
+
 # Entry point (worker_loop and process_job)
 from .entry import worker_loop, process_job
 
@@ -64,6 +93,15 @@ __all__ = [
     'handle_kcc_physics_step',
     # Job handlers
     'handle_camera_occlusion',
+    # Interaction handlers
+    'handle_interaction_check_batch',
+    'handle_cache_trackers',
+    'handle_evaluate_trackers',
+    'reset_tracker_state',
+    # Reaction handlers
+    'handle_projectile_update_batch',
+    'reset_projectile_state',
+    'handle_hitscan_batch',
     # Entry point
     'worker_loop',
     'process_job',

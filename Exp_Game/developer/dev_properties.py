@@ -380,6 +380,136 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # RIG VISUALIZER (Comprehensive animation system debug)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _rig_vis_update(self, context):
+        """Toggle callback for rig visualizer."""
+        from .rig_visualizer import enable_rig_visualizer, disable_rig_visualizer
+        if self.dev_rig_visualizer_enabled:
+            enable_rig_visualizer()
+        else:
+            disable_rig_visualizer()
+
+    bpy.types.Scene.dev_rig_visualizer_enabled = bpy.props.BoolProperty(
+        name="Enable Rig Visualizer",
+        description=(
+            "Comprehensive rig and animation system visualization:\n"
+            "• Bone groups (colored by membership)\n"
+            "• IK chains, targets, poles, reach\n"
+            "• Active blend masks\n"
+            "• Bone local axes\n"
+            "\n"
+            "Shows in 3D viewport when enabled, regardless of panel selection"
+        ),
+        default=False,
+        update=_rig_vis_update
+    )
+
+    bpy.types.Scene.dev_rig_vis_bone_groups = bpy.props.BoolProperty(
+        name="Bone Groups",
+        description="Color bones by their group membership (UPPER_BODY, ARM_L, etc.)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_rig_vis_selected_group = bpy.props.EnumProperty(
+        name="Highlight Group",
+        description="Which bone group to highlight (or ALL to show all groups)",
+        items=[
+            ("ALL", "All Groups", "Show all bones with group-based colors"),
+            ("UPPER_BODY", "Upper Body", "Highlight upper body bones"),
+            ("LOWER_BODY", "Lower Body", "Highlight lower body bones"),
+            ("SPINE", "Spine", "Highlight spine bones"),
+            ("HEAD_NECK", "Head & Neck", "Highlight head and neck bones"),
+            ("ARM_L", "Left Arm", "Highlight left arm bones"),
+            ("ARM_R", "Right Arm", "Highlight right arm bones"),
+            ("ARM_L_IK", "Left Arm IK", "Highlight left arm IK chain"),
+            ("ARM_R_IK", "Right Arm IK", "Highlight right arm IK chain"),
+            ("LEG_L", "Left Leg", "Highlight left leg bones"),
+            ("LEG_R", "Right Leg", "Highlight right leg bones"),
+            ("LEG_L_IK", "Left Leg IK", "Highlight left leg IK chain"),
+            ("LEG_R_IK", "Right Leg IK", "Highlight right leg IK chain"),
+            ("FINGERS", "Fingers", "Highlight finger bones"),
+            ("ROOT", "Root (Hips)", "Highlight root/hips bone"),
+        ],
+        default="ALL"
+    )
+
+    bpy.types.Scene.dev_rig_vis_ik_chains = bpy.props.BoolProperty(
+        name="IK Chains",
+        description="Draw IK chain bones (cyan = upper, magenta = lower)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_rig_vis_ik_targets = bpy.props.BoolProperty(
+        name="IK Targets",
+        description="Draw IK target spheres (green = reachable, red = out of reach)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_rig_vis_ik_poles = bpy.props.BoolProperty(
+        name="IK Poles",
+        description="Draw pole vector arrows (orange = bend direction)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_rig_vis_ik_reach = bpy.props.BoolProperty(
+        name="IK Reach",
+        description="Draw maximum reach spheres from root joints",
+        default=False
+    )
+
+    bpy.types.Scene.dev_rig_vis_bone_axes = bpy.props.BoolProperty(
+        name="Bone Axes",
+        description="Draw local X/Y/Z axes for each bone (shows orientation)",
+        default=False
+    )
+
+    bpy.types.Scene.dev_rig_vis_active_mask = bpy.props.BoolProperty(
+        name="Active Mask",
+        description="Color bones by active blend layer mask weight (blue = low, red = high)",
+        default=False
+    )
+
+    bpy.types.Scene.dev_rig_vis_line_width = bpy.props.FloatProperty(
+        name="Line Width",
+        description="Visualizer line thickness",
+        default=2.0,
+        min=1.0,
+        max=10.0
+    )
+
+    bpy.types.Scene.dev_rig_vis_axis_length = bpy.props.FloatProperty(
+        name="Axis Length",
+        description="Length of bone axis lines",
+        default=0.05,
+        min=0.01,
+        max=0.2,
+        unit='LENGTH'
+    )
+
+    # Text overlay properties
+    bpy.types.Scene.dev_rig_vis_text_overlay = bpy.props.BoolProperty(
+        name="Text Overlay",
+        description="Show animation state text above character (IK, layers, etc.)",
+        default=True
+    )
+
+    bpy.types.Scene.dev_rig_vis_text_size = bpy.props.IntProperty(
+        name="Text Size",
+        description="Font size for text overlay",
+        default=14,
+        min=10,
+        max=24
+    )
+
+    bpy.types.Scene.dev_rig_vis_text_background = bpy.props.BoolProperty(
+        name="Text Background",
+        description="Draw semi-transparent background behind text for readability",
+        default=True
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
     # GAME SYSTEMS
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -442,6 +572,29 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_projectiles = bpy.props.BoolProperty(
+        name="Projectiles",
+        description=(
+            "Projectile system diagnostics (worker-offloaded):\n"
+            "• Spawn events with velocity and origin\n"
+            "• Physics updates (gravity, sweep raycasts)\n"
+            "• Impacts and collisions\n"
+            "• Lifetime expiry"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_hitscans = bpy.props.BoolProperty(
+        name="Hitscans",
+        description=(
+            "Hitscan system diagnostics (worker-offloaded):\n"
+            "• Fire events with origin and direction\n"
+            "• Ray results (hit/miss, distance, target)\n"
+            "• Batch processing stats"
+        ),
+        default=False
+    )
+
     # ══════════════════════════════════════════════════════════════════════════
     # RUNTIME IK SYSTEM
     # ══════════════════════════════════════════════════════════════════════════
@@ -461,6 +614,17 @@ def register_properties():
     bpy.types.Scene.runtime_ik_enabled = bpy.props.BoolProperty(
         name="Enable Runtime IK",
         description="Enable real-time IK solving during gameplay",
+        default=False
+    )
+
+    bpy.types.Scene.runtime_ik_use_blend_system = bpy.props.BoolProperty(
+        name="Use BlendSystem",
+        description=(
+            "Route IK through BlendSystem (production path).\n"
+            "When enabled, sets IK target via blend_sys.set_ik_target_object().\n"
+            "Logs will show 'src=BlendSystem' instead of 'src=SceneProps'.\n"
+            "Use this to test the same code path that reactions will use."
+        ),
         default=False
     )
 
@@ -559,6 +723,22 @@ def unregister_properties():
         'dev_debug_ik_visual_joints',
         'dev_debug_ik_line_width',
 
+        # Rig visualizer
+        'dev_rig_visualizer_enabled',
+        'dev_rig_vis_bone_groups',
+        'dev_rig_vis_selected_group',
+        'dev_rig_vis_ik_chains',
+        'dev_rig_vis_ik_targets',
+        'dev_rig_vis_ik_poles',
+        'dev_rig_vis_ik_reach',
+        'dev_rig_vis_bone_axes',
+        'dev_rig_vis_active_mask',
+        'dev_rig_vis_line_width',
+        'dev_rig_vis_axis_length',
+        'dev_rig_vis_text_overlay',
+        'dev_rig_vis_text_size',
+        'dev_rig_vis_text_background',
+
         # Game systems
         'dev_debug_interactions',
         'dev_debug_audio',
@@ -566,10 +746,13 @@ def unregister_properties():
         'dev_debug_animations',
         'dev_debug_anim_cache',
         'dev_debug_anim_worker',
+        'dev_debug_projectiles',
+        'dev_debug_hitscans',
 
         # Runtime IK
         'dev_debug_runtime_ik',
         'runtime_ik_enabled',
+        'runtime_ik_use_blend_system',
         'runtime_ik_chain',
         'runtime_ik_influence',
         'runtime_ik_target',
