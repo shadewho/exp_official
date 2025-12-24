@@ -88,6 +88,10 @@ _cached_animations = {}
 # Flag to track if numpy arrays have been reconstructed from lists
 _animations_numpy_ready = False
 
+# Pose library cache: {pose_name: {bone_transforms: {bone: [10 floats]}, source_armature: str}}
+# Sent once via CACHE_POSES job. Used by PLAY_POSE jobs for pose playback.
+_cached_poses = {}
+
 # NOTE: Tracker state moved to worker/interactions/trackers.py
 
 
@@ -711,6 +715,41 @@ def process_job(job) -> dict:
                 result_data = {
                     "success": False,
                     "error": "No animation data provided"
+                }
+
+        elif job.job_type == "CACHE_POSES":
+            # Cache pose library for subsequent PLAY_POSE jobs
+            # Sent ONCE at game start. Poses are static snapshots (no animation).
+            global _cached_poses
+            poses_data = job.data.get("poses", {})
+
+            if poses_data:
+                # Clear existing cache and store new poses
+                _cached_poses.clear()
+
+                for pose_name, pose_dict in poses_data.items():
+                    _cached_poses[pose_name] = pose_dict
+
+                pose_count = len(_cached_poses)
+                total_bones = sum(
+                    p.get("bone_count", 0)
+                    for p in _cached_poses.values()
+                )
+
+                # Log for diagnostics (no console print - use log system only)
+                logs = [("POSE-CACHE", f"WORKER_CACHED {pose_count} poses, {total_bones} bones")]
+
+                result_data = {
+                    "success": True,
+                    "pose_count": pose_count,
+                    "total_bones": total_bones,
+                    "message": "Poses cached successfully",
+                    "logs": logs
+                }
+            else:
+                result_data = {
+                    "success": False,
+                    "error": "No pose data provided"
                 }
 
         elif job.job_type == "ANIMATION_COMPUTE":

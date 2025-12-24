@@ -31,7 +31,11 @@ def should_print_debug(category: str, message_key: str = None) -> bool:
     Returns:
         True if enough time has passed since last print, False otherwise
     """
-    scene = bpy.context.scene
+    # Handle restricted context (e.g., during addon registration)
+    try:
+        scene = bpy.context.scene
+    except AttributeError:
+        return False  # No context available, skip logging
 
     # Get the enabled flag for this category
     debug_enabled_prop = f"dev_debug_{category}"

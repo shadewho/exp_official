@@ -104,9 +104,8 @@ def init_engine(modal, context) -> tuple[bool, str]:
             print(f"[STARTUP 4/5] Grid size: {pickle_size_kb:.1f} KB")
             print(f"              Serialization time: {pickle_time:.1f}ms")
 
-        # Send CACHE_GRID jobs to all workers
-        for i in range(8):
-            modal.engine.submit_job("CACHE_GRID", {"grid": modal.spatial_grid})
+        # Send CACHE_GRID jobs to all workers (targeted broadcast ensures each worker gets one)
+        modal.engine.broadcast_job("CACHE_GRID", {"grid": modal.spatial_grid})
 
         if startup_logs:
             print(f"[STARTUP 4/5] Grid jobs submitted, waiting for all workers to confirm...")
@@ -179,10 +178,9 @@ def shutdown_engine(modal, context):
     if debug:
         print("[ExpModal] Shutting down multiprocessing engine...")
 
-    # Clear dynamic mesh caches in all workers before shutdown
+    # Clear dynamic mesh caches in all workers before shutdown (targeted broadcast)
     try:
-        for _ in range(8):
-            modal.engine.submit_job("CLEAR_DYNAMIC_CACHE", {"clear_all": True})
+        modal.engine.broadcast_job("CLEAR_DYNAMIC_CACHE", {"clear_all": True})
         if debug:
             print("[ExpModal] Sent CLEAR_DYNAMIC_CACHE to all workers")
     except Exception as e:
@@ -751,3 +749,103 @@ def get_cached_other_results(modal) -> list:
     results = modal._cached_other_results
     modal._cached_other_results = []
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POSE LIBRARY CACHING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cache_poses_in_workers(modal, context) -> bool:
+    """
+    Cache pose library in the ANIMATION WORKER for runtime pose playback.
+    MUST be called AFTER init_engine() since it needs workers to be running.
+
+    Poses are sent to ANIMATION_WORKER_ID (worker 0) since pose playback
+    integrates with the animation blend system.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+
+    Returns:
+        True if caching succeeded or no poses to cache
+    """
+    import json
+    from ..developer.dev_logger import log_game
+
+    scene = context.scene
+
+    # Check if pose library exists and has poses
+    if not hasattr(scene, 'pose_library') or len(scene.pose_library) == 0:
+        log_game("POSE-CACHE", "EMPTY no poses in library")
+        return True  # No poses to cache is not an error
+
+    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
+        log_game("POSE-CACHE", "SKIP engine not available")
+        return False
+
+    # Convert pose library to worker-friendly format
+    # Format: {pose_name: {bone_transforms: {bone: [10 floats]}, source_armature: str}}
+    poses_data = {}
+
+    for pose_entry in scene.pose_library:
+        try:
+            bone_data = json.loads(pose_entry.bone_data_json)
+            poses_data[pose_entry.name] = {
+                "bone_transforms": bone_data,
+                "source_armature": pose_entry.source_armature_name,
+                "bone_count": len(bone_data),
+            }
+        except json.JSONDecodeError:
+            log_game("POSE-CACHE", f"SKIP pose='{pose_entry.name}' invalid JSON")
+            continue
+
+    if not poses_data:
+        log_game("POSE-CACHE", "EMPTY no valid poses after parsing")
+        return True
+
+    # Log pose list
+    pose_count = len(poses_data)
+    pose_names = list(poses_data.keys())
+    total_bones = sum(p["bone_count"] for p in poses_data.values())
+    log_game("POSE-CACHE", f"CACHING {pose_count} poses: {pose_names}")
+
+    # Send cache to ANIMATION WORKER ONLY
+    transfer_start = time.perf_counter()
+    job_id = modal.engine.submit_job(
+        "CACHE_POSES",
+        {"poses": poses_data},
+        check_overload=False,
+        target_worker=ANIMATION_WORKER_ID
+    )
+
+    # Wait for cache confirmation from animation worker
+    if job_id is not None and job_id >= 0:
+        start_time = time.perf_counter()
+        timeout = 1.0
+        confirmed = False
+
+        while not confirmed:
+            if time.perf_counter() - start_time > timeout:
+                log_game("POSE-CACHE", f"TIMEOUT worker={ANIMATION_WORKER_ID} cache not confirmed")
+                break
+
+            results = list(modal.engine.poll_results(max_results=50))
+            for result in results:
+                if result.job_type == "CACHE_POSES" and result.success:
+                    if result.worker_id == ANIMATION_WORKER_ID:
+                        confirmed = True
+                        break
+
+            if confirmed:
+                break
+            time.sleep(0.002)
+
+        transfer_elapsed_ms = (time.perf_counter() - transfer_start) * 1000
+
+        if confirmed:
+            log_game("POSE-CACHE", f"CACHE_OK worker={ANIMATION_WORKER_ID} {pose_count}poses {total_bones}bones ({transfer_elapsed_ms:.0f}ms)")
+        else:
+            log_game("POSE-CACHE", f"CACHE_FAIL worker={ANIMATION_WORKER_ID} timeout after {transfer_elapsed_ms:.0f}ms")
+
+    return True

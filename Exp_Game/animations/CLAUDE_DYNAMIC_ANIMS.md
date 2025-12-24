@@ -222,3 +222,30 @@ ARM_IK = {
 ---
 
 **Last Updated**: 2025-12-22
+
+
+═══════════════════════════════════════════════════════════════════════════════
+POSE LIBRARY SYSTEM
+═══════════════════════════════════════════════════════════════════════════════
+Exp_Game\animations\pose_library.py
+WHAT IT IS:
+    A system for capturing and storing armature poses as JSON data. Users can
+    save poses from the current armature state and replay them with bone group
+    filtering (full body, upper body, arms only, etc.)
+
+EVENTUAL GOAL:
+    Dynamic pose switching via the Node System (interaction/reaction system).
+    Users won't need to animate everything - they can define poses and let the
+    system blend between them with IK overlay for procedural adjustments.
+
+CURRENT STAGE:
+    Early testing in Developer Tools panel. Before exposing to nodes, we need
+    to nail down:
+    - Pose blending (smooth transitions between poses)
+    - Timing control (blend duration, easing curves)
+    - Animation speed coordination
+    - IK integration (pose + procedural IK overlay)
+
+    The Test Suite (Pose mode) is where this gets validated.
+
+═══════════════════════════════════════════════════════════════════════════════

@@ -299,6 +299,47 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         )
         box.label(text="For distribution, please pack all custom audio into the .blend file.")
 
+        # ─── Pose Library ───
+        box = layout.box()
+        box.label(text="Pose Library", icon='ARMATURE_DATA')
+
+        # Pose list
+        row = box.row()
+        row.template_list(
+            "EXPLORATORY_UL_pose_library_list",
+            "",
+            scene,
+            "pose_library",
+            scene,
+            "pose_library_index",
+            rows=3
+        )
+        col = row.column(align=True)
+        col.operator("exploratory.capture_pose", text="", icon='ADD')
+        remove_op = col.operator("exploratory.remove_pose", text="", icon='REMOVE')
+        remove_op.index = scene.pose_library_index
+        col.separator()
+        col.operator("exploratory.duplicate_pose", text="", icon='DUPLICATE')
+
+        # Selected pose details
+        idx = scene.pose_library_index
+        if 0 <= idx < len(scene.pose_library):
+            pose = scene.pose_library[idx]
+            detail_box = box.box()
+            detail_box.prop(pose, "name", text="Name")
+            detail_box.prop(pose, "description", text="Description")
+
+            # Info row
+            info_row = detail_box.row()
+            info_row.label(text=f"Bones: {pose.get_bone_count()}")
+            if pose.source_armature_name:
+                info_row.label(text=f"From: {pose.source_armature_name}")
+
+            # Preview button
+            detail_box.operator("exploratory.apply_pose", text="Preview Pose", icon='PLAY')
+        else:
+            box.label(text="No poses saved yet")
+
 # --------------------------------------------------------------------
 # Proxy Meshes (only visible in Create mode)
 # --------------------------------------------------------------------

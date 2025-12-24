@@ -35,6 +35,29 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # PANEL SECTION COLLAPSE STATES
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_section_engine = bpy.props.BoolProperty(
+        name="Engine Health", default=False)
+    bpy.types.Scene.dev_section_grid = bpy.props.BoolProperty(
+        name="Spatial Grid", default=False)
+    bpy.types.Scene.dev_section_offload = bpy.props.BoolProperty(
+        name="Offload Systems", default=False)
+    bpy.types.Scene.dev_section_physics = bpy.props.BoolProperty(
+        name="Unified Physics", default=False)
+    bpy.types.Scene.dev_section_camera = bpy.props.BoolProperty(
+        name="Unified Camera", default=False)
+    bpy.types.Scene.dev_section_dynamic = bpy.props.BoolProperty(
+        name="Dynamic Mesh System", default=False)
+    bpy.types.Scene.dev_section_kcc_visual = bpy.props.BoolProperty(
+        name="KCC Visual Debug", default=False)
+    bpy.types.Scene.dev_section_game = bpy.props.BoolProperty(
+        name="Game Systems", default=False)
+    bpy.types.Scene.dev_section_anim = bpy.props.BoolProperty(
+        name="Animation 2.0", default=False)
+
+    # ══════════════════════════════════════════════════════════════════════════
     # ENGINE HEALTH
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -537,6 +560,32 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_world_state = bpy.props.BoolProperty(
+        name="World State Filter",
+        description=(
+            "World state collection optimization (Phase 1.1):\n"
+            "• Objects collected vs total scene objects\n"
+            "• Tracked object names list\n"
+            "• Confirms filtering is active\n"
+            "\n"
+            "Shows: 'COLLECT filtered=5 total=127 (96% reduction)'"
+        ),
+        default=False
+    )
+
+    bpy.types.Scene.dev_debug_aabb_cache = bpy.props.BoolProperty(
+        name="AABB Cache",
+        description=(
+            "AABB cache optimization (Phase 1.2):\n"
+            "• Cache hits vs misses per frame\n"
+            "• Static objects cached at game start\n"
+            "• Dynamic objects recalculated each frame\n"
+            "\n"
+            "Shows: 'FRAME hits=4 misses=2 rate=67%'"
+        ),
+        default=False
+    )
+
     bpy.types.Scene.dev_debug_animations = bpy.props.BoolProperty(
         name="Animations",
         description=(
@@ -628,7 +677,104 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.runtime_ik_chain = bpy.props.EnumProperty(
+    # NOTE: runtime_ik_chain, runtime_ik_influence, runtime_ik_target removed
+    # Runtime IK now uses unified test_ik_* properties from Test Suite
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # POSE LIBRARY SYSTEM
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_debug_poses = bpy.props.BoolProperty(
+        name="Pose Library",
+        description=(
+            "Pose library system diagnostics:\n"
+            "• Pose capture events\n"
+            "• Pose cache transfer to workers\n"
+            "• Pose playback and blending\n"
+            "• Worker cache confirmation"
+        ),
+        default=False
+    )
+
+    # --- Pose Test Properties (Animation 2.0 Dev Panel) ---
+
+    def _get_pose_items(self, context):
+        """Dynamic enum callback for pose selection dropdown."""
+        items = []
+        if context and hasattr(context, 'scene') and hasattr(context.scene, 'pose_library'):
+            for i, pose in enumerate(context.scene.pose_library):
+                items.append((pose.name, pose.name, pose.description or "", 'ARMATURE_DATA', i))
+        # Always need at least one item for Blender enums
+        if not items:
+            items.append(("NONE", "No Poses", "Capture a pose first", 'ERROR', 0))
+        return items
+
+    bpy.types.Scene.pose_test_name = bpy.props.EnumProperty(
+        name="Test Pose",
+        description="Pose to play for testing",
+        items=_get_pose_items
+    )
+
+    bpy.types.Scene.pose_test_blend_time = bpy.props.FloatProperty(
+        name="Blend Time",
+        description="Time to blend into/out of the pose",
+        default=0.25,
+        min=0.0,
+        max=2.0,
+        unit='TIME'
+    )
+
+    # NOTE: pose_test_bone_group removed - now using unified test_bone_group
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # UNIFIED ANIMATION TEST SUITE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.test_mode = bpy.props.EnumProperty(
+        name="Test Mode",
+        description="Select which animation system to test",
+        items=[
+            ("ANIMATION", "Animation", "Test animation playback and blending", 'PLAY', 0),
+            ("POSE", "Pose", "Test pose library application", 'ARMATURE_DATA', 1),
+            ("IK", "IK", "Test IK chain solving", 'CON_KINEMATIC', 2),
+        ],
+        default="ANIMATION"
+    )
+
+    bpy.types.Scene.test_bone_group = bpy.props.EnumProperty(
+        name="Bone Group",
+        description="Which bones to affect (used by Pose and IK modes)",
+        items=[
+            ("ALL", "Full Body", "Apply to all bones"),
+            ("UPPER_BODY", "Upper Body", "Apply to spine, arms, head"),
+            ("LOWER_BODY", "Lower Body", "Apply to hips and legs"),
+            ("ARM_L", "Left Arm", "Apply to left arm only"),
+            ("ARM_R", "Right Arm", "Apply to right arm only"),
+            ("ARMS", "Both Arms", "Apply to both arms"),
+            ("LEG_L", "Left Leg", "Apply to left leg only"),
+            ("LEG_R", "Right Leg", "Apply to right leg only"),
+            ("LEGS", "Both Legs", "Apply to both legs"),
+            ("SPINE_HEAD", "Spine & Head", "Apply to spine, neck, and head"),
+        ],
+        default="ALL"
+    )
+
+    # --- Animation Mode Options ---
+    # Note: Uses existing props from ANIM2_TestProperties in test_panel.py:
+    # - props.selected_animation, props.blend_animation, props.blend_weight
+    # - props.play_speed, props.fade_time, props.loop_playback
+
+    bpy.types.Scene.test_blend_enabled = bpy.props.BoolProperty(
+        name="Blend Secondary",
+        description="Enable blending a second animation",
+        default=False
+    )
+
+    # --- Pose Mode Options ---
+    # Note: Uses existing pose_test_name, pose_test_blend_time from above
+
+    # --- IK Mode Options ---
+    bpy.types.Scene.test_ik_chain = bpy.props.EnumProperty(
         name="IK Chain",
         description="Which limb chain to solve IK for",
         items=[
@@ -637,22 +783,60 @@ def register_properties():
             ("arm_L", "Left Arm", "Left arm IK (upper → forearm → hand)"),
             ("arm_R", "Right Arm", "Right arm IK (upper → forearm → hand)"),
         ],
-        default="arm_R"
+        default="leg_L"
     )
 
-    bpy.types.Scene.runtime_ik_influence = bpy.props.FloatProperty(
+    bpy.types.Scene.test_ik_target = bpy.props.PointerProperty(
+        name="IK Target",
+        description="Object to use as IK target (Empty, etc.)",
+        type=bpy.types.Object
+    )
+
+    bpy.types.Scene.test_ik_influence = bpy.props.FloatProperty(
         name="IK Influence",
-        description="How much IK affects the final pose (0 = animation only, 1 = IK only)",
+        description="How much IK affects the final pose (0 = none, 1 = full)",
         default=1.0,
         min=0.0,
         max=1.0,
         subtype='FACTOR'
     )
 
-    bpy.types.Scene.runtime_ik_target = bpy.props.PointerProperty(
-        name="IK Target",
-        description="Object to use as IK target. If set, arm/leg will reach toward this object during gameplay",
-        type=bpy.types.Object
+    bpy.types.Scene.test_ik_pole = bpy.props.EnumProperty(
+        name="Pole Direction",
+        description="Hint for knee/elbow bend direction",
+        items=[
+            ("AUTO", "Auto", "Automatically determine from rest pose"),
+            ("FORWARD", "Forward (+Y)", "Bend forward"),
+            ("BACK", "Back (-Y)", "Bend backward"),
+            ("LEFT", "Left (-X)", "Bend left"),
+            ("RIGHT", "Right (+X)", "Bend right"),
+            ("UP", "Up (+Z)", "Bend upward"),
+            ("DOWN", "Down (-Z)", "Bend downward"),
+        ],
+        default="AUTO"
+    )
+
+    bpy.types.Scene.test_ik_advanced = bpy.props.BoolProperty(
+        name="Advanced Mode",
+        description="Show advanced IK controls (XYZ offset, pole offset)",
+        default=False
+    )
+
+    bpy.types.Scene.test_ik_target_xyz = bpy.props.FloatVectorProperty(
+        name="Target Offset",
+        description="Manual XYZ offset from rest position (advanced mode)",
+        default=(0.0, 0.0, 0.0),
+        subtype='XYZ',
+        unit='LENGTH'
+    )
+
+    bpy.types.Scene.test_ik_pole_offset = bpy.props.FloatProperty(
+        name="Pole Offset",
+        description="Distance of pole from joint midpoint",
+        default=0.5,
+        min=0.1,
+        max=2.0,
+        unit='LENGTH'
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -677,6 +861,17 @@ def unregister_properties():
     props_to_remove = [
         # Master control
         'dev_debug_master_hz',
+
+        # Section collapse states
+        'dev_section_engine',
+        'dev_section_grid',
+        'dev_section_offload',
+        'dev_section_physics',
+        'dev_section_camera',
+        'dev_section_dynamic',
+        'dev_section_kcc_visual',
+        'dev_section_game',
+        'dev_section_anim',
 
         # Engine
         'dev_debug_engine',
@@ -743,6 +938,8 @@ def unregister_properties():
         'dev_debug_interactions',
         'dev_debug_audio',
         'dev_debug_trackers',
+        'dev_debug_world_state',
+        'dev_debug_aabb_cache',
         'dev_debug_animations',
         'dev_debug_anim_cache',
         'dev_debug_anim_worker',
@@ -753,9 +950,25 @@ def unregister_properties():
         'dev_debug_runtime_ik',
         'runtime_ik_enabled',
         'runtime_ik_use_blend_system',
-        'runtime_ik_chain',
-        'runtime_ik_influence',
-        'runtime_ik_target',
+        # runtime_ik_chain, runtime_ik_influence, runtime_ik_target moved to old_props
+
+        # Pose Library
+        'dev_debug_poses',
+        'pose_test_name',
+        'pose_test_blend_time',
+        # pose_test_bone_group moved to old_props (replaced by test_bone_group)
+
+        # Unified Test Suite
+        'test_mode',
+        'test_bone_group',
+        'test_blend_enabled',
+        'test_ik_chain',
+        'test_ik_target',
+        'test_ik_influence',
+        'test_ik_pole',
+        'test_ik_advanced',
+        'test_ik_target_xyz',
+        'test_ik_pole_offset',
 
         # Session export
         'dev_export_session_log',
@@ -767,6 +980,14 @@ def unregister_properties():
 
     # Clean up OLD properties from previous versions (migration)
     old_props = [
+        # Replaced by unified test_bone_group
+        'pose_test_bone_group',
+        # Removed - IK Test section merged into unified Test Suite
+        'dev_section_ik',
+        # Replaced by unified test_ik_* properties
+        'runtime_ik_chain',
+        'runtime_ik_influence',
+        'runtime_ik_target',
     ]
 
     for prop in old_props:

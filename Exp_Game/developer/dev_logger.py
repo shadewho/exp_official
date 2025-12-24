@@ -83,8 +83,18 @@ _CATEGORY_MAP = {
     # IK System
     'IK': 'runtime_ik',
 
+    # Pose Library System
+    'POSES': 'poses',
+    'POSE-CACHE': 'poses',
+
     # Tracker System
     'TRACKERS': 'trackers',
+
+    # World State Optimization (Phase 1.1)
+    'WORLD-STATE': 'world_state',
+
+    # AABB Cache Optimization (Phase 1.2)
+    'AABB-CACHE': 'aabb_cache',
 }
 
 

@@ -478,9 +478,11 @@ def _resolve_direction(r, origin):
                 # Static hit: aim at that point
                 return (loc - origin).normalized()
             else:
-                # No static hit: use camera direction directly
-                # This ensures shots go where crosshair points (worker tests dynamic meshes)
-                return cam_dir.copy()
+                # No static hit: aim at where crosshair points at max_range
+                # This makes the shot converge with crosshair at distance
+                # (using cam_dir directly would create parallel offset, missing the target)
+                far_point = cam_o + cam_dir * hs_range
+                return (far_point - origin).normalized()
         return _character_forward_from_scene()
 
     # CHAR_FORWARD
@@ -1113,9 +1115,9 @@ def process_hitscan_results(result) -> int:
                         hit_obj = dynamic_obj_lookup.get(hit_obj_id)
                         if hit_obj:
                             try:
-                                # Store world position/rotation before parenting
-                                world_pos = new_ob.matrix_world.translation.copy()
-                                world_rot = new_ob.matrix_world.to_quaternion()
+                                # Use impact directly - matrix_world isn't updated until depsgraph eval
+                                world_pos = impact.copy()
+                                world_rot = new_ob.rotation_euler.to_quaternion()
 
                                 # Parent with identity inverse (local = relative to parent)
                                 new_ob.parent = hit_obj
@@ -1346,9 +1348,9 @@ def process_projectile_results(result) -> int:
                     hit_obj = dynamic_obj_lookup.get(hit_obj_id)
                     if hit_obj:
                         try:
-                            # Store world position/rotation before parenting
-                            world_pos = obj_v.matrix_world.translation.copy()
-                            world_rot = obj_v.matrix_world.to_quaternion()
+                            # Use pos directly - matrix_world isn't updated until depsgraph eval
+                            world_pos = Vector(pos)
+                            world_rot = obj_v.rotation_euler.to_quaternion()
 
                             # Parent with identity inverse (local = relative to parent)
                             obj_v.parent = hit_obj

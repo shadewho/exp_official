@@ -107,6 +107,9 @@ if not _IS_WORKER_PROCESS:
     # --- Animation 2.0 Operators & Properties ---
     from .animations import test_panel as anim2_test_panel
 
+    # --- Pose Library ---
+    from .animations import pose_library as pose_lib
+
     # ============================================================================
     # START GAME KEYMAP MANAGEMENT
     # ============================================================================
@@ -256,6 +259,9 @@ if not _IS_WORKER_PROCESS:
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.register()
 
+        # ─── Pose Library ──────────────────────────────
+        pose_lib.register_pose_library()
+
         # ─── Start Game Keymap ──────────────────────────────
         register_start_game_keymap()
 
@@ -344,6 +350,9 @@ if not _IS_WORKER_PROCESS:
 
         # ─── Performance Culling ──────────────────────────────────
         unregister_performance()
+
+        # ─── Pose Library ──────────────────────────────
+        pose_lib.unregister_pose_library()
 
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.unregister()

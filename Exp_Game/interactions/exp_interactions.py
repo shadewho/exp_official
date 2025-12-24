@@ -30,12 +30,156 @@ from ..reactions.exp_action_keys import (
 from ..reactions.exp_parenting import execute_parenting_reaction
 from ..reactions.exp_tracking import execute_tracking_reaction
 from .exp_tracker_eval import reset_tracker_state
+from ..developer.dev_logger import log_game
 
 # Global list to hold pending trigger tasks.
 _pending_reaction_batches = []
 _pending_trigger_tasks = []
 
+# ══════════════════════════════════════════════════════════════════════════════
+# AABB CACHE (Phase 1.2 Optimization)
+# ══════════════════════════════════════════════════════════════════════════════
+# Cache AABBs for static objects. Dynamic objects (character, moving platforms)
+# are recalculated each frame.
+
+_aabb_cache: dict = {}  # {obj_name: (min_x, max_x, min_y, max_y, min_z, max_z)}
+_dynamic_objects: set = set()  # Objects that move (character, platforms)
+_aabb_stats = {"hits": 0, "misses": 0}  # Per-frame stats for logging
+
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AABB CACHE FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_aabb(obj) -> tuple:
+    """Compute world-space AABB for an object. Returns (min_x, max_x, min_y, max_y, min_z, max_z)."""
+    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    return (
+        min(pt.x for pt in corners), max(pt.x for pt in corners),
+        min(pt.y for pt in corners), max(pt.y for pt in corners),
+        min(pt.z for pt in corners), max(pt.z for pt in corners)
+    )
+
+
+def init_aabb_cache(scene) -> int:
+    """
+    Initialize AABB cache at game start. Cache static objects, mark dynamic ones.
+    Called from game loop initialization.
+
+    Returns number of cached AABBs.
+    """
+    global _aabb_cache, _dynamic_objects, _aabb_stats
+    _aabb_cache.clear()
+    _dynamic_objects.clear()
+    _aabb_stats = {"hits": 0, "misses": 0}
+
+    # Character is always dynamic
+    char = scene.target_armature
+    if char:
+        _dynamic_objects.add(char.name)
+
+    # Collect all objects referenced by COLLISION interactions
+    collision_objects = set()
+    for inter in scene.custom_interactions:
+        if inter.trigger_type != "COLLISION":
+            continue
+
+        # Object A
+        if inter.use_character:
+            if char:
+                collision_objects.add(char.name)
+        elif inter.collision_object_a:
+            collision_objects.add(inter.collision_object_a.name)
+
+        # Object B
+        if inter.collision_object_b:
+            collision_objects.add(inter.collision_object_b.name)
+
+    # Check which objects are dynamic (have animation, physics, or are platforms)
+    for obj_name in collision_objects:
+        obj = bpy.data.objects.get(obj_name)
+        if not obj:
+            continue
+
+        # Skip if already marked dynamic
+        if obj_name in _dynamic_objects:
+            continue
+
+        # Check if object is dynamic:
+        # - Has animation data
+        # - Is in exp_dynamic_meshes collection
+        # - Has rigid body
+        is_dynamic = False
+
+        if obj.animation_data and obj.animation_data.action:
+            is_dynamic = True
+        elif obj.rigid_body:
+            is_dynamic = True
+        elif hasattr(scene, 'exp_dynamic_meshes'):
+            for dyn in scene.exp_dynamic_meshes:
+                if dyn.mesh == obj:
+                    is_dynamic = True
+                    break
+
+        if is_dynamic:
+            _dynamic_objects.add(obj_name)
+        else:
+            # Static - cache the AABB
+            _aabb_cache[obj_name] = _compute_aabb(obj)
+
+    cached = len(_aabb_cache)
+    dynamic = len(_dynamic_objects)
+    log_game("AABB-CACHE", f"INIT cached={cached} dynamic={dynamic} objects={list(_aabb_cache.keys())}")
+
+    return cached
+
+
+def get_cached_aabb(obj) -> tuple:
+    """
+    Get AABB for object, using cache if available.
+    Returns (min_x, max_x, min_y, max_y, min_z, max_z).
+    """
+    global _aabb_stats
+
+    obj_name = obj.name
+
+    # Dynamic objects always recalculate
+    if obj_name in _dynamic_objects:
+        _aabb_stats["misses"] += 1
+        return _compute_aabb(obj)
+
+    # Check cache
+    if obj_name in _aabb_cache:
+        _aabb_stats["hits"] += 1
+        return _aabb_cache[obj_name]
+
+    # Not in cache - compute and cache it
+    _aabb_stats["misses"] += 1
+    aabb = _compute_aabb(obj)
+    _aabb_cache[obj_name] = aabb
+    return aabb
+
+
+def reset_aabb_cache():
+    """Reset AABB cache. Called on game stop/reset."""
+    global _aabb_cache, _dynamic_objects, _aabb_stats
+    _aabb_cache.clear()
+    _dynamic_objects.clear()
+    _aabb_stats = {"hits": 0, "misses": 0}
+
+
+def log_aabb_stats():
+    """Log AABB cache stats for this frame, then reset counters."""
+    global _aabb_stats
+    hits = _aabb_stats["hits"]
+    misses = _aabb_stats["misses"]
+    total = hits + misses
+    if total > 0:
+        hit_rate = (hits / total) * 100
+        log_game("AABB-CACHE", f"FRAME hits={hits} misses={misses} rate={hit_rate:.0f}%")
+    _aabb_stats = {"hits": 0, "misses": 0}
 
 
 def _sync_dynamic_inputs_to_reaction(r, reaction_index):
@@ -480,8 +624,7 @@ def _submit_interaction_worker_jobs(context):
     # THROTTLING: Check if previous job still pending
     if hasattr(modal_op, '_pending_interaction_job_id') and modal_op._pending_interaction_job_id is not None:
         # Previous job not returned yet - skip this frame to prevent flooding
-        if debug_offload:
-            print("[InteractionOffload] Skipping submit - previous job still pending (frame drop protection)")
+        # Don't log this - it would spam the log at every skipped frame
         return None
 
     current_time = get_game_time()
@@ -528,19 +671,11 @@ def _submit_interaction_worker_jobs(context):
             obj_b = inter.collision_object_b
 
             if obj_a and obj_b:
-                # Calculate AABBs (same as bounding_sphere_collision)
-                def get_aabb(obj):
-                    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
-                    return (
-                        min(pt.x for pt in corners), max(pt.x for pt in corners),
-                        min(pt.y for pt in corners), max(pt.y for pt in corners),
-                        min(pt.z for pt in corners), max(pt.z for pt in corners)
-                    )
-
+                # Use cached AABBs (Phase 1.2 optimization)
                 inter_data = {
                     "type": "COLLISION",
-                    "aabb_a": get_aabb(obj_a),
-                    "aabb_b": get_aabb(obj_b),
+                    "aabb_a": get_cached_aabb(obj_a),
+                    "aabb_b": get_cached_aabb(obj_b),
                     "margin": float(inter.collision_margin),
                     # NEW: State data for worker trigger logic
                     "is_in_zone": inter.is_in_zone,
@@ -572,10 +707,15 @@ def _submit_interaction_worker_jobs(context):
                 submit_time_ms = (submit_end - submit_start) * 1000.0
                 prox_count = sum(1 for d in interactions_data if d["type"] == "PROXIMITY")
                 coll_count = sum(1 for d in interactions_data if d["type"] == "COLLISION")
-                print(f"[InteractionOffload] Submitted job {job_id} with {len(interactions_data)} interactions "
-                      f"({prox_count} PROXIMITY, {coll_count} COLLISION) (submit: {submit_time_ms:.3f}ms)")
+                log_game("INTERACTIONS", f"SUBMIT job={job_id} prox={prox_count} coll={coll_count} time={submit_time_ms:.2f}ms")
+
+            # Log AABB cache performance
+            log_aabb_stats()
 
             return job_id
+
+    # Log AABB cache performance even if no job submitted
+    log_aabb_stats()
 
     return None
 
@@ -615,9 +755,7 @@ def apply_interaction_check_result(engine_result, context):
         worker_time_ms = engine_result.processing_time * 1000.0
         count = result_data.get("count", 0)
         worker_id = getattr(engine_result, 'worker_id', -1)
-        print(f"[InteractionOffload] Worker {worker_id} checked {count} interactions, "
-              f"{len(triggered_indices)} triggered "
-              f"(worker: {worker_time_ms:.3f}ms, calc: {calc_time_us:.1f}µs)")
+        log_game("INTERACTIONS", f"BATCH w{worker_id} checked={count} triggered={len(triggered_indices)} calc={calc_time_us:.0f}µs")
 
     # Apply state updates and fire reactions
     for idx_str, state_update in state_updates.items():
@@ -639,14 +777,13 @@ def apply_interaction_check_result(engine_result, context):
         # Handle firing reactions
         if should_fire:
             if debug_offload:
-                print(f"[InteractionOffload] Triggering '{inter.name}' "
-                      f"(transition: {transition}, mode: {inter.trigger_mode})")
+                log_game("INTERACTIONS", f"TRIGGER '{inter.name}' trans={transition} mode={inter.trigger_mode}")
 
             # Handle trigger_delay scheduling
             if inter.trigger_delay > 0.0:
                 schedule_trigger(inter, current_time + inter.trigger_delay)
                 if debug_offload:
-                    print(f"[InteractionOffload] '{inter.name}' scheduled with {inter.trigger_delay}s delay")
+                    log_game("INTERACTIONS", f"DELAYED '{inter.name}' delay={inter.trigger_delay:.1f}s")
             else:
                 # Fire reactions immediately
                 run_reactions(_get_linked_reactions(inter))
@@ -660,15 +797,7 @@ def apply_interaction_check_result(engine_result, context):
         elif transition == "EXITED" and inter.trigger_mode == "ENTER_ONLY":
             inter.has_fired = False
             if debug_offload:
-                print(f"[InteractionOffload] '{inter.name}' exited zone (ENTER_ONLY reset)")
-
-        # Log other transitions if in verbose mode
-        elif debug_offload and transition in ("STILL_IN", "STILL_OUT"):
-            # Only log STILL_IN if it's a COOLDOWN that didn't fire (cooldown not ready)
-            if transition == "STILL_IN" and inter.trigger_mode == "COOLDOWN" and not should_fire:
-                time_since = current_time - inter.last_trigger_time
-                remaining = inter.trigger_cooldown - time_since
-                print(f"[InteractionOffload] '{inter.name}' still in zone but cooldown not ready ({remaining:.1f}s remaining)")
+                log_game("INTERACTIONS", f"EXIT '{inter.name}' reset=ENTER_ONLY")
 
 
 def check_interactions(context):
@@ -909,6 +1038,9 @@ def reset_all_interactions(scene):
 
     # Reset tracker evaluation state
     reset_tracker_state()
+
+    # Reset AABB cache (Phase 1.2)
+    reset_aabb_cache()
 
     # Clear any queued triggers and delayed reaction batches
     global _pending_trigger_tasks, _pending_reaction_batches

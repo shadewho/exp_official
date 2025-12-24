@@ -11,7 +11,7 @@ UI is in Developer Tools panel (dev_panel.py).
 import bpy
 import time
 from bpy.types import Operator, PropertyGroup
-from bpy.props import FloatProperty, BoolProperty, EnumProperty, FloatVectorProperty, PointerProperty
+from bpy.props import FloatProperty, BoolProperty, EnumProperty, PointerProperty
 
 from ..engine.animations.baker import bake_action
 from ..engine.animations.ik import (
@@ -559,73 +559,6 @@ class ANIM2_OT_BakeAll(Operator):
         return {'FINISHED'}
 
 
-class ANIM2_OT_PlayAnimation(Operator):
-    """Play an animation on the selected object"""
-    bl_idname = "anim2.play_animation"
-    bl_label = "Play"
-    bl_options = {'REGISTER'}
-
-    def execute(self, context):
-        obj = context.active_object
-        if obj is None:
-            self.report({'WARNING'}, "No object selected")
-            return {'CANCELLED'}
-
-        props = context.scene.anim2_test
-        anim_name = props.selected_animation
-
-        if not anim_name:
-            self.report({'WARNING'}, "No animation selected")
-            return {'CANCELLED'}
-
-        ctrl = get_test_controller()
-
-        if not ctrl.has_animation(anim_name):
-            self.report({'WARNING'}, f"Animation '{anim_name}' not in cache. Bake first.")
-            return {'CANCELLED'}
-
-        # Play with settings
-        success = ctrl.play(
-            obj.name,
-            anim_name,
-            weight=1.0,
-            speed=props.play_speed,
-            looping=props.loop_playback,
-            fade_in=props.fade_time,
-            replace=True
-        )
-
-        if success:
-            self.report({'INFO'}, f"Playing '{anim_name}' on {obj.name}")
-            # Start playback timer if not running
-            if not bpy.app.timers.is_registered(playback_update):
-                bpy.app.timers.register(playback_update, first_interval=1/60)
-        else:
-            self.report({'WARNING'}, f"Failed to play '{anim_name}'")
-
-        return {'FINISHED'}
-
-
-class ANIM2_OT_StopAnimation(Operator):
-    """Stop all animations on the selected object"""
-    bl_idname = "anim2.stop_animation"
-    bl_label = "Stop"
-    bl_options = {'REGISTER'}
-
-    def execute(self, context):
-        obj = context.active_object
-        if obj is None:
-            self.report({'WARNING'}, "No object selected")
-            return {'CANCELLED'}
-
-        props = context.scene.anim2_test
-        ctrl = get_test_controller()
-        ctrl.stop(obj.name, fade_out=props.fade_time)
-
-        self.report({'INFO'}, f"Stopped animations on {obj.name}")
-        return {'FINISHED'}
-
-
 class ANIM2_OT_StopAll(Operator):
     """Stop ALL animations on ALL objects"""
     bl_idname = "anim2.stop_all"
@@ -646,50 +579,6 @@ class ANIM2_OT_StopAll(Operator):
             bpy.app.timers.unregister(playback_update)
 
         self.report({'INFO'}, "Stopped all animations")
-        return {'FINISHED'}
-
-
-class ANIM2_OT_BlendAnimation(Operator):
-    """Blend in a second animation"""
-    bl_idname = "anim2.blend_animation"
-    bl_label = "Blend In"
-    bl_options = {'REGISTER'}
-
-    def execute(self, context):
-        obj = context.active_object
-        if obj is None:
-            self.report({'WARNING'}, "No object selected")
-            return {'CANCELLED'}
-
-        props = context.scene.anim2_test
-        anim_name = props.blend_animation
-
-        if not anim_name:
-            self.report({'WARNING'}, "No blend animation selected")
-            return {'CANCELLED'}
-
-        ctrl = get_test_controller()
-
-        if not ctrl.has_animation(anim_name):
-            self.report({'WARNING'}, f"Animation '{anim_name}' not in cache")
-            return {'CANCELLED'}
-
-        # Add without replacing (blends with existing)
-        success = ctrl.play(
-            obj.name,
-            anim_name,
-            weight=props.blend_weight,
-            speed=props.play_speed,
-            looping=props.loop_playback,
-            fade_in=props.fade_time,
-            replace=False
-        )
-
-        if success:
-            self.report({'INFO'}, f"Blending '{anim_name}' at {props.blend_weight:.0%}")
-            if not bpy.app.timers.is_registered(playback_update):
-                bpy.app.timers.register(playback_update, first_interval=1/60)
-
         return {'FINISHED'}
 
 
@@ -787,150 +676,6 @@ def get_pole_direction_vector(pole_dir: str, is_leg: bool) -> np.ndarray:
         return directions["FORWARD"] if is_leg else directions["BACK"]
 
     return directions.get(pole_dir, directions["FORWARD"])
-
-
-class ANIM2_OT_TestIK(Operator):
-    """Test IK solver on the IK armature"""
-    bl_idname = "anim2.test_ik"
-    bl_label = "Apply IK"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        props = context.scene.anim2_test
-        obj = props.ik_armature
-        if obj is None or obj.type != 'ARMATURE':
-            self.report({'WARNING'}, "Set an armature in the IK Test panel")
-            return {'CANCELLED'}
-        chain = props.ik_chain
-        is_leg = chain.startswith("leg")
-        is_arm = chain.startswith("arm")
-
-        pose_bones = obj.pose.bones
-
-        # Get chain definition
-        if is_leg:
-            chain_def = LEG_IK[chain]
-            side = "L" if chain == "leg_L" else "R"
-        elif is_arm:
-            chain_def = ARM_IK[chain]
-            side = "L" if chain == "arm_L" else "R"
-        else:
-            self.report({'WARNING'}, f"Unknown chain: {chain}")
-            return {'CANCELLED'}
-
-        # Get bones
-        root_bone = pose_bones.get(chain_def["root"])
-        mid_bone = pose_bones.get(chain_def["mid"])
-        tip_bone = pose_bones.get(chain_def["tip"])
-
-        if not all([root_bone, mid_bone, tip_bone]):
-            self.report({'WARNING'}, f"Missing bones for {chain}")
-            return {'CANCELLED'}
-
-        # Reset to rest first for clean solve
-        root_bone.rotation_mode = 'QUATERNION'
-        mid_bone.rotation_mode = 'QUATERNION'
-        root_bone.rotation_quaternion = mathutils.Quaternion()
-        mid_bone.rotation_quaternion = mathutils.Quaternion()
-        context.view_layer.update()
-
-        # Get world positions after reset
-        root_pos = np.array((obj.matrix_world @ root_bone.head)[:], dtype=np.float32)
-        tip_pos = np.array((obj.matrix_world @ tip_bone.head)[:], dtype=np.float32)
-
-        # Determine target position
-        if props.ik_target_object is not None:
-            # Use target object's world location
-            obj_loc = props.ik_target_object.matrix_world.translation
-            target_pos = np.array([obj_loc.x, obj_loc.y, obj_loc.z], dtype=np.float32)
-            target_info = f"object '{props.ik_target_object.name}'"
-        elif props.ik_advanced_mode:
-            # Use XYZ offset from rest tip position
-            offset = props.ik_target
-            target_pos = tip_pos + np.array([offset[0], offset[1], offset[2]], dtype=np.float32)
-            target_info = f"offset ({offset[0]:.2f}, {offset[1]:.2f}, {offset[2]:.2f})"
-        else:
-            # Simple mode - legacy behavior
-            target_pos = tip_pos.copy()
-            if is_leg:
-                target_pos[2] = props.ik_target_z
-                target_info = f"Z={props.ik_target_z:.2f}m"
-            else:
-                target_pos[1] += props.ik_arm_forward
-                target_info = f"forward={props.ik_arm_forward:.2f}m"
-
-        # Compute pole position
-        pole_dir = get_pole_direction_vector(props.ik_pole_direction, is_leg)
-        pole_offset = props.ik_pole_offset
-        pole_pos = (root_pos + target_pos) / 2 + pole_dir * pole_offset
-
-        # Solve IK
-        if is_leg:
-            _, _, joint_world = solve_leg_ik(root_pos, target_pos, pole_pos, side)
-        else:
-            _, _, joint_world = solve_arm_ik(root_pos, target_pos, pole_pos, side)
-
-        # Check reachability for visualization
-        target_dist = float(np.linalg.norm(target_pos - root_pos))
-        max_reach = chain_def['reach']
-        is_reachable = target_dist <= max_reach
-        at_limit = target_dist > (max_reach * 0.95)  # Within 5% of max
-
-        # Update IK visualization (if enabled)
-        update_ik_visualization(
-            obj=obj,
-            chain=chain,
-            target_pos=tuple(target_pos),
-            pole_pos=tuple(pole_pos),
-            joint_world_pos=joint_world,
-            is_reachable=is_reachable,
-            at_limit=at_limit
-        )
-
-        # Point upper bone at joint (knee/elbow)
-        root_rot = point_bone_at_target(obj, root_bone, joint_world)
-        root_bone.rotation_quaternion = root_rot
-        context.view_layer.update()
-
-        # Point lower bone at target (foot/hand)
-        mid_rot = point_bone_at_target(obj, mid_bone, target_pos)
-        mid_bone.rotation_quaternion = mid_rot
-
-        context.view_layer.update()
-
-        # Report
-        chain_name = "leg" if is_leg else "arm"
-        self.report({'INFO'}, f"Applied {side} {chain_name} IK, target: {target_info}")
-
-        return {'FINISHED'}
-
-
-class ANIM2_OT_ResetPose(Operator):
-    """Reset IK armature to rest pose"""
-    bl_idname = "anim2.reset_pose"
-    bl_label = "Reset Pose"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        props = context.scene.anim2_test
-        obj = props.ik_armature
-        if obj is None or obj.type != 'ARMATURE':
-            self.report({'WARNING'}, "Set an armature in the IK Test panel")
-            return {'CANCELLED'}
-
-        # Reset all pose bones to rest
-        for pbone in obj.pose.bones:
-            pbone.rotation_mode = 'QUATERNION'
-            pbone.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
-            pbone.location = mathutils.Vector((0, 0, 0))
-            pbone.scale = mathutils.Vector((1, 1, 1))
-
-        # Clear IK visualization
-        disable_ik_visualizer()
-
-        context.view_layer.update()
-        self.report({'INFO'}, "Reset to rest pose")
-        return {'FINISHED'}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1099,100 +844,324 @@ class ANIM2_TestProperties(PropertyGroup):
         max=300.0
     )
 
-    # ─── IK Test Properties ────────────────────────────────────────────────
-    ik_chain: EnumProperty(
-        name="Chain",
-        description="IK chain to test",
-        items=[
-            ("leg_L", "Left Leg", "Left leg IK (thigh → shin → foot)"),
-            ("leg_R", "Right Leg", "Right leg IK (thigh → shin → foot)"),
-            ("arm_L", "Left Arm", "Left arm IK (upper → forearm → hand)"),
-            ("arm_R", "Right Arm", "Right arm IK (upper → forearm → hand)"),
-        ],
-        default="leg_L"
-    )
+    # NOTE: Legacy IK properties removed - now using unified test_ik_* properties
+    # from dev_properties.py (test_ik_chain, test_ik_target, test_ik_pole, etc.)
 
-    # Full XYZ target control
-    ik_target: FloatVectorProperty(
-        name="Target",
-        description="IK target position (world space offset from rest pose)",
-        default=(0.0, 0.0, 0.0),
-        subtype='TRANSLATION',
-        unit='LENGTH'
-    )
 
-    # Target object (use object's location as IK target)
-    ik_target_object: PointerProperty(
-        name="Target Object",
-        description="Object to use as IK target (use an Empty for best results)",
-        type=bpy.types.Object
-    )
+# ═══════════════════════════════════════════════════════════════════════════════
+# UNIFIED TEST SUITE OPERATORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    # Pole vector control
-    ik_pole_direction: EnumProperty(
-        name="Pole",
-        description="Direction the knee/elbow bends toward",
-        items=[
-            ("AUTO", "Auto", "Automatic based on chain type (knee forward, elbow back)"),
-            ("FORWARD", "Forward (+Y)", "Bend toward character front"),
-            ("BACK", "Back (-Y)", "Bend toward character back"),
-            ("LEFT", "Left (-X)", "Bend toward character left"),
-            ("RIGHT", "Right (+X)", "Bend toward character right"),
-            ("UP", "Up (+Z)", "Bend upward"),
-            ("DOWN", "Down (-Z)", "Bend downward"),
-        ],
-        default="AUTO"
-    )
+class ANIM2_OT_TestPlay(Operator):
+    """Unified Play - dispatches based on test mode (Animation/Pose/IK)"""
+    bl_idname = "anim2.test_play"
+    bl_label = "Play"
+    bl_options = {'REGISTER'}
 
-    ik_pole_offset: FloatProperty(
-        name="Pole Offset",
-        description="Distance of pole target from joint midpoint",
-        default=0.5,
-        min=0.1,
-        max=2.0,
-        unit='LENGTH'
-    )
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        armature = getattr(scene, 'target_armature', None)
+        if armature is None or armature.type != 'ARMATURE':
+            return False
 
-    # Legacy properties for simple mode
-    ik_target_z: FloatProperty(
-        name="Foot Height",
-        description="Target Z height for foot (leg IK) - simple mode",
-        default=0.1,
-        min=-0.5,
-        max=1.0,
-        unit='LENGTH'
-    )
+        mode = getattr(scene, 'test_mode', 'ANIMATION')
+        if mode == 'ANIMATION':
+            # Need baked animations
+            ctrl = get_test_controller()
+            return ctrl.cache.count > 0
+        elif mode == 'POSE':
+            # Need poses in library
+            pose_name = getattr(scene, 'pose_test_name', 'NONE')
+            return pose_name and pose_name != 'NONE'
+        elif mode == 'IK':
+            return True
+        return False
 
-    ik_arm_forward: FloatProperty(
-        name="Reach Forward",
-        description="How far forward the hand reaches (arm IK) - simple mode",
-        default=0.3,
-        min=-0.5,
-        max=0.6,
-        unit='LENGTH'
-    )
+    def execute(self, context):
+        scene = context.scene
+        mode = scene.test_mode
+        armature = scene.target_armature
 
-    # Mode toggle
-    ik_advanced_mode: BoolProperty(
-        name="Advanced Mode",
-        description="Show full XYZ controls instead of simple sliders",
-        default=False
-    )
+        if mode == 'ANIMATION':
+            return self._play_animation(context, armature)
+        elif mode == 'POSE':
+            return self._play_pose(context, armature)
+        elif mode == 'IK':
+            return self._play_ik(context, armature)
 
-    # Live update
-    ik_live_update: BoolProperty(
-        name="Live Update",
-        description="Update IK in real-time as you adjust sliders (can be slow)",
-        default=False
-    )
+        return {'CANCELLED'}
 
-    # Armature pointer (so you don't have to keep it selected)
-    ik_armature: PointerProperty(
-        name="IK Armature",
-        description="Armature to apply IK to (no need to select it)",
-        type=bpy.types.Object,
-        poll=lambda self, obj: obj.type == 'ARMATURE'
-    )
+    def _play_animation(self, context, armature):
+        """Play animation on target armature."""
+        props = context.scene.anim2_test
+        anim_name = props.selected_animation
+
+        if not anim_name:
+            self.report({'WARNING'}, "No animation selected")
+            return {'CANCELLED'}
+
+        ctrl = get_test_controller()
+
+        if not ctrl.has_animation(anim_name):
+            self.report({'WARNING'}, f"Animation '{anim_name}' not in cache. Bake first.")
+            return {'CANCELLED'}
+
+        # Play with settings
+        success = ctrl.play(
+            armature.name,
+            anim_name,
+            weight=1.0,
+            speed=props.play_speed,
+            looping=props.loop_playback,
+            fade_in=props.fade_time,
+            replace=True
+        )
+
+        if success:
+            self.report({'INFO'}, f"Playing '{anim_name}' on {armature.name}")
+            if not bpy.app.timers.is_registered(playback_update):
+                bpy.app.timers.register(playback_update, first_interval=1/60)
+
+            # Blend secondary if enabled
+            scene = context.scene
+            if getattr(scene, 'test_blend_enabled', False):
+                blend_anim = props.blend_animation
+                if blend_anim and ctrl.has_animation(blend_anim):
+                    ctrl.play(
+                        armature.name,
+                        blend_anim,
+                        weight=props.blend_weight,
+                        speed=props.play_speed,
+                        looping=props.loop_playback,
+                        fade_in=props.fade_time,
+                        replace=False
+                    )
+                    self.report({'INFO'}, f"Playing '{anim_name}' + blending '{blend_anim}'")
+        else:
+            self.report({'WARNING'}, f"Failed to play '{anim_name}'")
+
+        return {'FINISHED'}
+
+    def _play_pose(self, context, armature):
+        """Apply pose from library to target armature."""
+        import json
+        from .bone_groups import BONE_GROUPS, BONE_INDEX
+
+        scene = context.scene
+        pose_name = scene.pose_test_name
+        bone_group = scene.test_bone_group
+
+        # Find pose in library
+        pose_entry = None
+        for p in scene.pose_library:
+            if p.name == pose_name:
+                pose_entry = p
+                break
+
+        if not pose_entry:
+            self.report({'WARNING'}, f"Pose not found: {pose_name}")
+            return {'CANCELLED'}
+
+        try:
+            bone_data = json.loads(pose_entry.bone_data_json)
+        except json.JSONDecodeError:
+            self.report({'ERROR'}, "Invalid pose data")
+            return {'CANCELLED'}
+
+        # Get target bones based on bone group
+        if bone_group == "ALL":
+            target_bones = set(BONE_INDEX.keys())
+        elif bone_group in BONE_GROUPS:
+            target_bones = set(BONE_GROUPS[bone_group])
+        else:
+            target_bones = set(BONE_INDEX.keys())
+
+        # Apply pose
+        pose_bones = armature.pose.bones
+        applied_count = 0
+
+        for bone_name, transform in bone_data.items():
+            if bone_name not in target_bones:
+                continue
+
+            pose_bone = pose_bones.get(bone_name)
+            if pose_bone:
+                pose_bone.rotation_mode = 'QUATERNION'
+                pose_bone.rotation_quaternion = mathutils.Quaternion((transform[0], transform[1], transform[2], transform[3]))
+                pose_bone.location = mathutils.Vector((transform[4], transform[5], transform[6]))
+                pose_bone.scale = mathutils.Vector((transform[7], transform[8], transform[9]))
+                applied_count += 1
+
+        context.view_layer.update()
+        self.report({'INFO'}, f"Applied pose: {pose_name} ({applied_count} bones)")
+        return {'FINISHED'}
+
+    def _play_ik(self, context, armature):
+        """Apply IK to target armature using unified properties."""
+        scene = context.scene
+
+        chain = scene.test_ik_chain
+        target_obj = scene.test_ik_target
+        influence = scene.test_ik_influence
+        pole_dir_name = scene.test_ik_pole
+        advanced = scene.test_ik_advanced
+
+        # Parse chain
+        parts = chain.split('_')
+        if len(parts) != 2:
+            self.report({'ERROR'}, f"Invalid chain: {chain}")
+            return {'CANCELLED'}
+
+        limb_type, side = parts[0], parts[1]
+        is_leg = (limb_type == "leg")
+
+        from .ik_solver import IK_CHAINS, solve_leg_ik, solve_arm_ik
+
+        # Get chain definition
+        chain_def = IK_CHAINS.get(chain)
+        if not chain_def:
+            self.report({'ERROR'}, f"Unknown IK chain: {chain}")
+            return {'CANCELLED'}
+
+        # Get bones
+        root_bone = armature.pose.bones.get(chain_def['root'])
+        mid_bone = armature.pose.bones.get(chain_def['mid'])
+        tip_bone = armature.pose.bones.get(chain_def['tip'])
+
+        if not all([root_bone, mid_bone, tip_bone]):
+            self.report({'ERROR'}, f"Missing bones for {chain}")
+            return {'CANCELLED'}
+
+        # Reset to rest first
+        for pbone in [root_bone, mid_bone, tip_bone]:
+            pbone.rotation_mode = 'QUATERNION'
+            pbone.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+        context.view_layer.update()
+
+        # Get positions
+        root_pos = np.array(armature.matrix_world @ root_bone.head, dtype=np.float32)
+        tip_pos = np.array(armature.matrix_world @ tip_bone.head, dtype=np.float32)
+
+        # Compute target position
+        if target_obj:
+            target_pos = np.array(target_obj.matrix_world.translation, dtype=np.float32)
+            target_info = target_obj.name
+        elif advanced:
+            offset = scene.test_ik_target_xyz
+            target_pos = tip_pos + np.array([offset[0], offset[1], offset[2]], dtype=np.float32)
+            target_info = f"offset ({offset[0]:.2f}, {offset[1]:.2f}, {offset[2]:.2f})"
+        else:
+            # Default: use tip position (no movement)
+            target_pos = tip_pos.copy()
+            target_info = "tip position"
+
+        # Compute pole position
+        pole_offset = scene.test_ik_pole_offset if advanced else 0.5
+        pole_dir = get_pole_direction_vector(pole_dir_name, is_leg)
+        pole_pos = (root_pos + target_pos) / 2 + pole_dir * pole_offset
+
+        # Solve IK
+        if is_leg:
+            _, _, joint_world = solve_leg_ik(root_pos, target_pos, pole_pos, side)
+        else:
+            _, _, joint_world = solve_arm_ik(root_pos, target_pos, pole_pos, side)
+
+        # Update visualization if enabled
+        target_dist = float(np.linalg.norm(target_pos - root_pos))
+        max_reach = chain_def['reach']
+        is_reachable = target_dist <= max_reach
+        at_limit = target_dist > (max_reach * 0.95)
+
+        update_ik_visualization(
+            obj=armature,
+            chain=chain,
+            target_pos=tuple(target_pos),
+            pole_pos=tuple(pole_pos),
+            joint_world_pos=joint_world,
+            is_reachable=is_reachable,
+            at_limit=at_limit
+        )
+
+        # Point bones
+        root_rot = point_bone_at_target(armature, root_bone, joint_world)
+        root_bone.rotation_quaternion = root_rot
+        context.view_layer.update()
+
+        mid_rot = point_bone_at_target(armature, mid_bone, target_pos)
+        mid_bone.rotation_quaternion = mid_rot
+        context.view_layer.update()
+
+        chain_name = "leg" if is_leg else "arm"
+        self.report({'INFO'}, f"Applied {side} {chain_name} IK, target: {target_info}")
+        return {'FINISHED'}
+
+
+class ANIM2_OT_TestStop(Operator):
+    """Unified Stop - stops based on test mode"""
+    bl_idname = "anim2.test_stop"
+    bl_label = "Stop"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        scene = context.scene
+        mode = scene.test_mode
+        armature = getattr(scene, 'target_armature', None)
+
+        if mode == 'ANIMATION':
+            # Stop animations
+            if armature:
+                props = scene.anim2_test
+                ctrl = get_test_controller()
+                ctrl.stop(armature.name, fade_out=props.fade_time)
+                self.report({'INFO'}, f"Stopped animations on {armature.name}")
+            else:
+                stop_all_animations()
+                self.report({'INFO'}, "Stopped all animations")
+        elif mode == 'POSE':
+            # Nothing to stop for pose (it's instant)
+            self.report({'INFO'}, "Pose applied instantly - nothing to stop")
+        elif mode == 'IK':
+            # Disable IK visualization
+            disable_ik_visualizer()
+            self.report({'INFO'}, "IK visualization disabled")
+
+        return {'FINISHED'}
+
+
+class ANIM2_OT_TestReset(Operator):
+    """Reset target armature to rest pose"""
+    bl_idname = "anim2.test_reset"
+    bl_label = "Reset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        armature = getattr(scene, 'target_armature', None)
+        return armature is not None and armature.type == 'ARMATURE'
+
+    def execute(self, context):
+        scene = context.scene
+        armature = scene.target_armature
+
+        # Stop any animations first
+        ctrl = get_test_controller()
+        ctrl.stop(armature.name, fade_out=0.0)
+
+        # Reset all pose bones to rest
+        for pbone in armature.pose.bones:
+            pbone.rotation_mode = 'QUATERNION'
+            pbone.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+            pbone.location = mathutils.Vector((0, 0, 0))
+            pbone.scale = mathutils.Vector((1, 1, 1))
+
+        # Clear IK visualization
+        disable_ik_visualizer()
+
+        context.view_layer.update()
+        self.report({'INFO'}, f"Reset {armature.name} to rest pose")
+        return {'FINISHED'}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1202,13 +1171,12 @@ class ANIM2_TestProperties(PropertyGroup):
 classes = [
     ANIM2_TestProperties,
     ANIM2_OT_BakeAll,
-    ANIM2_OT_PlayAnimation,
-    ANIM2_OT_StopAnimation,
     ANIM2_OT_StopAll,
-    ANIM2_OT_BlendAnimation,
     ANIM2_OT_ClearCache,
-    ANIM2_OT_TestIK,
-    ANIM2_OT_ResetPose,
+    # Unified test suite
+    ANIM2_OT_TestPlay,
+    ANIM2_OT_TestStop,
+    ANIM2_OT_TestReset,
 ]
 
 

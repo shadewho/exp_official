@@ -30,7 +30,7 @@ from ..physics.exp_view import (
     poll_camera_result_with_timeout,
     cache_camera_worker_result,
 )
-from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result
+from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result, init_aabb_cache
 from ..interactions.exp_tracker_eval import (
     set_current_operator,
     submit_tracker_evaluation,
@@ -76,6 +76,9 @@ class GameLoop:
         # Cache tracker node graph in workers
         import bpy
         cache_trackers_in_worker(op, bpy.context)
+
+        # Initialize AABB cache for collision interactions (Phase 1.2)
+        init_aabb_cache(bpy.context.scene)
 
     def shutdown(self):
         """Clean up game loop resources (called when game stops)."""

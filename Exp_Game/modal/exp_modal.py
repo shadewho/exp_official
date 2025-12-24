@@ -47,6 +47,7 @@ from .exp_engine_bridge import (
     init_animations,
     shutdown_animations,
     cache_animations_in_workers,
+    cache_poses_in_workers,
 )
 
 def _first_view3d_r3d():
@@ -572,6 +573,9 @@ class ExpModal(bpy.types.Operator):
 
             # Cache animations in workers (must happen AFTER engine is running)
             cache_animations_in_workers(self, context)
+
+            # Cache pose library in workers (must happen AFTER engine is running)
+            cache_poses_in_workers(self, context)
 
             # Initialize interaction offload tracking
             self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job

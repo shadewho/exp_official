@@ -68,354 +68,345 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
-        # Engine Health
+        # Engine Health (Collapsible)
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
-        box.label(text="Engine Health", icon='MEMORY')
-        col = box.column(align=True)
-        col.prop(scene, "dev_startup_logs", text="Startup Logs")
-        col.prop(scene, "dev_debug_engine", text="Engine Diagnostics")
+        row = box.row()
+        row.prop(scene, "dev_section_engine",
+                 icon='TRIA_DOWN' if scene.dev_section_engine else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Engine Health", icon='MEMORY')
 
-        col.separator()
-        col.label(text="Manual Stress Tests:", icon='PLAY')
-        row = col.row(align=True)
-        row.operator("exp_engine.quick_test", text="Quick Test", icon='CHECKMARK')
-        row.operator("exp_engine.stress_test", text="Full Stress Test", icon='COMMUNITY')
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Spatial Grid
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Spatial Grid", icon='MESH_GRID')
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_grid", text="Grid Diagnostics")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Offload Systems
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Offload Systems", icon='FORCE_CHARGE')
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_kcc_physics", text="KCC Physics")
-        col.prop(scene, "dev_debug_frame_numbers", text="Frame Numbers")
-        col.prop(scene, "dev_debug_culling", text="Performance Culling")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # UNIFIED PHYSICS (Single section - static + dynamic identical)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Unified Physics", icon='PHYSICS')
-
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_physics", text="Physics Summary")
-
-        col.separator()
-        col.label(text="Granular (shows source: static/dynamic):", icon='ALIGN_JUSTIFY')
-
-        col.prop(scene, "dev_debug_physics_ground", text="Ground Detection")
-        col.prop(scene, "dev_debug_physics_horizontal", text="Horizontal Collision")
-        col.prop(scene, "dev_debug_physics_body", text="Body Integrity")
-        col.prop(scene, "dev_debug_physics_ceiling", text="Ceiling Check")
-        col.prop(scene, "dev_debug_physics_step", text="Step-Up")
-        col.prop(scene, "dev_debug_physics_slide", text="Wall Slide")
-        col.prop(scene, "dev_debug_physics_slopes", text="Slopes")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Unified Camera (Static + Dynamic use same raycast)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Unified Camera", icon='VIEW_CAMERA')
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_camera", text="Camera Raycast")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Dynamic Mesh System (Unified with static)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Dynamic Mesh System", icon='MESH_DATA')
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_dynamic_cache", text="Cache & Transforms")
-        col.prop(scene, "dev_debug_dynamic_opt", text="Optimization Stats")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # KCC Visual Debug (3D Viewport)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="KCC Visual Debug (3D Viewport)", icon='SHADING_WIRE')
-        col = box.column(align=True)
-
-        row = col.row(align=True)
-        row.prop(scene, "dev_debug_kcc_visual", text="Enable Visual Debug")
-
-        if scene.dev_debug_kcc_visual:
-            col.separator(factor=0.5)
-            sub = col.column(align=True)
-            sub.prop(scene, "dev_debug_kcc_visual_capsule", text="Capsule Shape")
-            sub.prop(scene, "dev_debug_kcc_visual_normals", text="Hit Normals")
-            sub.prop(scene, "dev_debug_kcc_visual_ground", text="Ground Ray")
-            sub.prop(scene, "dev_debug_kcc_visual_movement", text="Movement Vectors")
-
-            col.separator(factor=0.5)
-            col.prop(scene, "dev_debug_kcc_visual_line_width", text="Line Width")
-            col.prop(scene, "dev_debug_kcc_visual_vector_scale", text="Vector Scale")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Game Systems
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Game Systems", icon='PLAY')
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_interactions", text="Interactions")
-        col.prop(scene, "dev_debug_audio", text="Audio")
-        col.prop(scene, "dev_debug_trackers", text="Trackers")
-        col.prop(scene, "dev_debug_projectiles", text="Projectiles")
-        col.prop(scene, "dev_debug_hitscans", text="Hitscans")
-
-        layout.separator()
-
-        # ═══════════════════════════════════════════════════════════════
-        # Animation 2.0 (Test Tools)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        box.label(text="Animation 2.0", icon='ACTION')
-
-        # ─── Rig Visualizer (3D Viewport) ─────────────────────────────
-        sub_box = box.box()
-        row = sub_box.row()
-        row.label(text="Rig Visualizer", icon='ARMATURE_DATA')
-        row.prop(scene, "dev_rig_visualizer_enabled", text="", icon='HIDE_OFF' if scene.dev_rig_visualizer_enabled else 'HIDE_ON')
-
-        if scene.dev_rig_visualizer_enabled:
-            col = sub_box.column(align=True)
-
-            # Bone groups
+        if scene.dev_section_engine:
+            col = box.column(align=True)
+            col.prop(scene, "dev_startup_logs", text="Startup Logs")
+            col.prop(scene, "dev_debug_engine", text="Engine Diagnostics")
+            col.separator()
+            col.label(text="Manual Stress Tests:", icon='PLAY')
             row = col.row(align=True)
-            row.prop(scene, "dev_rig_vis_bone_groups", text="Bone Groups")
-            if scene.dev_rig_vis_bone_groups:
-                col.prop(scene, "dev_rig_vis_selected_group", text="")
-
-            col.separator(factor=0.5)
-
-            # IK visualization
-            col.label(text="IK Display:", icon='CON_KINEMATIC')
-            sub = col.column(align=True)
-            sub.prop(scene, "dev_rig_vis_ik_chains", text="Chains")
-            sub.prop(scene, "dev_rig_vis_ik_targets", text="Targets")
-            sub.prop(scene, "dev_rig_vis_ik_poles", text="Poles")
-            sub.prop(scene, "dev_rig_vis_ik_reach", text="Reach Spheres")
-
-            col.separator(factor=0.5)
-
-            # Advanced
-            col.label(text="Advanced:", icon='PREFERENCES')
-            sub = col.column(align=True)
-            sub.prop(scene, "dev_rig_vis_bone_axes", text="Bone Axes (X/Y/Z)")
-            sub.prop(scene, "dev_rig_vis_active_mask", text="Active Blend Mask")
-
-            col.separator(factor=0.5)
-
-            # Text overlay
-            col.label(text="Text Overlay:", icon='SMALL_CAPS')
-            sub = col.column(align=True)
-            sub.prop(scene, "dev_rig_vis_text_overlay", text="Show State Text")
-            if scene.dev_rig_vis_text_overlay:
-                row = sub.row(align=True)
-                row.prop(scene, "dev_rig_vis_text_size", text="Size")
-                row.prop(scene, "dev_rig_vis_text_background", text="", icon='TEXTURE')
-
-            col.separator(factor=0.5)
-            col.prop(scene, "dev_rig_vis_line_width", text="Line Width")
-            if scene.dev_rig_vis_bone_axes:
-                col.prop(scene, "dev_rig_vis_axis_length", text="Axis Length")
-
-            # Status display
-            from .rig_visualizer import get_visualizer_state
-            vis_state = get_visualizer_state()
-
-            if vis_state["ik_chains"]:
-                col.separator(factor=0.5)
-                col.label(text=f"Active IK: {', '.join(vis_state['ik_chains'])}", icon='CHECKMARK')
-
-            if vis_state["layers"]["additive"] or vis_state["layers"]["override"]:
-                layers_info = []
-                if vis_state["layers"]["additive"]:
-                    layers_info.append(f"{len(vis_state['layers']['additive'])} add")
-                if vis_state["layers"]["override"]:
-                    layers_info.append(f"{len(vis_state['layers']['override'])} ovr")
-                col.label(text=f"Layers: {', '.join(layers_info)}", icon='RENDERLAYERS')
-
-        # ─── Debug Toggles (stacked vertically) ─────────────────────────
-        col = box.column(align=True)
-        col.prop(scene, "dev_debug_animations", text="Animation Logs")
-        col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
-        col.prop(scene, "dev_debug_anim_worker", text="Worker Logs")
-        col.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
-
-        props = scene.anim2_test
-        ctrl = get_test_controller()
-        obj = context.active_object
-
-        # ─── Cache Status ───────────────────────────────────────────────
-        row = box.row()
-        row.label(text=f"Cache: {ctrl.cache.count} animations", icon='FILE_CACHE')
-        row.operator("anim2.clear_cache", text="", icon='X')
-
-        # ─── Bake ───────────────────────────────────────────────────────
-        sub_box = box.box()
-        sub_box.label(text="Bake", icon='IMPORT')
-
-        armature = scene.target_armature
-        if armature:
-            sub_box.operator("anim2.bake_all", text=f"Bake All ({len(bpy.data.actions)} actions)", icon='ACTION')
-        else:
-            sub_box.label(text="Set target armature first", icon='ERROR')
-
-        # ─── Playback ───────────────────────────────────────────────────
-        sub_box = box.box()
-        sub_box.label(text="Playback", icon='PLAY')
-
-        if ctrl.cache.count > 0:
-            sub_box.prop(props, "selected_animation", text="")
-
-            row = sub_box.row(align=True)
-            row.prop(props, "play_speed")
-            row.prop(props, "fade_time")
-
-            row = sub_box.row(align=True)
-            row.prop(props, "loop_playback")
-            row.prop(props, "playback_timeout")
-
-            row = sub_box.row(align=True)
-            row.scale_y = 1.3
-            row.operator("anim2.play_animation", icon='PLAY')
-            row.operator("anim2.stop_animation", icon='SNAP_FACE')
-
-            # Stop All button (separate row)
-            row = sub_box.row(align=True)
-            row.scale_y = 1.2
-            row.operator("anim2.stop_all", text="Stop All", icon='CANCEL')
-        else:
-            sub_box.label(text="Bake animations first", icon='INFO')
-
-        # ─── Blending ───────────────────────────────────────────────────
-        sub_box = box.box()
-        sub_box.label(text="Blend Test", icon='MOD_VERTEX_WEIGHT')
-
-        if ctrl.cache.count > 1:
-            sub_box.prop(props, "blend_animation", text="")
-            sub_box.prop(props, "blend_weight", slider=True)
-            sub_box.operator("anim2.blend_animation", icon='OVERLAY')
-        elif ctrl.cache.count == 1:
-            sub_box.label(text="Need 2+ animations to blend", icon='INFO')
-        else:
-            sub_box.label(text="Bake animations first", icon='INFO')
-
-        # ─── Status ─────────────────────────────────────────────────────
-        if obj and obj.name in ctrl._states:
-            state = ctrl._states[obj.name]
-            playing = [p for p in state.playing if not p.finished]
-            if playing:
-                sub_box = box.box()
-                sub_box.label(text="Now Playing:", icon='TIME')
-                for p in playing:
-                    row = sub_box.row()
-                    row.label(text=f"  {p.animation_name}")
-                    row.label(text=f"{p.weight * p.fade_progress:.0%}")
-
-        # ─── Runtime IK (Gameplay) ─────────────────────────────────────
-        sub_box = box.box()
-        row = sub_box.row()
-        row.label(text="Runtime IK", icon='CON_KINEMATIC')
-        row.prop(scene, "runtime_ik_enabled", text="", icon='PLAY' if scene.runtime_ik_enabled else 'PAUSE')
-
-        if scene.runtime_ik_enabled:
-            col = sub_box.column(align=True)
-            col.prop(scene, "runtime_ik_chain", text="")
-            col.prop(scene, "runtime_ik_target", text="Target")
-            col.prop(scene, "runtime_ik_influence", slider=True)
-
-            # Show target position if set
-            if scene.runtime_ik_target:
-                loc = scene.runtime_ik_target.location
-                col.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
-
-            # BlendSystem toggle (tests production code path)
-            row = sub_box.row()
-            row.prop(scene, "runtime_ik_use_blend_system", text="Use BlendSystem", toggle=True)
-            if scene.runtime_ik_use_blend_system:
-                row.label(text="", icon='CHECKMARK')
-
-        layout.separator()
+            row.operator("exp_engine.quick_test", text="Quick Test", icon='CHECKMARK')
+            row.operator("exp_engine.stress_test", text="Full Stress Test", icon='COMMUNITY')
 
         # ═══════════════════════════════════════════════════════════════
-        # IK Test
+        # Spatial Grid (Collapsible)
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
         row = box.row()
-        row.label(text="IK Test", icon='CON_KINEMATIC')
-        row.prop(props, "ik_advanced_mode", text="Advanced", toggle=True)
+        row.prop(scene, "dev_section_grid",
+                 icon='TRIA_DOWN' if scene.dev_section_grid else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Spatial Grid", icon='MESH_GRID')
 
-        # Armature picker (no need to select the armature)
-        box.prop(props, "ik_armature", text="Armature")
+        if scene.dev_section_grid:
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_grid", text="Grid Diagnostics")
 
-        ik_arm = props.ik_armature
-        if ik_arm and ik_arm.type == 'ARMATURE':
-            # Chain selector
-            box.prop(props, "ik_chain", text="")
+        # ═══════════════════════════════════════════════════════════════
+        # Offload Systems (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_offload",
+                 icon='TRIA_DOWN' if scene.dev_section_offload else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Offload Systems", icon='FORCE_CHARGE')
 
-            # ─── Target Controls ───────────────────────────────────────
-            sub = box.box()
-            sub.label(text="Target", icon='EMPTY_AXIS')
+        if scene.dev_section_offload:
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_kcc_physics", text="KCC Physics")
+            col.prop(scene, "dev_debug_frame_numbers", text="Frame Numbers")
+            col.prop(scene, "dev_debug_culling", text="Performance Culling")
 
-            # Target object picker
-            sub.prop(props, "ik_target_object", text="")
+        # ═══════════════════════════════════════════════════════════════
+        # UNIFIED PHYSICS (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_physics",
+                 icon='TRIA_DOWN' if scene.dev_section_physics else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Unified Physics", icon='PHYSICS')
 
-            if props.ik_target_object is not None:
-                # Show target object's position
-                loc = props.ik_target_object.matrix_world.translation
-                sub.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
-            elif props.ik_advanced_mode:
-                # Full XYZ control
-                col = sub.column(align=True)
-                col.prop(props, "ik_target", index=0, text="X")
-                col.prop(props, "ik_target", index=1, text="Y")
-                col.prop(props, "ik_target", index=2, text="Z")
+        if scene.dev_section_physics:
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_physics", text="Physics Summary")
+            col.separator()
+            col.label(text="Granular (shows source: static/dynamic):", icon='ALIGN_JUSTIFY')
+            col.prop(scene, "dev_debug_physics_ground", text="Ground Detection")
+            col.prop(scene, "dev_debug_physics_horizontal", text="Horizontal Collision")
+            col.prop(scene, "dev_debug_physics_body", text="Body Integrity")
+            col.prop(scene, "dev_debug_physics_ceiling", text="Ceiling Check")
+            col.prop(scene, "dev_debug_physics_step", text="Step-Up")
+            col.prop(scene, "dev_debug_physics_slide", text="Wall Slide")
+            col.prop(scene, "dev_debug_physics_slopes", text="Slopes")
+
+        # ═══════════════════════════════════════════════════════════════
+        # Unified Camera (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_camera",
+                 icon='TRIA_DOWN' if scene.dev_section_camera else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Unified Camera", icon='VIEW_CAMERA')
+
+        if scene.dev_section_camera:
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_camera", text="Camera Raycast")
+
+        # ═══════════════════════════════════════════════════════════════
+        # Dynamic Mesh System (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_dynamic",
+                 icon='TRIA_DOWN' if scene.dev_section_dynamic else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Dynamic Mesh System", icon='MESH_DATA')
+
+        if scene.dev_section_dynamic:
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_dynamic_cache", text="Cache & Transforms")
+            col.prop(scene, "dev_debug_dynamic_opt", text="Optimization Stats")
+
+        # ═══════════════════════════════════════════════════════════════
+        # KCC Visual Debug (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_kcc_visual",
+                 icon='TRIA_DOWN' if scene.dev_section_kcc_visual else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="KCC Visual Debug", icon='SHADING_WIRE')
+
+        if scene.dev_section_kcc_visual:
+            col = box.column(align=True)
+            row = col.row(align=True)
+            row.prop(scene, "dev_debug_kcc_visual", text="Enable Visual Debug")
+
+            if scene.dev_debug_kcc_visual:
+                col.separator(factor=0.5)
+                sub = col.column(align=True)
+                sub.prop(scene, "dev_debug_kcc_visual_capsule", text="Capsule Shape")
+                sub.prop(scene, "dev_debug_kcc_visual_normals", text="Hit Normals")
+                sub.prop(scene, "dev_debug_kcc_visual_ground", text="Ground Ray")
+                sub.prop(scene, "dev_debug_kcc_visual_movement", text="Movement Vectors")
+                col.separator(factor=0.5)
+                col.prop(scene, "dev_debug_kcc_visual_line_width", text="Line Width")
+                col.prop(scene, "dev_debug_kcc_visual_vector_scale", text="Vector Scale")
+
+        # ═══════════════════════════════════════════════════════════════
+        # Game Systems (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_game",
+                 icon='TRIA_DOWN' if scene.dev_section_game else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Game Systems", icon='PLAY')
+
+        if scene.dev_section_game:
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_interactions", text="Interactions")
+            col.prop(scene, "dev_debug_audio", text="Audio")
+            col.prop(scene, "dev_debug_trackers", text="Trackers")
+            col.prop(scene, "dev_debug_world_state", text="World State Filter")
+            col.prop(scene, "dev_debug_aabb_cache", text="AABB Cache")
+            col.prop(scene, "dev_debug_projectiles", text="Projectiles")
+            col.prop(scene, "dev_debug_hitscans", text="Hitscans")
+
+        # ═══════════════════════════════════════════════════════════════
+        # Animation 2.0 (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_anim",
+                 icon='TRIA_DOWN' if scene.dev_section_anim else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Animation 2.0", icon='ACTION')
+
+        if scene.dev_section_anim:
+            # ─── Rig Visualizer (3D Viewport) ─────────────────────────────
+            sub_box = box.box()
+            row = sub_box.row()
+            row.label(text="Rig Visualizer", icon='ARMATURE_DATA')
+            row.prop(scene, "dev_rig_visualizer_enabled", text="", icon='HIDE_OFF' if scene.dev_rig_visualizer_enabled else 'HIDE_ON')
+
+            if scene.dev_rig_visualizer_enabled:
+                col = sub_box.column(align=True)
+                row = col.row(align=True)
+                row.prop(scene, "dev_rig_vis_bone_groups", text="Bone Groups")
+                if scene.dev_rig_vis_bone_groups:
+                    col.prop(scene, "dev_rig_vis_selected_group", text="")
+                col.separator(factor=0.5)
+                col.label(text="IK Display:", icon='CON_KINEMATIC')
+                sub = col.column(align=True)
+                sub.prop(scene, "dev_rig_vis_ik_chains", text="Chains")
+                sub.prop(scene, "dev_rig_vis_ik_targets", text="Targets")
+                sub.prop(scene, "dev_rig_vis_ik_poles", text="Poles")
+                sub.prop(scene, "dev_rig_vis_ik_reach", text="Reach Spheres")
+                col.separator(factor=0.5)
+                col.label(text="Advanced:", icon='PREFERENCES')
+                sub = col.column(align=True)
+                sub.prop(scene, "dev_rig_vis_bone_axes", text="Bone Axes (X/Y/Z)")
+                sub.prop(scene, "dev_rig_vis_active_mask", text="Active Blend Mask")
+                col.separator(factor=0.5)
+                col.label(text="Text Overlay:", icon='SMALL_CAPS')
+                sub = col.column(align=True)
+                sub.prop(scene, "dev_rig_vis_text_overlay", text="Show State Text")
+                if scene.dev_rig_vis_text_overlay:
+                    row = sub.row(align=True)
+                    row.prop(scene, "dev_rig_vis_text_size", text="Size")
+                    row.prop(scene, "dev_rig_vis_text_background", text="", icon='TEXTURE')
+                col.separator(factor=0.5)
+                col.prop(scene, "dev_rig_vis_line_width", text="Line Width")
+                if scene.dev_rig_vis_bone_axes:
+                    col.prop(scene, "dev_rig_vis_axis_length", text="Axis Length")
+                from .rig_visualizer import get_visualizer_state
+                vis_state = get_visualizer_state()
+                if vis_state["ik_chains"]:
+                    col.separator(factor=0.5)
+                    col.label(text=f"Active IK: {', '.join(vis_state['ik_chains'])}", icon='CHECKMARK')
+                if vis_state["layers"]["additive"] or vis_state["layers"]["override"]:
+                    layers_info = []
+                    if vis_state["layers"]["additive"]:
+                        layers_info.append(f"{len(vis_state['layers']['additive'])} add")
+                    if vis_state["layers"]["override"]:
+                        layers_info.append(f"{len(vis_state['layers']['override'])} ovr")
+                    col.label(text=f"Layers: {', '.join(layers_info)}", icon='RENDERLAYERS')
+
+            # ─── Debug Toggles ─────────────────────────────────────────────
+            col = box.column(align=True)
+            col.prop(scene, "dev_debug_animations", text="Animation Logs")
+            col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
+            col.prop(scene, "dev_debug_anim_worker", text="Worker Logs")
+            col.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
+
+            props = scene.anim2_test
+            ctrl = get_test_controller()
+            obj = context.active_object
+
+            # ─── Cache Status ───────────────────────────────────────────────
+            row = box.row()
+            row.label(text=f"Cache: {ctrl.cache.count} animations", icon='FILE_CACHE')
+            row.operator("anim2.clear_cache", text="", icon='X')
+
+            # ─── Bake ───────────────────────────────────────────────────────
+            sub_box = box.box()
+            sub_box.label(text="Bake", icon='IMPORT')
+            armature = scene.target_armature
+            if armature:
+                sub_box.operator("anim2.bake_all", text=f"Bake All ({len(bpy.data.actions)} actions)", icon='ACTION')
             else:
-                # Simple mode - legacy sliders
-                if props.ik_chain.startswith("leg"):
-                    sub.prop(props, "ik_target_z", slider=True)
+                sub_box.label(text="Set target armature first", icon='ERROR')
+
+            # ═══════════════════════════════════════════════════════════════
+            # UNIFIED TEST SUITE
+            # ═══════════════════════════════════════════════════════════════
+            sub_box = box.box()
+            sub_box.label(text="Test Suite", icon='EXPERIMENTAL')
+
+            # Armature (from Character panel)
+            armature = scene.target_armature
+            if armature:
+                row = sub_box.row()
+                row.label(text=f"Armature: {armature.name}", icon='ARMATURE_DATA')
+            else:
+                sub_box.label(text="Set target armature in Character panel", icon='ERROR')
+
+            # Mode selector row
+            row = sub_box.row(align=True)
+            row.prop(scene, "test_mode", expand=True)
+
+            mode = scene.test_mode
+
+            # Bone group (for Pose and IK modes)
+            if mode in ('POSE', 'IK'):
+                sub_box.prop(scene, "test_bone_group", text="")
+
+            # Mode-specific options
+            options_box = sub_box.box()
+
+            if mode == 'ANIMATION':
+                # Animation options
+                if ctrl.cache.count > 0:
+                    options_box.prop(props, "selected_animation", text="")
+                    row = options_box.row(align=True)
+                    row.prop(props, "play_speed")
+                    row.prop(props, "fade_time")
+                    row = options_box.row(align=True)
+                    row.prop(props, "loop_playback")
+                    row.prop(props, "playback_timeout")
+
+                    # Blend secondary toggle
+                    row = options_box.row()
+                    row.prop(scene, "test_blend_enabled", text="Blend Secondary")
+                    if scene.test_blend_enabled and ctrl.cache.count > 1:
+                        col = options_box.column(align=True)
+                        col.prop(props, "blend_animation", text="")
+                        col.prop(props, "blend_weight", slider=True)
                 else:
-                    sub.prop(props, "ik_arm_forward", slider=True)
+                    options_box.label(text="Bake animations first", icon='INFO')
 
-            # ─── Pole Vector Controls ──────────────────────────────────
-            sub = box.box()
-            sub.label(text="Pole Vector", icon='ORIENTATION_NORMAL')
-            row = sub.row(align=True)
-            row.prop(props, "ik_pole_direction", text="")
-            row.prop(props, "ik_pole_offset", text="Dist")
+            elif mode == 'POSE':
+                # Pose options
+                if len(scene.pose_library) > 0:
+                    options_box.prop(scene, "pose_test_name", text="")
+                    options_box.prop(scene, "pose_test_blend_time")
+                else:
+                    options_box.label(text="No poses in library", icon='INFO')
+                    options_box.label(text="(Add poses in Character panel)")
 
-            # ─── Action Buttons ────────────────────────────────────────
-            row = box.row(align=True)
-            row.scale_y = 1.3
-            row.operator("anim2.test_ik", text="Apply IK", icon='CON_KINEMATIC')
-            row.operator("anim2.reset_pose", text="Reset", icon='LOOP_BACK')
+            elif mode == 'IK':
+                # IK options
+                options_box.prop(scene, "test_ik_chain", text="")
 
-        else:
-            box.label(text="Set an armature above", icon='INFO')
+                row = options_box.row()
+                row.prop(scene, "test_ik_target", text="Target")
+
+                if scene.test_ik_target:
+                    loc = scene.test_ik_target.matrix_world.translation
+                    options_box.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
+
+                options_box.prop(scene, "test_ik_influence", slider=True)
+
+                row = options_box.row(align=True)
+                row.prop(scene, "test_ik_pole", text="")
+
+                # Advanced toggle
+                row = options_box.row()
+                row.prop(scene, "test_ik_advanced", text="Advanced")
+
+                if scene.test_ik_advanced:
+                    col = options_box.column(align=True)
+                    col.prop(scene, "test_ik_target_xyz", text="")
+                    col.prop(scene, "test_ik_pole_offset")
+
+                # Runtime IK (gameplay)
+                options_box.separator()
+                row = options_box.row()
+                row.prop(scene, "runtime_ik_enabled", text="Runtime (Gameplay)")
+                if scene.runtime_ik_enabled:
+                    row.prop(scene, "runtime_ik_use_blend_system", text="", icon='OVERLAY', toggle=True)
+
+            # Unified Play/Stop/Reset buttons
+            row = sub_box.row(align=True)
+            row.scale_y = 1.4
+            row.operator("anim2.test_play", text="Play", icon='PLAY')
+            row.operator("anim2.test_stop", text="Stop", icon='SNAP_FACE')
+            row.operator("anim2.test_reset", text="Reset", icon='LOOP_BACK')
+
+            # Status (for animation mode)
+            if mode == 'ANIMATION' and armature and armature.name in ctrl._states:
+                state = ctrl._states[armature.name]
+                playing = [p for p in state.playing if not p.finished]
+                if playing:
+                    status_box = sub_box.box()
+                    status_box.label(text="Now Playing:", icon='TIME')
+                    for p in playing:
+                        row = status_box.row()
+                        row.label(text=f"  {p.animation_name}")
+                        row.label(text=f"{p.weight * p.fade_progress:.0%}")
 
 
 def register():

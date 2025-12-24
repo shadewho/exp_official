@@ -25,6 +25,9 @@ _current_operator = None
 # Pending tracker job tracking
 _pending_tracker_job = None
 
+# Filtered object names - only objects referenced by trackers (Phase 1.1 optimization)
+_tracked_object_names: set = set()
+
 
 def set_current_operator(op):
     """Set the current operator reference for input state access."""
@@ -154,6 +157,67 @@ def serialize_tracker_graph(scene) -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# OBJECT NAME EXTRACTION (Phase 1.1 - Filter world state to tracked objects only)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _extract_from_tree(node: dict):
+    """
+    Recursively extract object references from a serialized node tree.
+    Adds found object names to _tracked_object_names.
+    """
+    global _tracked_object_names
+
+    if not node:
+        return
+
+    # Distance tracker - has object_a and object_b
+    obj_a = node.get("object_a")
+    if obj_a:
+        _tracked_object_names.add(obj_a)
+
+    obj_b = node.get("object_b")
+    if obj_b:
+        _tracked_object_names.add(obj_b)
+
+    # Contact tracker - has object and targets list
+    contact_obj = node.get("object")
+    if contact_obj:
+        _tracked_object_names.add(contact_obj)
+
+    for target in node.get("targets", []):
+        if target:
+            _tracked_object_names.add(target)
+
+    # Recurse into logic gate inputs
+    for child in node.get("inputs", []):
+        _extract_from_tree(child)
+
+
+def _extract_referenced_objects(tracker_data: list) -> int:
+    """
+    Extract all object names referenced by tracker nodes.
+    Called after serialize_tracker_graph() to build the filter set.
+
+    Returns the number of unique objects found.
+    """
+    global _tracked_object_names
+    _tracked_object_names.clear()
+
+    for tracker in tracker_data:
+        tree = tracker.get("condition_tree")
+        if tree:
+            _extract_from_tree(tree)
+
+    count = len(_tracked_object_names)
+    if count > 0:
+        log_game("TRACKERS", f"FILTER_EXTRACTED {count} tracked objects: {sorted(_tracked_object_names)}")
+    else:
+        log_game("TRACKERS", "FILTER_EXTRACTED 0 objects (no position-based trackers)")
+
+    return count
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # WORLD STATE COLLECTION (Main Thread → Worker each frame)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -161,16 +225,37 @@ def collect_world_state(context) -> dict:
     """
     Collect minimal world state needed for tracker evaluation.
     Sent to worker each frame with EVALUATE_TRACKERS job.
+
+    Phase 1.1 Optimization: Only collects positions for objects
+    referenced by trackers, not all objects in scene.
     """
-    global _current_operator
+    global _current_operator, _tracked_object_names
     scn = context.scene
 
-    # Object positions (only for objects referenced by trackers)
+    # Object positions - FILTERED to only tracked objects (Phase 1.1)
     positions = {}
-    for obj in bpy.data.objects:
-        if obj.type in {'MESH', 'ARMATURE', 'EMPTY'}:
+
+    # Always include character (needed for distance/contact checks)
+    char = scn.target_armature
+    if char:
+        loc = char.matrix_world.translation
+        positions[char.name] = (loc.x, loc.y, loc.z)
+
+    # Only collect positions for objects referenced by trackers
+    for name in _tracked_object_names:
+        if name in positions:
+            continue  # Already added (e.g., character)
+        obj = bpy.data.objects.get(name)
+        if obj:
             loc = obj.matrix_world.translation
-            positions[obj.name] = (loc.x, loc.y, loc.z)
+            positions[name] = (loc.x, loc.y, loc.z)
+
+    # Log world state filtering stats (Phase 1.1)
+    total_objects = sum(1 for o in bpy.data.objects if o.type in {'MESH', 'ARMATURE', 'EMPTY'})
+    collected = len(positions)
+    if total_objects > 0:
+        reduction = ((total_objects - collected) / total_objects) * 100
+        log_game("WORLD-STATE", f"COLLECT filtered={collected} total={total_objects} reduction={reduction:.0f}%")
 
     # Character state
     char_state = _get_character_state(context)
@@ -254,6 +339,8 @@ def cache_trackers_in_worker(modal, context) -> bool:
     """
     Serialize tracker graph and send to worker at game start.
     Called after engine is ready.
+
+    Also extracts referenced object names for Phase 1.1 world state filtering.
     """
     if not hasattr(modal, 'engine') or not modal.engine:
         log_game("TRACKERS", "CACHE_SKIP engine not available")
@@ -261,6 +348,10 @@ def cache_trackers_in_worker(modal, context) -> bool:
 
     # Serialize tracker graph
     tracker_data = serialize_tracker_graph(context.scene)
+
+    # Phase 1.1: Extract referenced object names for world state filtering
+    # This builds the filter set even if no trackers, so we don't collect all objects
+    _extract_referenced_objects(tracker_data)
 
     if not tracker_data:
         log_game("TRACKERS", "CACHE_SKIP no tracker chains found")
@@ -355,6 +446,7 @@ def process_tracker_result(result) -> bool:
 
 def reset_tracker_state():
     """Reset tracker state cache. Call on game start/reset."""
-    global _current_operator
+    global _current_operator, _tracked_object_names
     _current_operator = None
-    log_game("TRACKERS", "STATE_RESET")
+    _tracked_object_names.clear()
+    log_game("TRACKERS", "STATE_RESET (filter cleared)")

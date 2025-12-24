@@ -70,14 +70,15 @@ Both systems support collision with dynamic (moving) meshes:
 
 ## Current Issues (2024-12-22)
 
-### Hitscan + Dynamic Mesh NOT WORKING
-- Hitscans work fine for static meshes
-- Hitscans never hit dynamic meshes - visual spawns at wrong location
-- Suspected issues:
-  1. **Parenting bug**: After creating hitscan visual, we read `matrix_world.translation` before Blender updates it (should use `impact` vector directly)
-  2. **Cache timing**: Need to verify dynamic mesh cache is populated before hitscan batch processes
+### Hitscan + Dynamic Mesh - FIXED (2024-12-23)
+- **Root cause**: After setting `new_ob.location = impact`, we read `matrix_world.translation` before Blender's depsgraph updates it. This returned the stale origin position instead of the impact position.
+- **Fix**: Use `impact`/`pos` vectors directly from worker results instead of reading from `matrix_world`
+- Fixed in both `process_hitscan_results()` and `process_projectile_results()`
 
 ### Needs Testing
+- [ ] Hitscan hitting dynamic meshes at correct position (fix applied 2024-12-23)
+- [ ] Hitscan crosshair accuracy on dynamic meshes (convergence fix applied 2024-12-23)
+- [ ] Projectile hitting dynamic meshes (fix applied 2024-12-23)
 - [ ] Impact Location output to connected nodes
 - [ ] Impact Event triggering downstream reactions
 - [ ] Projectile lifetime auto-despawn (fixed but needs verification)
@@ -96,7 +97,7 @@ Both systems support collision with dynamic (moving) meshes:
 
 5. **Inflight hitscan separation**: Added `_inflight_hitscans` list to prevent data loss between submit and result processing
 
-6. **Direction resolution fix**: When aiming at dynamic meshes (no static hit), use `cam_dir` directly instead of computing direction to far point
+6. **Direction convergence fix** (2024-12-23): When aiming at dynamic meshes (no static hit), compute direction from origin to where crosshair points at max_range. Previous approach used `cam_dir` directly which created parallel offset (gun ray never converged with crosshair ray, causing inaccurate hits on dynamic meshes)
 
 ## Debug Logging Added
 

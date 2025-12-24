@@ -89,6 +89,9 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | `CAMERA` | `camera` | Camera occlusion raycasts |
 | `FRAME` | `frame_numbers` | Frame numbers with timestamps |
 | `CULLING` | `culling` | Distance-based object culling |
+| **Optimization Systems** |
+| `WORLD-STATE` | `world_state` | World state filtering (Phase 1.1) - shows collected vs total objects |
+| `AABB-CACHE` | `aabb_cache` | AABB cache for collisions (Phase 1.2) - shows cache hits/misses per frame |
 | **Unified Physics** (all show source: static/dynamic) |
 | `PHYSICS` | `physics` | Physics summary per frame |
 | `GROUND` | `physics_ground` | Ground detection raycasts |

@@ -12,7 +12,7 @@ ARCHITECTURE:
        - blend_sys.set_ik_target_object("arm_R", "TargetCube")
 
     2. Scene property IK (TESTING) - manual testing via Developer Tools panel
-       - scene.runtime_ik_enabled, runtime_ik_chain, runtime_ik_target
+       - scene.runtime_ik_enabled + unified test_ik_* properties
 
 Usage:
     from Exp_Game.animations.runtime_ik import apply_runtime_ik
@@ -98,10 +98,10 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
     scene_ik_enabled = getattr(scene, 'runtime_ik_enabled', False)
 
     if blend_sys and use_blend_system and scene_ik_enabled:
-        # Route scene properties through BlendSystem
-        chain = getattr(scene, 'runtime_ik_chain', 'arm_R')
-        influence = getattr(scene, 'runtime_ik_influence', 1.0)
-        target_obj = getattr(scene, 'runtime_ik_target', None)
+        # Route unified test properties through BlendSystem
+        chain = getattr(scene, 'test_ik_chain', 'arm_R')
+        influence = getattr(scene, 'test_ik_influence', 1.0)
+        target_obj = getattr(scene, 'test_ik_target', None)
 
         if target_obj is not None and influence >= 0.001:
             # Set BlendSystem IK target from scene properties
@@ -148,12 +148,12 @@ def apply_runtime_ik(armature: bpy.types.Object, delta_time: float = 0.033) -> b
     # Only used if "Use BlendSystem" is OFF and scene testing is enabled
     # =========================================================================
     if not applied_any and scene_ik_enabled and not use_blend_system:
-        chain = getattr(scene, 'runtime_ik_chain', 'arm_R')
-        influence = getattr(scene, 'runtime_ik_influence', 1.0)
+        chain = getattr(scene, 'test_ik_chain', 'arm_R')
+        influence = getattr(scene, 'test_ik_influence', 1.0)
 
         if influence >= 0.001:
-            # Get target position from scene
-            target_obj = getattr(scene, 'runtime_ik_target', None)
+            # Get target position from unified test properties
+            target_obj = getattr(scene, 'test_ik_target', None)
             if target_obj is not None:
                 target_pos = np.array(target_obj.matrix_world.translation, dtype=np.float32)
             else:
