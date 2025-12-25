@@ -595,7 +595,183 @@ class ANIM2_OT_ClearCache(Operator):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# IK TEST OPERATORS
+# IK APPLICATION (PROPER SOLVER-BASED)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def apply_ik_chain(armature, chain: str, target_pos, influence: float = 1.0, log: bool = False):
+    """
+    Apply IK to a bone chain using the proper two-bone IK solver.
+
+    This is the CORRECT way to apply IK - using solver-computed quaternions
+    with proper world-to-local space conversion.
+
+    Args:
+        armature: Blender armature object
+        chain: Chain name ("leg_L", "leg_R", "arm_L", "arm_R")
+        target_pos: World-space target position (Vector or array)
+        influence: IK influence 0-1
+        log: Enable detailed logging
+
+    Returns:
+        dict with debug info or None on failure
+    """
+    from ..engine.animations.ik import (
+        LEG_IK, ARM_IK, solve_leg_ik, solve_arm_ik,
+        compute_knee_pole_position, compute_elbow_pole_position
+    )
+    from ..developer.dev_logger import log_game
+
+    # Get chain definition
+    IK_CHAINS = {**LEG_IK, **ARM_IK}
+    chain_def = IK_CHAINS.get(chain)
+    if not chain_def:
+        if log:
+            log_game("IK-SOLVE", f"ERROR chain={chain} not found")
+        return None
+
+    # Parse chain type
+    parts = chain.split('_')
+    if len(parts) != 2:
+        return None
+    limb_type, side = parts[0], parts[1]
+    is_leg = (limb_type == "leg")
+
+    # Get bone references
+    pose_bones = armature.pose.bones
+    root_bone = pose_bones.get(chain_def["root"])
+    mid_bone = pose_bones.get(chain_def["mid"])
+    tip_bone = pose_bones.get(chain_def["tip"])
+
+    if not all([root_bone, mid_bone, tip_bone]):
+        if log:
+            log_game("IK-SOLVE", f"ERROR bones not found chain={chain}")
+        return None
+
+    # Get world-space positions
+    arm_matrix = armature.matrix_world
+    root_world = arm_matrix @ root_bone.head
+    target_world = mathutils.Vector(target_pos[:3])
+
+    # Convert to numpy
+    root_pos = np.array([root_world.x, root_world.y, root_world.z], dtype=np.float32)
+    target_np = np.array([target_world.x, target_world.y, target_world.z], dtype=np.float32)
+
+    # Get character orientation for pole calculation
+    char_forward = np.array([arm_matrix[0][1], arm_matrix[1][1], arm_matrix[2][1]], dtype=np.float32)
+    char_right = np.array([arm_matrix[0][0], arm_matrix[1][0], arm_matrix[2][0]], dtype=np.float32)
+    char_up = np.array([arm_matrix[0][2], arm_matrix[1][2], arm_matrix[2][2]], dtype=np.float32)
+
+    # Compute pole position (automatic, anatomically correct)
+    if is_leg:
+        pole_pos = compute_knee_pole_position(root_pos, target_np, char_forward, char_right, side, 0.5)
+        upper_quat, lower_quat, joint_world = solve_leg_ik(root_pos, target_np, pole_pos, side)
+    else:
+        pole_pos = compute_elbow_pole_position(root_pos, target_np, char_forward, char_up, side, 0.3)
+        upper_quat, lower_quat, joint_world = solve_arm_ik(root_pos, target_np, pole_pos, side)
+
+    # Calculate reach info
+    reach_dist = float(np.linalg.norm(target_np - root_pos))
+    max_reach = chain_def["reach"]
+    reach_pct = reach_dist / max_reach * 100
+
+    if log:
+        # Log current bone state BEFORE IK
+        root_world_pos = arm_matrix @ root_bone.head
+        mid_world_pos = arm_matrix @ mid_bone.head
+        tip_world_pos = arm_matrix @ tip_bone.head
+        log_game("IK-SOLVE", f"CHAIN={chain} root={root_bone.name} mid={mid_bone.name} tip={tip_bone.name}")
+        log_game("IK-SOLVE", f"BEFORE root_pos=({root_world_pos.x:.3f},{root_world_pos.y:.3f},{root_world_pos.z:.3f})")
+        log_game("IK-SOLVE", f"BEFORE mid_pos=({mid_world_pos.x:.3f},{mid_world_pos.y:.3f},{mid_world_pos.z:.3f})")
+        log_game("IK-SOLVE", f"BEFORE tip_pos=({tip_world_pos.x:.3f},{tip_world_pos.y:.3f},{tip_world_pos.z:.3f})")
+        log_game("IK-SOLVE", f"TARGET=({target_np[0]:.3f},{target_np[1]:.3f},{target_np[2]:.3f}) reach={reach_dist:.3f}m ({reach_pct:.0f}%)")
+        log_game("IK-SOLVE", f"POLE=({pole_pos[0]:.3f},{pole_pos[1]:.3f},{pole_pos[2]:.3f})")
+        log_game("IK-SOLVE", f"SOLVER_OUT upper_q=({upper_quat[0]:.3f},{upper_quat[1]:.3f},{upper_quat[2]:.3f},{upper_quat[3]:.3f})")
+        log_game("IK-SOLVE", f"SOLVER_OUT lower_q=({lower_quat[0]:.3f},{lower_quat[1]:.3f},{lower_quat[2]:.3f},{lower_quat[3]:.3f})")
+        log_game("IK-SOLVE", f"SOLVER_OUT joint=({joint_world[0]:.3f},{joint_world[1]:.3f},{joint_world[2]:.3f})")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # APPLY QUATERNIONS TO BONES
+    # The solver returns world-space quaternions. We need to convert to local.
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Get parent matrices for local space conversion
+    if root_bone.parent:
+        parent_matrix = arm_matrix @ root_bone.parent.matrix
+        parent_rot_inv = parent_matrix.to_quaternion().inverted()
+    else:
+        parent_rot_inv = arm_matrix.to_quaternion().inverted()
+
+    # Convert upper quaternion from world to local
+    upper_world_q = mathutils.Quaternion((upper_quat[0], upper_quat[1], upper_quat[2], upper_quat[3]))
+    upper_local_q = parent_rot_inv @ upper_world_q
+
+    # Store original for blending
+    original_upper = root_bone.rotation_quaternion.copy()
+    original_lower = mid_bone.rotation_quaternion.copy()
+
+    # Apply upper bone rotation
+    root_bone.rotation_mode = 'QUATERNION'
+    if influence < 1.0:
+        root_bone.rotation_quaternion = original_upper.slerp(upper_local_q, influence)
+    else:
+        root_bone.rotation_quaternion = upper_local_q
+
+    # Update transforms so mid_bone parent matrix is correct
+    bpy.context.view_layer.update()
+
+    # Now compute local rotation for mid bone
+    # Mid bone's parent is the root bone (which we just rotated)
+    mid_parent_matrix = arm_matrix @ root_bone.matrix
+    mid_parent_rot_inv = mid_parent_matrix.to_quaternion().inverted()
+
+    lower_world_q = mathutils.Quaternion((lower_quat[0], lower_quat[1], lower_quat[2], lower_quat[3]))
+    lower_local_q = mid_parent_rot_inv @ lower_world_q
+
+    # Apply lower bone rotation
+    mid_bone.rotation_mode = 'QUATERNION'
+    if influence < 1.0:
+        mid_bone.rotation_quaternion = original_lower.slerp(lower_local_q, influence)
+    else:
+        mid_bone.rotation_quaternion = lower_local_q
+
+    if log:
+        log_game("IK-SOLVE", f"APPLIED upper_local=({upper_local_q.w:.3f},{upper_local_q.x:.3f},{upper_local_q.y:.3f},{upper_local_q.z:.3f})")
+        log_game("IK-SOLVE", f"APPLIED lower_local=({lower_local_q.w:.3f},{lower_local_q.x:.3f},{lower_local_q.y:.3f},{lower_local_q.z:.3f})")
+        # Log AFTER state
+        bpy.context.view_layer.update()
+        root_world_after = arm_matrix @ root_bone.head
+        mid_world_after = arm_matrix @ mid_bone.head
+        tip_world_after = arm_matrix @ tip_bone.head
+        log_game("IK-SOLVE", f"AFTER root_pos=({root_world_after.x:.3f},{root_world_after.y:.3f},{root_world_after.z:.3f})")
+        log_game("IK-SOLVE", f"AFTER mid_pos=({mid_world_after.x:.3f},{mid_world_after.y:.3f},{mid_world_after.z:.3f})")
+        log_game("IK-SOLVE", f"AFTER tip_pos=({tip_world_after.x:.3f},{tip_world_after.y:.3f},{tip_world_after.z:.3f})")
+
+    # Update runtime_ik state for rig visualizer
+    from .runtime_ik import update_ik_state
+    update_ik_state(
+        chain=chain,
+        target_pos=target_np,
+        mid_pos=joint_world,
+        root_pos=root_pos,
+        pole_pos=pole_pos,
+        influence=influence,
+        reachable=(reach_pct <= 100)
+    )
+
+    return {
+        "chain": chain,
+        "target": target_np,
+        "reach_dist": reach_dist,
+        "reach_pct": reach_pct,
+        "pole": pole_pos,
+        "joint": joint_world,
+        "upper_quat": upper_quat,
+        "lower_quat": lower_quat,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LEGACY IK (for compatibility)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def point_bone_at_target(obj, pose_bone, target_world_pos):
@@ -779,6 +955,266 @@ def stop_all_animations():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# POSE BLEND AUTO-PLAY TIMER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_pose_blend_state = {
+    "start_time": 0.0,
+    "direction": 1,  # 1 = forward (A→B), -1 = backward (B→A)
+    "ik_targets": {},  # chain_name -> world position from Pose B
+}
+
+
+def pose_blend_auto_update():
+    """
+    Timer callback for pose blend auto-play.
+
+    Uses WORKER-BASED computation - all blending math happens in engine.
+    Main thread only submits jobs and applies results.
+    """
+    import json
+    from .bone_groups import BONE_INDEX
+    from ..developer.dev_logger import log_game, log_worker_messages
+
+    scene = bpy.context.scene
+
+    # Check if still in POSE mode
+    if scene.test_mode != 'POSE':
+        return None  # Stop timer
+
+    armature = getattr(scene, 'target_armature', None)
+    if not armature:
+        return None
+
+    engine = get_test_engine()
+    if not engine.is_alive():
+        return None
+
+    # Get timing
+    duration = scene.pose_blend_duration
+    elapsed = time.perf_counter() - _pose_blend_state["start_time"]
+
+    # Calculate normalized time within current half-cycle
+    cycle_time = elapsed % (duration * 2)  # Full back-and-forth cycle
+
+    if cycle_time < duration:
+        weight = cycle_time / duration
+    else:
+        weight = 1.0 - ((cycle_time - duration) / duration)
+
+    weight = max(0.0, min(1.0, weight))
+    scene.pose_blend_weight = weight
+
+    # Get pose data (already cached at start)
+    pose_a_data = _pose_blend_state.get("pose_a_data", {})
+    pose_b_data = _pose_blend_state.get("pose_b_data", {})
+
+    if not pose_a_data:
+        return None
+
+    # Build IK chain data for worker
+    ik_mode = getattr(scene, 'pose_blend_mode', 'POSE_TO_POSE')
+    ik_targets = _pose_blend_state.get("ik_targets", {})
+    influence = scene.pose_blend_ik_influence
+
+    ik_chain_props = [
+        ('pose_blend_ik_arm_L', 'pose_blend_ik_arm_L_target', 'arm_L'),
+        ('pose_blend_ik_arm_R', 'pose_blend_ik_arm_R_target', 'arm_R'),
+        ('pose_blend_ik_leg_L', 'pose_blend_ik_leg_L_target', 'leg_L'),
+        ('pose_blend_ik_leg_R', 'pose_blend_ik_leg_R_target', 'leg_R'),
+    ]
+
+    # Get character orientation for pole calculation
+    arm_matrix = armature.matrix_world
+    char_forward = [arm_matrix[0][1], arm_matrix[1][1], arm_matrix[2][1]]
+    char_right = [arm_matrix[0][0], arm_matrix[1][0], arm_matrix[2][0]]
+    char_up = [arm_matrix[0][2], arm_matrix[1][2], arm_matrix[2][2]]
+
+    ik_chains_for_worker = []
+    for enabled_prop, target_prop, chain_name in ik_chain_props:
+        if getattr(scene, enabled_prop, False):
+            target_pos = None
+            if ik_mode == 'POSE_TO_TARGET':
+                target_obj = getattr(scene, target_prop, None)
+                if target_obj:
+                    target_pos = list(target_obj.matrix_world.translation)
+            else:
+                if chain_name in ik_targets:
+                    target_pos = list(ik_targets[chain_name])
+
+            if target_pos:
+                # Get root bone position
+                from ..engine.animations.ik import LEG_IK, ARM_IK
+                all_chains = {**LEG_IK, **ARM_IK}
+                chain_def = all_chains.get(chain_name)
+                if chain_def:
+                    root_bone = armature.pose.bones.get(chain_def["root"])
+                    if root_bone:
+                        root_pos = list(arm_matrix @ root_bone.head)
+                        ik_chains_for_worker.append({
+                            "chain": chain_name,
+                            "target": target_pos,
+                            "root_pos": root_pos,
+                            "influence": influence,
+                            "char_forward": char_forward,
+                            "char_right": char_right,
+                            "char_up": char_up,
+                        })
+
+    # Submit POSE_BLEND_COMPUTE job to worker
+    job_data = {
+        "pose_a": pose_a_data,
+        "pose_b": pose_b_data,
+        "weight": weight,
+        "bone_names": list(set(pose_a_data.keys()) | set(pose_b_data.keys())),
+        "ik_chains": ik_chains_for_worker,
+    }
+
+    job_id = engine.submit_job("POSE_BLEND_COMPUTE", job_data)
+
+    # Poll for result with short timeout (same-frame sync)
+    if job_id is not None and job_id >= 0:
+        poll_start = time.perf_counter()
+        while (time.perf_counter() - poll_start) < 0.003:  # 3ms timeout
+            results = list(engine.poll_results(max_results=5))
+            for result in results:
+                if result.job_type == "POSE_BLEND_COMPUTE" and result.job_id == job_id:
+                    if result.success:
+                        # Apply blended bone transforms
+                        bone_transforms = result.result.get("bone_transforms", {})
+                        _apply_bone_transforms(armature, bone_transforms)
+
+                        # Apply IK results
+                        ik_results = result.result.get("ik_results", {})
+                        _apply_ik_results(armature, ik_results)
+
+                        # Process worker logs
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            log_worker_messages(worker_logs)
+                    break
+            else:
+                time.sleep(0.0001)
+                continue
+            break
+
+    # Force viewport redraw
+    for area in bpy.context.screen.areas:
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
+
+    return 1/60  # Continue at 60fps
+
+
+def _apply_bone_transforms(armature, bone_transforms: dict):
+    """Apply bone transforms from worker result to armature."""
+    pose_bones = armature.pose.bones
+    for bone_name, transform in bone_transforms.items():
+        pose_bone = pose_bones.get(bone_name)
+        if pose_bone:
+            pose_bone.rotation_mode = 'QUATERNION'
+            pose_bone.rotation_quaternion = mathutils.Quaternion((transform[0], transform[1], transform[2], transform[3]))
+            pose_bone.location = mathutils.Vector((transform[4], transform[5], transform[6]))
+            pose_bone.scale = mathutils.Vector((transform[7], transform[8], transform[9]))
+
+
+def _apply_ik_results(armature, ik_results: dict):
+    """Apply IK results from worker to armature bones."""
+    from ..engine.animations.ik import LEG_IK, ARM_IK
+
+    if not ik_results:
+        return
+
+    all_chains = {**LEG_IK, **ARM_IK}
+    arm_matrix = armature.matrix_world
+    pose_bones = armature.pose.bones
+
+    for chain_name, ik_data in ik_results.items():
+        chain_def = all_chains.get(chain_name)
+        if not chain_def:
+            continue
+
+        root_bone = pose_bones.get(chain_def["root"])
+        mid_bone = pose_bones.get(chain_def["mid"])
+        if not root_bone or not mid_bone:
+            continue
+
+        upper_quat = ik_data.get("upper_quat")
+        lower_quat = ik_data.get("lower_quat")
+        influence = ik_data.get("influence", 1.0)
+
+        if upper_quat and lower_quat:
+            # Convert world quaternions to local
+            # Get parent matrices for local space conversion
+            if root_bone.parent:
+                parent_matrix = arm_matrix @ root_bone.parent.matrix
+                parent_rot_inv = parent_matrix.to_quaternion().inverted()
+            else:
+                parent_rot_inv = arm_matrix.to_quaternion().inverted()
+
+            upper_world_q = mathutils.Quaternion(upper_quat)
+            upper_local_q = parent_rot_inv @ upper_world_q
+
+            # Store original for blending
+            original_upper = root_bone.rotation_quaternion.copy()
+            original_lower = mid_bone.rotation_quaternion.copy()
+
+            # Apply upper bone
+            root_bone.rotation_mode = 'QUATERNION'
+            if influence < 1.0:
+                root_bone.rotation_quaternion = original_upper.slerp(upper_local_q, influence)
+            else:
+                root_bone.rotation_quaternion = upper_local_q
+
+            # Update for mid bone parent
+            bpy.context.view_layer.update()
+
+            # Mid bone local conversion
+            mid_parent_matrix = arm_matrix @ root_bone.matrix
+            mid_parent_rot_inv = mid_parent_matrix.to_quaternion().inverted()
+
+            lower_world_q = mathutils.Quaternion(lower_quat)
+            lower_local_q = mid_parent_rot_inv @ lower_world_q
+
+            # Apply lower bone
+            mid_bone.rotation_mode = 'QUATERNION'
+            if influence < 1.0:
+                mid_bone.rotation_quaternion = original_lower.slerp(lower_local_q, influence)
+            else:
+                mid_bone.rotation_quaternion = lower_local_q
+
+        # Update runtime_ik state for visualizer
+        from .runtime_ik import update_ik_state
+        update_ik_state(
+            chain=chain_name,
+            target_pos=np.array(ik_data.get("target", [0, 0, 0]), dtype=np.float32),
+            mid_pos=np.array(ik_data.get("joint_world", [0, 0, 0]), dtype=np.float32),
+            root_pos=np.array(ik_data.get("root_pos", [0, 0, 0]), dtype=np.float32) if "root_pos" in ik_data else np.zeros(3, dtype=np.float32),
+            pole_pos=np.array(ik_data.get("pole_pos", [0, 0, 0]), dtype=np.float32),
+            influence=influence,
+            reachable=ik_data.get("reachable", True)
+        )
+
+
+def _apply_ik_overlay_standalone(armature, chain, target_obj, influence):
+    """Standalone IK overlay for timer callback (no self reference)."""
+    target_pos = target_obj.matrix_world.translation
+    _apply_ik_overlay_with_position(armature, chain, target_pos, influence)
+
+
+def _apply_ik_overlay_with_position(armature, chain, target_pos, influence):
+    """Apply IK overlay using a world-space position."""
+    log_enabled = getattr(bpy.context.scene, 'dev_debug_ik_solve', False)
+    apply_ik_chain(armature, chain, target_pos, influence, log=log_enabled)
+
+
+def stop_pose_blend_auto():
+    """Stop pose blend auto-play timer."""
+    if bpy.app.timers.is_registered(pose_blend_auto_update):
+        bpy.app.timers.unregister(pose_blend_auto_update)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PROPERTIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -871,9 +1307,28 @@ class ANIM2_OT_TestPlay(Operator):
             ctrl = get_test_controller()
             return ctrl.cache.count > 0
         elif mode == 'POSE':
-            # Need poses in library
-            pose_name = getattr(scene, 'pose_test_name', 'NONE')
-            return pose_name and pose_name != 'NONE'
+            # Need poses and at least one IK chain enabled
+            if len(scene.pose_library) == 0:
+                return False
+
+            ik_mode = getattr(scene, 'pose_blend_mode', 'POSE_TO_POSE')
+            ik_chains = [
+                ('pose_blend_ik_arm_L', 'pose_blend_ik_arm_L_target'),
+                ('pose_blend_ik_arm_R', 'pose_blend_ik_arm_R_target'),
+                ('pose_blend_ik_leg_L', 'pose_blend_ik_leg_L_target'),
+                ('pose_blend_ik_leg_R', 'pose_blend_ik_leg_R_target'),
+            ]
+
+            for enabled_prop, target_prop in ik_chains:
+                if getattr(scene, enabled_prop, False):
+                    if ik_mode == 'POSE_TO_TARGET':
+                        # Need object target
+                        if getattr(scene, target_prop, None):
+                            return True
+                    else:
+                        # POSE_TO_POSE: Just need enabled chain
+                        return True
+            return False
         elif mode == 'IK':
             return True
         return False
@@ -883,14 +1338,27 @@ class ANIM2_OT_TestPlay(Operator):
         mode = scene.test_mode
         armature = scene.target_armature
 
-        if mode == 'ANIMATION':
-            return self._play_animation(context, armature)
-        elif mode == 'POSE':
-            return self._play_pose(context, armature)
-        elif mode == 'IK':
-            return self._play_ik(context, armature)
+        # Refresh rig visualizer if enabled (ensures it appears in viewport)
+        from ..developer.rig_visualizer import refresh_rig_visualizer
+        refresh_rig_visualizer()
 
-        return {'CANCELLED'}
+        # Start rig logging session if enabled
+        rig_log_enabled = getattr(scene, 'dev_debug_rig_state', False)
+        if rig_log_enabled and armature:
+            from .rig_logger import start_rig_test_session
+            start_rig_test_session(armature, f"TEST_{mode}")
+
+        if mode == 'ANIMATION':
+            result = self._play_animation(context, armature)
+        elif mode == 'POSE':
+            # POSE mode is always IK pose-to-pose with auto-loop
+            result = self._play_ik_pose_blend(context, armature)
+        elif mode == 'IK':
+            result = self._play_ik(context, armature)
+        else:
+            result = {'CANCELLED'}
+
+        return result
 
     def _play_animation(self, context, armature):
         """Play animation on target armature."""
@@ -997,6 +1465,270 @@ class ANIM2_OT_TestPlay(Operator):
         self.report({'INFO'}, f"Applied pose: {pose_name} ({applied_count} bones)")
         return {'FINISHED'}
 
+    def _play_ik_pose_blend(self, context, armature):
+        """
+        IK Pose mode - loops with IK applied.
+
+        Two modes:
+        - POSE_TO_POSE: IK targets from Pose B (blend between two poses)
+        - POSE_TO_TARGET: IK targets from external objects (reach toward objects)
+        """
+        import json
+        from .bone_groups import BONE_INDEX
+        from ..engine.animations.ik import LEG_IK, ARM_IK
+
+        scene = context.scene
+        ik_mode = getattr(scene, 'pose_blend_mode', 'POSE_TO_POSE')
+        pose_a_name = scene.pose_blend_a
+
+        # Validate pose A (always needed)
+        if pose_a_name == "NONE":
+            self.report({'WARNING'}, "Select a Pose")
+            return {'CANCELLED'}
+
+        pose_a_entry = None
+        for p in scene.pose_library:
+            if p.name == pose_a_name:
+                pose_a_entry = p
+                break
+
+        if not pose_a_entry:
+            self.report({'WARNING'}, f"Pose not found: {pose_a_name}")
+            return {'CANCELLED'}
+
+        # Get enabled IK chains
+        ik_chain_props = [
+            ('pose_blend_ik_arm_L', 'pose_blend_ik_arm_L_target', 'arm_L'),
+            ('pose_blend_ik_arm_R', 'pose_blend_ik_arm_R_target', 'arm_R'),
+            ('pose_blend_ik_leg_L', 'pose_blend_ik_leg_L_target', 'leg_L'),
+            ('pose_blend_ik_leg_R', 'pose_blend_ik_leg_R_target', 'leg_R'),
+        ]
+
+        active_chains = []
+        for enabled_prop, target_prop, chain_name in ik_chain_props:
+            if getattr(scene, enabled_prop, False):
+                if ik_mode == 'POSE_TO_TARGET':
+                    # Need object target
+                    if getattr(scene, target_prop, None):
+                        active_chains.append(chain_name)
+                else:
+                    active_chains.append(chain_name)
+
+        if not active_chains:
+            if ik_mode == 'POSE_TO_TARGET':
+                self.report({'WARNING'}, "Enable at least one IK chain with a target object")
+            else:
+                self.report({'WARNING'}, "Enable at least one IK chain")
+            return {'CANCELLED'}
+
+        # Extract IK targets from Pose B (only in POSE_TO_POSE mode)
+        ik_targets = {}
+        if ik_mode == 'POSE_TO_POSE':
+            pose_b_name = scene.pose_blend_b
+
+            # Get Pose B data
+            pose_b_data = None
+            if pose_b_name == "REST":
+                pose_b_data = {bone: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+                              for bone in BONE_INDEX.keys()}
+            else:
+                for p in scene.pose_library:
+                    if p.name == pose_b_name:
+                        try:
+                            pose_b_data = json.loads(p.bone_data_json)
+                        except:
+                            pass
+                        break
+
+            # Extract tip positions from Pose B
+            if pose_b_data:
+                # Store current pose
+                original_transforms = {}
+                for pbone in armature.pose.bones:
+                    original_transforms[pbone.name] = (
+                        pbone.rotation_quaternion.copy(),
+                        pbone.location.copy(),
+                        pbone.scale.copy()
+                    )
+
+                # Apply Pose B temporarily
+                for bone_name, transform in pose_b_data.items():
+                    pbone = armature.pose.bones.get(bone_name)
+                    if pbone:
+                        pbone.rotation_mode = 'QUATERNION'
+                        pbone.rotation_quaternion = mathutils.Quaternion((transform[0], transform[1], transform[2], transform[3]))
+                        pbone.location = mathutils.Vector((transform[4], transform[5], transform[6]))
+                        pbone.scale = mathutils.Vector((transform[7], transform[8], transform[9]))
+
+                context.view_layer.update()
+
+                # Get tip bone positions
+                all_chains = {**LEG_IK, **ARM_IK}
+                for chain_name in active_chains:
+                    chain_def = all_chains.get(chain_name)
+                    if chain_def:
+                        tip_bone = armature.pose.bones.get(chain_def["tip"])
+                        if tip_bone:
+                            tip_world = armature.matrix_world @ tip_bone.head
+                            ik_targets[chain_name] = mathutils.Vector(tip_world)
+
+                # Restore original pose
+                for bone_name, (rot, loc, scale) in original_transforms.items():
+                    pbone = armature.pose.bones.get(bone_name)
+                    if pbone:
+                        pbone.rotation_quaternion = rot
+                        pbone.location = loc
+                        pbone.scale = scale
+
+                context.view_layer.update()
+
+        # Store IK targets for timer (empty for POSE_TO_TARGET - uses objects directly)
+        _pose_blend_state["ik_targets"] = ik_targets
+
+        # Cache pose data for worker-based timer callback
+        try:
+            pose_a_data = json.loads(pose_a_entry.bone_data_json)
+        except:
+            pose_a_data = {}
+
+        pose_b_name = scene.pose_blend_b
+        if pose_b_name == "REST":
+            pose_b_data_cached = {bone: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+                                  for bone in BONE_INDEX.keys()}
+        else:
+            pose_b_data_cached = {}
+            for p in scene.pose_library:
+                if p.name == pose_b_name:
+                    try:
+                        pose_b_data_cached = json.loads(p.bone_data_json)
+                    except:
+                        pass
+                    break
+
+        _pose_blend_state["pose_a_data"] = pose_a_data
+        _pose_blend_state["pose_b_data"] = pose_b_data_cached
+
+        # Log extracted targets for debugging
+        if ik_targets:
+            from ..developer.dev_logger import log_game
+            log_game("IK-SOLVE", f"=== POSE-TO-POSE SETUP ===")
+            log_game("IK-SOLVE", f"Pose A: {pose_a_name} ({len(pose_a_data)} bones)")
+            log_game("IK-SOLVE", f"Pose B: {pose_b_name} ({len(pose_b_data_cached)} bones)")
+            for chain_name, target_pos in ik_targets.items():
+                log_game("IK-SOLVE", f"TARGET {chain_name}: ({target_pos.x:.3f}, {target_pos.y:.3f}, {target_pos.z:.3f})")
+            log_game("IK-SOLVE", f"=== END SETUP ===")
+
+        # Start the auto-loop timer
+        if not bpy.app.timers.is_registered(pose_blend_auto_update):
+            _pose_blend_state["start_time"] = time.perf_counter()
+            _pose_blend_state["direction"] = 1
+            bpy.app.timers.register(pose_blend_auto_update, first_interval=1/60)
+
+        duration = scene.pose_blend_duration
+        chains_str = ", ".join(active_chains)
+        if ik_mode == 'POSE_TO_POSE':
+            pose_b_name = scene.pose_blend_b
+            self.report({'INFO'}, f"Pose→Pose: {pose_a_name} ↔ {pose_b_name} ({duration:.1f}s) IK:[{chains_str}]")
+        else:
+            self.report({'INFO'}, f"Pose→Target: {pose_a_name} ({duration:.1f}s) IK:[{chains_str}]")
+        return {'FINISHED'}
+
+    # NOTE: _play_pose_blend removed - POSE mode now always uses _play_ik_pose_blend
+    # which automatically loops and always applies IK (that's the point of this mode)
+
+    def _apply_blended_pose(self, armature, pose_a_data, pose_b_data, weight, context):
+        """
+        Apply a blend of two poses to the armature.
+
+        Uses quaternion slerp for rotations, lerp for location/scale.
+        """
+        from .bone_groups import BONE_INDEX
+
+        pose_bones = armature.pose.bones
+        applied_count = 0
+
+        # Get all bones we have data for
+        all_bones = set(pose_a_data.keys()) | set(pose_b_data.keys())
+
+        for bone_name in all_bones:
+            if bone_name not in BONE_INDEX:
+                continue
+
+            pose_bone = pose_bones.get(bone_name)
+            if not pose_bone:
+                continue
+
+            # Get transforms (default to identity if missing)
+            t_a = pose_a_data.get(bone_name, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+            t_b = pose_b_data.get(bone_name, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+
+            # Quaternion slerp for rotation
+            q_a = mathutils.Quaternion((t_a[0], t_a[1], t_a[2], t_a[3]))
+            q_b = mathutils.Quaternion((t_b[0], t_b[1], t_b[2], t_b[3]))
+            q_blend = q_a.slerp(q_b, weight)
+
+            # Linear interpolation for location and scale
+            loc_a = mathutils.Vector((t_a[4], t_a[5], t_a[6]))
+            loc_b = mathutils.Vector((t_b[4], t_b[5], t_b[6]))
+            loc_blend = loc_a.lerp(loc_b, weight)
+
+            scale_a = mathutils.Vector((t_a[7], t_a[8], t_a[9]))
+            scale_b = mathutils.Vector((t_b[7], t_b[8], t_b[9]))
+            scale_blend = scale_a.lerp(scale_b, weight)
+
+            # Apply
+            pose_bone.rotation_mode = 'QUATERNION'
+            pose_bone.rotation_quaternion = q_blend
+            pose_bone.location = loc_blend
+            pose_bone.scale = scale_blend
+            applied_count += 1
+
+        return applied_count
+
+    def _apply_ik_overlay(self, armature, chain, target_obj, influence, context):
+        """
+        Apply IK to a chain on top of the current pose.
+
+        Uses the proper IK solver with world-to-local quaternion conversion.
+        """
+        # Check if logging enabled
+        log_enabled = getattr(context.scene, 'dev_debug_ik_solve', False)
+
+        # Get target position
+        target_pos = target_obj.matrix_world.translation
+
+        # Log IK attempt if rig state logging enabled
+        rig_log_enabled = getattr(context.scene, 'dev_debug_rig_state', False)
+        if rig_log_enabled:
+            from .rig_logger import log_ik_attempt, log_bone_chain
+            log_ik_attempt(armature, chain, target_pos, influence)
+            log_bone_chain(armature, chain, "IK_BEFORE")
+
+        # Apply IK using proper solver-based function
+        result = apply_ik_chain(armature, chain, target_pos, influence, log=log_enabled)
+
+        # Log result if rig state logging enabled
+        if rig_log_enabled:
+            from .rig_logger import log_ik_result, log_collision_check
+            context.view_layer.update()  # Ensure transforms are updated
+            log_ik_result(armature, chain, target_pos)
+            log_collision_check(armature, chain)
+
+        if result and getattr(context.scene, 'dev_debug_ik_visual', False):
+            from ..engine.animations.ik import LEG_IK, ARM_IK
+            IK_CHAINS = {**LEG_IK, **ARM_IK}
+            chain_def = IK_CHAINS.get(chain)
+            if chain_def:
+                update_ik_visualization(
+                    obj=armature,
+                    chain=chain,
+                    target_pos=tuple(result["target"]),
+                    pole_pos=tuple(result["pole"]),
+                    joint_world_pos=result["joint"],
+                    is_reachable=result["reach_pct"] <= 100,
+                    at_limit=result["reach_pct"] > 95
+                )
+
     def _play_ik(self, context, armature):
         """Apply IK to target armature using unified properties."""
         scene = context.scene
@@ -1016,7 +1748,9 @@ class ANIM2_OT_TestPlay(Operator):
         limb_type, side = parts[0], parts[1]
         is_leg = (limb_type == "leg")
 
-        from .ik_solver import IK_CHAINS, solve_leg_ik, solve_arm_ik
+        from ..engine.animations.ik import LEG_IK, ARM_IK, solve_leg_ik, solve_arm_ik
+        # Combine into IK_CHAINS for convenience
+        IK_CHAINS = {**LEG_IK, **ARM_IK}
 
         # Get chain definition
         chain_def = IK_CHAINS.get(chain)
@@ -1098,7 +1832,7 @@ class ANIM2_OT_TestPlay(Operator):
 
 
 class ANIM2_OT_TestStop(Operator):
-    """Unified Stop - stops based on test mode"""
+    """Unified Stop - stops based on test mode, exports rig logs"""
     bl_idname = "anim2.test_stop"
     bl_label = "Stop"
     bl_options = {'REGISTER'}
@@ -1107,6 +1841,12 @@ class ANIM2_OT_TestStop(Operator):
         scene = context.scene
         mode = scene.test_mode
         armature = getattr(scene, 'target_armature', None)
+
+        # Log final rig state if enabled
+        rig_log_enabled = getattr(scene, 'dev_debug_rig_state', False)
+        if rig_log_enabled and armature:
+            from .rig_logger import end_rig_test_session
+            end_rig_test_session(armature, f"TEST_{mode}")
 
         if mode == 'ANIMATION':
             # Stop animations
@@ -1119,12 +1859,27 @@ class ANIM2_OT_TestStop(Operator):
                 stop_all_animations()
                 self.report({'INFO'}, "Stopped all animations")
         elif mode == 'POSE':
-            # Nothing to stop for pose (it's instant)
-            self.report({'INFO'}, "Pose applied instantly - nothing to stop")
+            # Stop the IK pose-to-pose timer if running
+            if bpy.app.timers.is_registered(pose_blend_auto_update):
+                stop_pose_blend_auto()
+                disable_ik_visualizer()
+                # Clear IK state so visualizer doesn't show stale data
+                from .runtime_ik import clear_ik_state
+                clear_ik_state()
+                self.report({'INFO'}, "Stopped IK pose-to-pose loop")
+            else:
+                self.report({'INFO'}, "No active loop to stop")
         elif mode == 'IK':
             # Disable IK visualization
             disable_ik_visualizer()
             self.report({'INFO'}, "IK visualization disabled")
+
+        # Export logs if enabled
+        if getattr(scene, 'dev_export_session_log', False):
+            from ..developer.dev_logger import export_game_log, clear_log
+            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+            clear_log()
+            self.report({'INFO'}, "Logs exported to diagnostics_latest.txt")
 
         return {'FINISHED'}
 

@@ -477,3 +477,47 @@ def clear_ik_state() -> None:
     _ik_state.clear()
     _ik_state["chains"] = {}
     _ik_state["active"] = False
+
+
+def update_ik_state(
+    chain: str,
+    target_pos: np.ndarray,
+    mid_pos: np.ndarray,
+    root_pos: np.ndarray,
+    pole_pos: np.ndarray,
+    influence: float = 1.0,
+    reachable: bool = True
+) -> None:
+    """
+    Update IK state from external solver (e.g., test panel).
+
+    Call this after solving IK externally so the rig visualizer
+    can display the current IK state.
+
+    Args:
+        chain: Chain name ("arm_L", "arm_R", "leg_L", "leg_R")
+        target_pos: World-space target position
+        mid_pos: World-space mid-joint (elbow/knee) position
+        root_pos: World-space root position (shoulder/hip)
+        pole_pos: World-space pole position
+        influence: IK influence 0-1
+        reachable: Whether target is within reach
+    """
+    _ik_state["active"] = True
+    _ik_state["chains"][chain] = {
+        "last_target": np.array(target_pos, dtype=np.float32),
+        "last_mid_pos": np.array(mid_pos, dtype=np.float32),
+        "root_pos": np.array(root_pos, dtype=np.float32),
+        "pole_pos": np.array(pole_pos, dtype=np.float32),
+        "influence": influence,
+        "reachable": reachable,
+    }
+
+    # Legacy state for compatibility
+    _ik_state["last_target"] = _ik_state["chains"][chain]["last_target"]
+    _ik_state["last_mid_pos"] = _ik_state["chains"][chain]["last_mid_pos"]
+    _ik_state["root_pos"] = _ik_state["chains"][chain]["root_pos"]
+    _ik_state["pole_pos"] = _ik_state["chains"][chain]["pole_pos"]
+    _ik_state["last_influence"] = influence
+    _ik_state["chain"] = chain
+    _ik_state["reachable"] = reachable

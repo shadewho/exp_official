@@ -65,6 +65,10 @@ def update_dynamic_meshes(modal_op):
     """
     scene = bpy.context.scene
 
+    # Get evaluated depsgraph for animated meshes
+    # Without this, animated meshes read stale matrix_world (jitter!)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
     # --- Initialize caches (once) ---
     if not hasattr(modal_op, "platform_prev_positions"):
         modal_op.platform_prev_positions = {}
@@ -122,8 +126,11 @@ def update_dynamic_meshes(modal_op):
 
             obj_id = id(dyn_obj)
             if obj_id not in modal_op._cached_dynamic_mesh_ids:
+                # Use evaluated object for animated meshes
+                eval_obj = dyn_obj.evaluated_get(depsgraph)
+
                 # Extract triangles in LOCAL space (sent once)
-                mesh = dyn_obj.data
+                mesh = eval_obj.data
                 mesh.calc_loop_triangles()
 
                 triangles = []
@@ -134,7 +141,7 @@ def update_dynamic_meshes(modal_op):
                     triangles.append((v0, v1, v2))
 
                 # Compute bounding radius (uses helper to avoid duplicate code)
-                radius = _compute_bounding_radius(dyn_obj, dyn_obj.matrix_world)
+                radius = _compute_bounding_radius(eval_obj, eval_obj.matrix_world)
                 modal_op._cached_dyn_radius[dyn_obj] = radius
 
                 # Broadcast to all workers with per-worker targeting (guaranteed delivery)
@@ -166,11 +173,15 @@ def update_dynamic_meshes(modal_op):
             continue
 
         mesh_count += 1
-        cur_M = dyn_obj.matrix_world
+
+        # Use evaluated object for animated meshes (reads current animation state)
+        # Without this, animated meshes have jittery movement
+        eval_obj = dyn_obj.evaluated_get(depsgraph)
+        cur_M = eval_obj.matrix_world
 
         # Get cached radius (or compute if missing - fallback only)
         if dyn_obj not in modal_op._cached_dyn_radius:
-            modal_op._cached_dyn_radius[dyn_obj] = _compute_bounding_radius(dyn_obj, cur_M)
+            modal_op._cached_dyn_radius[dyn_obj] = _compute_bounding_radius(eval_obj, cur_M)
 
         rad = modal_op._cached_dyn_radius.get(dyn_obj, 1.0)
 

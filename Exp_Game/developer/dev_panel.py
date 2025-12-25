@@ -15,6 +15,7 @@ from ..animations.test_panel import (
     get_test_controller,
     reset_test_controller,
     playback_update,
+    pose_blend_auto_update,
 )
 
 
@@ -214,6 +215,8 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_aabb_cache", text="AABB Cache")
             col.prop(scene, "dev_debug_projectiles", text="Projectiles")
             col.prop(scene, "dev_debug_hitscans", text="Hitscans")
+            col.prop(scene, "dev_debug_transforms", text="Transforms")
+            col.prop(scene, "dev_debug_tracking", text="Tracking (Track To)")
 
         # ═══════════════════════════════════════════════════════════════
         # Animation 2.0 (Collapsible)
@@ -226,6 +229,38 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         row.label(text="Animation 2.0", icon='ACTION')
 
         if scene.dev_section_anim:
+            # ─── Rig Analyzer ─────────────────────────────────────────────
+            sub_box = box.box()
+            row = sub_box.row()
+            row.label(text="Rig Analyzer", icon='VIEWZOOM')
+
+            armature = scene.target_armature
+            if armature:
+                col = sub_box.column(align=True)
+                col.operator("rig.analyze", text="Analyze Rig", icon='PLAY')
+
+                # Show calibration status
+                from .rig_analyzer import is_calibrated, get_calibration, get_calibration_for_chain
+                if is_calibrated():
+                    calib = get_calibration()
+                    col.label(text=f"Calibrated: {len(calib)} bones", icon='CHECKMARK')
+                    col.operator("rig.copy_report", text="Copy Report", icon='COPYDOWN')
+
+                    # Show quick summary for IK chains
+                    for chain in ["arm_L", "arm_R", "leg_L", "leg_R"]:
+                        chain_data = get_calibration_for_chain(chain)
+                        if chain_data and len(chain_data) >= 2:
+                            root = chain_data[0]
+                            mid = chain_data[1] if len(chain_data) > 1 else None
+                            if root and mid:
+                                row = col.row()
+                                row.scale_y = 0.8
+                                row.label(text=f"  {chain}: {root.bone_axis} roll={root.roll_deg:.0f}")
+                else:
+                    col.label(text="Not calibrated", icon='INFO')
+            else:
+                sub_box.label(text="Set target armature first", icon='ERROR')
+
             # ─── Rig Visualizer (3D Viewport) ─────────────────────────────
             sub_box = box.box()
             row = sub_box.row()
@@ -281,6 +316,8 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
             col.prop(scene, "dev_debug_anim_worker", text="Worker Logs")
             col.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
+            col.prop(scene, "dev_debug_ik_solve", text="IK Solve Details")
+            col.prop(scene, "dev_debug_rig_state", text="Rig State (verbose)")
 
             props = scene.anim2_test
             ctrl = get_test_controller()
@@ -320,7 +357,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
 
             mode = scene.test_mode
 
-            # Bone group (for Pose and IK modes)
+            # Bone group (for Pose and IK modes, not for Pose Blend)
             if mode in ('POSE', 'IK'):
                 sub_box.prop(scene, "test_bone_group", text="")
 
@@ -349,10 +386,63 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     options_box.label(text="Bake animations first", icon='INFO')
 
             elif mode == 'POSE':
-                # Pose options
+                # IK Pose Testing
                 if len(scene.pose_library) > 0:
-                    options_box.prop(scene, "pose_test_name", text="")
-                    options_box.prop(scene, "pose_test_blend_time")
+                    # Mode switch at top
+                    options_box.prop(scene, "pose_blend_mode", expand=True)
+                    options_box.separator()
+
+                    ik_mode = scene.pose_blend_mode
+
+                    if ik_mode == 'POSE_TO_POSE':
+                        # Pose to Pose: IK targets from Pose B
+                        row = options_box.row(align=True)
+                        row.label(text="A:")
+                        row.prop(scene, "pose_blend_a", text="")
+                        row = options_box.row(align=True)
+                        row.label(text="B:")
+                        row.prop(scene, "pose_blend_b", text="")
+
+                    else:
+                        # Pose to Target: IK targets from objects
+                        row = options_box.row(align=True)
+                        row.label(text="Pose:")
+                        row.prop(scene, "pose_blend_a", text="")
+
+                    # Loop duration
+                    options_box.prop(scene, "pose_blend_duration", text="Loop Time")
+
+                    # IK Chain Selection
+                    options_box.separator()
+                    options_box.label(text="IK Chains:", icon='CON_KINEMATIC')
+
+                    col = options_box.column(align=True)
+                    row = col.row(align=True)
+                    row.prop(scene, "pose_blend_ik_arm_L", text="L Arm", toggle=True)
+                    row.prop(scene, "pose_blend_ik_arm_R", text="R Arm", toggle=True)
+                    row = col.row(align=True)
+                    row.prop(scene, "pose_blend_ik_leg_L", text="L Leg", toggle=True)
+                    row.prop(scene, "pose_blend_ik_leg_R", text="R Leg", toggle=True)
+
+                    # Show target objects only in Pose to Target mode
+                    if ik_mode == 'POSE_TO_TARGET':
+                        col = options_box.column(align=True)
+                        if scene.pose_blend_ik_arm_L:
+                            col.prop(scene, "pose_blend_ik_arm_L_target", text="L Arm")
+                        if scene.pose_blend_ik_arm_R:
+                            col.prop(scene, "pose_blend_ik_arm_R_target", text="R Arm")
+                        if scene.pose_blend_ik_leg_L:
+                            col.prop(scene, "pose_blend_ik_leg_L_target", text="L Leg")
+                        if scene.pose_blend_ik_leg_R:
+                            col.prop(scene, "pose_blend_ik_leg_R_target", text="R Leg")
+
+                    # Shared influence
+                    options_box.prop(scene, "pose_blend_ik_influence", slider=True)
+
+                    # Show current blend weight (read-only during playback)
+                    if bpy.app.timers.is_registered(pose_blend_auto_update):
+                        options_box.separator()
+                        options_box.label(text=f"Blend: {scene.pose_blend_weight:.0%}", icon='TIME')
                 else:
                     options_box.label(text="No poses in library", icon='INFO')
                     options_box.label(text="(Add poses in Character panel)")

@@ -3,7 +3,8 @@
 > **Goal**: Keep the main thread FREE from computations. Offload everything possible to worker processes.
 
 ---
-
+Critical: NO FALLBACKS TO MAIN thread!!! fully offload into the worker and never include 
+legagy or fallback logic or code. 
 ## Current Architecture Status
 
 ### Already Offloaded to Worker
@@ -20,6 +21,8 @@
 | Interaction Checks | `INTERACTION_CHECK_BATCH` | `worker/interactions/triggers.py` | Complete |
 | Dynamic Mesh Cache | `CACHE_DYNAMIC_MESH` | `worker/entry.py` | Complete |
 | Static Grid Cache | `CACHE_GRID` | `worker/entry.py` | Complete |
+| Transform Reactions | `TRANSFORM_BATCH` | `worker/reactions/transforms.py` | Complete |
+| Tracking Movement | `TRACKING_BATCH` | `worker/reactions/tracking.py` | **IN PROGRESS** |
 
 ---
 
@@ -191,11 +194,14 @@ def update_sound_tasks():
 
 ## Phase 2: Transform Tasks Offload
 
-### 2.1 New Job Type: `TRANSFORM_BATCH`
+### 2.1 New Job Type: `TRANSFORM_BATCH` - DONE
 **Files**:
-- `worker/entry.py` (add handler)
-- `worker/transforms.py` (new file)
-- `reactions/exp_transforms.py` (refactor)
+- `worker/entry.py` (handler registered)
+- `worker/reactions/transforms.py` (new file)
+- `worker/math.py` (quaternion functions added)
+- `reactions/exp_transforms.py` (refactored to submit/apply pattern)
+- `modal/exp_loop.py` (result handling added)
+- `developer/dev_properties.py` (debug toggle added)
 
 **Current Flow (Main Thread)**:
 ```
@@ -388,11 +394,38 @@ def apply_transform_results(result):
 
 ## Phase 3: Tracking Movement Offload
 
-### 3.1 New Job Type: `TRACKING_BATCH`
-**Files**:
-- `worker/entry.py` (add handler)
-- `worker/tracking.py` (new file)
-- `reactions/exp_tracking.py` (refactor)
+### 3.1 New Job Type: `TRACKING_BATCH` - IN PROGRESS
+**Files Changed (2024-12-25)**:
+- `worker/entry.py` (handler registered)
+- `worker/reactions/tracking.py` (NEW - worker handler)
+- `worker/reactions/__init__.py` (export added)
+- `reactions/exp_tracking.py` (refactored to submit/apply pattern)
+- `modal/exp_loop.py` (result handling added)
+- `developer/dev_properties.py` (dev_debug_tracking toggle added)
+- `developer/dev_panel.py` (Tracking checkbox in Game Systems)
+
+**Known Issues**:
+- `track_respect_proxy_meshes` causes object to get stuck on terrain
+- `track_use_gravity` causes object to get stuck when touching ground
+- Collision rays may be hitting floor geometry despite normal filtering
+- Character capsule dimensions (radius/height) used for all objects - may not fit actual object shapes
+
+**Debug Logging Added**:
+- Enable "Tracking (Track To)" in Developer Panel → Game Systems
+- Logs: TRACKING SUBMIT, TRACKING APPLY, TRACKING WORKER, TRACKING ACTIVE
+- Worker logs include: walls_hit, floors_skipped counters
+
+**Fixes Attempted (2024-12-25)**:
+1. Added floor/wall classification (|normal.z| < 0.7 = wall, skip floors)
+2. Raised collision feet ray from 0.27m to minimum 0.4m
+3. Raised gravity origin to half-height above position
+4. Added floor-normal check for gravity snap (only snap if normal.z > 0.5)
+5. Normalized XY component of wall normal for proper slide projection
+
+**Still Needs**:
+- More testing with various proxy mesh configurations
+- Consider using actual object bounds instead of character capsule dimensions
+- May need to simplify or disable collision for non-character tracking
 
 **Current Flow (Main Thread)**:
 ```
@@ -643,8 +676,8 @@ def update_property_tasks():
 | 1.1 | World state filtering | HIGH | LOW | **DONE** |
 | 1.2 | AABB caching | HIGH | LOW | **DONE** |
 | 1.3 | Sound distance batching | LOW | LOW | P2 |
-| 2.1 | Transform batch offload | MEDIUM | MEDIUM | **P1** |
-| 3.1 | Tracking batch offload | MEDIUM | MEDIUM | **P1** |
+| 2.1 | Transform batch offload | MEDIUM | MEDIUM | **DONE** |
+| 3.1 | Tracking batch offload | MEDIUM | MEDIUM | **IN PROGRESS** |
 | 4.1 | Property task batching | LOW | LOW | P2 |
 
 ---
@@ -665,10 +698,10 @@ def update_property_tasks():
 - [ ] Transform batch: Verify reset scheduling still works
 
 ### Phase 3
-- [ ] Tracking batch: Verify objects reach goals
-- [ ] Tracking batch: Verify collision avoidance works (walls)
-- [ ] Tracking batch: Verify gravity snap works
-- [ ] Tracking batch: Verify character autopilot still works (stays on main)
+- [x] Tracking batch: Verify objects reach goals (WORKS without collision/gravity)
+- [ ] Tracking batch: Verify collision avoidance works (walls) - **BROKEN: gets stuck on terrain**
+- [ ] Tracking batch: Verify gravity snap works - **BROKEN: gets stuck when touching ground**
+- [x] Tracking batch: Verify character autopilot still works (stays on main thread)
 
 ---
 
@@ -716,4 +749,4 @@ For very large scenes, consider GPU compute for:
 
 ---
 
-*Last updated: 2024-12-23*
+*Last updated: 2024-12-25*

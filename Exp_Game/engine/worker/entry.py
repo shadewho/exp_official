@@ -46,6 +46,8 @@ from worker.reactions import (
     handle_projectile_update_batch,
     reset_projectile_state,
     handle_hitscan_batch,
+    handle_transform_batch,
+    handle_tracking_batch,
 )
 
 # Import animation math from single source of truth (no duplicates!)
@@ -54,6 +56,18 @@ from animations.blend import (
     sample_object_animation,
     blend_bone_poses,
     blend_object_transforms,
+    slerp_vectorized,
+)
+
+# Import IK solver for worker-side IK computation
+from animations.ik import (
+    solve_two_bone_ik,
+    solve_leg_ik,
+    solve_arm_ik,
+    compute_knee_pole_position,
+    compute_elbow_pole_position,
+    LEG_IK,
+    ARM_IK,
 )
 
 
@@ -450,6 +464,252 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
 
 
 # ============================================================================
+# POSE BLEND COMPUTE (Worker-side pose-to-pose blending)
+# ============================================================================
+
+def _handle_pose_blend_compute(job_data: dict) -> dict:
+    """
+    Handle POSE_BLEND_COMPUTE job - blend between two poses with optional IK.
+
+    This is the WORKER-BASED version of pose-to-pose blending.
+    All slerp/lerp math happens here, not on main thread.
+
+    Input job_data:
+        {
+            "pose_a": {bone_name: [qw,qx,qy,qz,lx,ly,lz,sx,sy,sz], ...},
+            "pose_b": {bone_name: [10 floats], ...},
+            "weight": float (0-1),
+            "bone_names": [list of bone names to blend],
+            "ik_chains": [
+                {
+                    "chain": "arm_R",
+                    "target": [x, y, z],
+                    "influence": float,
+                    "char_forward": [x, y, z],
+                    "char_right": [x, y, z],
+                    "char_up": [x, y, z],
+                },
+                ...
+            ]
+        }
+
+    Returns:
+        {
+            "success": bool,
+            "bone_transforms": {bone_name: (10-float tuple), ...},
+            "ik_results": {chain_name: {...}, ...},
+            "calc_time_us": float,
+            "logs": [(category, message), ...]
+        }
+    """
+    calc_start = time.perf_counter()
+    logs = []
+
+    pose_a = job_data.get("pose_a", {})
+    pose_b = job_data.get("pose_b", {})
+    weight = job_data.get("weight", 0.5)
+    bone_names = job_data.get("bone_names", list(set(pose_a.keys()) | set(pose_b.keys())))
+    ik_chains = job_data.get("ik_chains", [])
+
+    # Identity transform for missing bones
+    identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+
+    # Blend poses using numpy
+    bone_transforms = {}
+    num_bones = len(bone_names)
+
+    if num_bones > 0:
+        # Build numpy arrays for vectorized blending
+        transforms_a = np.zeros((num_bones, 10), dtype=np.float32)
+        transforms_b = np.zeros((num_bones, 10), dtype=np.float32)
+
+        for i, bone_name in enumerate(bone_names):
+            t_a = pose_a.get(bone_name, identity)
+            t_b = pose_b.get(bone_name, identity)
+            transforms_a[i] = t_a
+            transforms_b[i] = t_b
+
+        # Quaternion slerp (indices 0-3) - vectorized
+        quats_a = transforms_a[:, :4]
+        quats_b = transforms_b[:, :4]
+        blended_quats = slerp_vectorized(quats_a, quats_b, weight)
+
+        # Location lerp (indices 4-6) - simple vectorized lerp
+        locs_a = transforms_a[:, 4:7]
+        locs_b = transforms_b[:, 4:7]
+        blended_locs = locs_a + (locs_b - locs_a) * weight
+
+        # Scale lerp (indices 7-9)
+        scales_a = transforms_a[:, 7:10]
+        scales_b = transforms_b[:, 7:10]
+        blended_scales = scales_a + (scales_b - scales_a) * weight
+
+        # Combine into result
+        blended = np.zeros((num_bones, 10), dtype=np.float32)
+        blended[:, :4] = blended_quats
+        blended[:, 4:7] = blended_locs
+        blended[:, 7:10] = blended_scales
+
+        # Convert to dict
+        for i, bone_name in enumerate(bone_names):
+            bone_transforms[bone_name] = tuple(blended[i].tolist())
+
+    # Process IK chains
+    ik_results = {}
+    for ik_data in ik_chains:
+        chain = ik_data.get("chain")
+        target = np.array(ik_data.get("target", [0, 0, 0]), dtype=np.float32)
+        influence = ik_data.get("influence", 1.0)
+        root_pos = np.array(ik_data.get("root_pos", [0, 0, 0]), dtype=np.float32)
+
+        # Get character orientation for pole calculation
+        char_forward = np.array(ik_data.get("char_forward", [0, 1, 0]), dtype=np.float32)
+        char_right = np.array(ik_data.get("char_right", [1, 0, 0]), dtype=np.float32)
+        char_up = np.array(ik_data.get("char_up", [0, 0, 1]), dtype=np.float32)
+
+        # Parse chain type
+        parts = chain.split('_') if chain else []
+        if len(parts) != 2:
+            continue
+        limb_type, side = parts[0], parts[1]
+        is_leg = (limb_type == "leg")
+
+        # Compute pole position and solve IK
+        if is_leg:
+            pole_pos = compute_knee_pole_position(root_pos, target, char_forward, char_right, side, 0.5)
+            upper_quat, lower_quat, joint_world = solve_leg_ik(root_pos, target, pole_pos, side)
+        else:
+            pole_pos = compute_elbow_pole_position(root_pos, target, char_forward, char_up, side, 0.3)
+            upper_quat, lower_quat, joint_world = solve_arm_ik(root_pos, target, pole_pos, side)
+
+        ik_results[chain] = {
+            "upper_quat": tuple(upper_quat.tolist()) if isinstance(upper_quat, np.ndarray) else tuple(upper_quat),
+            "lower_quat": tuple(lower_quat.tolist()) if isinstance(lower_quat, np.ndarray) else tuple(lower_quat),
+            "joint_world": tuple(joint_world.tolist()) if isinstance(joint_world, np.ndarray) else tuple(joint_world),
+            "pole_pos": tuple(pole_pos.tolist()) if isinstance(pole_pos, np.ndarray) else tuple(pole_pos),
+            "target": tuple(target.tolist()),
+            "influence": influence,
+        }
+
+    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+    logs.append(("POSE-BLEND", f"[NUMPY] {len(bone_transforms)} bones weight={weight:.2f} ik={len(ik_results)} chains {calc_time_us:.0f}µs"))
+
+    return {
+        "success": True,
+        "bone_transforms": bone_transforms,
+        "ik_results": ik_results,
+        "bones_count": len(bone_transforms),
+        "calc_time_us": calc_time_us,
+        "logs": logs
+    }
+
+
+def _handle_ik_solve_batch(job_data: dict) -> dict:
+    """
+    Handle IK_SOLVE_BATCH job - solve IK for multiple chains in one job.
+
+    Input job_data:
+        {
+            "chains": [
+                {
+                    "chain": "arm_R",
+                    "root_pos": [x, y, z],
+                    "target": [x, y, z],
+                    "influence": float,
+                    "char_forward": [x, y, z],
+                    "char_right": [x, y, z],
+                    "char_up": [x, y, z],
+                },
+                ...
+            ]
+        }
+
+    Returns:
+        {
+            "success": bool,
+            "results": {
+                "arm_R": {
+                    "upper_quat": (w, x, y, z),
+                    "lower_quat": (w, x, y, z),
+                    "joint_world": (x, y, z),
+                    "pole_pos": (x, y, z),
+                    ...
+                },
+                ...
+            },
+            "calc_time_us": float,
+            "logs": [(category, message), ...]
+        }
+    """
+    calc_start = time.perf_counter()
+    logs = []
+
+    chains_data = job_data.get("chains", [])
+    results = {}
+
+    for ik_data in chains_data:
+        chain = ik_data.get("chain")
+        if not chain:
+            continue
+
+        root_pos = np.array(ik_data.get("root_pos", [0, 0, 0]), dtype=np.float32)
+        target = np.array(ik_data.get("target", [0, 0, 0]), dtype=np.float32)
+        influence = ik_data.get("influence", 1.0)
+
+        char_forward = np.array(ik_data.get("char_forward", [0, 1, 0]), dtype=np.float32)
+        char_right = np.array(ik_data.get("char_right", [1, 0, 0]), dtype=np.float32)
+        char_up = np.array(ik_data.get("char_up", [0, 0, 1]), dtype=np.float32)
+
+        # Parse chain type
+        parts = chain.split('_')
+        if len(parts) != 2:
+            continue
+        limb_type, side = parts[0], parts[1]
+        is_leg = (limb_type == "leg")
+
+        # Compute pole and solve
+        if is_leg:
+            chain_def = LEG_IK.get(chain, {})
+            pole_pos = compute_knee_pole_position(root_pos, target, char_forward, char_right, side, 0.5)
+            upper_quat, lower_quat, joint_world = solve_leg_ik(root_pos, target, pole_pos, side)
+        else:
+            chain_def = ARM_IK.get(chain, {})
+            pole_pos = compute_elbow_pole_position(root_pos, target, char_forward, char_up, side, 0.3)
+            upper_quat, lower_quat, joint_world = solve_arm_ik(root_pos, target, pole_pos, side)
+
+        # Calculate reach info
+        reach_dist = float(np.linalg.norm(target - root_pos))
+        max_reach = chain_def.get("reach", 1.0)
+        reach_pct = (reach_dist / max_reach * 100) if max_reach > 0 else 100
+
+        results[chain] = {
+            "upper_quat": tuple(upper_quat.tolist()) if isinstance(upper_quat, np.ndarray) else tuple(upper_quat),
+            "lower_quat": tuple(lower_quat.tolist()) if isinstance(lower_quat, np.ndarray) else tuple(lower_quat),
+            "joint_world": tuple(joint_world.tolist()) if isinstance(joint_world, np.ndarray) else tuple(joint_world),
+            "pole_pos": tuple(pole_pos.tolist()) if isinstance(pole_pos, np.ndarray) else tuple(pole_pos),
+            "target": tuple(target.tolist()),
+            "root_pos": tuple(root_pos.tolist()),
+            "influence": influence,
+            "reach_dist": reach_dist,
+            "reach_pct": reach_pct,
+            "reachable": reach_pct <= 100,
+        }
+
+    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+    logs.append(("IK-SOLVE", f"[WORKER] {len(results)} chains {calc_time_us:.0f}µs"))
+
+    return {
+        "success": True,
+        "results": results,
+        "chains_solved": len(results),
+        "calc_time_us": calc_time_us,
+        "logs": logs
+    }
+
+
+# ============================================================================
 # TRACKER EVALUATION - MOVED TO worker/interactions/trackers.py
 # ============================================================================
 
@@ -766,6 +1026,18 @@ def process_job(job) -> dict:
             # This eliminates O(n) IPC overhead - one round trip regardless of object count
             result_data = _handle_animation_compute_batch(job.data)
 
+        elif job.job_type == "POSE_BLEND_COMPUTE":
+            # Pose-to-pose blending with optional IK (worker-based)
+            # Input: {"pose_a": {...}, "pose_b": {...}, "weight": float, "ik_chains": [...]}
+            # Output: {"bone_transforms": {...}, "ik_results": {...}}
+            result_data = _handle_pose_blend_compute(job.data)
+
+        elif job.job_type == "IK_SOLVE_BATCH":
+            # Batch IK solving for multiple chains
+            # Input: {"chains": [{chain, target, root_pos, ...}, ...]}
+            # Output: {"results": {chain: {upper_quat, lower_quat, ...}, ...}}
+            result_data = _handle_ik_solve_batch(job.data)
+
         elif job.job_type == "CACHE_TRACKERS":
             # Cache serialized tracker definitions - delegated to interactions module
             result_data = handle_cache_trackers(job.data)
@@ -790,6 +1062,20 @@ def process_job(job) -> dict:
         elif job.job_type == "HITSCAN_BATCH":
             # Hitscan instant raycasting
             result_data = handle_hitscan_batch(
+                job.data,
+                _cached_grid,
+                _cached_dynamic_meshes,
+                _cached_dynamic_transforms
+            )
+
+        elif job.job_type == "TRANSFORM_BATCH":
+            # Transform interpolation (lerp/slerp) - offloaded from main thread
+            result_data = handle_transform_batch(job.data)
+
+        elif job.job_type == "TRACKING_BATCH":
+            # Tracking movement (sweep/slide/gravity) - offloaded from main thread
+            # Uses unified_raycast for collision detection
+            result_data = handle_tracking_batch(
                 job.data,
                 _cached_grid,
                 _cached_dynamic_meshes,

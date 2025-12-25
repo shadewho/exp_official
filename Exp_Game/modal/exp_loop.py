@@ -20,8 +20,18 @@ from ..reactions.exp_projectiles import (
     process_projectile_results,
     interpolate_projectile_visuals,
 )
-from ..reactions.exp_transforms import update_transform_tasks
-from ..reactions.exp_tracking import update_tracking_tasks
+from ..reactions.exp_transforms import (
+    update_transform_tasks,
+    submit_transform_batch,
+    apply_transform_results,
+    poll_transform_result_with_timeout,
+    get_cached_other_results as get_cached_transform_results,
+)
+from ..reactions.exp_tracking import (
+    update_tracking_tasks,
+    submit_tracking_batch,
+    apply_tracking_results,
+)
 from ..systems.exp_performance import update_performance_culling, apply_cull_result
 from ..physics.exp_dynamic import update_dynamic_meshes
 from ..physics.exp_view import (
@@ -122,12 +132,33 @@ class GameLoop:
 
             # B1) Custom/scripted tasks (SIM-timed): cheap → step-per-step
             for _ in range(steps):
-                update_transform_tasks()
+                update_transform_tasks()  # Updates t values only (computation in worker)
                 update_property_tasks()
                 # NOTE: Projectile physics now handled by worker (PROJECTILE_UPDATE_BATCH)
                 # update_projectile_tasks() removed - worker-only mode
                 # NOTE: update_hitscan_tasks() moved to A3 (runs every frame)
                 update_tracking_tasks(dt_sim)
+
+            # B1a) Submit transform batch to worker (after t values updated)
+            engine = getattr(op, "engine", None)
+            transform_job_id = None
+            if engine and engine.is_alive():
+                transform_job_id = submit_transform_batch(engine)
+
+            # B1a2) CRITICAL: Poll transform results BEFORE dynamic meshes/physics!
+            # This ensures platform positions are updated before KCC reads them.
+            # Without this, characters sink/shift on moving platforms because
+            # physics runs against OLD platform position, then platform moves.
+            #
+            # Timeout: 5ms to handle worker queue congestion when on dynamic meshes
+            # (KCC physics can take 1-3ms with 500-1000 tris, backing up the queue)
+            if transform_job_id is not None and engine and engine.is_alive():
+                poll_transform_result_with_timeout(engine, transform_job_id, timeout=0.005)
+
+            # B1a3) Submit tracking batch to worker (non-character object movement)
+            # Character autopilot handled in update_tracking_tasks (just injects keys)
+            if engine and engine.is_alive():
+                submit_tracking_batch(engine, dt_sim)
 
             # B1b) Dynamic proxies + mesh caching (MUST run before hitscan/projectile)
             # This ensures:
@@ -328,6 +359,10 @@ class GameLoop:
         # Include any results cached by animation polling during same-frame sync
         anim_cached = get_cached_other_results(op)
         results.extend(anim_cached)
+
+        # Include any results cached by transform polling during same-frame sync
+        transform_cached = get_cached_transform_results()
+        results.extend(transform_cached)
 
         stats = get_stats_tracker()
 
@@ -537,6 +572,20 @@ class GameLoop:
                             log_worker_messages(worker_logs)
                     except Exception as e:
                         print(f"[GameLoop] Error processing projectile results: {e}")
+
+                elif result.job_type == "TRANSFORM_BATCH":
+                    # Apply transform interpolation results from worker
+                    try:
+                        apply_transform_results(result)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying transform results: {e}")
+
+                elif result.job_type == "TRACKING_BATCH":
+                    # Apply tracking movement results from worker
+                    try:
+                        apply_tracking_results(result)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying tracking results: {e}")
 
             else:
                 # Job failed - already logged in process_engine_result

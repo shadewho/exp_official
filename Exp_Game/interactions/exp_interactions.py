@@ -881,68 +881,6 @@ def process_pending_triggers():
     process_pending_reaction_batches()
 
 
-# -------------------------------------------------------------------
-# 4.1) Proximity Trigger:
-# -------------------------------------------------------------------
-def handle_proximity_trigger(inter, current_time):
-    scene = bpy.context.scene
-
-    # pick A: either the user‑chosen object or the character armature
-    if inter.use_character:
-        obj_a = scene.target_armature
-    else:
-        obj_a = inter.proximity_object_a
-    obj_b = inter.proximity_object_b
-    dist_thresh = inter.proximity_distance
-
-    if not obj_a or not obj_b:
-        return
-
-    dist = (obj_a.location - obj_b.location).length
-    inside_now = (dist <= dist_thresh)
-    was_in_zone = inter.is_in_zone
-    inter.is_in_zone = inside_now
-
-    # 1) ONE_SHOT: never re‑fire
-    if inter.trigger_mode == "ONE_SHOT" and inter.has_fired:
-        return
-
-    # 2) ENTER
-    if not was_in_zone and inside_now:
-        def fire():
-            if inter.trigger_delay > 0.0:
-                schedule_trigger(inter, current_time + inter.trigger_delay)
-            else:
-                run_reactions(_get_linked_reactions(inter))
-            inter.has_fired = True
-            inter.last_trigger_time = current_time
-
-        if inter.trigger_mode in {"ONE_SHOT", "ENTER_ONLY"}:
-            fire()
-        elif inter.trigger_mode == "COOLDOWN":
-            time_since = current_time - inter.last_trigger_time
-            if (not inter.has_fired) or (time_since >= inter.trigger_cooldown):
-                fire()
-
-    # 3) LEAVE → only ENTER_ONLY resets here
-    elif was_in_zone and not inside_now:
-        if inter.trigger_mode == "ENTER_ONLY":
-            inter.has_fired = False
-
-    # 4) STILL INSIDE: allow COOLDOWN to retrigger when timer expires
-    else:
-        if inside_now and inter.trigger_mode == "COOLDOWN" and inter.has_fired:
-            time_since = current_time - inter.last_trigger_time
-            if time_since >= inter.trigger_cooldown:
-                if inter.trigger_delay > 0.0:
-                    schedule_trigger(inter, current_time + inter.trigger_delay)
-                else:
-                    run_reactions(_get_linked_reactions(inter))
-                inter.has_fired = True
-                inter.last_trigger_time = current_time
-
-
-
 # ─────────────────────────────────────────────────────────
 # External Trigger (boolean input)
 # ─────────────────────────────────────────────────────────
@@ -982,52 +920,6 @@ def handle_on_game_start_trigger(inter, current_time):
     inter.has_fired = True
     inter.last_trigger_time = current_time
 
-
-# -------------------------------------------------------------------
-# 4.2) Collision Trigger: ENTER/LEAVE (updated)
-# -------------------------------------------------------------------
-def handle_collision_trigger(inter, current_time):
-    scene = bpy.context.scene
-
-    # pick A: either the user‑chosen object or the character armature
-    if inter.use_character:
-        obj_a = scene.target_armature
-    else:
-        obj_a = inter.collision_object_a
-    obj_b = inter.collision_object_b
-
-    if not obj_a or not obj_b:
-        return
-
-    margin = inter.collision_margin
-    colliding_now = bounding_sphere_collision(obj_a, obj_b, margin=margin)
-
-    # ENTER
-    if (not inter.is_in_zone) and colliding_now:
-        inter.is_in_zone = True
-        if can_fire_trigger(inter, current_time):
-            if inter.trigger_delay > 0.0:
-                schedule_trigger(inter, current_time + inter.trigger_delay)
-            else:
-                run_reactions(_get_linked_reactions(inter))
-            inter.has_fired = True
-            inter.last_trigger_time = current_time
-
-    # LEAVE
-    elif inter.is_in_zone and (not colliding_now):
-        inter.is_in_zone = False
-        reset_interaction_if_needed(inter)
-
-    # STILL COLLIDING
-    elif colliding_now and inter.is_in_zone:
-        if inter.trigger_mode == "COOLDOWN":
-            if can_fire_trigger(inter, current_time):
-                if inter.trigger_delay > 0.0:
-                    schedule_trigger(inter, current_time + inter.trigger_delay)
-                else:
-                    run_reactions(_get_linked_reactions(inter))
-                inter.has_fired = True
-                inter.last_trigger_time = current_time
 
 ###############################################################################
 # reset interactions
@@ -1202,16 +1094,6 @@ def can_fire_trigger(inter, current_time):
 
 
 
-def reset_interaction_if_needed(inter):
-    """
-    Only ENTER_ONLY should clear has_fired on exit.
-    COOLDOWN holds has_fired=True until cooldown expires.
-    ONE_SHOT never resets.
-    """
-    if inter.trigger_mode == "ENTER_ONLY":
-        inter.has_fired = False
-
-
 ###############################################################################
 # 5) Reaction Execution
 ###############################################################################
@@ -1253,87 +1135,7 @@ def run_reactions(reactions):
 
 
 ###############################################################################
-# 6) Collision Helper
-###############################################################################
-
-def bounding_sphere_collision(obj_a, obj_b, margin=0.0):
-    """
-    Actually uses Axis-Aligned Bounding Boxes (AABB).
-    This version lets you specify a 'margin' so we count collisions
-    if they're within 'margin' distance of touching.
-    """
-
-    if not obj_a or not obj_b:
-        return False
-
-    # Helper to get the min/max of an object's world AABB
-    def get_world_aabb(obj):
-        corners = []
-        for corner_local in obj.bound_box:
-            corner_world = obj.matrix_world @ Vector(corner_local)
-            corners.append(corner_world)
-
-        min_x = min(pt.x for pt in corners)
-        max_x = max(pt.x for pt in corners)
-        min_y = min(pt.y for pt in corners)
-        max_y = max(pt.y for pt in corners)
-        min_z = min(pt.z for pt in corners)
-        max_z = max(pt.z for pt in corners)
-        return (min_x, max_x, min_y, max_y, min_z, max_z)
-
-    # Get each object's AABB
-    A_minx, A_maxx, A_miny, A_maxy, A_minz, A_maxz = get_world_aabb(obj_a)
-    B_minx, B_maxx, B_miny, B_maxy, B_minz, B_maxz = get_world_aabb(obj_b)
-
-    # Inflate each AABB by margin on all sides
-    A_minx -= margin
-    A_maxx += margin
-    A_miny -= margin
-    A_maxy += margin
-    A_minz -= margin
-    A_maxz += margin
-
-    B_minx -= margin
-    B_maxx += margin
-    B_miny -= margin
-    B_maxy += margin
-    B_minz -= margin
-    B_maxz += margin
-
-    # Check overlap in X, Y, and Z
-    overlap_x = (A_minx <= B_maxx) and (A_maxx >= B_minx)
-    overlap_y = (A_miny <= B_maxy) and (A_maxy >= B_miny)
-    overlap_z = (A_minz <= B_maxz) and (A_maxz >= B_minz)
-
-    return (overlap_x and overlap_y and overlap_z)
-
-
-def approximate_bounding_sphere_radius(obj):
-    """
-    Approximate bounding-sphere radius from bounding-box diagonal & local scale.
-    """
-    local_min = Vector(obj.bound_box[0])
-    local_max = Vector(obj.bound_box[0])
-
-    for corner in obj.bound_box:
-        local_min.x = min(local_min.x, corner[0])
-        local_min.y = min(local_min.y, corner[1])
-        local_min.z = min(local_min.z, corner[2])
-
-        local_max.x = max(local_max.x, corner[0])
-        local_max.y = max(local_max.y, corner[1])
-        local_max.z = max(local_max.z, corner[2])
-
-    bb_size = local_max - local_min
-    local_radius = 0.5 * bb_size.length
-
-    scale_factors = obj.scale
-    max_scale = max(abs(scale_factors.x), abs(scale_factors.y), abs(scale_factors.z))
-    return local_radius * max_scale
-
-
-###############################################################################
-# 7) Interact Helper
+# 6) Interact Helper
 ###############################################################################
 
 _global_interact_pressed = False  # <--- global placeholders

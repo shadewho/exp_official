@@ -907,3 +907,146 @@ def matrix_to_euler_z(matrix_16):
     m00 = matrix_16[0]   # Column 0, row 0
     m10 = matrix_16[1]   # Column 0, row 1
     return math.atan2(m10, m00)
+
+
+# ============================================================================
+# QUATERNION OPERATIONS (for transform offload)
+# ============================================================================
+
+def euler_to_quaternion(euler):
+    """
+    Convert Euler angles (XYZ order) to quaternion.
+
+    Args:
+        euler: (x, y, z) Euler angles in radians, XYZ rotation order
+
+    Returns:
+        (w, x, y, z) quaternion tuple
+    """
+    hx = euler[0] * 0.5
+    hy = euler[1] * 0.5
+    hz = euler[2] * 0.5
+
+    cx = math.cos(hx)
+    sx = math.sin(hx)
+    cy = math.cos(hy)
+    sy = math.sin(hy)
+    cz = math.cos(hz)
+    sz = math.sin(hz)
+
+    # XYZ order quaternion composition
+    w = cx * cy * cz + sx * sy * sz
+    x = sx * cy * cz - cx * sy * sz
+    y = cx * sy * cz + sx * cy * sz
+    z = cx * cy * sz - sx * sy * cz
+
+    return (w, x, y, z)
+
+
+def quaternion_to_euler(q):
+    """
+    Convert quaternion to Euler angles (XYZ order).
+
+    Args:
+        q: (w, x, y, z) quaternion tuple
+
+    Returns:
+        (x, y, z) Euler angles in radians
+    """
+    w, x, y, z = q
+
+    # Roll (X-axis rotation)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (Y-axis rotation)
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    # Yaw (Z-axis rotation)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return (roll, pitch, yaw)
+
+
+def quaternion_multiply(q1, q2):
+    """
+    Multiply two quaternions: q1 @ q2 (Hamilton product).
+
+    Args:
+        q1: (w, x, y, z) first quaternion
+        q2: (w, x, y, z) second quaternion
+
+    Returns:
+        (w, x, y, z) result quaternion
+    """
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    return (
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    )
+
+
+def slerp_quaternion(q1, q2, t):
+    """
+    Spherical linear interpolation between two quaternions.
+
+    Args:
+        q1: (w, x, y, z) start quaternion
+        q2: (w, x, y, z) end quaternion
+        t: interpolation factor [0.0, 1.0]
+
+    Returns:
+        (w, x, y, z) interpolated quaternion
+    """
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    # Dot product
+    dot = w1 * w2 + x1 * x2 + y1 * y2 + z1 * z2
+
+    # Take shorter path
+    if dot < 0.0:
+        w2, x2, y2, z2 = -w2, -x2, -y2, -z2
+        dot = -dot
+
+    # If very close, use linear interpolation
+    if dot > 0.9995:
+        w = w1 + t * (w2 - w1)
+        x = x1 + t * (x2 - x1)
+        y = y1 + t * (y2 - y1)
+        z = z1 + t * (z2 - z1)
+        # Normalize
+        length = math.sqrt(w*w + x*x + y*y + z*z)
+        if length > 1e-10:
+            w /= length
+            x /= length
+            y /= length
+            z /= length
+        return (w, x, y, z)
+
+    # Slerp
+    theta_0 = math.acos(dot)
+    theta = theta_0 * t
+    sin_theta = math.sin(theta)
+    sin_theta_0 = math.sin(theta_0)
+
+    s1 = math.cos(theta) - dot * sin_theta / sin_theta_0
+    s2 = sin_theta / sin_theta_0
+
+    return (
+        s1 * w1 + s2 * w2,
+        s1 * x1 + s2 * x2,
+        s1 * y1 + s2 * y2,
+        s1 * z1 + s2 * z2
+    )

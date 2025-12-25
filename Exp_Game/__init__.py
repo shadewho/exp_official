@@ -44,6 +44,7 @@ if not _IS_WORKER_PROCESS:
         unregister_properties as unregister_dev_properties,
         DEV_PT_DeveloperTools,
     )
+    from . import developer as dev_module
 
 
     from .startup_and_reset.exp_spawn import EXPLORATORY_OT_RemoveCharacter
@@ -158,6 +159,9 @@ if not _IS_WORKER_PROCESS:
     def register():
         # --- Developer Properties (early registration) ---
         register_dev_properties()
+
+        # --- Developer Module (rig analyzer, etc.) ---
+        dev_module.register()
 
         # --- Mobility / Mesh Visibility PGs (must be registered before ReactionDefinition) ---
         bpy.utils.register_class(MobilityReactionsPG)
@@ -359,6 +363,9 @@ if not _IS_WORKER_PROCESS:
 
         # ─── Animation Engine ──────────────────────────────
         anim_module.unregister()
+
+        # ─── Developer Module ──────────────────────────────────
+        dev_module.unregister()
 
         # ─── Developer Properties ──────────────────────────────────
         unregister_dev_properties()

@@ -82,6 +82,10 @@ _CATEGORY_MAP = {
 
     # IK System
     'IK': 'runtime_ik',
+    'IK-SOLVE': 'ik_solve',
+
+    # Rig State Logging (bone transforms, violations, collisions)
+    'RIG': 'rig_state',
 
     # Pose Library System
     'POSES': 'poses',

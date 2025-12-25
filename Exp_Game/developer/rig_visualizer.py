@@ -772,6 +772,33 @@ def is_visualizer_active() -> bool:
     return _draw_handler is not None
 
 
+def refresh_rig_visualizer() -> bool:
+    """
+    Refresh the rig visualizer - ensures it's running if enabled.
+
+    Call this from Play buttons to ensure the visualizer appears.
+    Fixes the issue where visualizer doesn't show after addon reload
+    or when property is already True but handlers weren't registered.
+
+    Returns:
+        True if visualizer is now active, False otherwise
+    """
+    scene = bpy.context.scene
+
+    # Check if visualizer should be enabled
+    if not getattr(scene, 'dev_rig_visualizer_enabled', False):
+        return False
+
+    # If handlers aren't registered but should be, register them
+    if _draw_handler is None or _text_draw_handler is None:
+        enable_rig_visualizer()
+
+    # Tag all views for redraw
+    _tag_redraw()
+
+    return True
+
+
 def _tag_redraw():
     """Tag all VIEW_3D areas for redraw."""
     wm = getattr(bpy.context, "window_manager", None)
@@ -833,18 +860,6 @@ def get_visualizer_state() -> Dict:
                 })
 
     return state
-
-
-# =============================================================================
-# TOGGLE CALLBACK (for property update)
-# =============================================================================
-
-def _on_visualizer_toggle(self, context):
-    """Called when master toggle changes."""
-    if self.dev_rig_visualizer_enabled:
-        enable_rig_visualizer()
-    else:
-        disable_rig_visualizer()
 
 
 def register():

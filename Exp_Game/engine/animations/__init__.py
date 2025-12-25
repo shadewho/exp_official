@@ -56,6 +56,24 @@ from .ik import (
     LEG_IK,
     ARM_IK,
 )
+from .rig_calibration import (
+    # Rig calibration data
+    BoneCalibration,
+    ANATOMICAL_JOINTS,
+    IK_CHAINS,
+    # Analysis functions
+    analyze_bone_data,
+    analyze_rig_data,
+    compute_bone_roll,
+    classify_axis,
+    detect_bend_axis,
+    get_chain_calibration,
+    generate_report,
+    # Worker cache
+    set_worker_calibration,
+    get_worker_calibration,
+    is_worker_calibrated,
+)
 
 __all__ = [
     # Data
@@ -86,6 +104,21 @@ __all__ = [
     "compute_elbow_pole_position",
     "LEG_IK",
     "ARM_IK",
+
+    # Rig calibration
+    "BoneCalibration",
+    "ANATOMICAL_JOINTS",
+    "IK_CHAINS",
+    "analyze_bone_data",
+    "analyze_rig_data",
+    "compute_bone_roll",
+    "classify_axis",
+    "detect_bend_axis",
+    "get_chain_calibration",
+    "generate_report",
+    "set_worker_calibration",
+    "get_worker_calibration",
+    "is_worker_calibrated",
 ]
 
 
