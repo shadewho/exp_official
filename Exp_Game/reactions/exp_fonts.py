@@ -47,7 +47,7 @@ def discover_fonts() -> list[tuple[str, str, str]]:
 
 def get_font_id_by_name(name: str) -> int:
     """
-    • “DEFAULT” / empty → 0  (internal font)
+    • "DEFAULT" / empty → 0  (internal font)
     • otherwise → loads <name>.ttf once, returns its blf font‑id
     """
     if not name or name == "DEFAULT":
@@ -63,3 +63,12 @@ def get_font_id_by_name(name: str) -> int:
     font_id = blf.load(path)
     _font_cache[name] = (font_id, path)
     return font_id
+
+
+def clear_font_cache():
+    """
+    Clear the font cache. Call on game end to release loaded fonts.
+    Note: blf doesn't have an unload function, but clearing the cache
+    allows fonts to be reloaded fresh on next game start.
+    """
+    _font_cache.clear()

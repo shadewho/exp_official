@@ -69,12 +69,181 @@ _pending_projectile_spawns: list[dict] = []
 # Map worker projectile ID -> local tracking entry
 _worker_projectile_map: dict[int, dict] = {}
 
+# OPTIMIZATION INDICES: O(1) lookup instead of O(n) list iteration
+# Visual object -> entry (for fast removal by visual)
+_obj_to_entry: dict[object, dict] = {}
+# Owner key (reaction index) -> list of entries (for fast count/eviction)
+_owner_to_entries: dict[int, list[dict]] = {}
+
 # Client-generated projectile IDs (for matching spawns to worker results)
 _next_client_projectile_id: int = 0
 
 # Pending job IDs
 _pending_hitscan_job_id: int | None = None
 _pending_projectile_job_id: int | None = None
+
+# ─────────────────────────────────────────────────────────
+# IMPACT CACHE: Built at game start, used during runtime
+# Eliminates all node graph iteration during gameplay
+# ─────────────────────────────────────────────────────────
+# Schema:
+# _impact_cache[reaction_index] = {
+#     "reaction_chains": [[int, ...], ...],  # Lists of reaction indices to run on impact
+#     "trigger_indices": [int, ...],          # Interaction indices to fire on impact
+#     "location_writers": [node, ...],        # Nodes with write_from_graph method
+# }
+_impact_cache: dict[int, dict] = {}
+
+
+def init_impact_cache(scene) -> int:
+    """
+    Build the impact cache at game start.
+    Must be called BEFORE any projectiles/hitscans fire.
+    Returns the number of reactions cached.
+    """
+    global _impact_cache
+    _impact_cache.clear()
+
+    EXPL_TREE_ID = "ExploratoryNodesTreeType"
+    reactions = getattr(scene, "reactions", [])
+    cached_count = 0
+
+    # First pass: validate node bindings (ensure 1 node per reaction index)
+    # This handles the case where multiple nodes share the same reaction_index
+    _validate_node_bindings_at_startup(scene, reactions)
+
+    # Build mapping: reaction_index -> node for PROJECTILE/HITSCAN reactions
+    for r_idx, r in enumerate(reactions):
+        r_type = getattr(r, "reaction_type", "")
+        if r_type not in ("PROJECTILE", "HITSCAN"):
+            continue
+
+        # Find the node for this reaction
+        src_node = None
+        for ng in bpy.data.node_groups:
+            if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+                continue
+            for node in ng.nodes:
+                if getattr(node, "reaction_index", -1) == r_idx:
+                    src_node = node
+                    break
+            if src_node:
+                break
+
+        if not src_node:
+            continue
+
+        # Extract impact event destinations (reaction chains and triggers)
+        reaction_chains = []
+        trigger_indices = []
+
+        for sock in getattr(src_node, "outputs", []):
+            if getattr(sock, "bl_idname", "") != "ImpactEventOutputSocketType":
+                continue
+            for lk in getattr(sock, "links", []):
+                dst = getattr(lk, "to_node", None)
+                if not dst:
+                    continue
+
+                # Reaction node -> collect chain
+                if hasattr(dst, "reaction_index"):
+                    chain = _collect_chain_indices_at_startup(dst)
+                    if chain:
+                        reaction_chains.append(chain)
+
+                # External trigger node
+                elif getattr(dst, "bl_idname", "") == "ExternalTriggerNodeType":
+                    iidx = getattr(dst, "interaction_index", -1)
+                    if iidx >= 0:
+                        trigger_indices.append(iidx)
+
+        # Extract impact location destinations (nodes with write_from_graph)
+        location_writers = []
+        for sock in getattr(src_node, "outputs", []):
+            if getattr(sock, "bl_idname", "") != "ImpactLocationOutputSocketType":
+                continue
+            for lk in getattr(sock, "links", []):
+                to_node = getattr(lk, "to_node", None)
+                if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                    location_writers.append(to_node)
+
+        _impact_cache[r_idx] = {
+            "reaction_chains": reaction_chains,
+            "trigger_indices": trigger_indices,
+            "location_writers": location_writers,
+        }
+        cached_count += 1
+
+    log_game("PROJECTILE", f"IMPACT_CACHE built for {cached_count} reactions")
+    return cached_count
+
+
+def _validate_node_bindings_at_startup(scene, reactions):
+    """
+    Ensure one node per reaction index.
+    If multiple nodes share the same index, duplicate the reaction.
+    Called once at game start.
+    """
+    EXPL_TREE_ID = "ExploratoryNodesTreeType"
+
+    # Collect all nodes by reaction_index
+    nodes_by_idx: dict[int, list] = {}
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+            continue
+        for node in ng.nodes:
+            r_idx = getattr(node, "reaction_index", -1)
+            if r_idx >= 0:
+                nodes_by_idx.setdefault(r_idx, []).append(node)
+
+    # Duplicate reactions for indices with multiple nodes
+    for r_idx, nodes in nodes_by_idx.items():
+        if len(nodes) <= 1:
+            continue
+
+        # Keep first node on original index, rebind others
+        for node in nodes[1:]:
+            try:
+                res = bpy.ops.exploratory.duplicate_global_reaction('EXEC_DEFAULT', index=r_idx)
+                if 'CANCELLED' not in res:
+                    new_idx = len(reactions) - 1
+                    node.reaction_index = new_idx
+            except Exception:
+                pass
+
+
+def _collect_chain_indices_at_startup(start_node) -> list[int]:
+    """
+    From a Reaction node, follow its 'Reaction Output' through the graph
+    and return an ordered list of reaction indices.
+    Called at startup to build cache.
+    """
+    res = []
+    visited = set()
+    queue = [start_node]
+
+    while queue:
+        n = queue.pop(0)
+        if not n or n in visited:
+            continue
+        visited.add(n)
+
+        if hasattr(n, "reaction_index"):
+            idx = getattr(n, "reaction_index", -1)
+            if idx >= 0:
+                res.append(idx)
+            out2 = n.outputs.get("Reaction Output") or n.outputs.get("Output")
+            if out2:
+                for lk in out2.links:
+                    if lk.to_node:
+                        queue.append(lk.to_node)
+        else:
+            for s in n.outputs:
+                for lk in s.links:
+                    if lk.to_node:
+                        queue.append(lk.to_node)
+    return res
+
 
 def _emit_impact_event(r, loc: Vector, when: float):
     key = _owner_key(r)
@@ -94,72 +263,19 @@ def _reaction_from_owner_key(owner_key: int):
         return reactions[idx], idx
     return None, -1
 
-def _nodes_for_reaction_index(r_idx: int):
-    """Yield Reaction nodes whose .reaction_index == r_idx in any Exploratory node tree."""
-    for ng in bpy.data.node_groups:
-        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
-            continue
-        for node in getattr(ng, "nodes", []):
-            if getattr(node, "reaction_index", -1) == r_idx:
-                yield node
-
-def _dest_nodes_from_outputs(src_node):
-    """Collect unique to_nodes from the Projectile/Hit-scan node's Impact outputs."""
-    outs = []
-    for sock in getattr(src_node, "outputs", []):
-        if getattr(sock, "bl_idname", "") in {"ImpactEventOutputSocketType",
-                                              "ImpactLocationOutputSocketType"}:
-            outs.append(sock)
-    dest = []
-    seen = set()
-    for s in outs:
-        for lk in getattr(s, "links", []):
-            n = getattr(lk, "to_node", None)
-            if n and n not in seen:
-                dest.append(n); seen.add(n)
-    return dest
-
-def _collect_chain_indices_from_reaction_node(start_node):
-    """
-    From a Reaction node, follow its 'Reaction Output' through the graph and
-    return an ordered list of reaction indices to execute.
-    """
-    res = []
-    visited = set()
-    queue = [start_node]
-
-    while queue:
-        n = queue.pop(0)
-        if not n or n in visited:
-            continue
-        visited.add(n)
-
-        if hasattr(n, "reaction_index"):
-            idx = getattr(n, "reaction_index", -1)
-            if idx >= 0:
-                res.append(idx)
-            # only continue via the standard Reaction Output chain
-            out2 = n.outputs.get("Reaction Output") or n.outputs.get("Output")
-            if out2:
-                for lk in out2.links:
-                    if lk.to_node:
-                        queue.append(lk.to_node)
-        else:
-            # passthrough nodes (frames/reroutes)
-            for s in n.outputs:
-                for lk in s.links:
-                    if lk.to_node:
-                        queue.append(lk.to_node)
-    return res
-
 def _flush_impact_events_to_graph():
-    """Dispatch queued Impact (Bool) events via the Impact socket only."""
+    """
+    Dispatch queued Impact events using the pre-built cache.
+    NO node graph iteration during runtime - uses _impact_cache built at startup.
+    """
     if not _impact_events:
         return
 
     from ..interactions.exp_interactions import run_reactions, _fire_interaction  # lazy import
 
     scn = bpy.context.scene
+    reactions = getattr(scn, "reactions", [])
+    interactions = getattr(scn, "custom_interactions", [])
     owners = list(_impact_events.keys())
 
     log_game("HITSCAN", f"IMPACT_FLUSH events={len(_impact_events)} owners={len(owners)}")
@@ -169,71 +285,29 @@ def _flush_impact_events_to_graph():
         if not events:
             continue
 
-        _r, r_idx = _reaction_from_owner_key(owner)
-        if r_idx < 0:
-            log_game("HITSCAN", f"IMPACT_FLUSH owner={owner} reaction_not_found")
+        r_idx = int(owner)  # owner_key is the reaction index
+        cache_entry = _impact_cache.get(r_idx)
+
+        if not cache_entry:
+            log_game("HITSCAN", f"IMPACT_FLUSH r_idx={r_idx} not in cache (no wiring?)")
             continue
 
-        # Ensure one node per reaction index
-        src_nodes = _ensure_unique_node_binding_for_reaction_index(r_idx)
+        # A) Run reaction chains
+        for chain in cache_entry["reaction_chains"]:
+            to_run = [reactions[i] for i in chain if 0 <= i < len(reactions)]
+            if to_run:
+                log_game("HITSCAN", f"IMPACT_CHAIN r_idx={r_idx} chain={chain} running={len(to_run)}")
+                for _ev in events:
+                    run_reactions(to_run)
 
-        log_game("HITSCAN", f"IMPACT_FLUSH r_idx={r_idx} src_nodes={len(src_nodes)} events={len(events)}")
+        # B) Fire external triggers
+        for iidx in cache_entry["trigger_indices"]:
+            if 0 <= iidx < len(interactions):
+                inter = interactions[iidx]
+                log_game("HITSCAN", f"IMPACT_EXTERNAL r_idx={r_idx} trigger_idx={iidx}")
+                for ev in events:
+                    _fire_interaction(inter, ev["time"])
 
-        for src in src_nodes:
-            # Only nodes wired from the Impact (Bool) output
-            dst_nodes = list(_dest_nodes_from_impact_event_outputs(src))
-            log_game("HITSCAN", f"IMPACT_FLUSH src={getattr(src, 'bl_idname', '?')} dst_nodes={len(dst_nodes)}")
-
-            for dst in dst_nodes:
-                # A) Impact → Reaction Input (kick a chain)
-                if hasattr(dst, "reaction_index"):
-                    chain = _collect_chain_indices_from_reaction_node(dst)
-                    if not chain:
-                        log_game("HITSCAN", f"IMPACT_CHAIN dst={getattr(dst, 'bl_idname', '?')} chain=empty")
-                        continue
-                    to_run = [scn.reactions[i] for i in chain if 0 <= i < len(scn.reactions)]
-                    log_game("HITSCAN", f"IMPACT_CHAIN dst={getattr(dst, 'bl_idname', '?')} chain={chain} running={len(to_run)}")
-                    for _ev in events:
-                        run_reactions(to_run)
-
-                # B) Impact → Trigger node (EXTERNAL)
-                elif getattr(dst, "bl_idname", "") == "ExternalTriggerNodeType" or getattr(dst, "KIND", "") == "EXTERNAL":
-                    iidx = getattr(dst, "interaction_index", -1)
-                    if 0 <= iidx < len(getattr(scn, "custom_interactions", [])):
-                        inter = scn.custom_interactions[iidx]
-                        log_game("HITSCAN", f"IMPACT_EXTERNAL trigger_idx={iidx}")
-                        for ev in events:
-                            _fire_interaction(inter, ev["time"])
-
-
-
-def _ensure_unique_node_binding_for_reaction_index(r_idx: int):
-    """
-    Guarantee one node → one ReactionDefinition.
-    If multiple nodes reference r_idx, duplicate the reaction for all but the first,
-    rebind those nodes, and return the single kept node list.
-    """
-    # Find all nodes currently bound to this reaction index
-    nodes = list(_nodes_for_reaction_index(r_idx))
-    if len(nodes) <= 1:
-        return nodes
-
-    scn = bpy.context.scene
-    keep = nodes[0]  # keep the first node on the original index
-
-    # Duplicate reaction for the rest and rebind
-    for n in nodes[1:]:
-        try:
-            res = bpy.ops.exploratory.duplicate_global_reaction('EXEC_DEFAULT', index=r_idx)
-            if 'CANCELLED' in res:
-                continue
-            new_idx = len(scn.reactions) - 1
-            n.reaction_index = new_idx
-        except Exception:
-            pass
-
-    # Return only the node still bound to r_idx
-    return [keep]                         
 
 
 # --- Impact-Location wiring (vector only) ------------------------------------
@@ -247,49 +321,27 @@ def _reaction_index_of(r) -> int:
     return -1
 
 
-def _dest_nodes_from_impact_event_outputs(src_node):
-    """
-    Collect unique to_nodes wired from the *Impact (Bool)* output only.
-    (We deliberately ignore Impact Location here.)
-    """
-    dest = []
-    seen = set()
-    for sock in getattr(src_node, "outputs", []):
-        if getattr(sock, "bl_idname", "") != "ImpactEventOutputSocketType":
-            continue
-        for lk in getattr(sock, "links", []):
-            n = getattr(lk, "to_node", None)
-            if n and n not in seen:
-                dest.append(n); seen.add(n)
-    return dest
-
-
 def _push_impact_location_to_links(r, vec):
     """
-    Send 'vec' (x,y,z) ONLY through the 'Impact Location' socket wiring.
-    If the target node exposes write_from_graph(vec), we call it
-    (generic hook for capture/data nodes).
+    Send 'vec' (x,y,z) to cached location writer nodes.
+    NO node graph iteration - uses _impact_cache built at startup.
     """
     r_idx = _reaction_index_of(r)
     if r_idx < 0:
         return
 
-    for src in _nodes_for_reaction_index(r_idx):
-        for sock in getattr(src, "outputs", []):
-            if getattr(sock, "bl_idname", "") != "ImpactLocationOutputSocketType":
-                continue
-            for lk in getattr(sock, "links", []):
-                to_node = getattr(lk, "to_node", None)
-                if not to_node:
-                    continue
+    cache_entry = _impact_cache.get(r_idx)
+    if not cache_entry:
+        return
 
-                # Generic: if node advertises a writer, use it
-                writer = getattr(to_node, "write_from_graph", None)
-                if callable(writer):
-                    try:
-                        writer(vec, timestamp=get_game_time())
-                    except Exception:
-                        pass
+    timestamp = get_game_time()
+    for writer_node in cache_entry["location_writers"]:
+        writer = getattr(writer_node, "write_from_graph", None)
+        if callable(writer):
+            try:
+                writer(vec, timestamp=timestamp)
+            except Exception:
+                pass
 
 
 # ---------- Public helpers ----------
@@ -319,11 +371,16 @@ def clear():
     _visual_owner.clear()
     _impact_events.clear()
 
+    # Clear impact cache (rebuilt on next game start)
+    _impact_cache.clear()
+
     # Reset worker mode state
     _pending_hitscans.clear()
     _inflight_hitscans.clear()
     _pending_projectile_spawns.clear()
     _worker_projectile_map.clear()
+    _obj_to_entry.clear()
+    _owner_to_entries.clear()
     _next_hitscan_id = 0
     _next_client_projectile_id = 0
     _pending_hitscan_job_id = None
@@ -539,16 +596,23 @@ def _hard_delete_object(ob: bpy.types.Object | None):
 
 
 def _remove_active_entries_by_visual(ob: bpy.types.Object | None):
-    """Remove any active sim entries that reference this visual."""
-    if not ob or not _active_projectiles:
+    """Remove any active sim entries that reference this visual. O(1) via index."""
+    if not ob:
         return
-    keep = []
-    for p in _active_projectiles:
-        if p.get('obj') is ob:
-            # drop entry
-            continue
-        keep.append(p)
-    _active_projectiles[:] = keep
+    entry = _obj_to_entry.pop(ob, None)
+    if not entry:
+        return
+    # Remove from main list
+    if entry in _active_projectiles:
+        _active_projectiles.remove(entry)
+    # Remove from owner index
+    owner = entry.get('owner_key')
+    if owner is not None:
+        lst = _owner_to_entries.get(owner)
+        if lst and entry in lst:
+            lst.remove(entry)
+            if not lst:
+                _owner_to_entries.pop(owner, None)
 
 
 def _delete_visual_if_clone(ob: bpy.types.Object | None):
@@ -578,7 +642,7 @@ def _delete_visual_if_clone(ob: bpy.types.Object | None):
 def _prune_expired(now: float):
     """
     Remove expired projectiles immediately (so counts are accurate when firing rapidly).
-    Deletes their visuals too.
+    Deletes their visuals too. Cleans up O(1) indices.
     """
     if not _active_projectiles:
         return
@@ -586,6 +650,20 @@ def _prune_expired(now: float):
     for p in _active_projectiles:
         if now >= p['end_time']:
             _delete_visual_if_clone(p.get('obj'))
+            # Clean up indices
+            obj_v = p.get('obj')
+            if obj_v:
+                _obj_to_entry.pop(obj_v, None)
+            owner = p.get('owner_key')
+            if owner is not None:
+                lst = _owner_to_entries.get(owner)
+                if lst and p in lst:
+                    lst.remove(p)
+                    if not lst:
+                        _owner_to_entries.pop(owner, None)
+            worker_id = p.get('worker_id')
+            if worker_id and worker_id in _worker_projectile_map:
+                del _worker_projectile_map[worker_id]
         else:
             keep.append(p)
     _active_projectiles[:] = keep
@@ -609,21 +687,31 @@ def _evict_oldest_visuals_for_reaction(owner_key: int, n_to_evict: int):
         _per_reaction_visual_fifo.pop(owner_key, None)
 
 
-def _evict_oldest_active_for_reaction(r, n_to_evict: int):
+def _evict_oldest_active_for_reaction(owner_key: int, n_to_evict: int):
     """
     Fallback FIFO eviction for reactions with NO visuals (just sim entries).
+    Uses O(1) owner index lookup.
     """
-    if n_to_evict <= 0 or not _active_projectiles:
+    if n_to_evict <= 0:
         return
-    removed = 0
-    keep = []
-    for p in _active_projectiles:
-        if removed < n_to_evict and p.get('r_id') is r:
-            _delete_visual_if_clone(p.get('obj'))  # usually None in this mode
-            removed += 1
-            continue
-        keep.append(p)
-    _active_projectiles[:] = keep
+    lst = _owner_to_entries.get(owner_key)
+    if not lst:
+        return
+    count = min(n_to_evict, len(lst))
+    for _ in range(count):
+        if not lst:
+            break
+        entry = lst.pop(0)  # FIFO: oldest first
+        _delete_visual_if_clone(entry.get('obj'))
+        # Remove from main list
+        if entry in _active_projectiles:
+            _active_projectiles.remove(entry)
+        # Remove from obj index
+        obj_v = entry.get('obj')
+        if obj_v:
+            _obj_to_entry.pop(obj_v, None)
+    if not lst:
+        _owner_to_entries.pop(owner_key, None)
 
 
 # ─────────────────────────────────────────────────────────
@@ -695,10 +783,10 @@ def execute_projectile_reaction(r):
         if present >= per_cap:
             _evict_oldest_visuals_for_reaction(owner, present - per_cap + 1)
     else:
-        # No visuals → enforce on active sim entries only
-        acc = sum(1 for p in _active_projectiles if p.get('r_id') is r)
+        # No visuals → enforce on active sim entries only (O(1) via owner index)
+        acc = len(_owner_to_entries.get(owner, []))
         if acc >= per_cap:
-            _evict_oldest_active_for_reaction(r, acc - per_cap + 1)
+            _evict_oldest_active_for_reaction(owner, acc - per_cap + 1)
 
     # Resolve spawn state AFTER eviction
     origin = _resolve_origin(r)
@@ -764,7 +852,17 @@ def interpolate_projectile_visuals(dt: float):
     for p in _active_projectiles:
         if now >= p.get('end_time', float('inf')):
             _delete_visual_if_clone(p.get('obj'))
-            # Clean up worker map if we had a worker_id
+            # Clean up indices
+            obj_v = p.get('obj')
+            if obj_v:
+                _obj_to_entry.pop(obj_v, None)
+            owner = p.get('owner_key')
+            if owner is not None:
+                lst = _owner_to_entries.get(owner)
+                if lst and p in lst:
+                    lst.remove(p)
+                    if not lst:
+                        _owner_to_entries.pop(owner, None)
             worker_id = p.get('worker_id')
             if worker_id and worker_id in _worker_projectile_map:
                 del _worker_projectile_map[worker_id]
@@ -1173,7 +1271,10 @@ def process_hitscan_results(result) -> int:
 def submit_projectile_update(engine, dt: float) -> int | None:
     """
     Submit PROJECTILE_UPDATE_BATCH job to the engine.
-    Includes pending spawns and update for all active projectiles.
+
+    STATELESS DESIGN: Sends ALL active projectile data each frame.
+    Worker has no memory between frames - any worker can process.
+    This avoids the worker affinity bug where different workers had different state.
 
     Args:
         engine: EngineCore instance
@@ -1187,58 +1288,66 @@ def submit_projectile_update(engine, dt: float) -> int | None:
     if not engine or not engine.is_alive():
         return None
 
-    # Nothing to do if no active projectiles and no pending spawns
-    if not _active_projectiles and not _pending_projectile_spawns:
-        return None
-
     # Don't queue another job if one is already pending (prevents backup)
-    # Worker will process current job and we'll submit next frame
     if _pending_projectile_job_id is not None:
         return None
 
-    # Build new projectiles data (include client_id for result matching)
-    new_projectiles = []
+    # Add pending spawns to active list FIRST (so they're included in job)
+    now = get_game_time()
     for spawn in _pending_projectile_spawns:
-        new_projectiles.append({
-            "client_id": spawn["client_id"],
-            "pos": spawn["pos"],
-            "vel": spawn["vel"],
-            "gravity": spawn["gravity"],
-            "lifetime": spawn["lifetime"],
-            "stop_on_contact": spawn["stop_on_contact"],
-            "owner_key": spawn["owner_key"],
+        entry = {
+            'r_id': spawn["reaction"],
+            'obj': spawn.get("visual_obj"),
+            'pos': Vector(spawn["pos"]),
+            'vel': Vector(spawn["vel"]),
+            'g': spawn["gravity"],
+            'end_time': now + spawn["lifetime"],
+            'stop_on_contact': spawn["stop_on_contact"],
+            'align': spawn.get("align", True),
+            'owner_key': spawn["owner_key"],
+            'client_id': spawn["client_id"],
+        }
+        _active_projectiles.append(entry)
+        # Update O(1) indices
+        obj_v = entry.get('obj')
+        if obj_v:
+            _obj_to_entry[obj_v] = entry
+        owner = entry.get('owner_key')
+        if owner is not None:
+            _owner_to_entries.setdefault(owner, []).append(entry)
+
+    new_count = len(_pending_projectile_spawns)
+    _pending_projectile_spawns.clear()
+
+    # Nothing to do if no active projectiles
+    if not _active_projectiles:
+        return None
+
+    # Build FULL projectile list for stateless worker
+    # Worker receives everything, processes, returns updated state
+    projectiles = []
+    for p in _active_projectiles:
+        projectiles.append({
+            "client_id": p.get("client_id", 0),
+            "pos": tuple(p["pos"]),
+            "vel": tuple(p["vel"]),
+            "gravity": p["g"],
+            "end_time": p["end_time"],
+            "stop_on_contact": p["stop_on_contact"],
+            "owner_key": p["owner_key"],
         })
 
     job_data = {
         "dt": dt,
-        "game_time": get_game_time(),
-        "new_projectiles": new_projectiles,
+        "game_time": now,
+        "projectiles": projectiles,  # ALL active projectiles (stateless)
         "dynamic_transforms": get_dynamic_transforms(),
     }
 
     job_id = engine.submit_job("PROJECTILE_UPDATE_BATCH", job_data)
     if job_id is not None and job_id >= 0:
         _pending_projectile_job_id = job_id
-        log_game("PROJECTILE", f"BATCH_SUBMIT job={job_id} active={len(_active_projectiles)} new={len(new_projectiles)} dt={dt*1000:.1f}ms")
-
-        # Track spawns for result processing (use client_id for matching)
-        for spawn in _pending_projectile_spawns:
-            entry = {
-                'r_id': spawn["reaction"],
-                'obj': spawn.get("visual_obj"),
-                'pos': Vector(spawn["pos"]),
-                'vel': Vector(spawn["vel"]),
-                'g': spawn["gravity"],
-                'end_time': get_game_time() + spawn["lifetime"],
-                'stop_on_contact': spawn["stop_on_contact"],
-                'align': spawn.get("align", True),
-                'owner_key': spawn["owner_key"],
-                'client_id': spawn["client_id"],  # For matching with worker results
-                'worker_id': None,  # Assigned when result arrives
-            }
-            _active_projectiles.append(entry)
-
-        _pending_projectile_spawns.clear()
+        log_game("PROJECTILE", f"BATCH_SUBMIT job={job_id} active={len(_active_projectiles)} new={new_count} dt={dt*1000:.1f}ms")
         return job_id
 
     return None
@@ -1248,13 +1357,15 @@ def process_projectile_results(result) -> int:
     """
     Process PROJECTILE_UPDATE_BATCH result and update visuals/impacts.
 
+    STATELESS DESIGN: Uses client_id for matching (no worker_id needed).
+
     Args:
         result: EngineResult from PROJECTILE_UPDATE_BATCH job
 
     Returns:
         Number of projectiles updated
     """
-    global _pending_projectile_job_id, _worker_projectile_map
+    global _pending_projectile_job_id
 
     if not result.success or result.job_id != _pending_projectile_job_id:
         return 0
@@ -1266,33 +1377,18 @@ def process_projectile_results(result) -> int:
     impacts = result_data.get("impacts", [])
     expired = result_data.get("expired", [])
 
-    now = get_game_time()
     processed = 0
 
-    # Build client_id -> local entry map for matching
+    # Build client_id -> local entry map for matching (stateless - use client_id only)
     client_id_map = {p.get('client_id'): p for p in _active_projectiles if p.get('client_id')}
-
-    # Match worker results to local entries by client_id
-    for up in updated_projectiles:
-        worker_id = up.get("id")
-        client_id = up.get("client_id", 0)
-
-        # Find entry by client_id (reliable) instead of by order (fragile)
-        entry = client_id_map.get(client_id)
-        if entry and entry.get('worker_id') is None:
-            entry['worker_id'] = worker_id
-            _worker_projectile_map[worker_id] = entry
 
     # Update positions for active projectiles
     for up in updated_projectiles:
-        worker_id = up.get("id")
         client_id = up.get("client_id", 0)
-        active = up.get("active", True)
         pos = up.get("pos")
         vel = up.get("vel")
 
-        # Try worker_id first (already assigned), then fall back to client_id
-        entry = _worker_projectile_map.get(worker_id) or client_id_map.get(client_id)
+        entry = client_id_map.get(client_id)
         if not entry:
             continue
 
@@ -1326,15 +1422,13 @@ def process_projectile_results(result) -> int:
 
     # Process impacts
     for impact in impacts:
-        worker_id = impact.get("id")
         client_id = impact.get("client_id", 0)
         owner_key = impact.get("owner_key")
         pos = impact.get("pos")
         hit_source = impact.get("source", "static")
         hit_obj_id = impact.get("obj_id")
 
-        # Try worker_id first, then fall back to client_id
-        entry = _worker_projectile_map.get(worker_id) or client_id_map.get(client_id)
+        entry = client_id_map.get(client_id)
         if entry:
             r = entry.get('r_id')
             obj_v = entry.get('obj')
@@ -1373,35 +1467,45 @@ def process_projectile_results(result) -> int:
             if r and pos:
                 pos_v = Vector(pos)
                 _push_impact_location_to_links(r, (pos_v.x, pos_v.y, pos_v.z))
-                _emit_impact_event(r, pos_v, now)
-                log_game("PROJECTILE", f"IMPACT id={worker_id} source={hit_source} pos=({pos_v.x:.2f},{pos_v.y:.2f},{pos_v.z:.2f})")
+                _emit_impact_event(r, pos_v, get_game_time())
+                log_game("PROJECTILE", f"IMPACT cid={client_id} source={hit_source} pos=({pos_v.x:.2f},{pos_v.y:.2f},{pos_v.z:.2f})")
 
             # Remove from active list (keep visual for FIFO)
             if entry in _active_projectiles:
                 _active_projectiles.remove(entry)
 
-            # Clean up map
-            if worker_id in _worker_projectile_map:
-                del _worker_projectile_map[worker_id]
+            # Clean up O(1) indices
+            obj_v = entry.get('obj')
+            if obj_v:
+                _obj_to_entry.pop(obj_v, None)
+            owner = entry.get('owner_key')
+            if owner is not None:
+                lst = _owner_to_entries.get(owner)
+                if lst and entry in lst:
+                    lst.remove(entry)
+                    if not lst:
+                        _owner_to_entries.pop(owner, None)
 
-    # Handle expired projectiles (now includes client_id for reliable matching)
+    # Handle expired projectiles (stateless - uses client_id only)
     for exp_data in expired:
-        # Support both old format (int) and new format (dict with id/client_id)
-        if isinstance(exp_data, dict):
-            worker_id = exp_data.get("id")
-            client_id = exp_data.get("client_id", 0)
-        else:
-            worker_id = exp_data
-            client_id = 0
+        client_id = exp_data.get("client_id", 0) if isinstance(exp_data, dict) else 0
 
-        # Try worker_id first, then fall back to client_id
-        entry = _worker_projectile_map.get(worker_id) or client_id_map.get(client_id)
+        entry = client_id_map.get(client_id)
         if entry:
             _delete_visual_if_clone(entry.get('obj'))
             if entry in _active_projectiles:
                 _active_projectiles.remove(entry)
-            if worker_id and worker_id in _worker_projectile_map:
-                del _worker_projectile_map[worker_id]
+            # Clean up O(1) indices
+            obj_v = entry.get('obj')
+            if obj_v:
+                _obj_to_entry.pop(obj_v, None)
+            owner = entry.get('owner_key')
+            if owner is not None:
+                lst = _owner_to_entries.get(owner)
+                if lst and entry in lst:
+                    lst.remove(entry)
+                    if not lst:
+                        _owner_to_entries.pop(owner, None)
 
     # Log batch results
     log_game("PROJECTILE", f"BATCH_RESULT updated={processed} impacts={len(impacts)} expired={len(expired)}")

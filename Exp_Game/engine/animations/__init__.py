@@ -56,23 +56,25 @@ from .ik import (
     LEG_IK,
     ARM_IK,
 )
-from .rig_calibration import (
-    # Rig calibration data
-    BoneCalibration,
-    ANATOMICAL_JOINTS,
-    IK_CHAINS,
-    # Analysis functions
-    analyze_bone_data,
-    analyze_rig_data,
-    compute_bone_roll,
-    classify_axis,
-    detect_bend_axis,
-    get_chain_calibration,
-    generate_report,
+from .joint_limits import (
+    # Joint limit enforcement
+    clamp_rotation,
+    apply_limits_to_pose,
+    is_within_limits,
+    get_limit_info,
     # Worker cache
-    set_worker_calibration,
-    get_worker_calibration,
-    is_worker_calibrated,
+    set_worker_limits,
+    get_worker_limits,
+    has_worker_limits,
+    # File I/O
+    save_limits_to_file,
+    load_limits_from_file,
+)
+from .default_limits import (
+    # Default rig joint limits
+    DEFAULT_JOINT_LIMITS,
+    get_default_limits,
+    get_bone_limit,
 )
 
 __all__ = [
@@ -105,20 +107,19 @@ __all__ = [
     "LEG_IK",
     "ARM_IK",
 
-    # Rig calibration
-    "BoneCalibration",
-    "ANATOMICAL_JOINTS",
-    "IK_CHAINS",
-    "analyze_bone_data",
-    "analyze_rig_data",
-    "compute_bone_roll",
-    "classify_axis",
-    "detect_bend_axis",
-    "get_chain_calibration",
-    "generate_report",
-    "set_worker_calibration",
-    "get_worker_calibration",
-    "is_worker_calibrated",
+    # Joint limits
+    "clamp_rotation",
+    "apply_limits_to_pose",
+    "is_within_limits",
+    "get_limit_info",
+    "set_worker_limits",
+    "get_worker_limits",
+    "has_worker_limits",
+    "save_limits_to_file",
+    "load_limits_from_file",
+    "DEFAULT_JOINT_LIMITS",
+    "get_default_limits",
+    "get_bone_limit",
 ]
 
 

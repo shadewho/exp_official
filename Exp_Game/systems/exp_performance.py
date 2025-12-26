@@ -487,17 +487,20 @@ def update_performance_culling(operator, context):
                     threshold = max(0.0, base - margin)  # clearly inside to flip true
                 thr2 = threshold * threshold
 
+                # OPTIMIZATION: Cache all translations ONCE before any checks
+                # Avoids repeated matrix_world.translation reads in loops
+                obj_translations = [o.matrix_world.translation for o in objs]
+
                 # Optimization: For per-object mode, only check first object (cheap proxy check)
                 # Engine will do the full per-object calculations
                 if per_object_mode:
                     # Fast single-object check for placeholder toggling
-                    first_obj = objs[0]
-                    in_range = (first_obj.matrix_world.translation - ref_loc).length_squared <= thr2
+                    in_range = (obj_translations[0] - ref_loc).length_squared <= thr2
                 else:
                     # Full iteration for collection-exclude mode (needed for accurate toggle)
                     in_range = any(
-                        (o.matrix_world.translation - ref_loc).length_squared <= thr2
-                        for o in objs
+                        (pos - ref_loc).length_squared <= thr2
+                        for pos in obj_translations
                     )
             else:
                 in_range = False
@@ -547,8 +550,9 @@ def update_performance_culling(operator, context):
             objs = rec["obj_list"]
             if objs and hasattr(operator, "engine") and operator.engine:
                 # Snapshot names & positions on the main thread (read-only)
+                # OPTIMIZATION: Reuse cached translations from above (obj_translations)
                 names = [o.name for o in objs]
-                poss  = [tuple(o.matrix_world.translation) for o in objs]
+                poss  = [tuple(pos) for pos in obj_translations]
 
                 # Round-robin cursor and batch size (respect your write budget)
                 start_idx = rec.get("scan_idx", 0)
@@ -609,7 +613,7 @@ def apply_cull_result(operator, payload) -> int:
     rec = runtime[entry_ptr]
     writes = 0
     for name, desired_hidden in changes:
-        obj = bpy.data.objects.get(name)
+        obj = rec["name_map"].get(name)
         if not obj:
             continue
         if obj.hide_viewport != desired_hidden:

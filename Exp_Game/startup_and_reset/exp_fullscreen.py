@@ -217,3 +217,17 @@ def exit_fullscreen_once():
         return None
 
     bpy.app.timers.register(_restore_and_maybe_toggle_off, first_interval=_UI_DELAY_SEC)
+
+
+def reset_fullscreen_state():
+    """
+    Reset fullscreen state. Call on game end to clear accumulated state.
+    This prevents stale UI references from persisting across game sessions.
+    """
+    _state["entering"] = False
+    _state["exiting"] = False
+    _state["did_enter"] = False
+    _state["win_ptr"] = None
+    _state["ui_hidden"] = False
+    _state["orig_ui"].clear()
+    _state["screen_statusbars"].clear()

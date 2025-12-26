@@ -1,211 +1,202 @@
 # Exp_Game/engine/worker/reactions/tracking.py
 """
-Tracking movement computation - runs in worker process (NO bpy).
+NPC/Object Tracking - Worker-side movement computation.
 
-Handles sweep/slide/gravity for non-character object movement.
+Simplified system that reuses unified_raycast from engine.
+- Move toward goal at speed
+- Stop at walls (no slide)
+- Snap to ground with gravity
+
 Character autopilot stays on main thread (just injects keys).
 
-Reuses unified_raycast from worker/raycast.py for collision detection.
+OPTIMIZATIONS:
+  - Only build unified_dynamic_meshes if any track needs collision
+  - Early-out for arrived tracks (no raycast)
+  - Track ray/tri stats for diagnostics
+  - Minimal dict lookups in hot loop
 """
 
 import math
+import time
 from ..raycast import unified_raycast
 
 
-def handle_tracking_batch(job_data: dict, grid_data, dynamic_meshes, dynamic_transforms) -> dict:
+def handle_tracking_batch(job_data: dict, grid_data, cached_dynamic_meshes, cached_dynamic_transforms) -> dict:
     """
-    Batch compute tracking movement with collision.
+    Batch compute tracking movement for all active tracks.
 
-    Input:
-        tracks: [
-            {
-                "obj_id": int,
-                "current_pos": (x, y, z),
-                "goal_pos": (x, y, z),
-                "speed": float,
-                "dt": float,
-                "radius": float,
-                "height": float,
-                "arrive_radius": float,
-                "use_gravity": bool,
-                "respect_proxy": bool,
-            }
-        ]
-
-    Output:
-        results: [
-            {
-                "obj_id": int,
-                "new_pos": (x, y, z),
-                "arrived": bool,
-            }
-        ]
+    Simplified physics:
+    - XY movement toward goal
+    - Forward collision check (stop at walls)
+    - Gravity snap to ground
     """
+    start_time = time.perf_counter()
+
     tracks = job_data.get("tracks", [])
-    debug_logs = job_data.get("debug_logs")  # None if not debugging
+    debug_logs = job_data.get("debug_logs")
     results = []
+
+    # Stats
     total_rays = 0
     total_tris = 0
-    walls_hit = 0
-    floors_skipped = 0
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # PRE-CHECK: Do any tracks need collision/gravity?
+    # Only build unified_dynamic_meshes if needed
+    # ─────────────────────────────────────────────────────────────────────────
+    any_needs_raycast = False
+    for track in tracks:
+        if track.get("use_collision", True) or track.get("use_gravity", True):
+            any_needs_raycast = True
+            break
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BUILD UNIFIED DYNAMIC MESHES LIST (only if needed)
+    # Same pattern as physics.py - convert cached dicts to list format
+    # ─────────────────────────────────────────────────────────────────────────
+    unified_dynamic_meshes = None
+    if any_needs_raycast and cached_dynamic_meshes and cached_dynamic_transforms:
+        unified_dynamic_meshes = []
+        for obj_id, transform_data in cached_dynamic_transforms.items():
+            matrix_4x4, world_aabb, inv_matrix = transform_data
+            cached = cached_dynamic_meshes.get(obj_id)
+            if cached is None:
+                continue
+
+            local_triangles = cached.get("triangles", [])
+            if not local_triangles:
+                continue  # Skip meshes with no triangles
+
+            local_grid = cached.get("grid")
+
+            # Fallback bounding sphere if no AABB
+            bounding_sphere = None
+            if world_aabb is None:
+                bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
+
+            unified_dynamic_meshes.append({
+                "obj_id": obj_id,
+                "triangles": local_triangles,
+                "matrix": matrix_4x4,
+                "inv_matrix": inv_matrix,
+                "aabb": world_aabb,
+                "bounding_sphere": bounding_sphere,
+                "grid": local_grid,
+            })
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PROCESS EACH TRACK
+    # ─────────────────────────────────────────────────────────────────────────
     for track in tracks:
         obj_id = track["obj_id"]
-        pos = list(track["current_pos"])
-        goal = track["goal_pos"]
+        pos_x, pos_y, pos_z = track["current_pos"]
+        goal_x, goal_y, goal_z = track["goal_pos"]
         speed = track["speed"]
         dt = track["dt"]
-        radius = track.get("radius", 0.22)
-        height = track.get("height", 1.8)
         arrive_radius = track.get("arrive_radius", 0.3)
         use_gravity = track.get("use_gravity", True)
-        respect_proxy = track.get("respect_proxy", True)
+        use_collision = track.get("use_collision", True)
 
-        # Direction to goal (XY only)
-        dx = goal[0] - pos[0]
-        dy = goal[1] - pos[1]
-        dist = math.sqrt(dx * dx + dy * dy)
+        # ─────────────────────────────────────────────────────────────────
+        # DIRECTION TO GOAL (XY plane only)
+        # ─────────────────────────────────────────────────────────────────
+        dx = goal_x - pos_x
+        dy = goal_y - pos_y
+        dist_xy_sq = dx * dx + dy * dy
 
-        # Check arrival
-        if dist <= arrive_radius:
+        # Check arrival (squared distance comparison - faster)
+        arrive_radius_sq = arrive_radius * arrive_radius
+        if dist_xy_sq <= arrive_radius_sq:
             results.append({
                 "obj_id": obj_id,
-                "new_pos": tuple(pos),
+                "new_pos": (pos_x, pos_y, pos_z),
                 "arrived": True,
             })
+            if debug_logs is not None:
+                debug_logs.append(("TRACKING", f"  obj={obj_id} ARRIVED"))
             continue
 
-        # Normalize direction and compute step
-        step_len = min(speed * dt, dist)
-        fwd = (dx / dist, dy / dist, 0.0)
+        # Movement step
+        dist_xy = math.sqrt(dist_xy_sq)
+        step_len = min(speed * dt, dist_xy)
+        dir_x = dx / dist_xy
+        dir_y = dy / dist_xy
 
         # ─────────────────────────────────────────────────────────────────
-        # SWEEP FORWARD WITH COLLISION (3 vertical rays: feet/mid/head)
+        # COLLISION CHECK (simple - just stop at walls)
         # ─────────────────────────────────────────────────────────────────
-        new_pos = list(pos)
+        new_x = pos_x + dir_x * step_len
+        new_y = pos_y + dir_y * step_len
+        new_z = pos_z
 
-        if respect_proxy and grid_data:
-            ray_len = step_len + radius
-            best_d = None
-            best_n = None
+        if use_collision and grid_data:
+            # Cast ray forward at a reasonable height (0.5m above origin)
+            ray_origin = (pos_x, pos_y, pos_z + 0.5)
+            ray_dir = (dir_x, dir_y, 0.0)
+            ray_len = step_len + 0.3  # step + buffer
 
-            # 3 vertical rays - raised well above ground to avoid terrain grazing
-            # Use minimum 0.4m to clear most terrain geometry
-            feet_z = max(0.4, radius * 2)
-            mid_z = max(feet_z + 0.2, 0.5 * height)
-            head_z = max(mid_z + 0.2, height - radius)
+            result = unified_raycast(ray_origin, ray_dir, ray_len, grid_data, unified_dynamic_meshes)
+            total_rays += 1
+            total_tris += result.get("tris_tested", 0)
 
-            for z in (feet_z, mid_z, head_z):
-                origin = (pos[0], pos[1], pos[2] + z)
-                result = unified_raycast(origin, fwd, ray_len, grid_data, dynamic_meshes)
-                total_rays += 1
-                total_tris += result.get("tris_tested", 0)
+            if result["hit"]:
+                normal_z = result["normal"][2]
+                hit_dist = result["dist"]
 
-                if result["hit"]:
-                    # Only count as wall if normal is mostly horizontal
-                    # (skip floors/ramps where normal.z > 0.7)
-                    n = result["normal"]
-                    if abs(n[2]) < 0.7:  # Wall-like surface
-                        walls_hit += 1
-                        d = result["dist"]
-                        if best_d is None or d < best_d:
-                            best_d = d
-                            best_n = n
-                    else:
-                        floors_skipped += 1
+                # Only block on walls (normal mostly horizontal)
+                if abs(normal_z) < 0.7:
+                    # Wall - stop before it
+                    allow = max(0.0, hit_dist - 0.3)
+                    if allow < step_len:
+                        new_x = pos_x + dir_x * allow
+                        new_y = pos_y + dir_y * allow
 
-            # Advance until contact
-            if best_d is None:
-                # No wall - full step
-                new_pos[0] = pos[0] + fwd[0] * step_len
-                new_pos[1] = pos[1] + fwd[1] * step_len
-            else:
-                # Wall hit - advance to wall, then slide
-                allow = max(0.0, best_d - radius)
-                moved = min(step_len, allow)
-                new_pos[0] = pos[0] + fwd[0] * moved
-                new_pos[1] = pos[1] + fwd[1] * moved
-
-                # Slide along wall if remainder
-                remain = step_len - moved
-                if remain > (0.15 * radius) and best_n is not None:
-                    # Slide direction: remove normal component from forward (XY plane only)
-                    # Normalize the XY part of the normal for proper projection
-                    nx, ny = best_n[0], best_n[1]
-                    n_xy_len = math.sqrt(nx * nx + ny * ny)
-                    if n_xy_len > 1e-9:
-                        nx, ny = nx / n_xy_len, ny / n_xy_len
-                        dot = fwd[0] * nx + fwd[1] * ny
-                        slide = (fwd[0] - nx * dot, fwd[1] - ny * dot, 0.0)
-                    else:
-                        # Normal is vertical, just keep moving forward
-                        slide = (fwd[0], fwd[1], 0.0)
-
-                    slide_len = math.sqrt(slide[0] ** 2 + slide[1] ** 2)
-
-                    if slide_len > 1e-9:
-                        slide = (slide[0] / slide_len, slide[1] / slide_len, 0.0)
-
-                        # Check slide direction for walls (3 more rays)
-                        best_d2 = None
-                        for z in (feet_z, mid_z, head_z):
-                            origin2 = (new_pos[0], new_pos[1], new_pos[2] + z)
-                            result2 = unified_raycast(origin2, slide, remain + radius, grid_data, dynamic_meshes)
-                            total_rays += 1
-                            total_tris += result2.get("tris_tested", 0)
-
-                            if result2["hit"]:
-                                # Only walls block sliding
-                                n2 = result2["normal"]
-                                if abs(n2[2]) < 0.7:
-                                    walls_hit += 1
-                                    d2 = result2["dist"]
-                                    if best_d2 is None or d2 < best_d2:
-                                        best_d2 = d2
-                                else:
-                                    floors_skipped += 1
-
-                        allow2 = remain if best_d2 is None else max(0.0, best_d2 - radius)
-                        new_pos[0] += slide[0] * allow2
-                        new_pos[1] += slide[1] * allow2
-        else:
-            # No collision - simple move
-            new_pos[0] = pos[0] + fwd[0] * step_len
-            new_pos[1] = pos[1] + fwd[1] * step_len
+                    if debug_logs is not None:
+                        debug_logs.append(("TRACKING", f"  WALL at dist={hit_dist:.2f} allow={allow:.2f}"))
 
         # ─────────────────────────────────────────────────────────────────
-        # GRAVITY SNAP (downward raycast)
+        # GRAVITY SNAP
         # ─────────────────────────────────────────────────────────────────
         if use_gravity and grid_data:
-            # Cast from well above object to find ground below
-            origin_down = (new_pos[0], new_pos[1], new_pos[2] + height * 0.5)
-            direction_down = (0.0, 0.0, -1.0)
-            max_down = height + 0.5  # Search down past object height
+            # Cast down from above to find ground
+            ray_origin = (new_x, new_y, new_z + 1.0)
+            ray_dir = (0.0, 0.0, -1.0)
+            max_down = 2.0
 
-            result_down = unified_raycast(origin_down, direction_down, max_down, grid_data, dynamic_meshes)
+            result = unified_raycast(ray_origin, ray_dir, max_down, grid_data, unified_dynamic_meshes)
             total_rays += 1
-            total_tris += result_down.get("tris_tested", 0)
+            total_tris += result.get("tris_tested", 0)
 
-            if result_down["hit"]:
-                # Only snap if ground is floor-like (normal pointing up)
-                n = result_down["normal"]
-                if n[2] > 0.5:  # Floor surface
-                    new_pos[2] = result_down["pos"][2]
+            if result["hit"]:
+                normal_z = result["normal"][2]
+                # Only snap to floors (normal pointing up)
+                if normal_z > 0.5:
+                    new_z = result["pos"][2]
+
+                    if debug_logs is not None:
+                        debug_logs.append(("TRACKING", f"  GROUND at z={new_z:.2f}"))
 
         results.append({
             "obj_id": obj_id,
-            "new_pos": tuple(new_pos),
+            "new_pos": (new_x, new_y, new_z),
             "arrived": False,
         })
 
-    # Add summary log (only if debugging)
+        if debug_logs is not None:
+            debug_logs.append(("TRACKING", f"  obj={obj_id} moved ({pos_x:.2f},{pos_y:.2f},{pos_z:.2f}) -> ({new_x:.2f},{new_y:.2f},{new_z:.2f})"))
+
+    # Summary
+    calc_time_us = int((time.perf_counter() - start_time) * 1_000_000)
+
     if debug_logs is not None:
-        debug_logs.append(("TRACKING", f"WORKER count={len(results)} rays={total_rays} tris={total_tris} walls_hit={walls_hit} floors_skipped={floors_skipped}"))
+        dyn_count = len(unified_dynamic_meshes) if unified_dynamic_meshes else 0
+        debug_logs.append(("TRACKING", f"WORKER processed {len(results)} tracks | {total_rays}rays {total_tris}tris {dyn_count}dyn | {calc_time_us}us"))
 
     return {
         "results": results,
         "count": len(results),
         "rays": total_rays,
         "tris": total_tris,
+        "calc_time_us": calc_time_us,
         "worker_logs": debug_logs if debug_logs else [],
     }

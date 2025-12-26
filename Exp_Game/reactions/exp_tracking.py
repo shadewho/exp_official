@@ -8,6 +8,13 @@ Non-character mover: Offloaded to worker (sweep/slide/gravity via TRACKING_BATCH
 Worker offload pattern:
   Main thread: collect tracks, submit job, apply results
   Worker: compute collision/movement (reuses unified_raycast)
+
+OPTIMIZATIONS:
+  - Minimal main thread work (just collect data, apply results)
+  - Object lookup dict persisted between frames (only add/remove as needed)
+  - Debug flag cached once per frame
+  - Batch removal of finished tasks (no O(n) removes in loop)
+  - Direct tuple assignment for positions (no Vector creation)
 """
 import bpy
 from mathutils import Vector, Matrix
@@ -19,7 +26,7 @@ from ..audio import exp_globals  # ACTIVE_MODAL_OP
 # Module state
 # ─────────────────────────────────────────────────────────────────────────────
 _ACTIVE_TRACKS = []
-_tracking_obj_lookup: dict[int, bpy.types.Object] = {}  # obj_id -> bpy object
+_tracking_obj_lookup: dict[int, bpy.types.Object] = {}  # obj_id -> bpy object (persisted)
 _pending_tracking_job_id = None
 
 
@@ -71,12 +78,12 @@ class _TrackTask:
     def _release_keys(self, op):
         if not self._is_char_driver or not op:
             return
-        for k in list(self._last_keys):
-            try:
-                op.keys_pressed.discard(k)
-            except Exception:
-                pass
-        self._last_keys.clear()
+        keys = self._last_keys
+        if keys:
+            pressed = op.keys_pressed
+            for k in keys:
+                pressed.discard(k)
+            keys.clear()
 
     def _inject_autopilot(self, op, wish_world_xy: Vector, speed_hint: float):
         """
@@ -89,10 +96,13 @@ class _TrackTask:
 
         self._release_keys(op)
 
+        pressed = op.keys_pressed
         if self.exclusive_control:
-            for base in (op.pref_forward_key, op.pref_backward_key, op.pref_left_key,
-                         op.pref_right_key, op.pref_run_key):
-                op.keys_pressed.discard(base)
+            pressed.discard(op.pref_forward_key)
+            pressed.discard(op.pref_backward_key)
+            pressed.discard(op.pref_left_key)
+            pressed.discard(op.pref_right_key)
+            pressed.discard(op.pref_run_key)
 
         Rz = Matrix.Rotation(-op.yaw, 4, 'Z')
         local = Rz @ Vector((wish_world_xy.x, wish_world_xy.y, 0.0))
@@ -110,45 +120,49 @@ class _TrackTask:
             want.add(op.pref_left_key)
 
         run_now = False
-        try:
-            max_run = float(bpy.context.scene.char_physics.max_speed_run)
-            run_now = self.allow_run and (speed_hint >= max_run - 1e-3)
-        except Exception:
-            run_now = False
+        if self.allow_run:
+            try:
+                max_run = float(bpy.context.scene.char_physics.max_speed_run)
+                run_now = speed_hint >= max_run - 1e-3
+            except Exception:
+                pass
         if run_now:
             want.add(op.pref_run_key)
 
         for k in want:
-            op.keys_pressed.add(k)
+            pressed.add(k)
         self._last_keys = want
 
     # ─────────────────────────────────────────────────────────────────────────
     # Character autopilot update (MAIN THREAD - just injects keys)
     # ─────────────────────────────────────────────────────────────────────────
-    def update_character(self, dt: float) -> bool:
+    def update_character(self, now: float) -> bool:
         """Update character autopilot. Returns True when finished."""
-        now = get_game_time()
         if self.max_runtime > 0.0 and (now - self.start_time) > self.max_runtime:
             return True
 
-        tgt = None
+        to_obj = self.to_obj
+        if not to_obj:
+            return True
+
         try:
-            if self.to_obj:
-                tgt = self.to_obj.matrix_world.translation
+            tgt = to_obj.matrix_world.translation
         except Exception:
-            tgt = None
+            return True
 
         mover = self.from_obj
-        if not mover or tgt is None:
+        if not mover:
             return True
 
         cur = mover.location
-        delta = Vector((tgt.x - cur.x, tgt.y - cur.y, 0.0))
-        if delta.length <= self.arrive_radius:
+        dx = tgt.x - cur.x
+        dy = tgt.y - cur.y
+        dist_sq = dx * dx + dy * dy
+        if dist_sq <= self.arrive_radius * self.arrive_radius:
             return True
 
         op = getattr(exp_globals, "ACTIVE_MODAL_OP", None)
-        wish_xy = Vector((delta.x, delta.y, 0.0))
+        wish_xy = Vector((dx, dy, 0.0))
         self._inject_autopilot(op, wish_xy, self.speed)
         return False
 
@@ -169,19 +183,14 @@ def submit_tracking_batch(engine, dt: float):
     if not _ACTIVE_TRACKS:
         return None
 
-    # Debug flag
+    # Debug flag - cache once
     debug_tracking = getattr(bpy.context.scene, 'dev_debug_tracking', False)
 
     now = get_game_time()
     batch = []
-    _tracking_obj_lookup.clear()
 
-    # Get character physics params for capsule dimensions
-    try:
-        radius = float(bpy.context.scene.char_physics.radius)
-        height = float(bpy.context.scene.char_physics.height)
-    except Exception:
-        radius, height = 0.22, 1.8
+    # Track which obj_ids are still active this frame
+    active_obj_ids = set()
 
     for task in _ACTIVE_TRACKS:
         # Skip character tasks (handled via key injection)
@@ -196,39 +205,48 @@ def submit_tracking_batch(engine, dt: float):
         if not mover:
             continue
 
-        # Get target position
-        tgt = None
+        to_obj = task.to_obj
+        if not to_obj:
+            continue
+
+        # Get target position - minimal exception handling
         try:
-            if task.to_obj:
-                tgt = task.to_obj.matrix_world.translation
+            tgt = to_obj.matrix_world.translation
         except Exception:
             continue
 
-        if tgt is None:
-            continue
-
         obj_id = id(mover)
-        _tracking_obj_lookup[obj_id] = mover
+        active_obj_ids.add(obj_id)
 
+        # Only update lookup if not already present
+        if obj_id not in _tracking_obj_lookup:
+            _tracking_obj_lookup[obj_id] = mover
+
+        # Use tuple directly - avoid Vector overhead
+        loc = mover.location
         batch.append({
             "obj_id": obj_id,
-            "current_pos": tuple(mover.location),
+            "current_pos": (loc.x, loc.y, loc.z),
             "goal_pos": (tgt.x, tgt.y, tgt.z),
             "speed": task.speed,
             "dt": dt,
-            "radius": radius,
-            "height": height,
             "arrive_radius": task.arrive_radius,
             "use_gravity": task.use_gravity,
-            "respect_proxy": task.respect_proxy,
+            "use_collision": task.respect_proxy,
         })
+
+    # Clean stale entries from lookup (objects no longer tracked)
+    if len(_tracking_obj_lookup) > len(active_obj_ids):
+        stale = [k for k in _tracking_obj_lookup if k not in active_obj_ids]
+        for k in stale:
+            del _tracking_obj_lookup[k]
 
     if not batch:
         return None
 
     _pending_tracking_job_id = engine.submit_job("TRACKING_BATCH", {
         "tracks": batch,
-        "debug_logs": [] if debug_tracking else None,  # Only collect logs if debugging
+        "debug_logs": [] if debug_tracking else None,
     })
 
     # Debug logging
@@ -240,7 +258,7 @@ def submit_tracking_batch(engine, dt: float):
             name = obj.name if obj else "?"
             pos = b["current_pos"]
             goal = b["goal_pos"]
-            log_game("TRACKING", f"  {name}: pos=({pos[0]:.1f},{pos[1]:.1f},{pos[2]:.1f}) -> goal=({goal[0]:.1f},{goal[1]:.1f},{goal[2]:.1f}) speed={b['speed']:.1f}")
+            log_game("TRACKING", f"  {name}: pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) -> goal=({goal[0]:.2f},{goal[1]:.2f},{goal[2]:.2f}) collision={b['use_collision']} gravity={b['use_gravity']}")
 
     return _pending_tracking_job_id
 
@@ -253,7 +271,7 @@ def apply_tracking_results(result):
     global _pending_tracking_job_id
     _pending_tracking_job_id = None
 
-    # Debug flag
+    # Debug flag - cache once
     debug_tracking = getattr(bpy.context.scene, 'dev_debug_tracking', False)
 
     if not result.success:
@@ -262,49 +280,55 @@ def apply_tracking_results(result):
             log_game("TRACKING", f"APPLY FAILED: {result.error}")
         return 0
 
-    results = result.result.get("results", [])
-    rays = result.result.get("rays", 0)
-    tris = result.result.get("tris", 0)
+    result_data = result.result
+    results = result_data.get("results", [])
     applied = 0
 
     # Mark arrived tasks
     arrived_ids = set()
+    lookup = _tracking_obj_lookup
 
     for r in results:
         obj_id = r["obj_id"]
-        obj = _tracking_obj_lookup.get(obj_id)
+        obj = lookup.get(obj_id)
         if not obj:
             continue
 
-        # Apply new position (thin write - no computation)
-        obj.location = Vector(r["new_pos"])
+        # Direct tuple assignment - no Vector creation
+        new_pos = r["new_pos"]
+        obj.location = (new_pos[0], new_pos[1], new_pos[2])
         applied += 1
 
         if r.get("arrived", False):
             arrived_ids.add(obj_id)
 
-    # Mark tasks as arrived
-    for task in _ACTIVE_TRACKS:
-        if not task._is_char_driver and task.from_obj:
-            if id(task.from_obj) in arrived_ids:
-                task._arrived = True
+    # Mark tasks as arrived - only iterate if we have arrivals
+    if arrived_ids:
+        for task in _ACTIVE_TRACKS:
+            if not task._is_char_driver and task.from_obj:
+                if id(task.from_obj) in arrived_ids:
+                    task._arrived = True
 
     # Debug logging
     if debug_tracking:
         from ..developer.dev_logger import log_game
-        arrived_count = len(arrived_ids)
-        log_game("TRACKING", f"APPLY count={applied} arrived={arrived_count} rays={rays} tris={tris}")
+        rays = result_data.get("rays", 0)
+        tris = result_data.get("tris", 0)
+        calc_time = result_data.get("calc_time_us", 0)
+        log_game("TRACKING", f"APPLY count={applied} arrived={len(arrived_ids)} rays={rays} tris={tris} calc_time={calc_time}us")
+
         for r in results:
-            obj = _tracking_obj_lookup.get(r["obj_id"])
+            obj = lookup.get(r["obj_id"])
             name = obj.name if obj else "?"
             pos = r["new_pos"]
             status = "ARRIVED" if r.get("arrived") else "moving"
             log_game("TRACKING", f"  {name}: ({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) {status}")
 
         # Output worker logs
-        worker_logs = result.result.get("worker_logs", [])
-        for category, msg in worker_logs:
-            log_game(category, msg)
+        worker_logs = result_data.get("worker_logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
 
     return applied
 
@@ -324,52 +348,52 @@ def update_tracking_tasks(dt: float):
     - Character tasks: inject keys (stays on main thread)
     - Non-character tasks: handled via submit/apply pattern (worker)
     """
-    if not _ACTIVE_TRACKS:
+    tracks = _ACTIVE_TRACKS
+    if not tracks:
         return
 
-    # Debug flag
+    # Cache values once
     debug_tracking = getattr(bpy.context.scene, 'dev_debug_tracking', False)
-
     op = getattr(exp_globals, "ACTIVE_MODAL_OP", None)
-    finished = []
+    now = get_game_time()
+
+    # Track finished indices for batch removal
+    finished_indices = []
     char_count = 0
     obj_count = 0
 
-    for t in _ACTIVE_TRACKS:
-        try:
-            if t._is_char_driver:
-                # Character autopilot - inject keys (main thread)
-                char_count += 1
-                done = t.update_character(dt)
-                if debug_tracking and t._last_keys:
-                    from ..developer.dev_logger import log_game
-                    keys_str = ",".join(sorted(t._last_keys))
-                    log_game("TRACKING", f"AUTOPILOT keys=[{keys_str}] speed={t.speed:.1f}")
-            else:
-                # Non-character - check if arrived (position applied by worker)
-                obj_count += 1
-                done = t._arrived
-                # Also check timeout
-                now = get_game_time()
-                if t.max_runtime > 0.0 and (now - t.start_time) > t.max_runtime:
-                    done = True
-        except Exception:
-            done = True
+    for i, t in enumerate(tracks):
+        done = False
+
+        if t._is_char_driver:
+            # Character autopilot - inject keys (main thread)
+            char_count += 1
+            done = t.update_character(now)
+            if debug_tracking and t._last_keys:
+                from ..developer.dev_logger import log_game
+                keys_str = ",".join(sorted(t._last_keys))
+                log_game("TRACKING", f"AUTOPILOT keys=[{keys_str}] speed={t.speed:.1f}")
+        else:
+            # Non-character - check if arrived (position applied by worker)
+            obj_count += 1
+            done = t._arrived
+            # Also check timeout
+            if not done and t.max_runtime > 0.0:
+                done = (now - t.start_time) > t.max_runtime
 
         if done:
             t._release_keys(op)
-            finished.append(t)
+            finished_indices.append(i)
 
     # Log active track summary
     if debug_tracking and (char_count > 0 or obj_count > 0):
         from ..developer.dev_logger import log_game
-        log_game("TRACKING", f"ACTIVE char={char_count} obj={obj_count} finished={len(finished)}")
+        log_game("TRACKING", f"ACTIVE char={char_count} obj={obj_count} finished={len(finished_indices)}")
 
-    for t in finished:
-        try:
-            _ACTIVE_TRACKS.remove(t)
-        except Exception:
-            pass
+    # Batch removal - rebuild list excluding finished (O(n) instead of O(n²))
+    if finished_indices:
+        finished_set = set(finished_indices)
+        _ACTIVE_TRACKS[:] = [t for i, t in enumerate(tracks) if i not in finished_set]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,10 +410,12 @@ def start(r):
 
     op = getattr(exp_globals, "ACTIVE_MODAL_OP", None)
     if op and from_obj and op.target_object and from_obj == op.target_object:
-        for t in list(_ACTIVE_TRACKS):
+        # Remove existing character autopilot
+        for i in range(len(_ACTIVE_TRACKS) - 1, -1, -1):
+            t = _ACTIVE_TRACKS[i]
             if t._is_char_driver:
                 t._release_keys(op)
-                _ACTIVE_TRACKS.remove(t)
+                del _ACTIVE_TRACKS[i]
 
     task = _TrackTask(
         r_id=r,

@@ -48,6 +48,13 @@ _aabb_stats = {"hits": 0, "misses": 0}  # Per-frame stats for logging
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
 
+# ══════════════════════════════════════════════════════════════════════════════
+# REACTION NODE CACHE (Eliminates node graph iteration during runtime)
+# ══════════════════════════════════════════════════════════════════════════════
+# Maps reaction_index -> node reference for O(1) lookup during reaction execution.
+# Built at game start, cleared on game end.
+_reaction_node_cache: dict[int, object] = {}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AABB CACHE FUNCTIONS
@@ -182,10 +189,42 @@ def log_aabb_stats():
     _aabb_stats = {"hits": 0, "misses": 0}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# REACTION NODE CACHE FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def init_reaction_node_cache(scene) -> int:
+    """
+    Build reaction_index -> node mapping at game start.
+    Eliminates node graph iteration during runtime.
+    Returns number of cached nodes.
+    """
+    global _reaction_node_cache
+    _reaction_node_cache.clear()
+
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+            continue
+        for node in ng.nodes:
+            r_idx = getattr(node, "reaction_index", -1)
+            if r_idx >= 0:
+                _reaction_node_cache[r_idx] = node
+
+    log_game("REACTION-CACHE", f"INIT cached={len(_reaction_node_cache)} reaction nodes")
+    return len(_reaction_node_cache)
+
+
+def reset_reaction_node_cache():
+    """Clear reaction node cache. Called on game stop/reset."""
+    global _reaction_node_cache
+    _reaction_node_cache.clear()
+
+
 def _sync_dynamic_inputs_to_reaction(r, reaction_index):
     """
     Before executing a reaction, resolve any linked data node inputs
     and write them to the reaction definition.
+    Uses cached node lookup - NO node graph iteration during runtime.
 
     Mapping for CUSTOM_ACTION:
       - "Action" socket → custom_action_action
@@ -194,44 +233,39 @@ def _sync_dynamic_inputs_to_reaction(r, reaction_index):
       - "Loop Duration" socket → custom_action_loop_duration
       - "Speed" socket → custom_action_speed
     """
-    # Find the node that owns this reaction
-    for ng in bpy.data.node_groups:
-        if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+    # O(1) lookup using cached mapping
+    node = _reaction_node_cache.get(reaction_index)
+    if not node:
+        return
+
+    # Check the node's inputs for linked data nodes
+    for inp in getattr(node, "inputs", []):
+        if not getattr(inp, "is_linked", False):
             continue
-        for node in ng.nodes:
-            if getattr(node, "reaction_index", -1) != reaction_index:
-                continue
 
-            # Found the node - check its inputs
-            for inp in getattr(node, "inputs", []):
-                if not getattr(inp, "is_linked", False):
-                    continue
+        socket_name = inp.name
+        link = inp.links[0]
+        src_node = link.from_node
 
-                socket_name = inp.name
-                link = inp.links[0]
-                src_node = link.from_node
+        # Resolve based on socket name and node type
+        if socket_name == "Action" and hasattr(src_node, "export_action"):
+            action = src_node.export_action()
+            if action:
+                r.custom_action_action = action.name
 
-                # Resolve based on socket name and node type
-                if socket_name == "Action" and hasattr(src_node, "export_action"):
-                    action = src_node.export_action()
-                    if action:
-                        r.custom_action_action = action.name
+        elif socket_name == "Object" and hasattr(src_node, "export_object"):
+            obj = src_node.export_object()
+            if obj:
+                r.custom_action_target = obj
 
-                elif socket_name == "Object" and hasattr(src_node, "export_object"):
-                    obj = src_node.export_object()
-                    if obj:
-                        r.custom_action_target = obj
+        elif socket_name == "Loop?" and hasattr(src_node, "export_bool"):
+            r.custom_action_loop = src_node.export_bool()
 
-                elif socket_name == "Loop?" and hasattr(src_node, "export_bool"):
-                    r.custom_action_loop = src_node.export_bool()
+        elif socket_name == "Loop Duration" and hasattr(src_node, "export_float"):
+            r.custom_action_loop_duration = src_node.export_float()
 
-                elif socket_name == "Loop Duration" and hasattr(src_node, "export_float"):
-                    r.custom_action_loop_duration = src_node.export_float()
-
-                elif socket_name == "Speed" and hasattr(src_node, "export_float"):
-                    r.custom_action_speed = src_node.export_float()
-
-            return  # Found the node, done
+        elif socket_name == "Speed" and hasattr(src_node, "export_float"):
+            r.custom_action_speed = src_node.export_float()
 
 
 def _execute_reaction_now(r):
@@ -930,6 +964,9 @@ def reset_all_interactions(scene):
 
     # Reset tracker evaluation state
     reset_tracker_state()
+
+    # Reset reaction node cache
+    reset_reaction_node_cache()
 
     # Reset AABB cache (Phase 1.2)
     reset_aabb_cache()

@@ -77,6 +77,7 @@ _CATEGORY_MAP = {
     'ANIMATIONS': 'animations',
     'ANIM-CACHE': 'anim_cache',
     'ANIM-WORKER': 'anim_worker',
+    'TEST_MODAL': 'animations',  # Animation 2.0 test modal
     'PROJECTILE': 'projectiles',
     'HITSCAN': 'hitscans',
 
@@ -90,6 +91,7 @@ _CATEGORY_MAP = {
     # Pose Library System
     'POSES': 'poses',
     'POSE-CACHE': 'poses',
+    'POSE-BLEND': 'pose_blend',  # Pose-to-pose blending diagnostics
 
     # Tracker System
     'TRACKERS': 'trackers',

@@ -14,8 +14,7 @@ import bpy
 from ..animations.test_panel import (
     get_test_controller,
     reset_test_controller,
-    playback_update,
-    pose_blend_auto_update,
+    is_test_modal_active,
 )
 
 
@@ -229,38 +228,6 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
         row.label(text="Animation 2.0", icon='ACTION')
 
         if scene.dev_section_anim:
-            # ─── Rig Analyzer ─────────────────────────────────────────────
-            sub_box = box.box()
-            row = sub_box.row()
-            row.label(text="Rig Analyzer", icon='VIEWZOOM')
-
-            armature = scene.target_armature
-            if armature:
-                col = sub_box.column(align=True)
-                col.operator("rig.analyze", text="Analyze Rig", icon='PLAY')
-
-                # Show calibration status
-                from .rig_analyzer import is_calibrated, get_calibration, get_calibration_for_chain
-                if is_calibrated():
-                    calib = get_calibration()
-                    col.label(text=f"Calibrated: {len(calib)} bones", icon='CHECKMARK')
-                    col.operator("rig.copy_report", text="Copy Report", icon='COPYDOWN')
-
-                    # Show quick summary for IK chains
-                    for chain in ["arm_L", "arm_R", "leg_L", "leg_R"]:
-                        chain_data = get_calibration_for_chain(chain)
-                        if chain_data and len(chain_data) >= 2:
-                            root = chain_data[0]
-                            mid = chain_data[1] if len(chain_data) > 1 else None
-                            if root and mid:
-                                row = col.row()
-                                row.scale_y = 0.8
-                                row.label(text=f"  {chain}: {root.bone_axis} roll={root.roll_deg:.0f}")
-                else:
-                    col.label(text="Not calibrated", icon='INFO')
-            else:
-                sub_box.label(text="Set target armature first", icon='ERROR')
-
             # ─── Rig Visualizer (3D Viewport) ─────────────────────────────
             sub_box = box.box()
             row = sub_box.row()
@@ -318,6 +285,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
             col.prop(scene, "dev_debug_ik_solve", text="IK Solve Details")
             col.prop(scene, "dev_debug_rig_state", text="Rig State (verbose)")
+            col.prop(scene, "dev_debug_pose_blend", text="Pose Blend Logs")
 
             props = scene.anim2_test
             ctrl = get_test_controller()
@@ -375,13 +343,13 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     row.prop(props, "loop_playback")
                     row.prop(props, "playback_timeout")
 
-                    # Blend secondary toggle
+                    # A↔B crossfade loop toggle
                     row = options_box.row()
-                    row.prop(scene, "test_blend_enabled", text="Blend Secondary")
+                    row.prop(scene, "test_blend_enabled", text="A↔B Crossfade")
                     if scene.test_blend_enabled and ctrl.cache.count > 1:
                         col = options_box.column(align=True)
+                        col.label(text="Animation B:")
                         col.prop(props, "blend_animation", text="")
-                        col.prop(props, "blend_weight", slider=True)
                 else:
                     options_box.label(text="Bake animations first", icon='INFO')
 
@@ -439,8 +407,12 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     # Shared influence
                     options_box.prop(scene, "pose_blend_ik_influence", slider=True)
 
+                    # Joint limits toggle
+                    options_box.separator()
+                    options_box.prop(scene, "test_apply_joint_limits", text="Apply Joint Limits", icon='BONE_DATA')
+
                     # Show current blend weight (read-only during playback)
-                    if bpy.app.timers.is_registered(pose_blend_auto_update):
+                    if is_test_modal_active():
                         options_box.separator()
                         options_box.label(text=f"Blend: {scene.pose_blend_weight:.0%}", icon='TIME')
                 else:

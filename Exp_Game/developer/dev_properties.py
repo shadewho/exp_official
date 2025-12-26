@@ -748,6 +748,18 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_pose_blend = bpy.props.BoolProperty(
+        name="Pose Blend",
+        description=(
+            "Pose-to-pose blending diagnostics:\n"
+            "• Per-frame timing breakdown\n"
+            "• Worker computation time\n"
+            "• IK chain solve time\n"
+            "• Bone transform application time"
+        ),
+        default=False
+    )
+
     # --- Pose Test Properties (Animation 2.0 Dev Panel) ---
 
     def _get_pose_items(self, context):
@@ -826,6 +838,12 @@ def register_properties():
         name="Blend Secondary",
         description="Enable blending a second animation",
         default=False
+    )
+
+    bpy.types.Scene.test_apply_joint_limits = bpy.props.BoolProperty(
+        name="Apply Joint Limits",
+        description="Enforce anatomical rotation limits during pose blending",
+        default=True
     )
 
     # --- Pose Mode Options ---
@@ -1184,6 +1202,7 @@ def unregister_properties():
 
         # Pose Library
         'dev_debug_poses',
+        'dev_debug_pose_blend',
         'pose_test_name',
         'pose_test_blend_time',
         'pose_blend_enabled',

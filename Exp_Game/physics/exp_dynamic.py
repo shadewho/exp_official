@@ -235,3 +235,24 @@ def update_dynamic_meshes(modal_op):
     if debug_dyn_cache and mesh_count > 0:
         from ..developer.dev_logger import log_game
         log_game("DYN-CACHE", f"TRANSFORMS: sent={mesh_count} meshes")
+
+
+def cleanup_dynamic_mesh_state(modal_op):
+    """
+    Clean up dynamic mesh state when game ends.
+    Call from modal.cancel() to prevent stale data accumulating.
+    """
+    if hasattr(modal_op, "platform_prev_positions"):
+        modal_op.platform_prev_positions.clear()
+    if hasattr(modal_op, "_cached_dyn_radius"):
+        modal_op._cached_dyn_radius.clear()
+    if hasattr(modal_op, "_cached_dynamic_mesh_ids"):
+        modal_op._cached_dynamic_mesh_ids.clear()
+    if hasattr(modal_op, "platform_prev_quaternions"):
+        modal_op.platform_prev_quaternions.clear()
+    if hasattr(modal_op, "dynamic_objects_map"):
+        modal_op.dynamic_objects_map.clear()
+    if hasattr(modal_op, "platform_linear_velocity_map"):
+        modal_op.platform_linear_velocity_map.clear()
+    if hasattr(modal_op, "platform_ang_velocity_map"):
+        modal_op.platform_ang_velocity_map.clear()

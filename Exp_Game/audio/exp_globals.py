@@ -75,7 +75,9 @@ def update_sound_tasks():
 
 def stop_all_sounds():
     """Force-stop all playing sounds. Call this when the game (modal) ends."""
+    global ACTIVE_MODAL_OP
     for task in _sound_tasks:
         task.handle.stop()
     _sound_tasks.clear()
+    ACTIVE_MODAL_OP = None
 

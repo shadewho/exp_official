@@ -48,6 +48,7 @@ from .exp_engine_bridge import (
     shutdown_animations,
     cache_animations_in_workers,
     cache_poses_in_workers,
+    cache_joint_limits_in_workers,
 )
 
 def _first_view3d_r3d():
@@ -577,6 +578,9 @@ class ExpModal(bpy.types.Operator):
             # Cache pose library in workers (must happen AFTER engine is running)
             cache_poses_in_workers(self, context)
 
+            # Cache joint limits in workers (must happen AFTER engine is running)
+            cache_joint_limits_in_workers(self, context)
+
             # Initialize interaction offload tracking
             self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job
             self._interaction_map = []  # Maps worker indices to scene interactions
@@ -781,6 +785,58 @@ class ExpModal(bpy.types.Operator):
             self.physics_controller.cleanup_debug_handlers()
         # ====================================
 
+        # ========== CAMERA STATE CLEANUP ==========
+        # Clean up per-operator camera smoothers/latches/view state
+        from ..physics.exp_view import cleanup_camera_state
+        cleanup_camera_state(id(self))
+        # ====================================
+
+        # ========== DYNAMIC MESH STATE CLEANUP ==========
+        from ..physics.exp_dynamic import cleanup_dynamic_mesh_state
+        cleanup_dynamic_mesh_state(self)
+        # ====================================
+
+        # ========== AUDIO CLEANUP ==========
+        from ..audio.exp_audio import reset_audio_managers
+        reset_audio_managers()
+        # ====================================
+
+        # ========== FONT CACHE CLEANUP ==========
+        from ..reactions.exp_fonts import clear_font_cache
+        clear_font_cache()
+        # ====================================
+
+        # ========== IK STATE CLEANUP ==========
+        from ..animations.runtime_ik import clear_ik_state
+        clear_ik_state()
+        # ====================================
+
+        # ========== STATS CLEANUP ==========
+        from ..developer.dev_stats import reset_stats
+        reset_stats()
+        # ====================================
+
+        # ========== TRACKER CALLBACKS CLEANUP ==========
+        from ..props_and_utils.trackers import clear_tracker_callbacks
+        clear_tracker_callbacks()
+        # ====================================
+
+        # ========== CROSSHAIRS CLEANUP ==========
+        from ..reactions.exp_crosshairs import disable_crosshairs
+        disable_crosshairs()
+        # ====================================
+
+        # NOTE: Do NOT call reset_fullscreen_state() here!
+        # exit_fullscreen_once() (called below) needs the _state["orig_ui"] data
+        # to properly restore the UI. It handles its own cleanup after restoration.
+
+        # ========== LATENCY TRACKING CLEANUP ==========
+        if hasattr(self, '_sync_frame_latencies'):
+            self._sync_frame_latencies.clear()
+        if hasattr(self, '_sync_time_latencies'):
+            self._sync_time_latencies.clear()
+        # ====================================
+
         # ========== DIAGNOSTICS LOG EXPORT ==========
         # Export fast buffer logger diagnostics if enabled
         from ..developer.dev_logger import export_game_log, clear_log, get_buffer_size
@@ -808,15 +864,16 @@ class ExpModal(bpy.types.Operator):
         
         # Restore scene state and user preferences
         restore_user_settings(context.scene)
-        stop_all_sounds()
-        get_global_audio_state_manager().stop_current_sound()
+        # NOTE: Audio already cleaned up by reset_audio_managers() above (line 801)
+        # Don't call stop_all_sounds() or get_global_audio_state_manager().stop_current_sound() again
 
-        # Restore proxy mesh visibility
-        for entry in context.scene.proxy_meshes:
-            if entry.hide_during_game and entry.mesh_object:
-                original = self._proxy_mesh_original_states.get(entry.mesh_object.name)
-                if original is not None:
-                    entry.mesh_object.hide_viewport = original
+        # Restore proxy mesh visibility (only if NOT launched from UI, since scene will be reverted)
+        if not self.launched_from_ui:
+            for entry in context.scene.proxy_meshes:
+                if entry.hide_during_game and entry.mesh_object:
+                    original = self._proxy_mesh_original_states.get(entry.mesh_object.name)
+                    if original is not None:
+                        entry.mesh_object.hide_viewport = original
 
         #-----------------------------------------------
         ### Cleanup scene and temporary blend file ###

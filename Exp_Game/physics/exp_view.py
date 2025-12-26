@@ -498,6 +498,16 @@ def submit_camera_occlusion_early(op, context):
     return job_id  # Return job_id for explicit polling
 
 
+def cleanup_camera_state(op_key):
+    """
+    Clean up camera state when operator ends.
+    Call from modal cancel() to prevent memory leaks.
+    """
+    _SMOOTHERS.pop(op_key, None)
+    _LATCHES.pop(op_key, None)
+    _VIEWS.pop(op_key, None)
+
+
 def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
     """
     Explicitly poll for camera occlusion result with timeout (same-frame pattern).

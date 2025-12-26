@@ -447,9 +447,176 @@ Key bone positions in rest (T-pose):
 
 ---
 
+## Joint Rotation Limits
+
+Anatomical rotation limits for each bone. Used by the engine to constrain poses during blending.
+
+**Format**: `[min°, max°]` per axis. `[0, 0]` means no rotation allowed on that axis.
+
+**Note on Hips bone**: The `Hips` bone is the ROOT MASTER PARENT of the entire armature. Rotating Hips rotates every single bone in the skeleton. It is intentionally **NOT included** in the engine's joint limit data (`default_limits.py`) because:
+1. It's the root bone - all other bones are children of it
+2. Applying limits would break root motion and character positioning
+3. Any rotation applied to Hips affects the whole character's world-space orientation
+
+The Hips bone is listed in the table below for documentation completeness, but the engine does not clamp its rotation.
+
+### Spine & Torso
+
+| Bone | X (Forward/Back) | Y (Twist) | Z (Side Bend) |
+|------|------------------|-----------|---------------|
+| Hips | No limit (root) | No limit | No limit |
+| Spine | [-45, 45] | [-45, 45] | [-45, 45] |
+| Spine1 | [-30, 30] | [-30, 30] | [-30, 30] |
+| Spine2 | [-30, 30] | [-30, 30] | [-30, 30] |
+
+### Neck & Head
+
+| Bone | X (Nod) | Y (Turn) | Z (Tilt) |
+|------|---------|----------|----------|
+| NeckLower | [-45, 45] | [-45, 45] | [-30, 30] |
+| NeckUpper | [-30, 30] | [-30, 30] | [-30, 30] |
+| Head | [-45, 45] | [-60, 60] | [-30, 30] |
+
+### Left Arm
+
+| Bone | X | Y | Z |
+|------|---|---|---|
+| LeftArm | [-90, 90] | [-120, 120] | [-80, 140] |
+| LeftForeArm | [0, 0] | [-170, 60] | [0, 90] |
+| LeftHand | [-90, 90] | [0, 0] | [-60, 60] |
+
+### Right Arm (Mirrored)
+
+| Bone | X | Y | Z |
+|------|---|---|---|
+| RightArm | [-90, 90] | [-120, 120] | [-140, 80] |
+| RightForeArm | [0, 0] | [-60, 170] | [-90, 0] |
+| RightHand | [-90, 90] | [0, 0] | [-60, 60] |
+
+### Left Leg
+
+| Bone | X | Y | Z |
+|------|---|---|---|
+| LeftThigh | [-90, 120] | [-40, 40] | [-20, 80] |
+| LeftShin | [-150, 10] | [-10, 10] | [0, 0] |
+| LeftFoot | [-80, 45] | [-30, 30] | [-40, 40] |
+| LeftToeBase | [-40, 40] | [0, 0] | [0, 0] |
+
+### Right Leg (Mirrored)
+
+| Bone | X | Y | Z |
+|------|---|---|---|
+| RightThigh | [-90, 120] | [-40, 40] | [-80, 20] |
+| RightShin | [-150, 10] | [-10, 10] | [0, 0] |
+| RightFoot | [-80, 45] | [-30, 30] | [-40, 40] |
+| RightToeBase | [-40, 40] | [0, 0] | [0, 0] |
+
+### Left Hand Fingers
+
+| Bone | X (Curl) | Y | Z (Spread) |
+|------|----------|---|------------|
+| LeftHandThumb1 | [-30, 30] | [0, 0] | [-50, 40] |
+| LeftHandThumb2 | [0, 0] | [0, 0] | [-60, 0] |
+| LeftHandThumb3 | [0, 0] | [0, 0] | [-60, 0] |
+| LeftHandIndex1 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandIndex2 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandIndex3 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandMiddle1 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandMiddle2 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandMiddle3 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandRing1 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandRing2 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandRing3 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandPinky1 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandPinky2 | [-20, 90] | [0, 0] | [-20, 20] |
+| LeftHandPinky3 | [-20, 90] | [0, 0] | [-20, 20] |
+
+### Right Hand Fingers (Mirrored)
+
+| Bone | X (Curl) | Y | Z (Spread) |
+|------|----------|---|------------|
+| RightHandThumb1 | [-30, 30] | [0, 0] | [-40, 50] |
+| RightHandThumb2 | [0, 0] | [0, 0] | [0, 60] |
+| RightHandThumb3 | [0, 0] | [0, 0] | [0, 60] |
+| RightHandIndex1 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandIndex2 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandIndex3 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandMiddle1 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandMiddle2 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandMiddle3 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandRing1 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandRing2 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandRing3 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandPinky1 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandPinky2 | [-20, 90] | [0, 0] | [-20, 20] |
+| RightHandPinky3 | [-20, 90] | [0, 0] | [-20, 20] |
+
+### JSON Format (For Engine)
+
+```json
+{
+  "Spine": {"X": [-45, 45], "Y": [-45, 45], "Z": [-45, 45]},
+  "Spine1": {"X": [-30, 30], "Y": [-30, 30], "Z": [-30, 30]},
+  "Spine2": {"X": [-30, 30], "Y": [-30, 30], "Z": [-30, 30]},
+  "NeckLower": {"X": [-45, 45], "Y": [-45, 45], "Z": [-30, 30]},
+  "NeckUpper": {"X": [-30, 30], "Y": [-30, 30], "Z": [-30, 30]},
+  "Head": {"X": [-45, 45], "Y": [-60, 60], "Z": [-30, 30]},
+
+  "LeftArm": {"X": [-90, 90], "Y": [-120, 120], "Z": [-80, 140]},
+  "LeftForeArm": {"X": [0, 0], "Y": [-170, 60], "Z": [0, 90]},
+  "LeftHand": {"X": [-90, 90], "Y": [0, 0], "Z": [-60, 60]},
+  "RightArm": {"X": [-90, 90], "Y": [-120, 120], "Z": [-140, 80]},
+  "RightForeArm": {"X": [0, 0], "Y": [-60, 170], "Z": [-90, 0]},
+  "RightHand": {"X": [-90, 90], "Y": [0, 0], "Z": [-60, 60]},
+
+  "LeftThigh": {"X": [-90, 120], "Y": [-40, 40], "Z": [-20, 80]},
+  "LeftShin": {"X": [-150, 10], "Y": [-10, 10], "Z": [0, 0]},
+  "LeftFoot": {"X": [-80, 45], "Y": [-30, 30], "Z": [-40, 40]},
+  "LeftToeBase": {"X": [-40, 40], "Y": [0, 0], "Z": [0, 0]},
+  "RightThigh": {"X": [-90, 120], "Y": [-40, 40], "Z": [-80, 20]},
+  "RightShin": {"X": [-150, 10], "Y": [-10, 10], "Z": [0, 0]},
+  "RightFoot": {"X": [-80, 45], "Y": [-30, 30], "Z": [-40, 40]},
+  "RightToeBase": {"X": [-40, 40], "Y": [0, 0], "Z": [0, 0]},
+
+  "LeftHandThumb1": {"X": [-30, 30], "Y": [0, 0], "Z": [-50, 40]},
+  "LeftHandThumb2": {"X": [0, 0], "Y": [0, 0], "Z": [-60, 0]},
+  "LeftHandThumb3": {"X": [0, 0], "Y": [0, 0], "Z": [-60, 0]},
+  "LeftHandIndex1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandIndex2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandIndex3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandMiddle1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandMiddle2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandMiddle3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandRing1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandRing2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandRing3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandPinky1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandPinky2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "LeftHandPinky3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+
+  "RightHandThumb1": {"X": [-30, 30], "Y": [0, 0], "Z": [-40, 50]},
+  "RightHandThumb2": {"X": [0, 0], "Y": [0, 0], "Z": [0, 60]},
+  "RightHandThumb3": {"X": [0, 0], "Y": [0, 0], "Z": [0, 60]},
+  "RightHandIndex1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandIndex2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandIndex3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandMiddle1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandMiddle2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandMiddle3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandRing1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandRing2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandRing3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandPinky1": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandPinky2": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]},
+  "RightHandPinky3": {"X": [-20, 90], "Y": [0, 0], "Z": [-20, 20]}
+}
+```
+
+---
+
 ## Version History
 
 | Date | Change |
 |------|--------|
+| 2025-12-25 | Added Joint Rotation Limits section |
 | 2025-12-20 | Initial comprehensive documentation |
-wwwwwwwad

@@ -115,10 +115,9 @@ def execute_property_reaction(r):
     path_str = r.property_data_path.strip()
     if not path_str:
         return
-    try:
-        current_val = eval(path_str, {"bpy": bpy, "mathutils": mathutils})
-    except Exception as ex:
-        return
+    # NOTE: We don't eval the current value here anymore - it was never used.
+    # The default_val (user-defined) is used as the starting value instead.
+    # This saves an expensive eval() per reaction execution.
 
     # Use the user-defined default value as the starting value.
     if r.property_type == "BOOL":

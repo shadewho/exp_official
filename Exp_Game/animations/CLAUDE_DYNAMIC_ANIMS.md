@@ -83,23 +83,21 @@ actual gameplay use. The test suite ensures everything works before that.
 
 ## System Architecture
 
-### Phase 1: Rig Calibration (Current)
+### Phase 1: Rig Structure (Complete)
 
-Analyze the rig to understand its structure:
+The rig structure and joint limits are defined in:
+- `animations/rig.md` - Full rig documentation with joint limits
+- `engine/animations/default_limits.py` - Default joint limits as Python data
 
 ```
-RIG CALIBRATION
-├── Bone Orientations     - Which axis points down the bone
-├── Bend Axes             - Which axis each joint bends on
-├── Roll Values           - Bone roll for proper rotation
-└── Chain Definitions     - IK chains (arm_L, arm_R, leg_L, leg_R)
+RIG DATA
+├── Bone Hierarchy        - Parent/child relationships
+├── Bone Lengths          - Precise measurements for IK
+├── IK Chain Definitions  - arm_L, arm_R, leg_L, leg_R
+└── Joint Rotation Limits - Min/max angles per bone per axis
 ```
 
-Files:
-- `engine/animations/rig_calibration.py` - Worker-safe analysis
-- `developer/rig_analyzer.py` - UI and data extraction
-
-### Phase 2: Movement Profiles (Next)
+### Phase 2: Movement Profiles (Current)
 
 Define what each joint CAN and CANNOT do:
 
@@ -212,25 +210,26 @@ All computation happens in engine workers:
 | `animations/test_panel.py` | Animation 2.0 test suite UI and logic |
 | `animations/pose_library.py` | Pose capture and storage |
 | `animations/runtime_ik.py` | IK state management |
+| `animations/rig.md` | Complete rig documentation with joint limits |
 | `engine/worker/entry.py` | Worker job handlers |
 | `engine/animations/ik.py` | IK solvers (worker-safe) |
 | `engine/animations/blend.py` | Blend math (worker-safe) |
-| `engine/animations/rig_calibration.py` | Rig analysis (worker-safe) |
-| `developer/rig_analyzer.py` | Rig analyzer UI |
+| `engine/animations/joint_limits.py` | Joint limit enforcement (worker-safe) |
+| `engine/animations/default_limits.py` | Default rig joint limits |
 | `developer/rig_visualizer.py` | Debug visualization |
 
 ---
 
 ## Development Roadmap
 
-### Now
+### Complete
 - [x] Worker-based pose blending (POSE_BLEND_COMPUTE)
 - [x] Worker-based IK solving (IK_SOLVE_BATCH)
-- [x] Rig calibration system
-- [ ] Joint limit definitions
-- [ ] Joint limit enforcement during blend
+- [x] Rig structure documentation (rig.md)
+- [x] Joint limit definitions (default_limits.py)
+- [x] Joint limit enforcement during blend (CACHE_JOINT_LIMITS)
 
-### Next
+### In Progress
 - [ ] Coupling rules (bones that move together)
 - [ ] Spine IK chain
 - [ ] Full-body coordination

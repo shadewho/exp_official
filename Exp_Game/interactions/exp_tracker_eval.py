@@ -15,6 +15,7 @@ Architecture:
 
 import bpy
 from ..developer.dev_logger import log_game
+from ..developer.dev_debug_gate import should_print_debug
 from ..props_and_utils.exp_time import get_game_time
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
@@ -250,12 +251,13 @@ def collect_world_state(context) -> dict:
             loc = obj.matrix_world.translation
             positions[name] = (loc.x, loc.y, loc.z)
 
-    # Log world state filtering stats (Phase 1.1)
-    total_objects = sum(1 for o in bpy.data.objects if o.type in {'MESH', 'ARMATURE', 'EMPTY'})
-    collected = len(positions)
-    if total_objects > 0:
-        reduction = ((total_objects - collected) / total_objects) * 100
-        log_game("WORLD-STATE", f"COLLECT filtered={collected} total={total_objects} reduction={reduction:.0f}%")
+    # Log world state filtering stats (Phase 1.1) - only compute if logging enabled
+    if should_print_debug("world_state"):
+        total_objects = sum(1 for o in bpy.data.objects if o.type in {'MESH', 'ARMATURE', 'EMPTY'})
+        collected = len(positions)
+        if total_objects > 0:
+            reduction = ((total_objects - collected) / total_objects) * 100
+            log_game("WORLD-STATE", f"COLLECT filtered={collected} total={total_objects} reduction={reduction:.0f}%")
 
     # Character state
     char_state = _get_character_state(context)

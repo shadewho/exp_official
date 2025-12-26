@@ -50,14 +50,17 @@ from ..developer.gpu_utils import (
 
 _kcc_draw_handler = None
 _kcc_vis_data = None  # Shared visualization data
+_kcc_vis_version = 0  # Incremented when data changes
+_kcc_cached_batch = None  # Cached GPU batch
+_kcc_cached_version = -1  # Version when batch was built
 
 # Pre-computed vertical connector angles (cos, sin) for capsule
 _CONNECTOR_ANGLES = ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0))
 
 
 def _draw_kcc_visual():
-    """GPU draw callback for KCC visualization (optimized)."""
-    global _kcc_vis_data
+    """GPU draw callback for KCC visualization (optimized with batch caching)."""
+    global _kcc_vis_data, _kcc_cached_batch, _kcc_cached_version, _kcc_vis_version
 
     if _kcc_vis_data is None:
         return
@@ -66,12 +69,6 @@ def _draw_kcc_visual():
     if not scene.dev_debug_kcc_visual:
         return
 
-    # Read toggles once
-    show_capsule = scene.dev_debug_kcc_visual_capsule
-    show_normals = scene.dev_debug_kcc_visual_normals
-    show_ground = scene.dev_debug_kcc_visual_ground
-    show_movement = scene.dev_debug_kcc_visual_movement
-
     # Set GPU state
     gpu.state.depth_test_set('LESS_EQUAL')
     gpu.state.blend_set('ALPHA')
@@ -79,6 +76,23 @@ def _draw_kcc_visual():
 
     # CACHED shader (major optimization)
     shader = get_cached_shader()
+
+    # Check if we can use cached batch (data hasn't changed)
+    if _kcc_cached_batch is not None and _kcc_cached_version == _kcc_vis_version:
+        # Fast path: just redraw cached batch
+        shader.bind()
+        _kcc_cached_batch.draw(shader)
+        gpu.state.line_width_set(1.0)
+        gpu.state.depth_test_set('NONE')
+        gpu.state.blend_set('NONE')
+        return
+
+    # Slow path: rebuild batch (only when data changed)
+    # Read toggles once
+    show_capsule = scene.dev_debug_kcc_visual_capsule
+    show_normals = scene.dev_debug_kcc_visual_normals
+    show_ground = scene.dev_debug_kcc_visual_ground
+    show_movement = scene.dev_debug_kcc_visual_movement
 
     all_verts = []
     all_colors = []
@@ -231,13 +245,14 @@ def _draw_kcc_visual():
             )
 
     # ═════════════════════════════════════════════════════════════════════
-    # SINGLE BATCHED DRAW CALL
+    # SINGLE BATCHED DRAW CALL (cached for reuse)
     # ═════════════════════════════════════════════════════════════════════
     if all_verts:
         from gpu_extras.batch import batch_for_shader
-        batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
+        _kcc_cached_batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
+        _kcc_cached_version = _kcc_vis_version
         shader.bind()
-        batch.draw(shader)
+        _kcc_cached_batch.draw(shader)
 
     # Reset GPU state
     gpu.state.line_width_set(1.0)
@@ -256,7 +271,7 @@ def enable_kcc_visualizer():
 
 def disable_kcc_visualizer():
     """Unregister the KCC visualization draw handler."""
-    global _kcc_draw_handler, _kcc_vis_data
+    global _kcc_draw_handler, _kcc_vis_data, _kcc_cached_batch, _kcc_cached_version
 
     if _kcc_draw_handler is not None:
         try:
@@ -266,6 +281,8 @@ def disable_kcc_visualizer():
         _kcc_draw_handler = None
 
     _kcc_vis_data = None
+    _kcc_cached_batch = None
+    _kcc_cached_version = -1
     _tag_all_view3d_for_redraw()
 
 def _tag_all_view3d_for_redraw():
@@ -936,7 +953,7 @@ class KinematicCharacterController:
 
         PERFORMANCE: Only updates if position changed significantly.
         """
-        global _kcc_vis_data
+        global _kcc_vis_data, _kcc_vis_version
 
         if not getattr(context.scene, 'dev_debug_kcc_visual', False):
             return
@@ -1034,5 +1051,6 @@ class KinematicCharacterController:
             )
 
         _kcc_vis_data = vis_data
+        _kcc_vis_version += 1  # Increment to trigger batch rebuild
         _tag_all_view3d_for_redraw()
     

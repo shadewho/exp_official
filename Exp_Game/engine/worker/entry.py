@@ -70,6 +70,15 @@ from animations.ik import (
     ARM_IK,
 )
 
+# Import joint limits for anatomical constraints during pose blending
+from animations.joint_limits import (
+    set_worker_limits,
+    get_worker_limits,
+    has_worker_limits,
+    apply_limits_to_pose,
+    clamp_rotation,
+)
+
 
 # ============================================================================
 # DEBUG FLAG
@@ -474,12 +483,16 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
     This is the WORKER-BASED version of pose-to-pose blending.
     All slerp/lerp math happens here, not on main thread.
 
+    JOINT LIMITS: If limits are cached (via CACHE_JOINT_LIMITS), they are applied
+    after blending to ensure anatomically valid poses.
+
     Input job_data:
         {
             "pose_a": {bone_name: [qw,qx,qy,qz,lx,ly,lz,sx,sy,sz], ...},
             "pose_b": {bone_name: [10 floats], ...},
             "weight": float (0-1),
             "bone_names": [list of bone names to blend],
+            "apply_limits": bool (default True - apply joint limits if cached),
             "ik_chains": [
                 {
                     "chain": "arm_R",
@@ -498,6 +511,7 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
             "success": bool,
             "bone_transforms": {bone_name: (10-float tuple), ...},
             "ik_results": {chain_name: {...}, ...},
+            "limits_applied": int (number of bones clamped),
             "calc_time_us": float,
             "logs": [(category, message), ...]
         }
@@ -510,6 +524,7 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
     weight = job_data.get("weight", 0.5)
     bone_names = job_data.get("bone_names", list(set(pose_a.keys()) | set(pose_b.keys())))
     ik_chains = job_data.get("ik_chains", [])
+    apply_limits = job_data.get("apply_limits", True)  # Enable by default
 
     # Identity transform for missing bones
     identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
@@ -554,6 +569,27 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
         for i, bone_name in enumerate(bone_names):
             bone_transforms[bone_name] = tuple(blended[i].tolist())
 
+    # Apply joint limits if enabled and limits are cached
+    limits_applied = 0
+    clamped_bones_list = []
+    if apply_limits and has_worker_limits() and bone_transforms:
+        # Convert bone_transforms to format expected by apply_limits_to_pose
+        # Format: {bone_name: [qw, qx, qy, qz, lx, ly, lz, sx, sy, sz]}
+        transforms_for_limits = {
+            bone: list(xform) for bone, xform in bone_transforms.items()
+        }
+
+        # Apply limits (returns clamped transforms, count, and list of clamped bones)
+        clamped_transforms, limits_applied, clamped_bones_list = apply_limits_to_pose(transforms_for_limits)
+
+        # Convert back to tuple format
+        bone_transforms = {
+            bone: tuple(xform) for bone, xform in clamped_transforms.items()
+        }
+
+        if limits_applied > 0:
+            logs.append(("JOINT-LIMITS", f"Clamped {limits_applied} bones: {', '.join(clamped_bones_list[:5])}{'...' if len(clamped_bones_list) > 5 else ''}"))
+
     # Process IK chains
     ik_results = {}
     for ik_data in ik_chains:
@@ -593,13 +629,17 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
 
     calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
-    logs.append(("POSE-BLEND", f"[NUMPY] {len(bone_transforms)} bones weight={weight:.2f} ik={len(ik_results)} chains {calc_time_us:.0f}µs"))
+    # Build log message with limit info if any were applied
+    limit_info = f" limits={limits_applied}" if limits_applied > 0 else ""
+    logs.append(("POSE-BLEND", f"[NUMPY] {len(bone_transforms)} bones weight={weight:.2f} ik={len(ik_results)} chains{limit_info} {calc_time_us:.0f}µs"))
 
     return {
         "success": True,
         "bone_transforms": bone_transforms,
         "ik_results": ik_results,
         "bones_count": len(bone_transforms),
+        "limits_applied": limits_applied,
+        "clamped_bones": clamped_bones_list,
         "calc_time_us": calc_time_us,
         "logs": logs
     }
@@ -1010,6 +1050,36 @@ def process_job(job) -> dict:
                 result_data = {
                     "success": False,
                     "error": "No pose data provided"
+                }
+
+        elif job.job_type == "CACHE_JOINT_LIMITS":
+            # Cache joint limits for anatomical constraints during pose blending
+            # Sent ONCE at game start. Used by POSE_BLEND_COMPUTE to clamp rotations.
+            limits_data = job.data.get("limits", {})
+
+            if limits_data:
+                # Store in worker via joint_limits module
+                set_worker_limits(limits_data)
+
+                bone_count = len(limits_data)
+                axis_count = sum(
+                    len(bone_limits)
+                    for bone_limits in limits_data.values()
+                )
+
+                logs = [("JOINT-LIMITS", f"WORKER_CACHED {bone_count} bones, {axis_count} axis constraints")]
+
+                result_data = {
+                    "success": True,
+                    "bone_count": bone_count,
+                    "axis_count": axis_count,
+                    "message": "Joint limits cached successfully",
+                    "logs": logs
+                }
+            else:
+                result_data = {
+                    "success": False,
+                    "error": "No joint limits data provided"
                 }
 
         elif job.job_type == "ANIMATION_COMPUTE":

@@ -212,6 +212,27 @@ def get_global_audio_state_manager():
         _global_char_audio_mgr = CharacterAudioStateManager()
     return _global_char_audio_mgr
 
+
+def reset_audio_managers():
+    """
+    Reset audio manager singletons. Call on game end.
+    Stops any playing sounds and clears singleton references.
+    """
+    global _global_audio_manager, _global_char_audio_mgr
+
+    # Stop character audio first
+    if _global_char_audio_mgr is not None:
+        _global_char_audio_mgr.stop_current_sound()
+        _global_char_audio_mgr = None
+
+    # Stop all audio on the device
+    if _global_audio_manager is not None:
+        try:
+            _global_audio_manager.stop_all()
+        except Exception:
+            pass
+        _global_audio_manager = None
+
 ##############################################################################
 # TEST OPERATOR (No Local Path Fallback)
 ##############################################################################

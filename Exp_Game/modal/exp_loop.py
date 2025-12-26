@@ -19,6 +19,7 @@ from ..reactions.exp_projectiles import (
     process_hitscan_results,
     process_projectile_results,
     interpolate_projectile_visuals,
+    init_impact_cache,
 )
 from ..reactions.exp_transforms import (
     update_transform_tasks,
@@ -40,7 +41,7 @@ from ..physics.exp_view import (
     poll_camera_result_with_timeout,
     cache_camera_worker_result,
 )
-from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result, init_aabb_cache
+from ..interactions.exp_interactions import check_interactions, apply_interaction_check_result, init_aabb_cache, init_reaction_node_cache
 from ..interactions.exp_tracker_eval import (
     set_current_operator,
     submit_tracker_evaluation,
@@ -89,6 +90,12 @@ class GameLoop:
 
         # Initialize AABB cache for collision interactions (Phase 1.2)
         init_aabb_cache(bpy.context.scene)
+
+        # Initialize impact cache for projectiles/hitscans (eliminates node graph iteration)
+        init_impact_cache(bpy.context.scene)
+
+        # Initialize reaction node cache (eliminates node graph iteration for dynamic inputs)
+        init_reaction_node_cache(bpy.context.scene)
 
     def shutdown(self):
         """Clean up game loop resources (called when game stops)."""
@@ -376,6 +383,7 @@ class GameLoop:
             engine.output_debug_stats()  # Gets context from bpy.context internally
 
         for result in results:
+
             # Process result and track latency metrics
             if hasattr(op, 'process_engine_result'):
                 op.process_engine_result(result)

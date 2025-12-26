@@ -849,3 +849,81 @@ def cache_poses_in_workers(modal, context) -> bool:
             log_game("POSE-CACHE", f"CACHE_FAIL worker={ANIMATION_WORKER_ID} timeout after {transfer_elapsed_ms:.0f}ms")
 
     return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOINT LIMITS CACHING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cache_joint_limits_in_workers(modal, context) -> bool:
+    """
+    Cache joint limits in the ANIMATION WORKER for anatomical pose constraints.
+    MUST be called AFTER init_engine() since it needs workers to be running.
+
+    Joint limits are applied during POSE_BLEND_COMPUTE to ensure poses
+    stay within anatomically valid ranges.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+
+    Returns:
+        True if caching succeeded
+    """
+    from ..developer.dev_logger import log_game
+    from ..engine.animations.default_limits import get_default_limits
+
+    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
+        log_game("JOINT-LIMITS", "SKIP engine not available")
+        return False
+
+    # Get default joint limits from the standard rig definition
+    limits_data = get_default_limits()
+
+    if not limits_data:
+        log_game("JOINT-LIMITS", "EMPTY no joint limits defined")
+        return True  # No limits is not an error
+
+    bone_count = len(limits_data)
+    axis_count = sum(len(bone_limits) for bone_limits in limits_data.values())
+    log_game("JOINT-LIMITS", f"CACHING {bone_count} bones, {axis_count} axis constraints")
+
+    # Send cache to ANIMATION WORKER ONLY
+    transfer_start = time.perf_counter()
+    job_id = modal.engine.submit_job(
+        "CACHE_JOINT_LIMITS",
+        {"limits": limits_data},
+        check_overload=False,
+        target_worker=ANIMATION_WORKER_ID
+    )
+
+    # Wait for cache confirmation from animation worker
+    if job_id is not None and job_id >= 0:
+        start_time = time.perf_counter()
+        timeout = 1.0
+        confirmed = False
+
+        while not confirmed:
+            if time.perf_counter() - start_time > timeout:
+                log_game("JOINT-LIMITS", f"TIMEOUT worker={ANIMATION_WORKER_ID} cache not confirmed")
+                break
+
+            results = list(modal.engine.poll_results(max_results=50))
+            for result in results:
+                if result.job_type == "CACHE_JOINT_LIMITS" and result.success:
+                    if result.worker_id == ANIMATION_WORKER_ID:
+                        confirmed = True
+                        break
+
+            if confirmed:
+                break
+            time.sleep(0.002)
+
+        transfer_elapsed_ms = (time.perf_counter() - transfer_start) * 1000
+
+        if confirmed:
+            log_game("JOINT-LIMITS", f"CACHE_OK worker={ANIMATION_WORKER_ID} {bone_count}bones {axis_count}axes ({transfer_elapsed_ms:.0f}ms)")
+        else:
+            log_game("JOINT-LIMITS", f"CACHE_FAIL worker={ANIMATION_WORKER_ID} timeout after {transfer_elapsed_ms:.0f}ms")
+
+    return True

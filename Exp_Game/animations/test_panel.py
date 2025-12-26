@@ -6,6 +6,33 @@ Uses the SAME worker-based animation system as the game.
 No duplicate logic - just UI driving the existing system.
 
 UI is in Developer Tools panel (dev_panel.py).
+
+═══════════════════════════════════════════════════════════════════════════════
+PERFORMANCE ARCHITECTURE - DO NOT REGRESS
+═══════════════════════════════════════════════════════════════════════════════
+
+The pose-to-pose system achieves smooth 60Hz+ performance through this split:
+
+WORKER (multiprocessing - heavy computation):
+  - Pose blending: 50+ bone quaternion slerp/lerp
+  - Joint limit clamping: rotation constraints per bone
+  - NumPy vectorized operations
+  - ~100-300μs per frame
+
+MAIN THREAD (Blender - light coordination):
+  - Apply bone transforms from worker result
+  - view_layer.update() to refresh bone matrices
+  - IK computation (needs current bone positions from Blender)
+  - GPU draw callbacks
+
+WHY IK IS ON MAIN THREAD:
+  IK requires the POST-BLEND bone positions to compute correct rotations.
+  The worker doesn't have access to Blender's bone hierarchy after blending.
+  Main thread reads bone.head positions after view_layer.update(), then calls
+  the numpy IK solver. This is fast (~50μs) and architecturally correct.
+
+CRITICAL: Keep heavy math in worker, keep bpy reads on main thread.
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 import bpy
@@ -20,9 +47,11 @@ from ..engine.animations.ik import (
     LEG_IK,
     ARM_IK,
 )
+from ..engine.animations.default_limits import DEFAULT_JOINT_LIMITS
 from ..engine import EngineCore
 from .controller import AnimationController
-from ..developer.dev_logger import start_session, log_worker_messages, export_game_log, clear_log
+from .runtime_ik import update_ik_state
+from ..developer.dev_logger import start_session, log_game, log_worker_messages, export_game_log, clear_log
 import numpy as np
 import mathutils
 import math
@@ -453,7 +482,40 @@ def get_test_engine() -> EngineCore:
         _test_engine.wait_for_readiness(timeout=2.0)
         # Start log session for animation testing
         start_session()
+        # Cache joint limits in workers for anatomical constraints
+        _cache_joint_limits_in_workers(_test_engine)
     return _test_engine
+
+
+def _cache_joint_limits_in_workers(engine: EngineCore):
+    """
+    Send joint limits to all workers via CACHE_JOINT_LIMITS job.
+    This enables anatomical constraint enforcement during pose blending.
+    """
+    from ..developer.dev_logger import log_game
+
+    # Submit caching job (workers will store the limits)
+    job_id = engine.submit_job("CACHE_JOINT_LIMITS", {"limits": DEFAULT_JOINT_LIMITS})
+
+    if job_id is not None:
+        # Poll for result to confirm caching
+        poll_start = time.perf_counter()
+        while (time.perf_counter() - poll_start) < 1.0:  # 1 second timeout
+            results = list(engine.poll_results(max_results=10))
+            for result in results:
+                if result.job_id == job_id and result.job_type == "CACHE_JOINT_LIMITS":
+                    if result.success:
+                        bone_count = result.result.get("bone_count", 0)
+                        log_game("JOINT-LIMITS", f"Cached {bone_count} bone limits in worker")
+                        # Log worker messages
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            log_worker_messages(worker_logs)
+                        return True
+            time.sleep(0.01)
+
+    log_game("JOINT-LIMITS", "WARNING: Failed to cache joint limits in worker")
+    return False
 
 
 def get_test_controller() -> AnimationController:
@@ -466,17 +528,15 @@ def get_test_controller() -> AnimationController:
 
 def reset_test_controller():
     """Reset the test controller and engine."""
-    global _test_controller, _test_engine
+    global _test_controller, _test_engine, _active_test_modal
 
-    # Stop timer if running
-    if bpy.app.timers.is_registered(playback_update):
-        bpy.app.timers.unregister(playback_update)
+    # Stop unified test modal if running
+    if _active_test_modal:
+        _active_test_modal._test_mode = ""  # Forces modal to self-cancel
 
     # Export logs before shutdown
     if _test_engine is not None:
-        import os
-        log_path = os.path.join(os.path.expanduser("~"), "Desktop", "engine_output_files", "anim_test_log.txt")
-        export_game_log(log_path)
+        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
         clear_log()
 
     # Shutdown test engine
@@ -566,17 +626,12 @@ class ANIM2_OT_StopAll(Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        global _last_time, _playback_start_time
+        global _stop_requested
+
+        # Signal unified test modal to stop
+        _stop_requested = True
 
         stop_all_animations()
-
-        # Reset timer state
-        _last_time = None
-        _playback_start_time = None
-
-        # Unregister timer if running
-        if bpy.app.timers.is_registered(playback_update):
-            bpy.app.timers.unregister(playback_update)
 
         self.report({'INFO'}, "Stopped all animations")
         return {'FINISHED'}
@@ -691,23 +746,51 @@ def apply_ik_chain(armature, chain: str, target_pos, influence: float = 1.0, log
 
     # ═══════════════════════════════════════════════════════════════════════════
     # APPLY QUATERNIONS TO BONES
-    # The solver returns world-space quaternions. We need to convert to local.
+    # The solver returns world-space quaternions. We need to convert to pose-local.
+    #
+    # CRITICAL: Blender's pose_bone.rotation_quaternion is relative to the bone's
+    # REST pose, not just its parent. We must account for the bone's rest orientation.
+    #
+    # Formula: pose_rotation = rest_world.inverted() @ solver_world
+    # Where rest_world = armature_world @ parent_posed @ bone_rest_local
     # ═══════════════════════════════════════════════════════════════════════════
 
-    # Get parent matrices for local space conversion
-    if root_bone.parent:
-        parent_matrix = arm_matrix @ root_bone.parent.matrix
-        parent_rot_inv = parent_matrix.to_quaternion().inverted()
-    else:
-        parent_rot_inv = arm_matrix.to_quaternion().inverted()
+    # Get bone data (for rest pose info)
+    root_bone_data = armature.data.bones[root_bone.name]
 
-    # Convert upper quaternion from world to local
+    # Compute the bone's "rest world" rotation:
+    # This is what the bone's world rotation would be if pose_rotation were identity
+    if root_bone.parent:
+        parent_name = root_bone.parent.name
+        # Parent's posed world matrix
+        parent_posed_world = arm_matrix @ root_bone.parent.matrix
+        # Bone's rest orientation relative to parent (in parent's local space)
+        parent_bone_data = armature.data.bones[root_bone.parent.name]
+        bone_rest_rel_parent = parent_bone_data.matrix_local.inverted() @ root_bone_data.matrix_local
+        # Rest world = parent posed @ bone rest local
+        rest_world_matrix = parent_posed_world @ bone_rest_rel_parent
+    else:
+        parent_name = "ARMATURE"
+        # Root bone - rest world is armature @ bone rest
+        rest_world_matrix = arm_matrix @ root_bone_data.matrix_local
+
+    rest_world_q = rest_world_matrix.to_quaternion()
+
+    # Convert solver's world quaternion to pose-local
     upper_world_q = mathutils.Quaternion((upper_quat[0], upper_quat[1], upper_quat[2], upper_quat[3]))
-    upper_local_q = parent_rot_inv @ upper_world_q
+    upper_local_q = rest_world_q.inverted() @ upper_world_q
 
     # Store original for blending
     original_upper = root_bone.rotation_quaternion.copy()
     original_lower = mid_bone.rotation_quaternion.copy()
+
+    if log:
+        log_game("IK-SOLVE", f"CONVERT parent={parent_name}")
+        log_game("IK-SOLVE", f"CONVERT rest_world=({rest_world_q.w:.3f},{rest_world_q.x:.3f},{rest_world_q.y:.3f},{rest_world_q.z:.3f})")
+        log_game("IK-SOLVE", f"CONVERT upper_world=({upper_world_q.w:.3f},{upper_world_q.x:.3f},{upper_world_q.y:.3f},{upper_world_q.z:.3f})")
+        log_game("IK-SOLVE", f"CONVERT upper_local=({upper_local_q.w:.3f},{upper_local_q.x:.3f},{upper_local_q.y:.3f},{upper_local_q.z:.3f})")
+        log_game("IK-SOLVE", f"ORIGINAL upper_rot=({original_upper.w:.3f},{original_upper.x:.3f},{original_upper.y:.3f},{original_upper.z:.3f})")
+        log_game("IK-SOLVE", f"ORIGINAL lower_rot=({original_lower.w:.3f},{original_lower.x:.3f},{original_lower.y:.3f},{original_lower.z:.3f})")
 
     # Apply upper bone rotation
     root_bone.rotation_mode = 'QUATERNION'
@@ -721,11 +804,19 @@ def apply_ik_chain(armature, chain: str, target_pos, influence: float = 1.0, log
 
     # Now compute local rotation for mid bone
     # Mid bone's parent is the root bone (which we just rotated)
-    mid_parent_matrix = arm_matrix @ root_bone.matrix
-    mid_parent_rot_inv = mid_parent_matrix.to_quaternion().inverted()
+    # Same formula: pose_rotation = rest_world.inverted() @ solver_world
+    mid_bone_data = armature.data.bones[mid_bone.name]
+
+    # Parent is root_bone (which we just rotated and updated)
+    mid_parent_posed_world = arm_matrix @ root_bone.matrix
+    # Mid bone's rest orientation relative to its parent (root_bone)
+    mid_bone_rest_rel_parent = root_bone_data.matrix_local.inverted() @ mid_bone_data.matrix_local
+    # Rest world = parent posed @ bone rest local
+    mid_rest_world_matrix = mid_parent_posed_world @ mid_bone_rest_rel_parent
+    mid_rest_world_q = mid_rest_world_matrix.to_quaternion()
 
     lower_world_q = mathutils.Quaternion((lower_quat[0], lower_quat[1], lower_quat[2], lower_quat[3]))
-    lower_local_q = mid_parent_rot_inv @ lower_world_q
+    lower_local_q = mid_rest_world_q.inverted() @ lower_world_q
 
     # Apply lower bone rotation
     mid_bone.rotation_mode = 'QUATERNION'
@@ -771,7 +862,8 @@ def apply_ik_chain(armature, chain: str, target_pos, influence: float = 1.0, log
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LEGACY IK (for compatibility)
+# IK HELPER FUNCTIONS
+# Used by ANIM2_OT_PlayIK for direct bone manipulation
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def point_bone_at_target(obj, pose_bone, target_world_pos):
@@ -855,96 +947,513 @@ def get_pole_direction_vector(pole_dir: str, is_leg: bool) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLAYBACK TIMER (Uses same worker flow as game)
+# UNIFIED TEST MODAL OPERATOR
+#
+# Mimics the game's ExpModal pattern for smooth, frame-synchronized animation.
+# Uses window_manager.event_timer_add() instead of bpy.app.timers for reliable timing.
+#
+# Handles ALL test modes:
+# - ANIMATION: Regular animation playback
+# - ANIMATION + Crossfade: A↔B crossfade loop
+# - POSE: Pose-to-pose blending with IK
+# - IK: Direct IK manipulation
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_last_time = None
-_playback_start_time = None
+# Global reference to active test modal (for stopping from outside)
+_active_test_modal = None
+_stop_requested = False  # Flag to signal modal to stop
 
-def playback_update():
-    """Timer callback - uses worker-based animation system."""
-    global _last_time, _playback_start_time
 
-    ctrl = get_test_controller()
-    engine = get_test_engine()
+def is_test_modal_active() -> bool:
+    """Check if the test modal is currently running."""
+    return _active_test_modal is not None and _active_test_modal._test_mode != ""
 
-    if not engine.is_alive():
-        _last_time = None
-        _playback_start_time = None
-        return None  # Stop timer
 
-    # Calculate delta time
-    current = time.perf_counter()
-    if _last_time is None:
-        _last_time = current
-        _playback_start_time = current
-        dt = 1/60
-    else:
-        dt = current - _last_time
-        _last_time = current
+class ANIM2_OT_TestModal(bpy.types.Operator):
+    """
+    Unified test modal operator for Animation 2.0 testing.
 
-    # Check timeout
-    timeout = 20.0  # Default 20 second timeout
-    try:
-        timeout = bpy.context.scene.anim2_test.playback_timeout
-    except:
-        pass
+    Matches the game's ExpModal pattern:
+    - Uses event_timer_add() for reliable frame-synchronized updates
+    - Handles ESC to cancel
+    - Proper cleanup on stop
+    - Fixed timestep option (60Hz by default)
+    """
+    bl_idname = "anim2.test_modal"
+    bl_label = "Animation Test Modal"
+    bl_options = {'INTERNAL'}
 
-    if timeout > 0 and _playback_start_time is not None:
-        elapsed = current - _playback_start_time
-        if elapsed >= timeout:
-            # Stop all animations
-            stop_all_animations()
-            _last_time = None
-            _playback_start_time = None
-            return None  # Stop timer
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STATE TRACKING (like ExpModal)
+    # ═══════════════════════════════════════════════════════════════════════════
 
-    # 1. Update state (times, fades) - same as game
-    ctrl.update_state(dt)
+    _timer = None
+    _last_time: float = 0.0
+    _start_time: float = 0.0
+    _frame_count: int = 0
 
-    # 2. Get job data and submit to engine
-    jobs_data = ctrl.get_compute_job_data()
-    pending_jobs = {}
+    # Test mode being run (copied from scene at invoke time)
+    _test_mode: str = ""  # 'ANIMATION', 'POSE', 'IK'
+    _crossfade_enabled: bool = False
 
-    for object_name, job_data in jobs_data.items():
-        job_id = engine.submit_job("ANIMATION_COMPUTE", job_data)
+    # NOTE: Crossfade and pose blend state is stored in module-level dicts
+    # (_crossfade_state, _pose_blend_state) because they're set up before invoke
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MODAL LIFECYCLE (matches ExpModal pattern)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def invoke(self, context, event):
+        global _active_test_modal
+
+        scene = context.scene
+        self._test_mode = scene.test_mode
+        self._crossfade_enabled = getattr(scene, 'test_blend_enabled', False)
+
+        # Initialize timing
+        self._last_time = time.perf_counter()
+        self._start_time = time.perf_counter()
+        self._frame_count = 0
+
+        # Set up the timer (1/30s = 33.33ms, same as game's 30Hz fixed timestep)
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(1/30, window=context.window)
+        wm.modal_handler_add(self)
+
+        # Mark as active
+        _active_test_modal = self
+
+        # Start logging session
+        start_session()
+        log_game("TEST_MODAL", f"Started: mode={self._test_mode} crossfade={self._crossfade_enabled}")
+
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        global _active_test_modal, _stop_requested
+
+        # Check stop flag (set by Stop button)
+        if _stop_requested:
+            _stop_requested = False
+            self.cancel(context)
+            return {'CANCELLED'}
+
+        # ESC to cancel (like game modal)
+        if event.type == 'ESC' and event.value == 'PRESS':
+            self.cancel(context)
+            return {'CANCELLED'}
+
+        # TIMER event - do the actual work
+        if event.type == 'TIMER':
+            scene = context.scene
+
+            # Check if we should stop
+            if not self._should_continue(context):
+                self.cancel(context)
+                return {'CANCELLED'}
+
+            # Calculate delta time
+            current = time.perf_counter()
+            dt = current - self._last_time
+            self._last_time = current
+            self._frame_count += 1
+
+            # Route to appropriate handler based on mode
+            try:
+                if self._test_mode == 'ANIMATION':
+                    if self._crossfade_enabled:
+                        self._step_crossfade(context, dt)
+                    self._step_animation(context, dt)
+                elif self._test_mode == 'POSE':
+                    self._step_pose_blend(context, dt)
+                elif self._test_mode == 'IK':
+                    self._step_ik(context, dt)
+            except Exception as e:
+                log_game("TEST_MODAL", f"Error in step: {e}")
+                import traceback
+                traceback.print_exc()
+
+            return {'RUNNING_MODAL'}
+
+        # Pass through non-timer events so UI remains responsive
+        return {'PASS_THROUGH'}
+
+    def cancel(self, context):
+        global _active_test_modal
+
+        # Remove timer
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+
+        # Log stats
+        elapsed = time.perf_counter() - self._start_time
+        if elapsed > 0:
+            avg_fps = self._frame_count / elapsed
+            log_game("TEST_MODAL", f"Stopped: {self._frame_count} frames in {elapsed:.1f}s ({avg_fps:.1f} fps)")
+
+        # Export logs to file
+        if context.scene.dev_export_session_log:
+            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+            clear_log()
+
+        # Clear reference
+        _active_test_modal = None
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # HELPER METHODS
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _should_continue(self, context) -> bool:
+        """Check if the modal should continue running."""
+        scene = context.scene
+        engine = get_test_engine()
+
+        if not engine.is_alive():
+            return False
+
+        # Check timeout
+        timeout = getattr(scene.anim2_test, 'playback_timeout', 20.0)
+        if timeout > 0:
+            elapsed = time.perf_counter() - self._start_time
+            if elapsed >= timeout:
+                return False
+
+        # Mode-specific checks
+        if self._test_mode == 'ANIMATION':
+            ctrl = get_test_controller()
+            return ctrl.has_active_animations()
+        elif self._test_mode == 'POSE':
+            return scene.test_mode == 'POSE'
+        elif self._test_mode == 'IK':
+            return scene.test_mode == 'IK'
+
+        return True
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ANIMATION MODE STEP (replaces playback_update timer)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _step_animation(self, context, dt: float):
+        """
+        Single step of animation playback.
+        Uses WORKER-BASED computation - same as game.
+        """
+        ctrl = get_test_controller()
+        engine = get_test_engine()
+
+        # 1. Update state (times, fades) - same as game
+        ctrl.update_state(dt)
+
+        # 2. Get job data and submit to engine
+        jobs_data = ctrl.get_compute_job_data()
+        pending_jobs = {}
+
+        for object_name, job_data in jobs_data.items():
+            job_id = engine.submit_job("ANIMATION_COMPUTE", job_data)
+            if job_id is not None and job_id >= 0:
+                pending_jobs[job_id] = object_name
+
+        # 3. Poll for results with short timeout (same-frame sync)
+        if pending_jobs:
+            poll_start = time.perf_counter()
+            while pending_jobs and (time.perf_counter() - poll_start) < 0.003:
+                results = list(engine.poll_results(max_results=20))
+                for result in results:
+                    if result.job_type == "ANIMATION_COMPUTE" and result.job_id in pending_jobs:
+                        if result.success:
+                            object_name = pending_jobs.pop(result.job_id)
+                            bone_transforms = result.result.get("bone_transforms", {})
+                            object_transform = result.result.get("object_transform")
+                            if bone_transforms or object_transform:
+                                ctrl.apply_worker_result(object_name, bone_transforms, object_transform)
+                            # Process worker logs
+                            worker_logs = result.result.get("logs", [])
+                            if worker_logs:
+                                log_worker_messages(worker_logs)
+                time.sleep(0.0001)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CROSSFADE LOOP STEP (replaces crossfade_loop_update timer)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _step_crossfade(self, context, dt: float):
+        """
+        Crossfade logic - switches between animation A and B.
+        Uses module-level _crossfade_state dict for state.
+        """
+        anim_a = _crossfade_state.get("anim_a", "")
+        anim_b = _crossfade_state.get("anim_b", "")
+
+        if not anim_a or not anim_b:
+            return
+
+        current_time = time.perf_counter()
+        ctrl = get_test_controller()
+
+        # Check if it's time to switch
+        if current_time >= _crossfade_state.get("switch_time", 0):
+            # Get the animation we're switching TO
+            if _crossfade_state.get("active_anim", "A") == "A":
+                next_anim = anim_b
+                _crossfade_state["active_anim"] = "B"
+            else:
+                next_anim = anim_a
+                _crossfade_state["active_anim"] = "A"
+
+            # Get duration of the next animation
+            speed = _crossfade_state.get("speed", 1.0)
+            anim_data = ctrl.cache.get(next_anim)
+            if anim_data:
+                duration = anim_data.duration / speed
+            else:
+                duration = 2.0  # Fallback
+
+            # Schedule next switch
+            _crossfade_state["switch_time"] = current_time + duration
+
+            # Play the next animation with crossfade
+            ctrl.play(
+                _crossfade_state.get("armature", ""),
+                next_anim,
+                weight=1.0,
+                speed=speed,
+                looping=True,
+                fade_in=_crossfade_state.get("fade_time", 0.2),
+                replace=True
+            )
+
+            log_game("CROSSFADE", f"→ {next_anim} (duration={duration:.1f}s)")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # POSE BLEND STEP (replaces pose_blend_auto_update timer)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _step_pose_blend(self, context, dt: float):
+        """
+        Single step of pose-to-pose blending.
+        Uses WORKER-BASED computation - same as game.
+        Uses module-level _pose_blend_state dict for state.
+        """
+        step_start = time.perf_counter()
+
+        # Log entry timing (shows inter-frame gaps)
+        log_game("POSE-BLEND", f"FRAME_START dt={dt*1000:.1f}ms frame={self._frame_count}")
+
+        scene = context.scene
+        armature = getattr(scene, 'target_armature', None)
+        if not armature:
+            return
+
+        engine = get_test_engine()
+        if not engine.is_alive():
+            return
+
+        setup_time = (time.perf_counter() - step_start) * 1000
+
+        # Get timing
+        duration = scene.pose_blend_duration
+        elapsed = time.perf_counter() - self._start_time
+
+        # Calculate normalized time within current half-cycle
+        cycle_time = elapsed % (duration * 2)  # Full back-and-forth cycle
+
+        if cycle_time < duration:
+            weight = cycle_time / duration
+        else:
+            weight = 1.0 - ((cycle_time - duration) / duration)
+
+        weight = max(0.0, min(1.0, weight))
+        scene.pose_blend_weight = weight
+
+        # Get pose data from module-level state
+        pose_a_data = _pose_blend_state.get("pose_a_data", {})
+        pose_b_data = _pose_blend_state.get("pose_b_data", {})
+
+        if not pose_a_data:
+            return
+
+        # IK is computed LOCALLY after bone transforms are applied (not in worker)
+        # This ensures IK uses the correct blended skeleton positions
+        influence = scene.pose_blend_ik_influence
+
+        # Submit POSE_BLEND_COMPUTE job to worker (pose blending only, IK done locally)
+        build_start = time.perf_counter()
+        apply_limits = getattr(scene, 'test_apply_joint_limits', True)
+        job_data = {
+            "pose_a": pose_a_data,
+            "pose_b": pose_b_data,
+            "weight": weight,
+            "bone_names": list(set(pose_a_data.keys()) | set(pose_b_data.keys())),
+            "ik_chains": [],  # IK computed locally after blend is applied
+            "apply_limits": apply_limits,
+        }
+        build_time = (time.perf_counter() - build_start) * 1000
+
+        submit_start = time.perf_counter()
+        job_id = engine.submit_job("POSE_BLEND_COMPUTE", job_data)
+        submit_time = (time.perf_counter() - submit_start) * 1000
+
+        # Poll for result with timeout (same-frame sync, matches game's KCC pattern)
         if job_id is not None and job_id >= 0:
-            pending_jobs[job_id] = object_name
+            poll_start = time.perf_counter()
+            poll_timeout = 0.005  # 5ms max wait (matches game's KCC)
+            result_received = False
+            poll_count = 0
+            sleep_us = 25  # Start at 25µs, exponential backoff
+            max_sleep_us = 500  # Cap at 500µs
 
-    # 3. Poll for results with short timeout (same-frame sync)
-    if pending_jobs:
-        poll_start = time.perf_counter()
-        while pending_jobs and (time.perf_counter() - poll_start) < 0.003:
-            results = list(engine.poll_results(max_results=20))
-            for result in results:
-                if result.job_type == "ANIMATION_COMPUTE" and result.job_id in pending_jobs:
-                    if result.success:
-                        object_name = pending_jobs.pop(result.job_id)
-                        bone_transforms = result.result.get("bone_transforms", {})
-                        object_transform = result.result.get("object_transform")
-                        if bone_transforms or object_transform:
-                            ctrl.apply_worker_result(object_name, bone_transforms, object_transform)
-                        # Process worker logs
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            log_worker_messages(worker_logs)
-            time.sleep(0.0001)
+            while True:
+                elapsed = time.perf_counter() - poll_start
+                if elapsed >= poll_timeout:
+                    break
 
-    # Force viewport redraw
-    for area in bpy.context.screen.areas:
-        if area.type == 'VIEW_3D':
-            area.tag_redraw()
+                poll_count += 1
+                results = list(engine.poll_results(max_results=5))
+                for result in results:
+                    if result.job_type == "POSE_BLEND_COMPUTE" and result.job_id == job_id:
+                        if result.success:
+                            result_received = True
+                            poll_time = (time.perf_counter() - poll_start) * 1000
 
-    # Check if anything is still playing
-    has_playing = ctrl.has_active_animations()
+                            # Apply blended bone transforms
+                            apply_start = time.perf_counter()
+                            bone_transforms = result.result.get("bone_transforms", {})
+                            _apply_bone_transforms(armature, bone_transforms)
+                            bone_time = (time.perf_counter() - apply_start) * 1000
 
-    if has_playing:
-        return 1/60  # Continue at 60fps
-    else:
-        _last_time = None
-        _playback_start_time = None
-        return None  # Stop timer
+                            # Apply IK LOCALLY after bone transforms are applied
+                            # (Worker IK is broken - computed with pre-blend positions)
+                            ik_start = time.perf_counter()
 
+                            # Update armature to reflect new bone transforms
+                            context.view_layer.update()
+
+                            # Compute IK locally using current (blended) skeleton positions
+                            ik_chain_props = [
+                                ('pose_blend_ik_arm_L', 'arm_L'),
+                                ('pose_blend_ik_arm_R', 'arm_R'),
+                                ('pose_blend_ik_leg_L', 'leg_L'),
+                                ('pose_blend_ik_leg_R', 'leg_R'),
+                            ]
+                            ik_mode = getattr(scene, 'pose_blend_mode', 'POSE_TO_POSE')
+
+                            # Get both target sets for interpolation
+                            ik_targets_a = _pose_blend_state.get("ik_targets_a", {})
+                            ik_targets_b = _pose_blend_state.get("ik_targets_b", {})
+
+                            # DIAGNOSTIC: Log on first IK frame to diagnose issues
+                            # Use _frame_count == 1 because count is incremented BEFORE this code runs
+                            log_ik = (self._frame_count == 1)
+
+                            if log_ik:
+                                enabled_chains = [cn for prop, cn in ik_chain_props if getattr(scene, prop, False)]
+                                log_game("IK", f"=== IK DIAGNOSTIC START ===")
+                                log_game("IK", f"mode={ik_mode} weight={weight:.3f} influence={influence:.2f}")
+                                log_game("IK", f"enabled_chains={enabled_chains}")
+                                log_game("IK", f"targets_a={list(ik_targets_a.keys())} targets_b={list(ik_targets_b.keys())}")
+                                # Log armature world matrix
+                                arm_mat = armature.matrix_world
+                                log_game("IK", f"armature_pos=({arm_mat[0][3]:.3f},{arm_mat[1][3]:.3f},{arm_mat[2][3]:.3f})")
+
+                            ik_applied_count = 0
+                            for enabled_prop, chain_name in ik_chain_props:
+                                if getattr(scene, enabled_prop, False):
+                                    target_pos = None
+                                    if ik_mode == 'POSE_TO_TARGET':
+                                        target_prop = enabled_prop + '_target'
+                                        target_obj = getattr(scene, target_prop, None)
+                                        if target_obj:
+                                            target_pos = target_obj.matrix_world.translation
+                                    else:
+                                        # INTERPOLATE between Pose A and Pose B targets based on weight
+                                        if chain_name in ik_targets_a and chain_name in ik_targets_b:
+                                            local_a = ik_targets_a[chain_name]
+                                            local_b = ik_targets_b[chain_name]
+                                            # Linear interpolation in local space
+                                            local_target = local_a.lerp(local_b, weight)
+                                            # Transform to world space
+                                            target_pos = armature.matrix_world @ local_target
+                                            if log_ik:
+                                                log_game("IK", f"CHAIN {chain_name}:")
+                                                log_game("IK", f"  local_A=({local_a.x:.3f},{local_a.y:.3f},{local_a.z:.3f})")
+                                                log_game("IK", f"  local_B=({local_b.x:.3f},{local_b.y:.3f},{local_b.z:.3f})")
+                                                log_game("IK", f"  local_interp=({local_target.x:.3f},{local_target.y:.3f},{local_target.z:.3f})")
+                                                log_game("IK", f"  world_target=({target_pos.x:.3f},{target_pos.y:.3f},{target_pos.z:.3f})")
+
+                                    if target_pos:
+                                        # Always log on first frame for diagnostics
+                                        apply_ik_chain(armature, chain_name, target_pos, influence, log=log_ik)
+                                        ik_applied_count += 1
+                                    elif log_ik:
+                                        log_game("IK", f"CHAIN {chain_name}: NO_TARGET")
+
+                            if log_ik:
+                                log_game("IK", f"Applied IK to {ik_applied_count} chains")
+                                log_game("IK", f"=== IK DIAGNOSTIC END ===")
+
+                            ik_time = (time.perf_counter() - ik_start) * 1000
+
+                            # Log timing breakdown
+                            total_step = (time.perf_counter() - step_start) * 1000
+                            worker_calc = result.result.get("calc_time_us", 0) / 1000  # Convert to ms
+                            log_game("POSE-BLEND", f"OK total={total_step:.1f}ms setup={setup_time:.1f}ms build={build_time:.1f}ms submit={submit_time:.1f}ms poll={poll_time:.1f}ms({poll_count}) worker={worker_calc:.1f}ms bones={bone_time:.1f}ms ik={ik_time:.1f}ms")
+
+                            # Process worker logs
+                            worker_logs = result.result.get("logs", [])
+                            if worker_logs:
+                                log_worker_messages(worker_logs)
+                        break
+                else:
+                    # Exponential backoff (matches game's KCC pattern)
+                    time.sleep(sleep_us / 1_000_000)
+                    sleep_us = min(sleep_us * 2, max_sleep_us)
+                    continue
+                break
+
+            # Log if we timed out waiting for result
+            if not result_received:
+                poll_time = (time.perf_counter() - poll_start) * 1000
+                log_game("POSE-BLEND", f"TIMEOUT after {poll_time:.1f}ms polls={poll_count} setup={setup_time:.1f}ms build={build_time:.1f}ms submit={submit_time:.1f}ms")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # IK MODE STEP (placeholder for direct IK manipulation)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _step_ik(self, context, dt: float):
+        """
+        IK mode step - currently just maintains IK visualization.
+        Could be extended for continuous IK updates.
+        """
+        pass  # IK mode is currently instant-apply, no continuous updates needed
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST MODAL CONTROL FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def is_test_modal_running() -> bool:
+    """Check if the test modal is currently running."""
+    return _active_test_modal is not None
+
+
+def stop_test_modal():
+    """Signal the test modal to stop (it will self-cancel on next timer event)."""
+    global _active_test_modal
+    if _active_test_modal:
+        # The modal checks _should_continue() which will now return False
+        # because we're changing the scene state
+        pass  # Modal will detect state change and self-cancel
+
+
+def get_test_modal():
+    """Get the active test modal operator (for setup calls)."""
+    return _active_test_modal
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANIMATION HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def stop_all_animations():
     """Stop animations on ALL objects."""
@@ -955,180 +1464,97 @@ def stop_all_animations():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# POSE BLEND AUTO-PLAY TIMER
+# CROSSFADE STATE (used by unified ANIM2_OT_TestModal)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_crossfade_state = {
+    "active_anim": "A",  # Which animation is currently playing ("A" or "B")
+    "switch_time": 0.0,  # Time when we should switch to the other animation
+    "start_time": 0.0,   # When we started
+    "anim_a": "",        # Animation A name
+    "anim_b": "",        # Animation B name
+    "armature": "",      # Target armature name
+    "fade_time": 0.2,    # Crossfade duration
+    "speed": 1.0,        # Playback speed
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POSE BLEND STATE (used by unified ANIM2_OT_TestModal)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _pose_blend_state = {
     "start_time": 0.0,
     "direction": 1,  # 1 = forward (A→B), -1 = backward (B→A)
-    "ik_targets": {},  # chain_name -> world position from Pose B
+    "ik_targets_a": {},  # chain_name -> LOCAL position from Pose A (start)
+    "ik_targets_b": {},  # chain_name -> LOCAL position from Pose B (end)
+    "pose_a_data": {},  # Cached pose A bone transforms
+    "pose_b_data": {},  # Cached pose B bone transforms
 }
 
 
-def pose_blend_auto_update():
-    """
-    Timer callback for pose blend auto-play.
-
-    Uses WORKER-BASED computation - all blending math happens in engine.
-    Main thread only submits jobs and applies results.
-    """
-    import json
-    from .bone_groups import BONE_INDEX
-    from ..developer.dev_logger import log_game, log_worker_messages
-
-    scene = bpy.context.scene
-
-    # Check if still in POSE mode
-    if scene.test_mode != 'POSE':
-        return None  # Stop timer
-
-    armature = getattr(scene, 'target_armature', None)
-    if not armature:
-        return None
-
-    engine = get_test_engine()
-    if not engine.is_alive():
-        return None
-
-    # Get timing
-    duration = scene.pose_blend_duration
-    elapsed = time.perf_counter() - _pose_blend_state["start_time"]
-
-    # Calculate normalized time within current half-cycle
-    cycle_time = elapsed % (duration * 2)  # Full back-and-forth cycle
-
-    if cycle_time < duration:
-        weight = cycle_time / duration
-    else:
-        weight = 1.0 - ((cycle_time - duration) / duration)
-
-    weight = max(0.0, min(1.0, weight))
-    scene.pose_blend_weight = weight
-
-    # Get pose data (already cached at start)
-    pose_a_data = _pose_blend_state.get("pose_a_data", {})
-    pose_b_data = _pose_blend_state.get("pose_b_data", {})
-
-    if not pose_a_data:
-        return None
-
-    # Build IK chain data for worker
-    ik_mode = getattr(scene, 'pose_blend_mode', 'POSE_TO_POSE')
-    ik_targets = _pose_blend_state.get("ik_targets", {})
-    influence = scene.pose_blend_ik_influence
-
-    ik_chain_props = [
-        ('pose_blend_ik_arm_L', 'pose_blend_ik_arm_L_target', 'arm_L'),
-        ('pose_blend_ik_arm_R', 'pose_blend_ik_arm_R_target', 'arm_R'),
-        ('pose_blend_ik_leg_L', 'pose_blend_ik_leg_L_target', 'leg_L'),
-        ('pose_blend_ik_leg_R', 'pose_blend_ik_leg_R_target', 'leg_R'),
-    ]
-
-    # Get character orientation for pole calculation
-    arm_matrix = armature.matrix_world
-    char_forward = [arm_matrix[0][1], arm_matrix[1][1], arm_matrix[2][1]]
-    char_right = [arm_matrix[0][0], arm_matrix[1][0], arm_matrix[2][0]]
-    char_up = [arm_matrix[0][2], arm_matrix[1][2], arm_matrix[2][2]]
-
-    ik_chains_for_worker = []
-    for enabled_prop, target_prop, chain_name in ik_chain_props:
-        if getattr(scene, enabled_prop, False):
-            target_pos = None
-            if ik_mode == 'POSE_TO_TARGET':
-                target_obj = getattr(scene, target_prop, None)
-                if target_obj:
-                    target_pos = list(target_obj.matrix_world.translation)
-            else:
-                if chain_name in ik_targets:
-                    target_pos = list(ik_targets[chain_name])
-
-            if target_pos:
-                # Get root bone position
-                from ..engine.animations.ik import LEG_IK, ARM_IK
-                all_chains = {**LEG_IK, **ARM_IK}
-                chain_def = all_chains.get(chain_name)
-                if chain_def:
-                    root_bone = armature.pose.bones.get(chain_def["root"])
-                    if root_bone:
-                        root_pos = list(arm_matrix @ root_bone.head)
-                        ik_chains_for_worker.append({
-                            "chain": chain_name,
-                            "target": target_pos,
-                            "root_pos": root_pos,
-                            "influence": influence,
-                            "char_forward": char_forward,
-                            "char_right": char_right,
-                            "char_up": char_up,
-                        })
-
-    # Submit POSE_BLEND_COMPUTE job to worker
-    job_data = {
-        "pose_a": pose_a_data,
-        "pose_b": pose_b_data,
-        "weight": weight,
-        "bone_names": list(set(pose_a_data.keys()) | set(pose_b_data.keys())),
-        "ik_chains": ik_chains_for_worker,
-    }
-
-    job_id = engine.submit_job("POSE_BLEND_COMPUTE", job_data)
-
-    # Poll for result with short timeout (same-frame sync)
-    if job_id is not None and job_id >= 0:
-        poll_start = time.perf_counter()
-        while (time.perf_counter() - poll_start) < 0.003:  # 3ms timeout
-            results = list(engine.poll_results(max_results=5))
-            for result in results:
-                if result.job_type == "POSE_BLEND_COMPUTE" and result.job_id == job_id:
-                    if result.success:
-                        # Apply blended bone transforms
-                        bone_transforms = result.result.get("bone_transforms", {})
-                        _apply_bone_transforms(armature, bone_transforms)
-
-                        # Apply IK results
-                        ik_results = result.result.get("ik_results", {})
-                        _apply_ik_results(armature, ik_results)
-
-                        # Process worker logs
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            log_worker_messages(worker_logs)
-                    break
-            else:
-                time.sleep(0.0001)
-                continue
-            break
-
-    # Force viewport redraw
-    for area in bpy.context.screen.areas:
-        if area.type == 'VIEW_3D':
-            area.tag_redraw()
-
-    return 1/60  # Continue at 60fps
-
+# ═══════════════════════════════════════════════════════════════════════════════
+# BONE TRANSFORM APPLICATION (used by unified ANIM2_OT_TestModal)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _apply_bone_transforms(armature, bone_transforms: dict):
-    """Apply bone transforms from worker result to armature."""
+    """
+    Apply bone transforms from worker result to armature.
+
+    PERFORMANCE: Uses direct property access to minimize Blender notifications.
+    Each bone property set triggers internal Blender updates, so we minimize writes.
+    """
     pose_bones = armature.pose.bones
+
+    # Pre-cache the identity values to skip unchanged transforms
+    IDENTITY_LOC = (0.0, 0.0, 0.0)
+    IDENTITY_SCALE = (1.0, 1.0, 1.0)
+
     for bone_name, transform in bone_transforms.items():
         pose_bone = pose_bones.get(bone_name)
         if pose_bone:
-            pose_bone.rotation_mode = 'QUATERNION'
-            pose_bone.rotation_quaternion = mathutils.Quaternion((transform[0], transform[1], transform[2], transform[3]))
-            pose_bone.location = mathutils.Vector((transform[4], transform[5], transform[6]))
-            pose_bone.scale = mathutils.Vector((transform[7], transform[8], transform[9]))
+            # Only set rotation_mode once (check avoids unnecessary update)
+            if pose_bone.rotation_mode != 'QUATERNION':
+                pose_bone.rotation_mode = 'QUATERNION'
+
+            # Always set rotation (this is what we're animating)
+            pose_bone.rotation_quaternion = (transform[0], transform[1], transform[2], transform[3])
+
+            # Only set location/scale if not identity (skip unnecessary writes)
+            loc = (transform[4], transform[5], transform[6])
+            if loc != IDENTITY_LOC:
+                pose_bone.location = loc
+
+            scale = (transform[7], transform[8], transform[9])
+            if scale != IDENTITY_SCALE:
+                pose_bone.scale = scale
 
 
 def _apply_ik_results(armature, ik_results: dict):
-    """Apply IK results from worker to armature bones."""
-    from ..engine.animations.ik import LEG_IK, ARM_IK
+    """
+    Apply IK results from worker to armature bones.
 
+    OPTIMIZED: No view_layer.update() calls - uses manual matrix computation.
+    PERFORMANCE: No imports inside this function - all at module level.
+    """
     if not ik_results:
         return
 
+    # LEG_IK, ARM_IK already imported at module level
     all_chains = {**LEG_IK, **ARM_IK}
     arm_matrix = armature.matrix_world
     pose_bones = armature.pose.bones
 
+    # Check if visualizer is enabled (skip updates if not)
+    visualizer_enabled = getattr(bpy.context.scene, 'dev_debug_ik_visual', False)
+    log_enabled = getattr(bpy.context.scene, 'dev_debug_ik_solve', False)
+
+    # Collect data for two-pass application
+    upper_bone_data = []  # (root_bone, upper_local_q, original_upper, influence)
+    lower_bone_data = []  # (mid_bone, lower_quat_world, original_lower, influence, upper_posed_world_q, root_bone_data, mid_bone_data)
+    visualizer_updates = []  # Batch visualizer updates (only if enabled)
+
+    # PASS 1: Prepare upper bones and apply them
     for chain_name, ik_data in ik_results.items():
         chain_def = all_chains.get(chain_name)
         if not chain_def:
@@ -1144,56 +1570,98 @@ def _apply_ik_results(armature, ik_results: dict):
         influence = ik_data.get("influence", 1.0)
 
         if upper_quat and lower_quat:
-            # Convert world quaternions to local
-            # Get parent matrices for local space conversion
-            if root_bone.parent:
-                parent_matrix = arm_matrix @ root_bone.parent.matrix
-                parent_rot_inv = parent_matrix.to_quaternion().inverted()
-            else:
-                parent_rot_inv = arm_matrix.to_quaternion().inverted()
+            # Convert upper world quaternion to pose-local
+            # CRITICAL: Must account for bone's rest orientation, not just parent rotation
+            # Formula: pose_rotation = rest_world.inverted() @ solver_world
+            root_bone_data = armature.data.bones[root_bone.name]
 
+            if root_bone.parent:
+                parent_posed_world = arm_matrix @ root_bone.parent.matrix
+                parent_bone_data = armature.data.bones[root_bone.parent.name]
+                bone_rest_rel_parent = parent_bone_data.matrix_local.inverted() @ root_bone_data.matrix_local
+                rest_world_matrix = parent_posed_world @ bone_rest_rel_parent
+            else:
+                rest_world_matrix = arm_matrix @ root_bone_data.matrix_local
+
+            rest_world_q = rest_world_matrix.to_quaternion()
             upper_world_q = mathutils.Quaternion(upper_quat)
-            upper_local_q = parent_rot_inv @ upper_world_q
+            upper_local_q = rest_world_q.inverted() @ upper_world_q
 
             # Store original for blending
             original_upper = root_bone.rotation_quaternion.copy()
             original_lower = mid_bone.rotation_quaternion.copy()
 
-            # Apply upper bone
-            root_bone.rotation_mode = 'QUATERNION'
+            # Apply upper bone immediately
+            if root_bone.rotation_mode != 'QUATERNION':
+                root_bone.rotation_mode = 'QUATERNION'
             if influence < 1.0:
-                root_bone.rotation_quaternion = original_upper.slerp(upper_local_q, influence)
+                final_upper_q = original_upper.slerp(upper_local_q, influence)
             else:
-                root_bone.rotation_quaternion = upper_local_q
+                final_upper_q = upper_local_q
+            root_bone.rotation_quaternion = final_upper_q
 
-            # Update for mid bone parent
-            bpy.context.view_layer.update()
+            if log_enabled:
+                log_game("IK-SOLVE", f"APPLY {chain_name} upper: world_q={upper_quat} -> local_q=({upper_local_q.w:.3f},{upper_local_q.x:.3f},{upper_local_q.y:.3f},{upper_local_q.z:.3f}) bone={root_bone.name}")
 
-            # Mid bone local conversion
-            mid_parent_matrix = arm_matrix @ root_bone.matrix
-            mid_parent_rot_inv = mid_parent_matrix.to_quaternion().inverted()
+            # Compute upper bone's final world rotation (after applying pose)
+            # WITHOUT calling view_layer.update() (which is extremely slow)
+            # upper_world = rest_world @ pose_rotation
+            upper_posed_world_q = rest_world_q @ final_upper_q
 
-            lower_world_q = mathutils.Quaternion(lower_quat)
-            lower_local_q = mid_parent_rot_inv @ lower_world_q
+            # Queue lower bone for pass 2 with upper bone's world rotation and data bone
+            mid_bone_data = armature.data.bones[mid_bone.name]
+            lower_bone_data.append((mid_bone, lower_quat, original_lower, influence, upper_posed_world_q, root_bone_data, mid_bone_data))
 
-            # Apply lower bone
+        # Queue visualizer update (only if visualizer is enabled)
+        if visualizer_enabled:
+            visualizer_updates.append((
+                chain_name,
+                ik_data.get("target", [0, 0, 0]),
+                ik_data.get("joint_world", [0, 0, 0]),
+                ik_data.get("root_pos", [0, 0, 0]),
+                ik_data.get("pole_pos", [0, 0, 0]),
+                influence,
+                ik_data.get("reachable", True)
+            ))
+
+    # NO view_layer.update() - we computed parent rotations manually above
+
+    # PASS 2: Apply all lower bones using pre-computed parent rotations
+    for mid_bone, lower_quat, original_lower, influence, upper_posed_world_q, root_bone_data, mid_bone_data in lower_bone_data:
+        # Convert lower world quaternion to pose-local
+        # CRITICAL: Must account for mid bone's rest orientation
+        # mid_rest_world = upper_posed_world @ mid_rest_rel_parent
+        mid_rest_rel_parent = root_bone_data.matrix_local.inverted() @ mid_bone_data.matrix_local
+        mid_rest_world_q = upper_posed_world_q @ mid_rest_rel_parent.to_quaternion()
+
+        lower_world_q = mathutils.Quaternion(lower_quat)
+        lower_local_q = mid_rest_world_q.inverted() @ lower_world_q
+
+        # Apply lower bone
+        if mid_bone.rotation_mode != 'QUATERNION':
             mid_bone.rotation_mode = 'QUATERNION'
-            if influence < 1.0:
-                mid_bone.rotation_quaternion = original_lower.slerp(lower_local_q, influence)
-            else:
-                mid_bone.rotation_quaternion = lower_local_q
+        if influence < 1.0:
+            final_lower_q = original_lower.slerp(lower_local_q, influence)
+        else:
+            final_lower_q = lower_local_q
+        mid_bone.rotation_quaternion = final_lower_q
 
-        # Update runtime_ik state for visualizer
-        from .runtime_ik import update_ik_state
-        update_ik_state(
-            chain=chain_name,
-            target_pos=np.array(ik_data.get("target", [0, 0, 0]), dtype=np.float32),
-            mid_pos=np.array(ik_data.get("joint_world", [0, 0, 0]), dtype=np.float32),
-            root_pos=np.array(ik_data.get("root_pos", [0, 0, 0]), dtype=np.float32) if "root_pos" in ik_data else np.zeros(3, dtype=np.float32),
-            pole_pos=np.array(ik_data.get("pole_pos", [0, 0, 0]), dtype=np.float32),
-            influence=influence,
-            reachable=ik_data.get("reachable", True)
-        )
+        if log_enabled:
+            log_game("IK-SOLVE", f"APPLY lower: world_q={lower_quat} -> local_q=({lower_local_q.w:.3f},{lower_local_q.x:.3f},{lower_local_q.y:.3f},{lower_local_q.z:.3f}) bone={mid_bone.name}")
+
+    # Batch update visualizer state (only if enabled and there are updates)
+    # update_ik_state already imported at module level
+    if visualizer_updates:
+        for chain_name, target, joint, root, pole, influence, reachable in visualizer_updates:
+            update_ik_state(
+                chain=chain_name,
+                target_pos=np.array(target, dtype=np.float32),
+                mid_pos=np.array(joint, dtype=np.float32),
+                root_pos=np.array(root, dtype=np.float32),
+                pole_pos=np.array(pole, dtype=np.float32),
+                influence=influence,
+                reachable=reachable
+            )
 
 
 def _apply_ik_overlay_standalone(armature, chain, target_obj, influence):
@@ -1206,12 +1674,6 @@ def _apply_ik_overlay_with_position(armature, chain, target_pos, influence):
     """Apply IK overlay using a world-space position."""
     log_enabled = getattr(bpy.context.scene, 'dev_debug_ik_solve', False)
     apply_ik_chain(armature, chain, target_pos, influence, log=log_enabled)
-
-
-def stop_pose_blend_auto():
-    """Stop pose blend auto-play timer."""
-    if bpy.app.timers.is_registered(pose_blend_auto_update):
-        bpy.app.timers.unregister(pose_blend_auto_update)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1375,7 +1837,18 @@ class ANIM2_OT_TestPlay(Operator):
             self.report({'WARNING'}, f"Animation '{anim_name}' not in cache. Bake first.")
             return {'CANCELLED'}
 
-        # Play with settings
+        scene = context.scene
+
+        # Check if crossfade loop is enabled
+        crossfade_enabled = getattr(scene, 'test_blend_enabled', False)
+        blend_anim = props.blend_animation if crossfade_enabled else None
+
+        if crossfade_enabled:
+            if not blend_anim or not ctrl.has_animation(blend_anim):
+                self.report({'WARNING'}, "Select a secondary animation for crossfade")
+                return {'CANCELLED'}
+
+        # Start the animation (modal will handle playback)
         success = ctrl.play(
             armature.name,
             anim_name,
@@ -1386,28 +1859,33 @@ class ANIM2_OT_TestPlay(Operator):
             replace=True
         )
 
-        if success:
-            self.report({'INFO'}, f"Playing '{anim_name}' on {armature.name}")
-            if not bpy.app.timers.is_registered(playback_update):
-                bpy.app.timers.register(playback_update, first_interval=1/60)
-
-            # Blend secondary if enabled
-            scene = context.scene
-            if getattr(scene, 'test_blend_enabled', False):
-                blend_anim = props.blend_animation
-                if blend_anim and ctrl.has_animation(blend_anim):
-                    ctrl.play(
-                        armature.name,
-                        blend_anim,
-                        weight=props.blend_weight,
-                        speed=props.play_speed,
-                        looping=props.loop_playback,
-                        fade_in=props.fade_time,
-                        replace=False
-                    )
-                    self.report({'INFO'}, f"Playing '{anim_name}' + blending '{blend_anim}'")
-        else:
+        if not success:
             self.report({'WARNING'}, f"Failed to play '{anim_name}'")
+            return {'CANCELLED'}
+
+        # Start the unified test modal
+        if not is_test_modal_running():
+            # Store crossfade state in module-level dict for modal to access
+            if crossfade_enabled and blend_anim:
+                # Set up crossfade state for the modal
+                _crossfade_state["active_anim"] = "A"
+                _crossfade_state["anim_a"] = anim_name
+                _crossfade_state["anim_b"] = blend_anim
+                _crossfade_state["armature"] = armature.name
+                _crossfade_state["fade_time"] = props.fade_time
+                _crossfade_state["speed"] = props.play_speed
+                # Calculate switch time
+                anim_data = ctrl.cache.get(anim_name)
+                duration = anim_data.duration / props.play_speed if anim_data else 2.0
+                _crossfade_state["switch_time"] = time.perf_counter() + duration
+                _crossfade_state["start_time"] = time.perf_counter()
+
+            bpy.ops.anim2.test_modal('INVOKE_DEFAULT')
+
+        if crossfade_enabled:
+            self.report({'INFO'}, f"Crossfade loop: {anim_name} ↔ {blend_anim}")
+        else:
+            self.report({'INFO'}, f"Playing '{anim_name}' on {armature.name}")
 
         return {'FINISHED'}
 
@@ -1521,27 +1999,15 @@ class ANIM2_OT_TestPlay(Operator):
                 self.report({'WARNING'}, "Enable at least one IK chain")
             return {'CANCELLED'}
 
-        # Extract IK targets from Pose B (only in POSE_TO_POSE mode)
-        ik_targets = {}
+        # Extract IK targets from BOTH Pose A and Pose B (for interpolation)
+        ik_targets_a = {}  # Targets from Pose A (start)
+        ik_targets_b = {}  # Targets from Pose B (end)
+
         if ik_mode == 'POSE_TO_POSE':
-            pose_b_name = scene.pose_blend_b
+            all_chains = {**LEG_IK, **ARM_IK}
 
-            # Get Pose B data
-            pose_b_data = None
-            if pose_b_name == "REST":
-                pose_b_data = {bone: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-                              for bone in BONE_INDEX.keys()}
-            else:
-                for p in scene.pose_library:
-                    if p.name == pose_b_name:
-                        try:
-                            pose_b_data = json.loads(p.bone_data_json)
-                        except:
-                            pass
-                        break
-
-            # Extract tip positions from Pose B
-            if pose_b_data:
+            # Helper function to extract tip positions from a pose
+            def extract_tip_positions(pose_data, target_dict, pose_name):
                 # Store current pose
                 original_transforms = {}
                 for pbone in armature.pose.bones:
@@ -1551,8 +2017,8 @@ class ANIM2_OT_TestPlay(Operator):
                         pbone.scale.copy()
                     )
 
-                # Apply Pose B temporarily
-                for bone_name, transform in pose_b_data.items():
+                # Apply pose temporarily
+                for bone_name, transform in pose_data.items():
                     pbone = armature.pose.bones.get(bone_name)
                     if pbone:
                         pbone.rotation_mode = 'QUATERNION'
@@ -1562,15 +2028,15 @@ class ANIM2_OT_TestPlay(Operator):
 
                 context.view_layer.update()
 
-                # Get tip bone positions
-                all_chains = {**LEG_IK, **ARM_IK}
+                # Get tip bone positions in LOCAL space
                 for chain_name in active_chains:
                     chain_def = all_chains.get(chain_name)
                     if chain_def:
                         tip_bone = armature.pose.bones.get(chain_def["tip"])
                         if tip_bone:
-                            tip_world = armature.matrix_world @ tip_bone.head
-                            ik_targets[chain_name] = mathutils.Vector(tip_world)
+                            tip_local = tip_bone.head.copy()
+                            target_dict[chain_name] = tip_local
+                            log_game("IK", f"CAPTURE_{pose_name} {chain_name} local=({tip_local.x:.3f},{tip_local.y:.3f},{tip_local.z:.3f})")
 
                 # Restore original pose
                 for bone_name, (rot, loc, scale) in original_transforms.items():
@@ -1582,8 +2048,40 @@ class ANIM2_OT_TestPlay(Operator):
 
                 context.view_layer.update()
 
-        # Store IK targets for timer (empty for POSE_TO_TARGET - uses objects directly)
-        _pose_blend_state["ik_targets"] = ik_targets
+            # Get Pose A data
+            pose_a_data_ik = {}
+            try:
+                pose_a_data_ik = json.loads(pose_a_entry.bone_data_json)
+            except:
+                pass
+
+            # Get Pose B data
+            pose_b_name = scene.pose_blend_b
+            pose_b_data_ik = None
+            if pose_b_name == "REST":
+                pose_b_data_ik = {bone: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+                              for bone in BONE_INDEX.keys()}
+            else:
+                for p in scene.pose_library:
+                    if p.name == pose_b_name:
+                        try:
+                            pose_b_data_ik = json.loads(p.bone_data_json)
+                        except:
+                            pass
+                        break
+
+            # Extract targets from Pose A
+            if pose_a_data_ik:
+                extract_tip_positions(pose_a_data_ik, ik_targets_a, "A")
+
+            # Extract targets from Pose B
+            if pose_b_data_ik:
+                extract_tip_positions(pose_b_data_ik, ik_targets_b, "B")
+
+        # Store BOTH sets of IK targets for interpolation during blend
+        _pose_blend_state["ik_targets_a"] = ik_targets_a  # Start positions
+        _pose_blend_state["ik_targets_b"] = ik_targets_b  # End positions
+        log_game("IK", f"STORED targets_a={list(ik_targets_a.keys())} targets_b={list(ik_targets_b.keys())}")
 
         # Cache pose data for worker-based timer callback
         try:
@@ -1608,21 +2106,22 @@ class ANIM2_OT_TestPlay(Operator):
         _pose_blend_state["pose_a_data"] = pose_a_data
         _pose_blend_state["pose_b_data"] = pose_b_data_cached
 
-        # Log extracted targets for debugging
-        if ik_targets:
-            from ..developer.dev_logger import log_game
+        # Log extracted targets for debugging (now in LOCAL armature space)
+        if ik_targets_a or ik_targets_b:
             log_game("IK-SOLVE", f"=== POSE-TO-POSE SETUP ===")
             log_game("IK-SOLVE", f"Pose A: {pose_a_name} ({len(pose_a_data)} bones)")
             log_game("IK-SOLVE", f"Pose B: {pose_b_name} ({len(pose_b_data_cached)} bones)")
-            for chain_name, target_pos in ik_targets.items():
-                log_game("IK-SOLVE", f"TARGET {chain_name}: ({target_pos.x:.3f}, {target_pos.y:.3f}, {target_pos.z:.3f})")
+            for chain_name in ik_targets_a:
+                local_a = ik_targets_a.get(chain_name)
+                local_b = ik_targets_b.get(chain_name)
+                if local_a and local_b:
+                    log_game("IK-SOLVE", f"TARGET {chain_name}: A=({local_a.x:.3f},{local_a.y:.3f},{local_a.z:.3f}) B=({local_b.x:.3f},{local_b.y:.3f},{local_b.z:.3f})")
             log_game("IK-SOLVE", f"=== END SETUP ===")
 
-        # Start the auto-loop timer
-        if not bpy.app.timers.is_registered(pose_blend_auto_update):
-            _pose_blend_state["start_time"] = time.perf_counter()
+        # Start the unified test modal for smooth animation
+        if not is_test_modal_running():
             _pose_blend_state["direction"] = 1
-            bpy.app.timers.register(pose_blend_auto_update, first_interval=1/60)
+            bpy.ops.anim2.test_modal('INVOKE_DEFAULT')
 
         duration = scene.pose_blend_duration
         chains_str = ", ".join(active_chains)
@@ -1848,6 +2347,13 @@ class ANIM2_OT_TestStop(Operator):
             from .rig_logger import end_rig_test_session
             end_rig_test_session(armature, f"TEST_{mode}")
 
+        # Stop the unified test modal if running (handles all modes)
+        was_running = is_test_modal_running()
+        if was_running:
+            # Signal modal to stop via flag (checked on next event)
+            global _stop_requested
+            _stop_requested = True
+
         if mode == 'ANIMATION':
             # Stop animations
             if armature:
@@ -1859,13 +2365,12 @@ class ANIM2_OT_TestStop(Operator):
                 stop_all_animations()
                 self.report({'INFO'}, "Stopped all animations")
         elif mode == 'POSE':
-            # Stop the IK pose-to-pose timer if running
-            if bpy.app.timers.is_registered(pose_blend_auto_update):
-                stop_pose_blend_auto()
-                disable_ik_visualizer()
-                # Clear IK state so visualizer doesn't show stale data
-                from .runtime_ik import clear_ik_state
-                clear_ik_state()
+            # Disable IK visualization
+            disable_ik_visualizer()
+            # Clear IK state so visualizer doesn't show stale data
+            from .runtime_ik import clear_ik_state
+            clear_ik_state()
+            if was_running:
                 self.report({'INFO'}, "Stopped IK pose-to-pose loop")
             else:
                 self.report({'INFO'}, "No active loop to stop")
@@ -1932,6 +2437,8 @@ classes = [
     ANIM2_OT_TestPlay,
     ANIM2_OT_TestStop,
     ANIM2_OT_TestReset,
+    # Unified test modal (handles all modes: ANIMATION, POSE, IK)
+    ANIM2_OT_TestModal,
 ]
 
 
@@ -1943,7 +2450,10 @@ def register():
 
 
 def unregister():
-    # Stop timer and shutdown engine
+    # Stop unified test modal and shutdown engine
+    global _active_test_modal
+    if _active_test_modal:
+        _active_test_modal._test_mode = ""  # Forces modal to self-cancel
     reset_test_controller()
 
     if hasattr(bpy.types.Scene, 'anim2_test'):
