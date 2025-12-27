@@ -137,11 +137,13 @@ def handle_hitscan_batch(job_data: dict, cached_grid, cached_dynamic_meshes, cac
         direction = ray.get("direction", (0, 0, 1))
         max_range = ray.get("max_range", 100.0)
 
-        # Normalize direction
+        # Normalize direction - skip sqrt if already normalized (squared length ≈ 1.0)
         dx, dy, dz = direction
-        d_len = math.sqrt(dx*dx + dy*dy + dz*dz)
-        if d_len > 1e-12:
-            direction = (dx / d_len, dy / d_len, dz / d_len)
+        d_len_sq = dx*dx + dy*dy + dz*dz
+        if abs(d_len_sq - 1.0) > 0.001:  # Not normalized, need to fix
+            if d_len_sq > 1e-24:
+                d_len = math.sqrt(d_len_sq)
+                direction = (dx / d_len, dy / d_len, dz / d_len)
 
         # Cast ray
         result = unified_raycast(

@@ -1,5 +1,5 @@
 import bpy
-from ..reactions.exp_reaction_definition import ReactionDefinition, enum_objective_items
+from ..reactions.exp_reaction_definition import ReactionDefinition, enum_counter_items, enum_timer_items
 from .exp_interactions import trigger_mode_items
 from ..reactions.exp_reaction_definition import register_reaction_library_properties
 from ..reactions.exp_fonts import discover_fonts
@@ -48,10 +48,10 @@ class InteractionDefinition(bpy.types.PropertyGroup):
             ("PROXIMITY",       "Proximity",        "Triggers when within distance"),
             ("COLLISION",       "Collision",        "Triggers on collision"),
             ("INTERACT",        "Interact Key",     "Triggers on user pressing Interact"),
-            ("ACTION",           "Action Key",       "Triggers on user pressing Action"), 
-            ("OBJECTIVE_UPDATE","Objective Update", "Triggers when an objective changes"),
-            ("TIMER_COMPLETE",  "Timer Complete",   "Fires when an objective’s timer ends"),
-            ("ON_GAME_START",  "On Game Start",   "Fires once right after gameplay begins or a reset"),
+            ("ACTION",          "Action Key",       "Triggers on user pressing Action"),
+            ("COUNTER_UPDATE",  "Counter Update",   "Triggers when a counter changes"),
+            ("TIMER_COMPLETE",  "Timer Complete",   "Fires when a timer ends"),
+            ("ON_GAME_START",   "On Game Start",    "Fires once right after gameplay begins or a reset"),
             ("EXTERNAL",        "Trigger",          "Fires when an external boolean input is True"),
         ],
         default="PROXIMITY",
@@ -133,27 +133,27 @@ class InteractionDefinition(bpy.types.PropertyGroup):
 )
 
 
-    #####Objectives Trigger Properties #####
-    objective_index: bpy.props.EnumProperty(
-        name="Objective",
-        description="Which objective do we monitor?",
-        items=enum_objective_items,
+    #####Counter Trigger Properties #####
+    counter_index: bpy.props.EnumProperty(
+        name="Counter",
+        description="Which counter do we monitor?",
+        items=enum_counter_items,
         default=None
     )
 
-    objective_condition: bpy.props.EnumProperty(
+    counter_condition: bpy.props.EnumProperty(
         name="Condition",
         items=[
-            ("CHANGED",    "Changed",    "Fires whenever the current_value changes in any direction"),
-            ("INCREASED",  "Increased",  "Fires only if the current_value goes up"),
-            ("DECREASED",  "Decreased",  "Fires only if the current_value goes down"),
-            ("EQUALS",     "Equals",     "Fire if current_value == Condition Value"),
-            ("AT_LEAST",   "At Least",   "Fire if current_value >= Condition Value"),
+            ("CHANGED",    "Changed",    "Fires whenever the current value changes in any direction"),
+            ("INCREASED",  "Increased",  "Fires only if the current value goes up"),
+            ("DECREASED",  "Decreased",  "Fires only if the current value goes down"),
+            ("EQUALS",     "Equals",     "Fire if current value == Condition Value"),
+            ("AT_LEAST",   "At Least",   "Fire if current value >= Condition Value"),
         ],
         default="CHANGED"
     )
 
-    objective_condition_value: bpy.props.IntProperty(
+    counter_condition_value: bpy.props.IntProperty(
         name="Condition Value",
         default=5,
         min=0,
@@ -165,10 +165,12 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         default=-1,
         description="(internal) tracks the previous count so we can detect changes"
     )
-    timer_objective_index: bpy.props.EnumProperty(
-        name="Timer Objective",
-        items=enum_objective_items,  # same function you use for objective listing
-        description="Which objective’s timer we watch for completion"
+
+    #####Timer Trigger Properties #####
+    timer_index: bpy.props.EnumProperty(
+        name="Timer",
+        items=enum_timer_items,
+        description="Which timer we watch for completion"
     )
 
 

@@ -111,6 +111,17 @@ IK_COLORS = {
     "chain_lower": (1.0, 0.0, 1.0, 0.9),    # Magenta
 }
 
+# Full-Body IK colors
+FBIK_COLORS = {
+    "hips": (1.0, 1.0, 0.0, 0.9),           # Yellow - hips control
+    "hips_drop": (1.0, 0.5, 0.0, 0.7),      # Orange - hips drop indicator
+    "foot_target": (0.2, 1.0, 0.2, 0.9),    # Green - foot grounded
+    "hand_target": (0.2, 0.8, 1.0, 0.9),    # Cyan - hand reach
+    "hand_limit": (1.0, 0.6, 0.0, 0.9),     # Orange - hand at limit
+    "look_at": (1.0, 0.0, 1.0, 0.9),        # Magenta - look-at target
+    "spine_lean": (0.8, 0.8, 0.2, 0.7),     # Pale yellow - spine direction
+}
+
 
 # =============================================================================
 # MAIN DRAW CALLBACK
@@ -161,6 +172,9 @@ def _draw_rig_visualizer():
 
     if getattr(scene, 'dev_rig_vis_active_mask', False):
         _draw_active_mask(armature, all_verts, all_colors, scene)
+
+    if getattr(scene, 'dev_rig_vis_full_body_ik', False):
+        _draw_full_body_ik(armature, all_verts, all_colors, scene)
 
     # Single batched draw
     if all_verts:
@@ -540,6 +554,186 @@ def _draw_active_mask(armature, all_verts, all_colors, scene):
 
 
 # =============================================================================
+# FULL-BODY IK VISUALIZATION
+# =============================================================================
+
+def _draw_full_body_ik(armature, all_verts, all_colors, scene):
+    """
+    Draw full-body IK constraints and state.
+
+    Shows:
+    - Hips position and drop indicator
+    - Foot grounding targets
+    - Hand reach targets
+    - Spine lean direction
+    - Look-at target
+    """
+    from ..animations.full_body_ik import get_fbik_state
+
+    fbik_state = get_fbik_state()
+    if not fbik_state.get("active", False):
+        return
+
+    pose_bones = armature.pose.bones
+    arm_matrix = armature.matrix_world
+
+    constraints = fbik_state.get("constraints", {})
+    last_result = fbik_state.get("last_result")
+
+    # Get Root and Hips positions
+    root_bone = pose_bones.get("Root")
+    hips_bone = pose_bones.get("Hips")
+
+    if not root_bone or not hips_bone:
+        return
+
+    root_world = tuple((arm_matrix @ root_bone.head)[:])
+    hips_world = tuple((arm_matrix @ hips_bone.head)[:])
+
+    # =========================================================================
+    # HIPS DROP INDICATOR
+    # =========================================================================
+    hips_drop = constraints.get("hips_drop", 0.0)
+    if abs(hips_drop) > 0.001:
+        # Draw vertical line showing drop amount
+        hips_color = FBIK_COLORS["hips_drop"]
+
+        # Original hips position (before drop)
+        orig_hips = (hips_world[0], hips_world[1], hips_world[2] + hips_drop)
+
+        # Line from original to current
+        all_verts.extend([orig_hips, hips_world])
+        all_colors.extend([hips_color, hips_color])
+
+        # Crosshair at original position
+        extend_batch_data(all_verts, all_colors, crosshair_verts(orig_hips, 0.03), hips_color)
+
+        # Box at current hips position
+        extend_batch_data(all_verts, all_colors, crosshair_verts(hips_world, 0.04), FBIK_COLORS["hips"])
+
+    # =========================================================================
+    # FOOT TARGETS
+    # =========================================================================
+    for foot_key in ["left_foot", "right_foot"]:
+        foot_data = constraints.get(foot_key)
+        if not foot_data or not foot_data.get("enabled", True):
+            continue
+
+        foot_pos = foot_data.get("position")
+        if not foot_pos:
+            continue
+
+        # Convert Root-relative to world
+        target_world = (
+            root_world[0] + foot_pos[0],
+            root_world[1] + foot_pos[1],
+            root_world[2] + foot_pos[2],
+        )
+
+        # Get error from last result
+        error_cm = 0.0
+        if last_result:
+            error_key = f"{foot_key}_error_cm".replace("_foot", "_foot")
+            error_cm = last_result.get(error_key, 0.0)
+
+        # Color based on error
+        if error_cm < 1.0:
+            color = FBIK_COLORS["foot_target"]  # Green - good
+        elif error_cm < 5.0:
+            color = IK_COLORS["at_limit"]  # Yellow - warning
+        else:
+            color = IK_COLORS["out_of_reach"]  # Red - bad
+
+        # Wireframe sphere at target
+        extend_batch_data(
+            all_verts, all_colors,
+            sphere_wire_verts(target_world, 0.04, CIRCLE_8),
+            color
+        )
+
+        # Line from foot target to ground (Z=0 relative to root)
+        ground_pos = (target_world[0], target_world[1], root_world[2])
+        all_verts.extend([target_world, ground_pos])
+        all_colors.extend([color, (color[0], color[1], color[2], 0.3)])
+
+    # =========================================================================
+    # HAND TARGETS
+    # =========================================================================
+    for hand_key in ["left_hand", "right_hand"]:
+        hand_data = constraints.get(hand_key)
+        if not hand_data or not hand_data.get("enabled", True):
+            continue
+
+        hand_pos = hand_data.get("position")
+        if not hand_pos:
+            continue
+
+        # Convert Root-relative to world
+        target_world = (
+            root_world[0] + hand_pos[0],
+            root_world[1] + hand_pos[1],
+            root_world[2] + hand_pos[2],
+        )
+
+        # Get error from last result
+        error_cm = 0.0
+        if last_result:
+            side = "left" if "left" in hand_key else "right"
+            error_key = f"{side}_hand_error_cm"
+            error_cm = last_result.get(error_key, 0.0)
+
+        # Color based on error
+        if error_cm < 3.0:
+            color = FBIK_COLORS["hand_target"]  # Cyan - good
+        elif error_cm < 10.0:
+            color = FBIK_COLORS["hand_limit"]  # Orange - at limit
+        else:
+            color = IK_COLORS["out_of_reach"]  # Red - out of reach
+
+        # Wireframe sphere at target
+        extend_batch_data(
+            all_verts, all_colors,
+            sphere_wire_verts(target_world, 0.05, CIRCLE_8),
+            color
+        )
+
+        # Line from shoulder area to target (visual aid)
+        # Estimate shoulder position
+        shoulder_offset = 0.15 if "left" in hand_key else -0.15
+        shoulder_z = hips_world[2] + 0.5
+        shoulder_world = (hips_world[0] + shoulder_offset, hips_world[1], shoulder_z)
+
+        all_verts.extend([shoulder_world, target_world])
+        all_colors.extend([(color[0], color[1], color[2], 0.4), color])
+
+    # =========================================================================
+    # LOOK-AT TARGET
+    # =========================================================================
+    look_at_data = constraints.get("look_at")
+    if look_at_data and look_at_data.get("enabled", True):
+        look_pos = look_at_data.get("position")
+        if look_pos:
+            # Convert Root-relative to world
+            target_world = (
+                root_world[0] + look_pos[0],
+                root_world[1] + look_pos[1],
+                root_world[2] + look_pos[2],
+            )
+
+            color = FBIK_COLORS["look_at"]
+
+            # Crosshair at look-at target
+            extend_batch_data(all_verts, all_colors, crosshair_verts(target_world, 0.06), color)
+
+            # Line from head to target
+            head_bone = pose_bones.get("Head")
+            if head_bone:
+                head_world = tuple((arm_matrix @ head_bone.head)[:])
+                all_verts.extend([head_world, target_world])
+                all_colors.extend([(color[0], color[1], color[2], 0.5), color])
+
+
+# =============================================================================
 # TEXT OVERLAY (Billboard text above character)
 # =============================================================================
 
@@ -637,6 +831,7 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
     """
     from ..animations.blend_system import get_blend_system
     from ..animations.runtime_ik import get_ik_state, is_ik_active
+    from ..animations.full_body_ik import get_fbik_state
 
     lines = []
 
@@ -645,10 +840,43 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
     cyan = (0.4, 1.0, 1.0, 1.0)
     yellow = (1.0, 1.0, 0.4, 1.0)
     orange = (1.0, 0.6, 0.2, 1.0)
+    magenta = (1.0, 0.4, 1.0, 1.0)
     gray = (0.6, 0.6, 0.6, 1.0)
 
-    # IK Status
-    if is_ik_active():
+    # Full-Body IK Status
+    fbik_state = get_fbik_state()
+    if fbik_state.get("active", False):
+        constraints = fbik_state.get("constraints", {})
+        last_result = fbik_state.get("last_result")
+
+        # Build constraint summary
+        parts = []
+        if constraints.get("hips_drop", 0) != 0:
+            parts.append(f"hips:{constraints['hips_drop']:.2f}m")
+        if constraints.get("left_foot") and constraints["left_foot"].get("enabled"):
+            parts.append("L_foot")
+        if constraints.get("right_foot") and constraints["right_foot"].get("enabled"):
+            parts.append("R_foot")
+        if constraints.get("left_hand") and constraints["left_hand"].get("enabled"):
+            parts.append("L_hand")
+        if constraints.get("right_hand") and constraints["right_hand"].get("enabled"):
+            parts.append("R_hand")
+        if constraints.get("look_at") and constraints["look_at"].get("enabled"):
+            parts.append("look")
+
+        if parts:
+            lines.append((f"FBIK: {' '.join(parts)}", magenta))
+
+        # Show result status
+        if last_result:
+            satisfied = last_result.get("constraints_satisfied", 0)
+            total = last_result.get("constraints_total", 0)
+            if total > 0:
+                status_color = green if satisfied == total else yellow
+                lines.append((f"  {satisfied}/{total} satisfied", status_color))
+
+    # IK Status (limb-only)
+    elif is_ik_active():
         ik_state = get_ik_state()
         chains = list(ik_state.get("chains", {}).keys())
         if chains:

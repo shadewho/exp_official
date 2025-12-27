@@ -289,7 +289,7 @@ evaluate_trackers(tracker_data, world_state)   # No node access
 - Fires reactions when conditions met
 
 **Reactions** (`Exp_Game/reactions/`) = Response execution
-- Sounds, transforms, projectiles, UI text, objectives, teleports
+- Sounds, transforms, projectiles, UI text, counters, timers, teleports
 - Task-based with delays and interpolation
 - Each reaction type has its own executor file
 

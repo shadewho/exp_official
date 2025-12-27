@@ -10,10 +10,24 @@ Architecture:
   - Returns local-space quaternions to apply to bones
   - Uses rig.md chain definitions
 
+IMPORTANT - Root Bone Reference Frame:
+  All IK target positions should be relative to the Root bone (world anchor).
+  The rig hierarchy is: Root → Hips → (Spine/Legs)
+
+  - Root: At origin (0,0,0), defines character's world position
+  - Hips: Can translate/rotate for crouch/lean, children move with it
+  - Leg IK: Targets are Root-relative, so feet stay planted when Hips moves
+
+  Workflow for crouch:
+    1. Move Hips down (relative to Root)
+    2. Feet targets stay at ground level (Root-relative)
+    3. Solve leg IK → legs bend to reach stationary foot targets
+    4. Result: character crouches, feet don't move
+
 Usage:
   upper_quat, lower_quat = solve_two_bone_ik(
       root_pos=hip_world_pos,
-      target_pos=foot_target_pos,
+      target_pos=foot_target_pos,  # Relative to Root bone
       pole_pos=knee_hint_pos,
       upper_len=0.495,  # thigh
       lower_len=0.478,  # shin
@@ -33,18 +47,18 @@ LEG_IK = {
         "root": "LeftThigh",
         "mid": "LeftShin",
         "tip": "LeftFoot",
-        "len_upper": 0.4947,
-        "len_lower": 0.4784,
-        "reach": 0.9731,
+        "len_upper": 0.448,   # Actual rig measurement
+        "len_lower": 0.497,   # Actual rig measurement
+        "reach": 0.945,       # Actual reach (upper + lower)
         "pole_forward": np.array([0.0, 1.0, 0.0], dtype=np.float32),
     },
     "leg_R": {
         "root": "RightThigh",
         "mid": "RightShin",
         "tip": "RightFoot",
-        "len_upper": 0.4947,
-        "len_lower": 0.4775,
-        "reach": 0.9722,
+        "len_upper": 0.448,   # Actual rig measurement
+        "len_lower": 0.497,   # Actual rig measurement
+        "reach": 0.945,       # Actual reach (upper + lower)
         "pole_forward": np.array([0.0, 1.0, 0.0], dtype=np.float32),
     },
 }
@@ -334,31 +348,95 @@ def solve_leg_ik(
     foot_target: np.ndarray,
     knee_pole: np.ndarray,
     side: str = "L",
+    char_forward: np.ndarray = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Solve IK for a leg using rig.md definitions.
+    Solve IK for a leg - returns DIRECTIONS, not quaternions.
+
+    The solver computes WHERE the joints should be. The main thread
+    then uses Blender's actual bone data to compute rotations.
 
     Args:
         hip_pos: World position of the hip/thigh joint
         foot_target: World position where foot should reach
         knee_pole: World position of knee hint (in front of knee)
         side: "L" for left, "R" for right
+        char_forward: Character's forward direction (CRITICAL for high kicks)
 
     Returns:
-        Tuple of (thigh_quat, shin_quat, knee_pos)
+        Tuple of (thigh_dir, shin_dir, knee_pos)
+        - thigh_dir: Direction vector for thigh (hip to knee)
+        - shin_dir: Direction vector for shin (knee to foot)
+        - knee_pos: World position of knee
     """
     chain = LEG_IK["leg_L"] if side == "L" else LEG_IK["leg_R"]
+    upper_len = chain["len_upper"]
+    lower_len = chain["len_lower"]
 
-    return solve_two_bone_ik(
-        root_pos=hip_pos,
-        target_pos=foot_target,
-        pole_pos=knee_pole,
-        upper_len=chain["len_upper"],
-        lower_len=chain["len_lower"],
-        # Legs point down in rest pose
-        initial_upper_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
-        initial_lower_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
-    )
+    hip_pos = np.asarray(hip_pos, dtype=np.float32)
+    foot_target = np.asarray(foot_target, dtype=np.float32)
+    knee_pole = np.asarray(knee_pole, dtype=np.float32)
+
+    # Direction from hip to target
+    reach_vec = foot_target - hip_pos
+    reach_dist = float(np.linalg.norm(reach_vec))
+
+    # Clamp to reachable distance
+    max_reach = upper_len + lower_len - 0.001
+    min_reach = abs(upper_len - lower_len) + 0.001
+    clamped_dist = max(min_reach, min(reach_dist, max_reach))
+
+    if reach_dist > 0.001:
+        reach_dir = reach_vec / reach_dist
+    else:
+        # Fallback: straight down
+        reach_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+
+    # === LAW OF COSINES ===
+    a, b, c = upper_len, lower_len, clamped_dist
+
+    # Angle at hip (between thigh and reach line)
+    cos_hip = (a*a + c*c - b*b) / (2*a*c)
+    cos_hip = np.clip(cos_hip, -1.0, 1.0)
+    hip_angle = np.arccos(cos_hip)
+
+    # === COMPUTE KNEE POSITION ===
+    # For legs, the knee must ALWAYS be in front of the body (+Y in character space)
+    # regardless of where the foot target is. This is anatomically correct.
+    #
+    # The old approach (projecting pole perpendicular to reach) fails when
+    # reaching UP and forward - the projection becomes tiny or points DOWN.
+    #
+    # New approach: Use char_forward directly to define the bend plane.
+    # The bend axis is perpendicular to the plane containing (reach_dir, char_forward)
+
+    if char_forward is None:
+        char_forward = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    char_forward = np.asarray(char_forward, dtype=np.float32)
+
+    # Bend axis: perpendicular to the plane formed by reach and forward
+    # This ensures knee always goes "forward" relative to character, not reach line
+    bend_axis = normalize(cross(reach_dir, char_forward))
+
+    # Handle edge case: reach is exactly aligned with char_forward
+    if np.linalg.norm(bend_axis) < 0.001:
+        # Fallback: use character's right vector as bend axis
+        # (knee would go forward, which is correct)
+        char_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        bend_axis = normalize(cross(char_forward, char_up))  # This gives char_right
+
+    # Thigh direction: rotate reach_dir TOWARD pole by hip_angle
+    # POSITIVE angle for legs (knee goes forward)
+    thigh_dir = quat_rotate_vector(quat_from_axis_angle(bend_axis, hip_angle), reach_dir)
+
+    # Knee position
+    knee_pos = hip_pos + thigh_dir * upper_len
+
+    # Shin direction: from knee to foot (clamped)
+    clamped_foot = hip_pos + reach_dir * clamped_dist
+    shin_dir = normalize(clamped_foot - knee_pos)
+
+    return thigh_dir, shin_dir, knee_pos
 
 
 def solve_arm_ik(
@@ -366,33 +444,141 @@ def solve_arm_ik(
     hand_target: np.ndarray,
     elbow_pole: np.ndarray,
     side: str = "L",
+    char_forward: np.ndarray = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Solve IK for an arm using rig.md definitions.
+    Solve IK for an arm - returns POSITIONS only.
+
+    The solver computes WHERE the joints should be. The main thread
+    then uses Blender's actual bone data to compute rotations.
 
     Args:
         shoulder_pos: World position of the shoulder/upper arm joint
         hand_target: World position where hand should reach
         elbow_pole: World position of elbow hint (behind elbow)
         side: "L" for left, "R" for right
+        char_forward: Character's forward direction (for elbow constraint)
 
     Returns:
-        Tuple of (upper_arm_quat, forearm_quat, elbow_pos)
+        Tuple of (upper_dir, lower_dir, elbow_pos)
+        - upper_dir: Direction vector for upper arm (shoulder to elbow)
+        - lower_dir: Direction vector for forearm (elbow to hand)
+        - elbow_pos: World position of elbow
     """
     chain = ARM_IK["arm_L"] if side == "L" else ARM_IK["arm_R"]
+    upper_len = chain["len_upper"]
+    lower_len = chain["len_lower"]
 
-    # Arms point outward in T-pose
-    arm_dir = np.array([-1.0, 0.0, 0.0], dtype=np.float32) if side == "L" else np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    shoulder_pos = np.asarray(shoulder_pos, dtype=np.float32)
+    hand_target = np.asarray(hand_target, dtype=np.float32)
+    elbow_pole = np.asarray(elbow_pole, dtype=np.float32)
 
-    return solve_two_bone_ik(
-        root_pos=shoulder_pos,
-        target_pos=hand_target,
-        pole_pos=elbow_pole,
-        upper_len=chain["len_upper"],
-        lower_len=chain["len_lower"],
-        initial_upper_dir=arm_dir,
-        initial_lower_dir=arm_dir,
-    )
+    # Direction from shoulder to target
+    reach_vec = hand_target - shoulder_pos
+    reach_dist = float(np.linalg.norm(reach_vec))
+
+    # Clamp to reachable distance
+    max_reach = upper_len + lower_len - 0.001
+    min_reach = abs(upper_len - lower_len) + 0.001
+    clamped_dist = max(min_reach, min(reach_dist, max_reach))
+
+    if reach_dist > 0.001:
+        reach_dir = reach_vec / reach_dist
+    else:
+        reach_dir = np.array([-1.0, 0.0, 0.0] if side == "L" else [1.0, 0.0, 0.0], dtype=np.float32)
+
+    # === LAW OF COSINES ===
+    a, b, c = upper_len, lower_len, clamped_dist
+
+    # Angle at shoulder (between upper arm and reach line)
+    cos_shoulder = (a*a + c*c - b*b) / (2*a*c)
+    cos_shoulder = np.clip(cos_shoulder, -1.0, 1.0)
+    shoulder_angle = np.arccos(cos_shoulder)
+
+    # === COMPUTE ELBOW POSITION ===
+    # Pole vector defines where the elbow should go (BEHIND for arms)
+    pole_vec = elbow_pole - shoulder_pos
+    pole_vec = pole_vec - reach_dir * dot(pole_vec, reach_dir)  # Project perpendicular to reach
+
+    if np.linalg.norm(pole_vec) > 0.001:
+        pole_vec = normalize(pole_vec)
+    else:
+        # Fallback: elbow behind (-Y in character space)
+        pole_vec = np.array([0.0, -1.0, 0.0], dtype=np.float32)
+        pole_vec = pole_vec - reach_dir * dot(pole_vec, reach_dir)
+        if np.linalg.norm(pole_vec) > 0.001:
+            pole_vec = normalize(pole_vec)
+        else:
+            pole_vec = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+
+    # Bend axis (perpendicular to arm plane)
+    # This axis is perpendicular to both the reach direction and pole direction
+    bend_axis = normalize(cross(pole_vec, reach_dir))
+
+    # Upper arm direction: rotate reach_dir TOWARD pole by shoulder_angle
+    # NEGATIVE angle because right-hand rule: cross(pole, reach) points such that
+    # negative rotation moves reach_dir toward pole_vec (elbow goes backward)
+    upper_dir = quat_rotate_vector(quat_from_axis_angle(bend_axis, -shoulder_angle), reach_dir)
+
+    # Elbow position
+    elbow_pos = shoulder_pos + upper_dir * upper_len
+
+    # =========================================================================
+    # CROSS-BODY CONSTRAINT: Elbow must stay BEHIND shoulder in character space
+    # =========================================================================
+    # When reaching across the body, the "backward relative to arm line" direction
+    # can actually be FORWARD in character space. This is anatomically impossible.
+    # Enforce: elbow_forward_offset <= 0 (elbow behind or at shoulder level)
+
+    if char_forward is not None:
+        char_forward = np.asarray(char_forward, dtype=np.float32)
+        char_forward = normalize(char_forward)
+
+        # How far forward is elbow relative to shoulder?
+        shoulder_to_elbow = elbow_pos - shoulder_pos
+        forward_offset = float(np.dot(shoulder_to_elbow, char_forward))
+
+        if forward_offset > 0.01:  # Elbow is in front of shoulder
+            # Need to move elbow backward by rotating upper_dir around reach_dir
+            # The elbow must stay on the "elbow sphere" (distance = upper_len from shoulder)
+
+            # SAVE ORIGINAL - all rotations should be from this base!
+            original_upper_dir = upper_dir.copy()
+
+            # Strategy: Sample many angles around reach_dir, find the one that
+            # puts elbow most backward while still being geometrically valid
+            best_upper_dir = upper_dir
+            best_elbow = elbow_pos
+            best_forward = forward_offset
+
+            # Sample rotation angles from 0 to 2*PI around reach_dir
+            # More samples = better chance of finding optimal elbow position
+            num_samples = 24  # Every 15 degrees
+            for i in range(num_samples):
+                test_angle = (2.0 * np.pi * i) / num_samples
+                test_quat = quat_from_axis_angle(reach_dir, test_angle)
+                test_upper_dir = quat_rotate_vector(test_quat, original_upper_dir)
+                test_elbow = shoulder_pos + test_upper_dir * upper_len
+                test_forward = float(np.dot(test_elbow - shoulder_pos, char_forward))
+
+                if test_forward < best_forward:
+                    best_forward = test_forward
+                    best_upper_dir = test_upper_dir
+                    best_elbow = test_elbow
+
+            # Use the best position found (most backward)
+            if best_forward < forward_offset - 0.001:
+                upper_dir = best_upper_dir
+                elbow_pos = best_elbow
+
+    # Hand position (clamped to reach)
+    hand_pos = shoulder_pos + reach_dir * clamped_dist
+
+    # Lower arm direction (from elbow to hand)
+    lower_dir = normalize(hand_pos - elbow_pos)
+
+    # Return DIRECTIONS and POSITION - rotations computed in main thread
+    return upper_dir.astype(np.float32), lower_dir.astype(np.float32), elbow_pos
 
 
 # =============================================================================
@@ -408,13 +594,16 @@ def compute_foot_ground_target(
     """
     Compute foot target position for grounding IK.
 
+    NOTE: All positions should be in Root-relative coordinates (character space).
+    The Root bone is the world anchor at the character's feet.
+
     Args:
-        foot_rest_pos: Current foot position from animation
-        ground_z: Ground height at this position (from raycast)
+        foot_rest_pos: Current foot position from animation (Root-relative)
+        ground_z: Ground height at this position (Root-relative, usually 0)
         foot_rest_z: Foot height in rest pose (ankle to floor)
 
     Returns:
-        Target foot position for IK
+        Target foot position for IK (Root-relative)
     """
     target = foot_rest_pos.copy()
     target[2] = ground_z + foot_rest_z
@@ -436,16 +625,18 @@ def compute_knee_pole_position(
     not dependent on where the foot is. Even when kicking backward, the knee
     bends forward.
 
+    NOTE: All positions should be in Root-relative coordinates (character space).
+
     Args:
-        hip_pos: Hip joint position
-        foot_pos: Foot position (or target)
+        hip_pos: Hip joint position (Root-relative)
+        foot_pos: Foot position or target (Root-relative)
         char_forward: Character's forward direction (from pelvis/armature)
         char_right: Character's right direction
         side: "L" for left leg, "R" for right leg
         offset: Distance in front of the knee
 
     Returns:
-        Pole target position (world space)
+        Pole target position (Root-relative)
     """
     hip_pos = np.asarray(hip_pos, dtype=np.float32)
     foot_pos = np.asarray(foot_pos, dtype=np.float32)
@@ -504,16 +695,18 @@ def compute_elbow_pole_position(
     - Reaching sideways → elbow goes back
     - Natural resting: elbow points back and slightly down
 
+    NOTE: All positions should be in Root-relative coordinates (character space).
+
     Args:
-        shoulder_pos: Shoulder joint position
-        hand_pos: Hand position (or target)
+        shoulder_pos: Shoulder joint position (Root-relative)
+        hand_pos: Hand position or target (Root-relative)
         char_forward: Character's forward direction
         char_up: Character's up direction (usually world Z)
         side: "L" for left arm, "R" for right arm
         offset: Distance from elbow midpoint
 
     Returns:
-        Pole target position (world space)
+        Pole target position (Root-relative)
     """
     shoulder_pos = np.asarray(shoulder_pos, dtype=np.float32)
     hand_pos = np.asarray(hand_pos, dtype=np.float32)
@@ -540,37 +733,32 @@ def compute_elbow_pole_position(
 
     reach_dir = reach_vec / reach_length
 
-    # Compute "away" direction - perpendicular to reach, biased back/down
-    # Cross reach with up to get a sideways vector, then cross again to get back-ish
-    sideways = np.cross(reach_dir, char_up)
-    sideways_norm = np.linalg.norm(sideways)
+    # =========================================================================
+    # RIG-AWARE ELBOW POLE COMPUTATION (from rig.md)
+    # =========================================================================
+    # Elbows ALWAYS bend BACKWARD in character space (pole_back: (0, -1, 0))
+    # This is the anatomical standard - humans can't bend elbows forward.
+    #
+    # Primary direction: BACKWARD (char_back = -char_forward)
+    # Secondary bias: OUTWARD (left arm → left, right arm → right)
+    # =========================================================================
 
-    if sideways_norm > 0.1:
-        sideways = sideways / sideways_norm
-        # "Away" is perpendicular to reach, in the plane containing reach and up
-        away = np.cross(sideways, reach_dir)
-        away = normalize(away)
-    else:
-        # Reaching straight up or down - elbow goes backward
-        away = char_back
-
-    # Bias the away direction toward character's back AND outward from body
-    # This makes elbows prefer to bend backward naturally and prevents
-    # arm-through-body issues when reaching across
-    back_bias = 0.6  # Strong back bias to keep elbows behind
-    down_bias = 0.2
-
-    # Compute side direction - elbows should bend OUTWARD from body
     char_right = np.cross(char_forward, char_up)
     char_right = normalize(char_right)
 
-    # Add outward bias based on which arm
-    if side == "L":
-        side_bias = -char_right * 0.4  # Left elbow goes leftward
-    else:
-        side_bias = char_right * 0.4   # Right elbow goes rightward
+    # Start with strong BACKWARD direction - this is non-negotiable for human arms
+    pole_dir = char_back * 1.0  # Primary: BACKWARD
 
-    pole_dir = normalize(away + char_back * back_bias + char_down * down_bias + side_bias)
+    # Add outward bias - elbows also go slightly outward from body center
+    if side == "L":
+        pole_dir = pole_dir + (-char_right) * 0.5  # Left elbow goes LEFT
+    else:
+        pole_dir = pole_dir + char_right * 0.5     # Right elbow goes RIGHT
+
+    # Slight downward bias for natural arm hanging position
+    pole_dir = pole_dir + (-char_up) * 0.2
+
+    pole_dir = normalize(pole_dir)
 
     # Ensure pole is on correct side for each arm (prevents elbow flip through body)
     if side == "L":

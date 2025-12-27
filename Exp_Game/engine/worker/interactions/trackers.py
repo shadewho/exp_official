@@ -34,6 +34,27 @@ def _compare(value: float, op: str, threshold: float) -> bool:
     return False
 
 
+def _get_max_eval_hz(tree: dict) -> int:
+    """
+    Find the maximum eval_hz in the entire condition tree.
+    Logic gates don't have eval_hz, so we check all children.
+    The fastest tracker wins (highest Hz = most responsive).
+    """
+    if not tree:
+        return 10
+
+    # This node's Hz (if it has one)
+    max_hz = tree.get('eval_hz', 0)
+
+    # Check children (for logic gates)
+    for child in tree.get('inputs', []):
+        child_hz = _get_max_eval_hz(child)
+        if child_hz > max_hz:
+            max_hz = child_hz
+
+    return max_hz if max_hz > 0 else 10
+
+
 def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
     """
     Recursively evaluate a serialized condition tree.
@@ -44,7 +65,6 @@ def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
     inputs = world_state.get('inputs', {})
     char_state = world_state.get('char_state', 'IDLE')
     game_time = world_state.get('game_time', 0.0)
-    contacts = world_state.get('contacts', {})
 
     # Distance Tracker
     if node_type == 'DistanceTrackerNodeType':
@@ -75,16 +95,21 @@ def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
 
         return is_match if equals else not is_match
 
-    # Contact Tracker
+    # Contact Tracker - Optimized proximity check between two objects
     elif node_type == 'ContactTrackerNodeType':
         obj = tree.get('object', '')
-        targets = tree.get('targets', [])
+        target = tree.get('target', '')
+        threshold_sq = tree.get('threshold_sq', 0.25)
 
-        obj_contacts = contacts.get(obj, [])
-        for target in targets:
-            if target in obj_contacts:
-                return True
-        return False
+        pos_obj = positions.get(obj)
+        pos_target = positions.get(target)
+        if not pos_obj or not pos_target:
+            return False
+
+        dx = pos_obj[0] - pos_target[0]
+        dy = pos_obj[1] - pos_target[1]
+        dz = pos_obj[2] - pos_target[2]
+        return (dx*dx + dy*dy + dz*dz) < threshold_sq
 
     # Input Tracker
     elif node_type == 'InputTrackerNodeType':
@@ -114,7 +139,7 @@ def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
     elif node_type == 'LogicOrNodeType':
         children = tree.get('inputs', [])
         if not children:
-            return True
+            return False
         for child in children:
             if _eval_condition_tree(child, world_state):
                 return True
@@ -124,7 +149,7 @@ def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
     elif node_type == 'LogicNotNodeType':
         children = tree.get('inputs', [])
         if not children:
-            return True
+            return False
         return not _eval_condition_tree(children[0], world_state)
 
     return False
@@ -228,11 +253,9 @@ def handle_evaluate_trackers(job_data: dict) -> dict:
         if inter_idx < 0:
             continue
 
-        # Hz throttling
-        eval_hz = 10
+        # Hz throttling - use max Hz from entire tree (fastest child wins)
         tree = tracker.get('condition_tree', {})
-        if tree:
-            eval_hz = tree.get('eval_hz', 10)
+        eval_hz = _get_max_eval_hz(tree)
 
         eval_interval = 1.0 / max(1, eval_hz)
         last_eval = _tracker_last_eval.get(inter_idx, 0.0)

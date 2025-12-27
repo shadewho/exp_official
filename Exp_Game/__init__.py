@@ -81,9 +81,9 @@ if not _IS_WORKER_PROCESS:
     )
 
     from .reactions.exp_reaction_definition import ReactionDefinition, unregister_reaction_library_properties, EXPLORATORY_OT_DuplicateGlobalReaction
-    from .systems.exp_objectives import (
-        register_objective_properties,
-        unregister_objective_properties
+    from .systems.exp_counters_timers import (
+        register_counter_timer_properties,
+        unregister_counter_timer_properties
     )
 
     from .systems.exp_performance import (
@@ -228,8 +228,8 @@ if not _IS_WORKER_PROCESS:
         # --- Character Removal ---
         bpy.utils.register_class(EXPLORATORY_OT_RemoveCharacter)
 
-        # --- Objectives Properties & Operators ---
-        register_objective_properties()
+        # --- Counter & Timer Properties & Operators ---
+        register_counter_timer_properties()
 
         # --- Character Actions & Proxy Mesh Properties ---
         bpy.utils.register_class(CharacterActionsPG)
@@ -277,7 +277,7 @@ if not _IS_WORKER_PROCESS:
         unregister_start_game_keymap()
         remove_scene_properties()
         unregister_interaction_properties()
-        unregister_objective_properties()
+        unregister_counter_timer_properties()
         unregister_reaction_library_properties()
         unregister_action_key_properties()
         # --- Mobility / Mesh Visibility PGs ---

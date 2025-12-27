@@ -27,7 +27,7 @@ class ExploratoryNodesTree(NodeTree):
     scene: bpy.props.PointerProperty(
         type=bpy.types.Scene,
         name="Owner Scene",
-        description="Scene this node tree belongs to. Nodes reference scene-specific data (interactions, reactions, objectives)"
+        description="Scene this node tree belongs to. Nodes reference scene-specific data (interactions, reactions, counters, timers)"
     )
 
     def update(self):
@@ -90,7 +90,7 @@ class NODE_MT_exploratory_add_triggers(Menu):
         add("Interact Key",     "InteractTriggerNodeType")
         add("Action Key",       "ActionTriggerNodeType")
         add("Trigger",          "ExternalTriggerNodeType")
-        add("Objective Update", "ObjectiveUpdateTriggerNodeType")
+        add("Counter Update",   "CounterUpdateTriggerNodeType")
         add("Timer Complete",   "TimerCompleteTriggerNodeType")
         add("On Game Start",    "OnGameStartTriggerNodeType")
 
@@ -117,8 +117,8 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Enable Crosshairs", "ReactionCrosshairsNodeType")
         add("Hitscan",           "ReactionHitscanNodeType")
         add("Projectile",        "ReactionProjectileNodeType")
-        add("Objective Counter", "ReactionObjectiveCounterNodeType")
-        add("Objective Timer",   "ReactionObjectiveTimerNodeType")
+        add("Counter Update",    "ReactionCounterUpdateNodeType")
+        add("Timer Control",     "ReactionTimerControlNodeType")
         add("Mobility",          "ReactionMobilityNodeType")
         add("Mesh Visibility",   "ReactionMeshVisibilityNodeType")
         add("Reset Game",        "ReactionResetGameNodeType")
@@ -127,15 +127,20 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Track To",           "ReactionTrackingNodeType")
 
 
-class NODE_MT_exploratory_add_objectives(Menu):
-    bl_idname = "NODE_MT_exploratory_add_objectives"
-    bl_label  = "Objectives and Timers"
+class NODE_MT_exploratory_add_counter_timer(Menu):
+    bl_idname = "NODE_MT_exploratory_add_counter_timer"
+    bl_label  = "Counter and Timer"
 
     def draw(self, context):
         layout = self.layout
-        op = layout.operator("node.add_node", text="Objective", icon='NONE')
-        op.type = "ObjectiveNodeType"
-        op.use_transform = True
+
+        def add(lbl, idname):
+            op = layout.operator("node.add_node", text=lbl, icon='NONE')
+            op.type = idname
+            op.use_transform = True
+
+        add("Counter", "CounterNodeType")
+        add("Timer", "TimerNodeType")
 class NODE_MT_exploratory_add_actions(Menu):
     bl_idname = "NODE_MT_exploratory_add_actions"
     bl_label  = "Action Keys"
@@ -212,7 +217,7 @@ def _append_exploratory_entry(self, context):
         self.layout.menu("NODE_MT_exploratory_add_reactions",  text="Reactions")
         self.layout.menu("NODE_MT_exploratory_add_trackers",   text="Trackers")
         self.layout.menu("NODE_MT_exploratory_add_actions",    text="Action Keys")
-        self.layout.menu("NODE_MT_exploratory_add_objectives", text="Objectives")
+        self.layout.menu("NODE_MT_exploratory_add_counter_timer", text="Counter and Timer")
         self.layout.menu("NODE_MT_exploratory_add_utilities",  text="Utilities")
 
 
@@ -254,7 +259,7 @@ class NODE_OT_create_exploratory_node_tree(Operator):
 
 
 class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
-    """Delete the selected Exploratory Node Tree and fully remove its Interactions, Reactions, and Objectives"""
+    """Delete the selected Exploratory Node Tree and fully remove its Interactions, Reactions, Counters, and Timers"""
     bl_idname = "node.delete_exploratory_node_tree"
     bl_label  = "Delete Exploratory Node Tree"
 
@@ -363,112 +368,189 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
         except Exception:
             pass
 
-    # ---------- OBJECTIVES ----------
+    # ---------- COUNTERS ----------
     @classmethod
-    def _reindex_objective_nodes_after_remove(cls, removed_index: int) -> None:
-        """Repair ObjectiveNode.objective_index across all trees after a scn.objectives removal."""
+    def _reindex_counter_nodes_after_remove(cls, removed_index: int) -> None:
+        """Repair CounterNode.counter_index across all trees after a scn.counters removal."""
         for ng in bpy.data.node_groups:
             if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
                 continue
             for node in ng.nodes:
-                if getattr(node, "bl_idname", "") != "ObjectiveNodeType":
+                if getattr(node, "bl_idname", "") != "CounterNodeType":
                     continue
-                idx = getattr(node, "objective_index", -1)
+                idx = getattr(node, "counter_index", -1)
                 if idx < 0:
                     continue
                 if idx == removed_index:
                     try:
-                        node.objective_index = -1
+                        node.counter_index = -1
                     except Exception:
                         pass
                 elif idx > removed_index:
                     try:
-                        node.objective_index = idx - 1
+                        node.counter_index = idx - 1
                     except Exception:
                         pass
 
     @classmethod
-    def _fix_objective_indices_in_interactions_after_remove(cls, removed_index: int) -> None:
-        """Fix InteractionDefinition fields that store objective indices."""
+    def _fix_counter_indices_in_interactions_after_remove(cls, removed_index: int) -> None:
+        """Fix InteractionDefinition fields that store counter indices."""
         scn = cls._scene()
         if not scn or not hasattr(scn, "custom_interactions"):
             return
         for inter in scn.custom_interactions:
             t = getattr(inter, "trigger_type", "")
-            if t == "OBJECTIVE_UPDATE":
-                idx = getattr(inter, "objective_index", -1)
+            if t == "COUNTER_UPDATE":
+                idx = getattr(inter, "counter_index", -1)
                 if idx == removed_index:
                     try:
-                        inter.objective_index = -1
+                        inter.counter_index = -1
                     except Exception:
                         pass
                 elif idx > removed_index:
                     try:
-                        inter.objective_index = idx - 1
-                    except Exception:
-                        pass
-            elif t == "TIMER_COMPLETE":
-                idx = getattr(inter, "timer_objective_index", -1)
-                if idx == removed_index:
-                    try:
-                        inter.timer_objective_index = -1
-                    except Exception:
-                        pass
-                elif idx > removed_index:
-                    try:
-                        inter.timer_objective_index = idx - 1
+                        inter.counter_index = idx - 1
                     except Exception:
                         pass
 
     @classmethod
-    def _fix_objective_indices_in_reactions_after_remove(cls, removed_index: int) -> None:
-        """Fix ReactionDefinition fields that store objective indices."""
+    def _fix_counter_indices_in_reactions_after_remove(cls, removed_index: int) -> None:
+        """Fix ReactionDefinition fields that store counter indices."""
         scn = cls._scene()
         if not scn or not hasattr(scn, "reactions"):
             return
         for r in scn.reactions:
             rtype = getattr(r, "reaction_type", "")
-            # OBJECTIVE_COUNTER / OBJECTIVE_TIMER store objective_index
-            if rtype in {"OBJECTIVE_COUNTER", "OBJECTIVE_TIMER"}:
-                idx = getattr(r, "objective_index", -1)
+            if rtype == "COUNTER_UPDATE":
+                idx = getattr(r, "counter_index", -1)
                 if idx == removed_index:
                     try:
-                        r.objective_index = -1
+                        r.counter_index = -1
                     except Exception:
                         pass
                 elif idx > removed_index:
                     try:
-                        r.objective_index = idx - 1
+                        r.counter_index = idx - 1
                     except Exception:
                         pass
-            # CUSTOM_UI_TEXT (OBJECTIVE subtype) uses text_objective_index
+            # CUSTOM_UI_TEXT (COUNTER_DISPLAY subtype) uses text_counter_index
             if rtype == "CUSTOM_UI_TEXT":
-                idx2 = getattr(r, "text_objective_index", -1)
+                idx2 = getattr(r, "text_counter_index", -1)
                 if idx2 == removed_index:
                     try:
-                        r.text_objective_index = -1
+                        r.text_counter_index = -1
                     except Exception:
                         pass
                 elif idx2 > removed_index:
                     try:
-                        r.text_objective_index = idx2 - 1
+                        r.text_counter_index = idx2 - 1
                     except Exception:
                         pass
 
     @classmethod
-    def _delete_objective_at(cls, index: int) -> None:
+    def _delete_counter_at(cls, index: int) -> None:
         scn = cls._scene()
-        if not scn or not (0 <= index < len(getattr(scn, "objectives", []))):
+        if not scn or not (0 <= index < len(getattr(scn, "counters", []))):
             return
-        # Remove objective item
-        scn.objectives.remove(index)
-        # Repair all holders of objective indices
-        cls._reindex_objective_nodes_after_remove(index)
-        cls._fix_objective_indices_in_interactions_after_remove(index)
-        cls._fix_objective_indices_in_reactions_after_remove(index)
-        # Clamp active index
+        scn.counters.remove(index)
+        cls._reindex_counter_nodes_after_remove(index)
+        cls._fix_counter_indices_in_interactions_after_remove(index)
+        cls._fix_counter_indices_in_reactions_after_remove(index)
         try:
-            scn.objectives_index = max(0, min(index, len(scn.objectives) - 1))
+            scn.counters_index = max(0, min(index, len(scn.counters) - 1))
+        except Exception:
+            pass
+
+    # ---------- TIMERS ----------
+    @classmethod
+    def _reindex_timer_nodes_after_remove(cls, removed_index: int) -> None:
+        """Repair TimerNode.timer_index across all trees after a scn.timers removal."""
+        for ng in bpy.data.node_groups:
+            if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
+                continue
+            for node in ng.nodes:
+                if getattr(node, "bl_idname", "") != "TimerNodeType":
+                    continue
+                idx = getattr(node, "timer_index", -1)
+                if idx < 0:
+                    continue
+                if idx == removed_index:
+                    try:
+                        node.timer_index = -1
+                    except Exception:
+                        pass
+                elif idx > removed_index:
+                    try:
+                        node.timer_index = idx - 1
+                    except Exception:
+                        pass
+
+    @classmethod
+    def _fix_timer_indices_in_interactions_after_remove(cls, removed_index: int) -> None:
+        """Fix InteractionDefinition fields that store timer indices."""
+        scn = cls._scene()
+        if not scn or not hasattr(scn, "custom_interactions"):
+            return
+        for inter in scn.custom_interactions:
+            t = getattr(inter, "trigger_type", "")
+            if t == "TIMER_COMPLETE":
+                idx = getattr(inter, "timer_index", -1)
+                if idx == removed_index:
+                    try:
+                        inter.timer_index = -1
+                    except Exception:
+                        pass
+                elif idx > removed_index:
+                    try:
+                        inter.timer_index = idx - 1
+                    except Exception:
+                        pass
+
+    @classmethod
+    def _fix_timer_indices_in_reactions_after_remove(cls, removed_index: int) -> None:
+        """Fix ReactionDefinition fields that store timer indices."""
+        scn = cls._scene()
+        if not scn or not hasattr(scn, "reactions"):
+            return
+        for r in scn.reactions:
+            rtype = getattr(r, "reaction_type", "")
+            if rtype == "TIMER_CONTROL":
+                idx = getattr(r, "timer_index", -1)
+                if idx == removed_index:
+                    try:
+                        r.timer_index = -1
+                    except Exception:
+                        pass
+                elif idx > removed_index:
+                    try:
+                        r.timer_index = idx - 1
+                    except Exception:
+                        pass
+            # CUSTOM_UI_TEXT (TIMER_DISPLAY subtype) uses text_timer_index
+            if rtype == "CUSTOM_UI_TEXT":
+                idx2 = getattr(r, "text_timer_index", -1)
+                if idx2 == removed_index:
+                    try:
+                        r.text_timer_index = -1
+                    except Exception:
+                        pass
+                elif idx2 > removed_index:
+                    try:
+                        r.text_timer_index = idx2 - 1
+                    except Exception:
+                        pass
+
+    @classmethod
+    def _delete_timer_at(cls, index: int) -> None:
+        scn = cls._scene()
+        if not scn or not (0 <= index < len(getattr(scn, "timers", []))):
+            return
+        scn.timers.remove(index)
+        cls._reindex_timer_nodes_after_remove(index)
+        cls._fix_timer_indices_in_interactions_after_remove(index)
+        cls._fix_timer_indices_in_reactions_after_remove(index)
+        try:
+            scn.timers_index = max(0, min(index, len(scn.timers) - 1))
         except Exception:
             pass
 
@@ -587,11 +669,12 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
         except Exception:
             pass
 
-        # 1) Collect all Interactions, Reactions, Objectives, and Action Keys referenced by nodes in THIS tree
+        # 1) Collect all Interactions, Reactions, Counters, Timers, and Action Keys referenced by nodes in THIS tree
         inter_indices = set()
         react_indices = set()
-        objv_indices  = set()
-        ak_pairs      = self._collect_action_keys_from_tree(nt)  # [(index, name)]
+        counter_indices = set()
+        timer_indices = set()
+        ak_pairs = self._collect_action_keys_from_tree(nt)  # [(index, name)]
 
         for node in nt.nodes:
             if hasattr(node, "interaction_index"):
@@ -602,10 +685,14 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
                 r_idx = getattr(node, "reaction_index", -1)
                 if r_idx >= 0:
                     react_indices.add(r_idx)
-            if getattr(node, "bl_idname", "") == "ObjectiveNodeType":
-                o_idx = getattr(node, "objective_index", -1)
-                if o_idx >= 0:
-                    objv_indices.add(o_idx)
+            if getattr(node, "bl_idname", "") == "CounterNodeType":
+                c_idx = getattr(node, "counter_index", -1)
+                if c_idx >= 0:
+                    counter_indices.add(c_idx)
+            if getattr(node, "bl_idname", "") == "TimerNodeType":
+                t_idx = getattr(node, "timer_index", -1)
+                if t_idx >= 0:
+                    timer_indices.add(t_idx)
 
         # 2) Delete the node tree itself (nodes go away)
         try:
@@ -638,19 +725,23 @@ class NODE_OT_delete_exploratory_node_tree(bpy.types.Operator):
         for i_idx in sorted(inter_indices, reverse=True):
             self._delete_interaction_at(i_idx)
 
-        # 5) Fully delete all referenced Objectives (DESC order avoids index drift)
-        for o_idx in sorted(objv_indices, reverse=True):
-            self._delete_objective_at(o_idx)
+        # 5) Fully delete all referenced Counters (DESC order avoids index drift)
+        for c_idx in sorted(counter_indices, reverse=True):
+            self._delete_counter_at(c_idx)
 
-        # 6) Fully delete all referenced Action Keys (DESC order avoids index drift)
+        # 6) Fully delete all referenced Timers (DESC order avoids index drift)
+        for t_idx in sorted(timer_indices, reverse=True):
+            self._delete_timer_at(t_idx)
+
+        # 7) Fully delete all referenced Action Keys (DESC order avoids index drift)
         for i, name in sorted(ak_pairs, key=lambda p: p[0], reverse=True):
             self._delete_action_key_at(i, name)
 
         self.report(
             {'INFO'},
             f"Deleted node tree and removed {len(inter_indices)} interaction(s), "
-            f"{len(react_indices)} reaction(s), {len(objv_indices)} objective(s), "
-            f"{len(ak_pairs)} action key(s)."
+            f"{len(react_indices)} reaction(s), {len(counter_indices)} counter(s), "
+            f"{len(timer_indices)} timer(s), {len(ak_pairs)} action key(s)."
         )
         return {'FINISHED'}
 

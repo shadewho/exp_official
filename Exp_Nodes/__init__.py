@@ -24,10 +24,6 @@ from ..Exp_Game.props_and_utils.exp_utility_store import (
     unregister_utility_store_properties,
 )
 
-from ..Exp_Game.props_and_utils.trackers import (
-    register_tracker_properties,
-    unregister_tracker_properties,
-)
 
 from .utility_nodes import (
     # Unified Sockets (ONE type per data type for full connectivity)
@@ -64,7 +60,7 @@ from .node_editor import (
     # menus (native Add → Exploratory → …)
     NODE_MT_exploratory_add_triggers,
     NODE_MT_exploratory_add_reactions,
-    NODE_MT_exploratory_add_objectives,
+    NODE_MT_exploratory_add_counter_timer,
     NODE_MT_exploratory_add_actions,
     NODE_MT_exploratory_add_utilities,
     NODE_MT_exploratory_add_trackers,
@@ -90,11 +86,11 @@ from .trigger_nodes import (
     ProximityTriggerNode,
     CollisionTriggerNode,
     InteractTriggerNode,
-    ObjectiveUpdateTriggerNode,
+    CounterUpdateTriggerNode,
     TimerCompleteTriggerNode,
     OnGameStartTriggerNode,
     ActionTriggerNode,
-    ExternalTriggerNode, 
+    ExternalTriggerNode,
 )
 
 # ── REACTIONS ──
@@ -114,8 +110,8 @@ from .reaction_nodes import (
     ReactionPropertyNode,
     ReactionTransformNode,
     ReactionCustomTextNode,
-    ReactionObjectiveCounterNode,
-    ReactionObjectiveTimerNode,
+    ReactionCounterUpdateNode,
+    ReactionTimerControlNode,
     ReactionMobilityNode,
     ReactionMeshVisibilityNode,
     ReactionResetGameNode,
@@ -132,14 +128,15 @@ from .trig_react_obj_lists import(
     EXPL_OT_delete_orphaned,
     VIEW3D_PT_Exploratory_Studio,
     VIEW3D_PT_Exploratory_Reactions,
-    VIEW3D_PT_Objectives,
+    VIEW3D_PT_Counters,
+    VIEW3D_PT_Timers,
     VIEW3D_PT_ActionKeys,
     VIEW3D_PT_Trackers,
     VIEW3D_PT_Utilities,
 )
 
-# ── OBJECTIVES ──
-from .objective_nodes import ObjectiveNode
+# ── COUNTERS & TIMERS ──
+from .counter_timer_nodes import CounterNode, TimerNode
 
 classes = [
     # tree + socket
@@ -151,7 +148,7 @@ classes = [
     ProximityTriggerNode,
     CollisionTriggerNode,
     InteractTriggerNode,
-    ObjectiveUpdateTriggerNode,
+    CounterUpdateTriggerNode,
     TimerCompleteTriggerNode,
     OnGameStartTriggerNode,
     ActionTriggerNode,
@@ -195,8 +192,8 @@ classes = [
     ReactionPropertyNode,
     ReactionTransformNode,
     ReactionCustomTextNode,
-    ReactionObjectiveCounterNode,
-    ReactionObjectiveTimerNode,
+    ReactionCounterUpdateNode,
+    ReactionTimerControlNode,
     ReactionMobilityNode,
     ReactionMeshVisibilityNode,
     ReactionResetGameNode,
@@ -207,8 +204,9 @@ classes = [
     ReactionParentingNode,
     ReactionTrackingNode,
 
-    # objective
-    ObjectiveNode,
+    # counters & timers
+    CounterNode,
+    TimerNode,
 
     #actions
     CreateActionKeyNode,
@@ -224,7 +222,7 @@ classes = [
     # menus
     NODE_MT_exploratory_add_triggers,
     NODE_MT_exploratory_add_reactions,
-    NODE_MT_exploratory_add_objectives,
+    NODE_MT_exploratory_add_counter_timer,
     NODE_MT_exploratory_add_actions,
     NODE_MT_exploratory_add_utilities,
     NODE_MT_exploratory_add_trackers,
@@ -242,7 +240,8 @@ classes = [
     EXPL_OT_delete_orphaned,
     VIEW3D_PT_Exploratory_Studio,
     VIEW3D_PT_Exploratory_Reactions,
-    VIEW3D_PT_Objectives,
+    VIEW3D_PT_Counters,
+    VIEW3D_PT_Timers,
     VIEW3D_PT_ActionKeys,
     VIEW3D_PT_Trackers,
     VIEW3D_PT_Utilities,
@@ -289,7 +288,6 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     register_utility_store_properties()
-    register_tracker_properties()
     from bpy.types import NODE_MT_add
     NODE_MT_add.append(_append_exploratory_entry)
 
@@ -302,7 +300,6 @@ def unregister():
         try: bpy.utils.unregister_class(cls)
         except Exception: pass
     unregister_utility_store_properties()
-    unregister_tracker_properties()
 
 
 

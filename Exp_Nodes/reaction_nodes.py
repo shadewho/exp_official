@@ -274,14 +274,15 @@ def _draw_common_fields(layout, r, kind: str):
         content.label(text="Text Content")
         if subtype == "STATIC":
             content.prop(r, "custom_text_value", text="Text")
-        else:
-            content.prop(r, "text_objective_index", text="Objective")
-        if subtype == "OBJECTIVE":
+        elif subtype == "COUNTER_DISPLAY":
+            content.prop(r, "text_counter_index", text="Counter")
             fmt = content.box()
             fmt.label(text="Counter Formatting")
             fmt.prop(r, "custom_text_prefix", text="Prefix")
             fmt.prop(r, "custom_text_include_counter", text="Show Counter")
             fmt.prop(r, "custom_text_suffix", text="Suffix")
+        elif subtype == "TIMER_DISPLAY":
+            content.prop(r, "text_timer_index", text="Timer")
 
         # Timing
         timing = header.box()
@@ -330,15 +331,15 @@ def _draw_common_fields(layout, r, kind: str):
         if not getattr(r, "crosshair_indefinite", True):
             timing.prop(r, "crosshair_duration", text="Duration (sec)")
 
-    elif t == "OBJECTIVE_COUNTER":
-        header.prop(r, "objective_index", text="Objective")
-        header.prop(r, "objective_op", text="Operation")
-        if getattr(r, "objective_op", "") in {"ADD","SUBTRACT"}:
-            header.prop(r, "objective_amount", text="Amount")
+    elif t == "COUNTER_UPDATE":
+        header.prop(r, "counter_index", text="Counter")
+        header.prop(r, "counter_op", text="Operation")
+        if getattr(r, "counter_op", "") in {"ADD", "SUBTRACT"}:
+            header.prop(r, "counter_amount", text="Amount")
 
-    elif t == "OBJECTIVE_TIMER":
-        header.prop(r, "objective_index", text="Timer Objective")
-        header.prop(r, "objective_timer_op", text="Timer Operation")
+    elif t == "TIMER_CONTROL":
+        header.prop(r, "timer_index", text="Timer")
+        header.prop(r, "timer_op", text="Timer Operation")
         header.prop(r, "interruptible", text="Interruptible")
 
     elif t == "MOBILITY":
@@ -548,7 +549,7 @@ class _ReactionNodeKind(ReactionNodeBase):
     reaction_index: bpy.props.IntProperty(name="Reaction Index", default=-1, min=-1)
 
 
-    # subtle mid-green (body) to contrast triggers/objectives without shouting
+    # subtle mid-green (body) to contrast triggers/counters/timers without shouting
     _EXPL_TINT_REACTION = (0.18, 0.24, 0.18)
     def _tint(self):
         try:
@@ -1109,15 +1110,15 @@ class ReactionCustomTextNode(_ReactionNodeKind):
     bl_label  = "Custom UI Text"
     KIND = "CUSTOM_UI_TEXT"
 
-class ReactionObjectiveCounterNode(_ReactionNodeKind):
-    bl_idname = "ReactionObjectiveCounterNodeType"
-    bl_label  = "Objective Counter"
-    KIND = "OBJECTIVE_COUNTER"
+class ReactionCounterUpdateNode(_ReactionNodeKind):
+    bl_idname = "ReactionCounterUpdateNodeType"
+    bl_label  = "Counter Update"
+    KIND = "COUNTER_UPDATE"
 
-class ReactionObjectiveTimerNode(_ReactionNodeKind):
-    bl_idname = "ReactionObjectiveTimerNodeType"
-    bl_label  = "Objective Timer"
-    KIND = "OBJECTIVE_TIMER"
+class ReactionTimerControlNode(_ReactionNodeKind):
+    bl_idname = "ReactionTimerControlNodeType"
+    bl_label  = "Timer Control"
+    KIND = "TIMER_CONTROL"
 
 class ReactionMobilityNode(_ReactionNodeKind):
     bl_idname = "ReactionMobilityNodeType"

@@ -1,14 +1,23 @@
 # Exp_Game/animations/test_panel.py
 """
-Animation 2.0 Test Suite - MINIMAL VERSION
+Animation 2.0 Test Suite - Full-Body IK Architecture
 
-Stripped down to essentials:
-- Bake animations
-- Play animations on armature
+Test panel for developing and testing animation techniques:
+- Animation playback with worker-based blending
+- Full-Body IK system (Root → Hips → Spine → Limbs)
 - GPU visualization for debugging
-- Engine/controller management
 
-IK and pose blending will be rebuilt properly from scratch.
+IK Modes:
+- FULL_BODY: Whole skeleton responds to targets (crouch, reach, lean)
+- TWO_BONE: Single limb chain solving (legacy, building block)
+- FOOT_GROUND: Keep feet planted during body movement
+- LOOK_AT: Head/neck tracking
+
+Rig Structure (see rig.md):
+- Root: World anchor at origin (IK targets relative to this)
+- Hips: Pelvis control (translates for crouch, rotates for lean)
+- Spine: Torso chain (leans toward reach targets)
+- Limbs: Two-bone IK chains (arms, legs)
 """
 
 import bpy
@@ -512,14 +521,26 @@ class ANIM2_TestProperties(PropertyGroup):
     )
 
 
-# IK chain items for dropdown
-def get_ik_chain_items(self, context):
-    """Return available IK chains for dropdown."""
+# =============================================================================
+# UNIFIED IK SYSTEM
+# =============================================================================
+# Single IK system - select which body regions to control.
+# All IK is handled through one interface.
+
+
+def get_ik_region_items(self, context):
+    """Return available IK regions - what parts of the body to control."""
     return [
-        ("arm_R", "Right Arm", "Right arm IK chain (shoulder → elbow → hand)"),
-        ("arm_L", "Left Arm", "Left arm IK chain (shoulder → elbow → hand)"),
-        ("leg_R", "Right Leg", "Right leg IK chain (hip → knee → foot)"),
-        ("leg_L", "Left Leg", "Left leg IK chain (hip → knee → foot)"),
+        ("FULL_BODY", "Full Body", "Control entire skeleton: hips, spine, all limbs"),
+        ("LOWER_BODY", "Lower Body", "Hips and legs only"),
+        ("UPPER_BODY", "Upper Body", "Spine, arms, and head"),
+        ("LEGS", "Legs Only", "Both legs"),
+        ("ARMS", "Arms Only", "Both arms"),
+        ("LEFT_LEG", "Left Leg", "Left leg chain"),
+        ("RIGHT_LEG", "Right Leg", "Right leg chain"),
+        ("LEFT_ARM", "Left Arm", "Left arm chain"),
+        ("RIGHT_ARM", "Right Arm", "Right arm chain"),
+        ("HEAD", "Head/Neck", "Head look-at only"),
     ]
 
 
@@ -754,6 +775,218 @@ class ANIM2_OT_ApplyIK(Operator):
 
 
 # =============================================================================
+# FULL-BODY IK TEST OPERATOR
+# =============================================================================
+
+class ANIM2_OT_TestFullBodyIK(Operator):
+    """Solve IK for selected body region"""
+    bl_idname = "anim2.test_full_body_ik"
+    bl_label = "Solve IK"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        armature = getattr(context.scene, 'target_armature', None)
+        return armature and armature.type == 'ARMATURE'
+
+    def execute(self, context):
+        from .full_body_ik import get_full_body_ik, IKTarget
+
+        scene = context.scene
+        armature = scene.target_armature
+        ik_region = getattr(scene, 'ik_region', 'FULL_BODY')
+
+        if not armature:
+            self.report({'ERROR'}, "No armature selected")
+            return {'CANCELLED'}
+
+        # Start log session
+        start_session()
+
+        # Get or create IK controller
+        fbik = get_full_body_ik(armature)
+        if not fbik:
+            self.report({'ERROR'}, "Failed to create IK controller")
+            return {'CANCELLED'}
+
+        # Clear previous constraints
+        fbik.clear_constraints()
+
+        log_game("IK", f"Region: {ik_region}")
+
+        # Get root position for converting world -> root-relative
+        root_bone = armature.pose.bones.get("Root")
+        arm_matrix = armature.matrix_world
+        root_world = (arm_matrix @ root_bone.head) if root_bone else armature.location
+
+        # Determine which constraints to set based on region
+        use_left_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'LEFT_LEG')
+        use_right_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'RIGHT_LEG')
+        use_left_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'LEFT_ARM')
+        use_right_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'RIGHT_ARM')
+        use_look_at = ik_region in ('FULL_BODY', 'UPPER_BODY', 'HEAD')
+        use_hips = ik_region in ('FULL_BODY', 'LOWER_BODY')  # LEGS means legs ONLY - no hips
+
+        # Apply hips drop if relevant
+        if use_hips:
+            hips_drop = getattr(scene, 'ik_hips_drop', 0.0)
+            if abs(hips_drop) > 0.001:
+                fbik.set_hips_drop(hips_drop)
+                log_game("IK", f"Hips drop: {hips_drop:.3f}m")
+
+        # Set targets from scene objects
+        if use_left_foot:
+            obj = getattr(scene, 'ik_target_left_foot', None)
+            if obj:
+                pos = tuple(obj.matrix_world.translation - root_world)
+                fbik.constraints.left_foot = IKTarget(pos, True, 1.0)
+                log_game("IK", f"L Foot target: {pos}")
+
+        if use_right_foot:
+            obj = getattr(scene, 'ik_target_right_foot', None)
+            if obj:
+                pos = tuple(obj.matrix_world.translation - root_world)
+                fbik.constraints.right_foot = IKTarget(pos, True, 1.0)
+                log_game("IK", f"R Foot target: {pos}")
+
+        if use_left_hand:
+            obj = getattr(scene, 'ik_target_left_hand', None)
+            if obj:
+                pos = tuple(obj.matrix_world.translation - root_world)
+                fbik.constraints.left_hand = IKTarget(pos, True, 1.0)
+                log_game("IK", f"L Hand target: {pos}")
+
+        if use_right_hand:
+            obj = getattr(scene, 'ik_target_right_hand', None)
+            if obj:
+                pos = tuple(obj.matrix_world.translation - root_world)
+                fbik.constraints.right_hand = IKTarget(pos, True, 1.0)
+                log_game("IK", f"R Hand target: {pos}")
+
+        if use_look_at:
+            obj = getattr(scene, 'ik_target_look_at', None)
+            if obj:
+                pos = tuple(obj.matrix_world.translation - root_world)
+                fbik.constraints.look_at = IKTarget(pos, True, 1.0)
+                log_game("IK", f"Look-at target: {pos}")
+
+        # If no targets set and region includes feet, ground them
+        if fbik.constraints.get_active_count() == 0 and use_left_foot and use_right_foot:
+            fbik.ground_feet()
+            log_game("IK", "No targets - grounding feet at current positions")
+
+        # Solve
+        log_game("IK", "=" * 60)
+        result = fbik.solve(use_engine=False)
+
+        # Force update
+        context.view_layer.update()
+
+        # Export log
+        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+        clear_log()
+
+        # Report result
+        if result.success:
+            self.report({'INFO'}, f"IK [{ik_region}]: {result.constraints_satisfied}/{result.constraints_total} solved, {result.solve_time_us:.0f}μs")
+        else:
+            self.report({'WARNING'}, f"IK [{ik_region}]: {result.constraints_satisfied}/{result.constraints_total} solved")
+
+        return {'FINISHED'}
+
+
+class ANIM2_OT_CrouchTest(Operator):
+    """Test crouch by dropping hips and solving leg IK"""
+    bl_idname = "anim2.crouch_test"
+    bl_label = "Test Crouch"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    crouch_amount: FloatProperty(
+        name="Crouch",
+        description="Crouch amount (0=standing, 1=full crouch)",
+        default=0.5,
+        min=0.0,
+        max=1.0
+    )
+
+    @classmethod
+    def poll(cls, context):
+        armature = getattr(context.scene, 'target_armature', None)
+        return armature and armature.type == 'ARMATURE'
+
+    def execute(self, context):
+        from .full_body_ik import get_full_body_ik
+
+        scene = context.scene
+        armature = scene.target_armature
+
+        # Start log session
+        start_session()
+
+        # Get FullBodyIK controller
+        fbik = get_full_body_ik(armature)
+        if not fbik:
+            self.report({'ERROR'}, "Failed to create FullBodyIK controller")
+            return {'CANCELLED'}
+
+        # Apply crouch
+        log_game("FULL-BODY-IK", f"CROUCH_TEST: amount={self.crouch_amount:.2f}")
+        fbik.crouch(self.crouch_amount)
+        result = fbik.solve(use_engine=False)
+
+        # Force update
+        context.view_layer.update()
+
+        # Export log
+        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+        clear_log()
+
+        hips_drop = self.crouch_amount * 0.4
+        if result.success:
+            self.report({'INFO'}, f"Crouch: hips dropped {hips_drop:.2f}m, legs adjusted")
+        else:
+            self.report({'WARNING'}, f"Crouch failed")
+
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class ANIM2_OT_ResetPose(Operator):
+    """Reset armature to rest pose and clear IK"""
+    bl_idname = "anim2.reset_pose"
+    bl_label = "Reset Pose"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        armature = getattr(context.scene, 'target_armature', None)
+        return armature and armature.type == 'ARMATURE'
+
+    def execute(self, context):
+        from .full_body_ik import clear_full_body_ik
+
+        scene = context.scene
+        armature = scene.target_armature
+
+        # Clear FullBodyIK
+        clear_full_body_ik()
+
+        # Reset all pose bones to identity
+        for pose_bone in armature.pose.bones:
+            pose_bone.rotation_mode = 'QUATERNION'
+            pose_bone.rotation_quaternion = (1, 0, 0, 0)
+            pose_bone.location = (0, 0, 0)
+            pose_bone.scale = (1, 1, 1)
+
+        context.view_layer.update()
+
+        self.report({'INFO'}, "Pose reset to rest")
+        return {'FINISHED'}
+
+
+# =============================================================================
 # PLAY/STOP OPERATORS
 # =============================================================================
 
@@ -838,30 +1071,71 @@ def register():
     bpy.utils.register_class(ANIM2_OT_TestStop)
     bpy.utils.register_class(ANIM2_OT_TestIKState)
     bpy.utils.register_class(ANIM2_OT_ApplyIK)
+    bpy.utils.register_class(ANIM2_OT_TestFullBodyIK)
+    bpy.utils.register_class(ANIM2_OT_CrouchTest)
+    bpy.utils.register_class(ANIM2_OT_ResetPose)
 
     bpy.types.Scene.anim2_test = bpy.props.PointerProperty(type=ANIM2_TestProperties)
 
-    # IK Test properties
-    bpy.types.Scene.ik_test_chain = bpy.props.EnumProperty(
-        name="IK Chain",
-        description="Which IK chain to analyze",
-        items=get_ik_chain_items,
+    # ─── Unified IK System ───────────────────────────────────────────────
+    # Region selector - what parts of the body to control
+    bpy.types.Scene.ik_region = bpy.props.EnumProperty(
+        name="IK Region",
+        description="Which body region(s) to solve IK for",
+        items=get_ik_region_items,
         default=0
     )
-    bpy.types.Scene.ik_test_target = bpy.props.PointerProperty(
-        name="IK Target",
-        description="Object to use as IK target position",
+
+    # Hips control
+    bpy.types.Scene.ik_hips_drop = bpy.props.FloatProperty(
+        name="Hips Drop",
+        description="Drop hips (meters) - affected limbs bend via IK",
+        default=0.0,
+        min=0.0,
+        max=0.5,
+        unit='LENGTH'
+    )
+
+    # IK Targets - unified for all modes
+    bpy.types.Scene.ik_target_left_foot = bpy.props.PointerProperty(
+        name="Left Foot",
+        description="Target object for left foot",
+        type=bpy.types.Object
+    )
+    bpy.types.Scene.ik_target_right_foot = bpy.props.PointerProperty(
+        name="Right Foot",
+        description="Target object for right foot",
+        type=bpy.types.Object
+    )
+    bpy.types.Scene.ik_target_left_hand = bpy.props.PointerProperty(
+        name="Left Hand",
+        description="Target object for left hand",
+        type=bpy.types.Object
+    )
+    bpy.types.Scene.ik_target_right_hand = bpy.props.PointerProperty(
+        name="Right Hand",
+        description="Target object for right hand",
+        type=bpy.types.Object
+    )
+    bpy.types.Scene.ik_target_look_at = bpy.props.PointerProperty(
+        name="Look At",
+        description="Target object for head look-at",
         type=bpy.types.Object
     )
 
 
 def unregister():
-    if hasattr(bpy.types.Scene, 'ik_test_target'):
-        del bpy.types.Scene.ik_test_target
-    if hasattr(bpy.types.Scene, 'ik_test_chain'):
-        del bpy.types.Scene.ik_test_chain
+    # IK properties
+    for prop in ['ik_region', 'ik_hips_drop', 'ik_target_look_at', 'ik_target_right_hand',
+                 'ik_target_left_hand', 'ik_target_right_foot', 'ik_target_left_foot']:
+        if hasattr(bpy.types.Scene, prop):
+            delattr(bpy.types.Scene, prop)
+
     del bpy.types.Scene.anim2_test
 
+    bpy.utils.unregister_class(ANIM2_OT_ResetPose)
+    bpy.utils.unregister_class(ANIM2_OT_CrouchTest)
+    bpy.utils.unregister_class(ANIM2_OT_TestFullBodyIK)
     bpy.utils.unregister_class(ANIM2_OT_ApplyIK)
     bpy.utils.unregister_class(ANIM2_OT_TestIKState)
     bpy.utils.unregister_class(ANIM2_OT_TestStop)

@@ -435,32 +435,27 @@ def execute_custom_ui_text_reaction(r):
         )
         item["subtype"] = "STATIC"
 
-    elif subtype == "OBJECTIVE":
+    elif subtype == "COUNTER_DISPLAY":
         if r.custom_text_indefinite:
             e_time = None
         else:
             e_time = get_game_time() + r.custom_text_duration
 
-        # Here you obtain the current objective value
-        # (Assuming that elsewhere in your update loop you update the reaction item's text.)
-        # For example, objective_value can be obtained from the scene's objective list.
+        # Get the current counter value
         scene = bpy.context.scene
-        if r.text_objective_index.isdigit():
-            idx = int(r.text_objective_index)
-            if 0 <= idx < len(scene.objectives):
-                objective_value = scene.objectives[idx].current_value
-            else:
-                objective_value = "?"
-        else:
-            objective_value = "?"
+        counter_value = "?"
+        if r.text_counter_index.isdigit():
+            idx = int(r.text_counter_index)
+            if hasattr(scene, "counters") and 0 <= idx < len(scene.counters):
+                counter_value = scene.counters[idx].current_value
 
-        # Build the display text from separate fields.
+        # Build the display text from separate fields
         if r.custom_text_include_counter:
-            display_text = f"{r.custom_text_prefix}{objective_value}{r.custom_text_suffix}"
+            display_text = f"{r.custom_text_prefix}{counter_value}{r.custom_text_suffix}"
         else:
             display_text = f"{r.custom_text_prefix}{r.custom_text_suffix}"
 
-        # Create the reaction text item with the composed text.
+        # Create the reaction text item with the composed text
         item = exp_custom_ui.add_text_reaction(
             text_str=r.custom_text_value,
             anchor=r.custom_text_anchor,
@@ -469,18 +464,15 @@ def execute_custom_ui_text_reaction(r):
             scale=r.custom_text_scale,
             end_time=e_time,
             color=tuple(r.custom_text_color),
-            font_name = r.custom_text_font,
-
+            font_name=r.custom_text_font,
         )
-        item["subtype"] = "OBJECTIVE"
-        item["objective_index"] = r.text_objective_index
-
-        # Newly added lines:
+        item["subtype"] = "COUNTER_DISPLAY"
+        item["counter_index"] = r.text_counter_index
         item["custom_text_prefix"] = r.custom_text_prefix
         item["custom_text_suffix"] = r.custom_text_suffix
         item["custom_text_include_counter"] = r.custom_text_include_counter
 
-    elif subtype == "OBJECTIVE_TIMER_DISPLAY":
+    elif subtype == "TIMER_DISPLAY":
         # Determine expiration time (or indefinite)
         if r.custom_text_indefinite:
             e_time = None
@@ -497,10 +489,10 @@ def execute_custom_ui_text_reaction(r):
             scale=r.custom_text_scale,
             end_time=e_time,
             color=tuple(r.custom_text_color),
-            font_name = r.custom_text_font,
+            font_name=r.custom_text_font,
         )
-        item["subtype"] = "OBJECTIVE_TIMER_DISPLAY"
-        item["objective_index"] = r.text_objective_index
+        item["subtype"] = "TIMER_DISPLAY"
+        item["timer_index"] = r.text_timer_index
 
 
 ##----Sound reaction----------------------#
@@ -582,57 +574,58 @@ def execute_sound_reaction(r):
         _sound_tasks.append(t)
 
 
-##----Objectives reaction----------------------#
-def execute_objective_counter_reaction(r):
+##----Counter reaction----------------------#
+def execute_counter_update_reaction(r):
     scene = bpy.context.scene
 
-    # Convert the chosen objective index to int
-    if not r.objective_index.isdigit():
+    # Convert the chosen counter index to int
+    if not r.counter_index.isdigit():
         return
-    idx = int(r.objective_index)
-    if idx < 0 or idx >= len(scene.objectives):
+    idx = int(r.counter_index)
+    if not hasattr(scene, "counters") or idx < 0 or idx >= len(scene.counters):
         return
 
-    objv = scene.objectives[idx]
+    counter = scene.counters[idx]
 
     # ─── perform the counter operation ───────────
-    if r.objective_op == "ADD":
-        objv.current_value += r.objective_amount
+    if r.counter_op == "ADD":
+        counter.current_value += r.counter_amount
 
-    elif r.objective_op == "SUBTRACT":
-        objv.current_value -= r.objective_amount
-        if objv.current_value < 0:
-            objv.current_value = 0
+    elif r.counter_op == "SUBTRACT":
+        counter.current_value -= r.counter_amount
+        if counter.current_value < 0:
+            counter.current_value = 0
 
-    elif r.objective_op == "RESET":
-        objv.current_value = objv.default_value
+    elif r.counter_op == "RESET":
+        counter.current_value = counter.default_value
     # ───────────────────────────────────────────────
 
     # ─── NOW clamp to min/max if enabled ─────────
-    if getattr(objv, "use_min_limit", False) and objv.current_value < objv.min_value:
-        objv.current_value = objv.min_value
+    if getattr(counter, "use_min_limit", False) and counter.current_value < counter.min_value:
+        counter.current_value = counter.min_value
 
-    if getattr(objv, "use_max_limit", False) and objv.current_value > objv.max_value:
-        objv.current_value = objv.max_value
+    if getattr(counter, "use_max_limit", False) and counter.current_value > counter.max_value:
+        counter.current_value = counter.max_value
     # ───────────────────────────────────────────────
 
 
-def execute_objective_timer_reaction(r):
+##----Timer reaction----------------------#
+def execute_timer_control_reaction(r):
     scene = bpy.context.scene
-    if not r.objective_index.isdigit():
+    if not r.timer_index.isdigit():
         return
-    idx = int(r.objective_index)
-    if idx < 0 or idx >= len(scene.objectives):
+    idx = int(r.timer_index)
+    if not hasattr(scene, "timers") or idx < 0 or idx >= len(scene.timers):
         return
-    objv = scene.objectives[idx]
+    timer = scene.timers[idx]
 
     now = get_game_time()
 
-    if r.objective_timer_op == "START":
+    if r.timer_op == "START":
         # if not interruptible and timer is already running (and not yet finished), skip
-        if not r.interruptible and objv.timer_active and not objv.just_finished:
+        if not r.interruptible and timer.is_active and not timer.just_finished:
             return
-        objv.start_timer(now)
+        timer.start(now)
 
-    elif r.objective_timer_op == "STOP":
-        objv.stop_timer()
+    elif r.timer_op == "STOP":
+        timer.stop()

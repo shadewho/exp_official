@@ -1,6 +1,6 @@
 # Exploratory Standard Rig
 
-**Last Updated**: 2025-12-20
+**Last Updated**: 2025-12-27
 
 This is the official humanoid rig for the Exploratory game engine. All default animations, IK systems, and procedural features target this exact bone structure.
 
@@ -10,7 +10,7 @@ This is the official humanoid rig for the Exploratory game engine. All default a
 
 | Stat | Value |
 |------|-------|
-| **Total Bones** | 53 |
+| **Total Bones** | 54 |
 | **Naming Convention** | Mixamo-style (LeftArm, RightArm, etc.) |
 | **Rest Pose** | T-Pose (arms horizontal) |
 | **Total Height** | ~1.97m (head top) |
@@ -24,46 +24,55 @@ This is the official humanoid rig for the Exploratory game engine. All default a
 ## Hierarchy Tree
 
 ```
-Hips (ROOT)
-├── Spine
-│   └── Spine1
-│       └── Spine2
-│           ├── NeckLower
-│           │   └── NeckUpper
-│           │       └── Head
-│           ├── LeftShoulder
-│           │   └── LeftArm
-│           │       └── LeftForeArm
-│           │           └── LeftHand
-│           │               ├── LeftHandThumb1 → Thumb2 → Thumb3
-│           │               ├── LeftHandIndex1 → Index2 → Index3
-│           │               ├── LeftHandMiddle1 → Middle2 → Middle3
-│           │               ├── LeftHandRing1 → Ring2 → Ring3
-│           │               └── LeftHandPinky1 → Pinky2 → Pinky3
-│           └── RightShoulder
-│               └── RightArm
-│                   └── RightForeArm
-│                       └── RightHand
-│                           └── [Same finger structure as left]
-├── LeftThigh
-│   └── LeftShin
-│       └── LeftFoot
-│           └── LeftToeBase
-└── RightThigh
-    └── RightShin
-        └── RightFoot
-            └── RightToeBase
+Root (ARMATURE ROOT - at origin, Z=0)
+└── Hips (pelvis control - can translate/rotate for body mechanics)
+    ├── Spine
+    │   └── Spine1
+    │       └── Spine2
+    │           ├── NeckLower
+    │           │   └── NeckUpper
+    │           │       └── Head
+    │           ├── LeftShoulder
+    │           │   └── LeftArm
+    │           │       └── LeftForeArm
+    │           │           └── LeftHand
+    │           │               ├── LeftHandThumb1 → Thumb2 → Thumb3
+    │           │               ├── LeftHandIndex1 → Index2 → Index3
+    │           │               ├── LeftHandMiddle1 → Middle2 → Middle3
+    │           │               ├── LeftHandRing1 → Ring2 → Ring3
+    │           │               └── LeftHandPinky1 → Pinky2 → Pinky3
+    │           └── RightShoulder
+    │               └── RightArm
+    │                   └── RightForeArm
+    │                       └── RightHand
+    │                           └── [Same finger structure as left]
+    ├── LeftThigh
+    │   └── LeftShin
+    │       └── LeftFoot
+    │           └── LeftToeBase
+    └── RightThigh
+        └── RightShin
+            └── RightFoot
+                └── RightToeBase
 ```
 
 ---
 
 ## Bone Groups
 
+### Root Bone (1)
+
+| Bone | Parent | Length | Position (Head) | Purpose |
+|------|--------|--------|-----------------|---------|
+| `Root` | None (armature root) | 0m | (0, 0, 0) | World anchor - character's position in scene. IK targets are relative to this. Never animated directly. |
+
+**Important:** The `Root` bone is the armature root, positioned at the origin (ground level). It defines WHERE the character is in the world. All IK foot targets should be relative to Root, so when the character moves through the world, foot positions remain consistent.
+
 ### Core/Spine Bones (9)
 
 | Bone | Parent | Length | Position (Head) | Purpose |
 |------|--------|--------|-----------------|---------|
-| `Hips` | ROOT | 0.136m | (0, 0.056, 1.001) | Root of skeleton, center of mass |
+| `Hips` | Root | 0.136m | (0, 0.056, 1.001) | Pelvis control - can translate (crouch) and rotate (lean/tilt). Moving Hips moves the body, leg IK compensates to keep feet grounded. |
 | `Spine` | Hips | 0.145m | (0, 0.056, 1.137) | Lower back |
 | `Spine1` | Spine | 0.191m | (0, 0.051, 1.282) | Mid back |
 | `Spine2` | Spine1 | 0.149m | (0, 0.050, 1.473) | Upper back / chest |
@@ -279,7 +288,7 @@ FINGERS = {
 
 ## Bone Index Map (Alphabetical)
 
-For numpy array operations, bones are indexed alphabetically:
+For numpy array operations, bones are indexed alphabetically. **Source of truth:** `animations/bone_groups.py`
 
 ```python
 BONE_INDEX = {
@@ -287,57 +296,18 @@ BONE_INDEX = {
     "Hips": 1,
     "LeftArm": 2,
     "LeftFoot": 3,
-    "LeftForeArm": 4,
-    "LeftHand": 5,
-    "LeftHandIndex1": 6,
-    "LeftHandIndex2": 7,
-    "LeftHandIndex3": 8,
-    "LeftHandMiddle1": 9,
-    "LeftHandMiddle2": 10,
-    "LeftHandMiddle3": 11,
-    "LeftHandPinky1": 12,
-    "LeftHandPinky2": 13,
-    "LeftHandPinky3": 14,
-    "LeftHandRing1": 15,
-    "LeftHandRing2": 16,
-    "LeftHandRing3": 17,
-    "LeftHandThumb1": 18,
-    "LeftHandThumb2": 19,
-    "LeftHandThumb3": 20,
-    "LeftShin": 21,
-    "LeftShoulder": 22,
-    "LeftThigh": 23,
-    "LeftToeBase": 24,
-    "NeckLower": 25,
-    "NeckUpper": 26,
-    "RightArm": 27,
-    "RightFoot": 28,
-    "RightForeArm": 29,
-    "RightHand": 30,
-    "RightHandIndex1": 31,
-    "RightHandIndex2": 32,
-    "RightHandIndex3": 33,
-    "RightHandMiddle1": 34,
-    "RightHandMiddle2": 35,
-    "RightHandMiddle3": 36,
-    "RightHandPinky1": 37,
-    "RightHandPinky2": 38,
-    "RightHandPinky3": 39,
-    "RightHandRing1": 40,
-    "RightHandRing2": 41,
-    "RightHandRing3": 42,
-    "RightHandThumb1": 43,
-    "RightHandThumb2": 44,
-    "RightHandThumb3": 45,
-    "RightShin": 46,
-    "RightShoulder": 47,
-    "RightThigh": 48,
-    "RightToeBase": 49,
-    "Spine": 50,
-    "Spine1": 51,
-    "Spine2": 52,
+    # ... (middle bones)
+    "Root": 43,           # World anchor for full-body IK
+    "RightHandThumb1": 44,
+    # ... (remaining bones)
+    "Spine": 51,
+    "Spine1": 52,
+    "Spine2": 53,
 }
+# TOTAL_BONES = 54
 ```
+
+**Note:** Root is inserted alphabetically between RightHandRing3 and RightHandThumb1.
 
 ---
 
@@ -347,7 +317,7 @@ For animation layers and masking:
 
 ```python
 BONE_MASKS = {
-    "full_body": ["*"],  # All 53 bones
+    "full_body": ["*"],  # All 54 bones
 
     "upper_body": [
         "Spine", "Spine1", "Spine2",

@@ -3,15 +3,25 @@ import bpy
 from bpy.types import Node
 from .base_nodes import TriggerNodeBase
 
-def enum_objective_items(self, context):
+def enum_counter_items(self, context):
     scn = getattr(context, "scene", None) or getattr(bpy.context, "scene", None)
     items = []
-    if scn and hasattr(scn, "objectives"):
-        for i, obj in enumerate(scn.objectives):
-            # identifier must be a string for EnumProperty
-            items.append((str(i), obj.name, f"Objective: {obj.name}"))
+    if scn and hasattr(scn, "counters"):
+        for i, counter in enumerate(scn.counters):
+            items.append((str(i), counter.name, f"Counter: {counter.name}"))
     if not items:
-        items.append(("0", "No Objectives", ""))
+        items.append(("0", "No Counters", ""))
+    return items
+
+
+def enum_timer_items(self, context):
+    scn = getattr(context, "scene", None) or getattr(bpy.context, "scene", None)
+    items = []
+    if scn and hasattr(scn, "timers"):
+        for i, timer in enumerate(scn.timers):
+            items.append((str(i), timer.name, f"Timer: {timer.name}"))
+    if not items:
+        items.append(("0", "No Timers", ""))
     return items
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -187,23 +197,23 @@ class _TriggerNodeKind(TriggerNodeBase):
     Every Trigger node owns exactly one real InteractionDefinition (by index).
     Deleting the node deletes that interaction. The node UI edits the real object.
     """
-    KIND = None  # "PROXIMITY" | "COLLISION" | "INTERACT" | "OBJECTIVE_UPDATE" | "TIMER_COMPLETE"
+    KIND = None  # "PROXIMITY" | "COLLISION" | "INTERACT" | "COUNTER_UPDATE" | "TIMER_COMPLETE"
     # Subtle mid-red body tint (header is theme-controlled)
 
     interaction_index: bpy.props.IntProperty(name="Interaction Index", default=-1, min=-1)
 
     # UI convenience mirrors for the two enum pickers that are expensive to reach by index each draw
-    node_objective_index: bpy.props.EnumProperty(
-        name="Objective",
-        description="Select which objective this trigger watches",
-        items=enum_objective_items,
-        update=lambda self, ctx: self._on_objective_changed(ctx)
+    node_counter_index: bpy.props.EnumProperty(
+        name="Counter",
+        description="Select which counter this trigger watches",
+        items=enum_counter_items,
+        update=lambda self, ctx: self._on_counter_changed(ctx)
     )
-    node_timer_objective_index: bpy.props.EnumProperty(
-        name="Timer Objective",
-        description="Select which timer objective to watch for completion",
-        items=enum_objective_items,
-        update=lambda self, ctx: self._on_timer_objective_changed(ctx)
+    node_timer_index: bpy.props.EnumProperty(
+        name="Timer",
+        description="Select which timer to watch for completion",
+        items=enum_timer_items,
+        update=lambda self, ctx: self._on_timer_changed(ctx)
     )
 
     _EXPL_TINT_TRIGGER = (0.24, 0.18, 0.18)
@@ -338,21 +348,21 @@ class _TriggerNodeKind(TriggerNodeBase):
         pass
 
     # ── Two reactive pickers that mirror into the real Interaction object ──
-    def _on_objective_changed(self, context):
+    def _on_counter_changed(self, context):
         scn = _scene()
         if not scn or not (0 <= self.interaction_index < len(scn.custom_interactions)):
             return
         inter = scn.custom_interactions[self.interaction_index]
-        if getattr(inter, "trigger_type", "") == "OBJECTIVE_UPDATE":
-            inter.objective_index = self.node_objective_index
+        if getattr(inter, "trigger_type", "") == "COUNTER_UPDATE":
+            inter.counter_index = self.node_counter_index
 
-    def _on_timer_objective_changed(self, context):
+    def _on_timer_changed(self, context):
         scn = _scene()
         if not scn or not (0 <= self.interaction_index < len(scn.custom_interactions)):
             return
         inter = scn.custom_interactions[self.interaction_index]
         if getattr(inter, "trigger_type", "") == "TIMER_COMPLETE":
-            inter.timer_objective_index = self.node_timer_objective_index
+            inter.timer_index = self.node_timer_index
 
     # ── Per-kind drawers (edit the backed Interaction by index) ──
     def _draw_proximity(self, layout, scn, inter):
@@ -380,14 +390,14 @@ class _TriggerNodeKind(TriggerNodeBase):
         layout.prop(inter, "interact_distance", text="Distance")
         
 
-    def _draw_objective_update(self, layout, _scn, inter):
-        layout.prop(self, "node_objective_index", text="Objective")
-        layout.prop(inter, "objective_condition", text="Condition")
-        if getattr(inter, "objective_condition", "") in {"EQUALS", "AT_LEAST"}:
-            layout.prop(inter, "objective_condition_value", text="Value")
+    def _draw_counter_update(self, layout, _scn, inter):
+        layout.prop(self, "node_counter_index", text="Counter")
+        layout.prop(inter, "counter_condition", text="Condition")
+        if getattr(inter, "counter_condition", "") in {"EQUALS", "AT_LEAST"}:
+            layout.prop(inter, "counter_condition_value", text="Value")
 
     def _draw_timer_complete(self, layout, _scn, inter):
-        layout.prop(self, "node_timer_objective_index", text="Timer Objective")
+        layout.prop(self, "node_timer_index", text="Timer")
 
 
 
@@ -403,11 +413,11 @@ class _TriggerNodeKind(TriggerNodeBase):
             "PROXIMITY": "Proximity",
             "COLLISION": "Collision",
             "INTERACT": "Interact Key",
-            "ACTION":          "Action Key",
-            "EXTERNAL":         "Trigger",
-            "OBJECTIVE_UPDATE": "Objective Update",
+            "ACTION": "Action Key",
+            "EXTERNAL": "Trigger",
+            "COUNTER_UPDATE": "Counter Update",
             "TIMER_COMPLETE": "Timer Complete",
-            "ON_GAME_START":  "On Game Start",
+            "ON_GAME_START": "On Game Start",
         }.get(self.KIND or "PROXIMITY", self.KIND or "PROXIMITY")
 
         layout.label(text=nice, icon='HAND')
@@ -420,8 +430,8 @@ class _TriggerNodeKind(TriggerNodeBase):
             self._draw_interact(layout, scn, inter)
         elif self.KIND == "ACTION":
             self._draw_action(layout, scn, inter)
-        elif self.KIND == "OBJECTIVE_UPDATE":
-            self._draw_objective_update(layout, scn, inter)
+        elif self.KIND == "COUNTER_UPDATE":
+            self._draw_counter_update(layout, scn, inter)
         elif self.KIND == "TIMER_COMPLETE":
             self._draw_timer_complete(layout, scn, inter)
 
@@ -452,10 +462,10 @@ class InteractTriggerNode(_TriggerNodeKind):
     bl_label  = 'Interact Key'
     KIND = "INTERACT"
 
-class ObjectiveUpdateTriggerNode(_TriggerNodeKind):
-    bl_idname = 'ObjectiveUpdateTriggerNodeType'
-    bl_label  = 'Objective Update'
-    KIND = "OBJECTIVE_UPDATE"
+class CounterUpdateTriggerNode(_TriggerNodeKind):
+    bl_idname = 'CounterUpdateTriggerNodeType'
+    bl_label  = 'Counter Update'
+    KIND = "COUNTER_UPDATE"
 
 class TimerCompleteTriggerNode(_TriggerNodeKind):
     bl_idname = 'TimerCompleteTriggerNodeType'

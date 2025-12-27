@@ -107,22 +107,33 @@ def update_property_data_path(self, context):
     self.property_type = "NONE"
 
 
-#---objective counter--#
-def enum_objective_items(self, context):
-    """
-    Build a list of (identifier, name, description) 
-    for each objective in scene.objectives.
-    The identifier can be the index as a string.
-    """
+# --- Counter enum ---
+def enum_counter_items(self, context):
+    """Build a list of (identifier, name, description) for each counter."""
     if not context:
         return []
-
     scn = context.scene
     items = []
-    for i, objv in enumerate(scn.objectives):
-        # The "identifier" must be a string, so let's just use str(i).
-        # The "name" is what shows up in the dropdown, so use objv.name or something user-friendly.
-        items.append((str(i), objv.name, f"Objective: {objv.name}"))
+    if hasattr(scn, "counters"):
+        for i, counter in enumerate(scn.counters):
+            items.append((str(i), counter.name, f"Counter: {counter.name}"))
+    if not items:
+        items.append(("0", "No Counters", ""))
+    return items
+
+
+# --- Timer enum ---
+def enum_timer_items(self, context):
+    """Build a list of (identifier, name, description) for each timer."""
+    if not context:
+        return []
+    scn = context.scene
+    items = []
+    if hasattr(scn, "timers"):
+        for i, timer in enumerate(scn.timers):
+            items.append((str(i), timer.name, f"Timer: {timer.name}"))
+    if not items:
+        items.append(("0", "No Timers", ""))
     return items
 
 
@@ -215,12 +226,12 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("ENABLE_CROSSHAIRS", "Enable Crosshairs", "Pixel based crosshair at screen center"),
             ("HITSCAN",           "Hitscan",   "Instant ray from origin to max range"),
             ("PROJECTILE",        "Projectile","Simulated projectile with gravity"),
-            ("OBJECTIVE_COUNTER", "Objective Counter", ""),
-            ("OBJECTIVE_TIMER",   "Objective Timer", "Start/Stop an objective's timer"),
-            ("MOBILITY",        "Mobility",             "Enable/Disable movement, jump, sprint"),
-            ("MESH_VISIBILITY", "Mesh Visibility",      "Hide/Unhide/Toggle a mesh object"),
-            ("RESET_GAME",      "Reset Game",           "Reset the game state"),
-            ("ACTION_KEYS",      "Action Keys",        "Enable/Disable/Toggle a named Action Key"),
+            ("COUNTER_UPDATE",    "Counter Update", "Add/subtract/reset a counter"),
+            ("TIMER_CONTROL",     "Timer Control", "Start/Stop a timer"),
+            ("MOBILITY",          "Mobility",             "Enable/Disable movement, jump, sprint"),
+            ("MESH_VISIBILITY",   "Mesh Visibility",      "Hide/Unhide/Toggle a mesh object"),
+            ("RESET_GAME",        "Reset Game",           "Reset the game state"),
+            ("ACTION_KEYS",       "Action Keys",        "Enable/Disable/Toggle a named Action Key"),
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
@@ -515,32 +526,37 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Text Subtype",
         items=[
             ('STATIC', "Static Text", ""),
-            ('OBJECTIVE', "Objective Counter", "Displays an objective’s current_value in real time"),
-            ('OBJECTIVE_TIMER_DISPLAY', "Objective Timer Display", "Show an objective’s timer countdown"),
+            ('COUNTER_DISPLAY', "Counter Display", "Displays a counter's current value in real time"),
+            ('TIMER_DISPLAY', "Timer Display", "Show a timer's countdown/countup"),
         ],
         default='STATIC'
     )
-    text_objective_index: bpy.props.EnumProperty(
-        name="Objective",
-        description="Which objective's current_value to display",
-        items=enum_objective_items  # <--- same function you use elsewhere
+    text_counter_index: bpy.props.EnumProperty(
+        name="Counter",
+        description="Which counter's current value to display",
+        items=enum_counter_items
+    )
+    text_timer_index: bpy.props.EnumProperty(
+        name="Timer",
+        description="Which timer's current value to display",
+        items=enum_timer_items
     )
 
-    # fields for more intuitive Objective Counter formatting:
+    # fields for more intuitive Counter formatting:
     custom_text_prefix: bpy.props.StringProperty(
         name="Prefix Text",
         default="",
-        description="Text displayed before the objective counter value."
+        description="Text displayed before the counter/timer value."
     )
     custom_text_suffix: bpy.props.StringProperty(
         name="Suffix Text",
         default="",
-        description="Text displayed after the objective counter value."
+        description="Text displayed after the counter/timer value."
     )
     custom_text_include_counter: bpy.props.BoolProperty(
-        name="Include Counter",
+        name="Include Value",
         default=True,
-        description="If enabled, the numeric value of the objective is displayed."
+        description="If enabled, the numeric value is displayed."
     )
 
 
@@ -641,40 +657,49 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     default_vector_value: bpy.props.FloatVectorProperty(size=4, default=(0.0, 0.0, 0.0, 0.0))
 
 #############################################
-##### OBJECTIVE REACTION FIELDS
+##### COUNTER REACTION FIELDS
 #############################################
-    objective_index: bpy.props.EnumProperty(
-        name="Objective",
-        description="Which objective to modify?",
-        items=enum_objective_items,
+    counter_index: bpy.props.EnumProperty(
+        name="Counter",
+        description="Which counter to modify?",
+        items=enum_counter_items,
     )
-    objective_op: bpy.props.EnumProperty(
+    counter_op: bpy.props.EnumProperty(
         name="Operation",
         items=[
-            ("ADD",      "Add",      "Add to the current_value"),
-            ("SUBTRACT", "Subtract", "Subtract from the current_value"),
-            ("RESET",    "Reset",    "Set current_value back to default_value"),
+            ("ADD",      "Add",      "Add to the current value"),
+            ("SUBTRACT", "Subtract", "Subtract from the current value"),
+            ("RESET",    "Reset",    "Set current value back to default"),
         ],
         default="ADD"
     )
-    objective_amount: bpy.props.IntProperty(
+    counter_amount: bpy.props.IntProperty(
         name="Amount",
         default=1,
         min=0,
         description="How much to add or subtract for ADD/SUBTRACT"
     )
-    objective_timer_op: bpy.props.EnumProperty(
+
+#############################################
+##### TIMER REACTION FIELDS
+#############################################
+    timer_index: bpy.props.EnumProperty(
+        name="Timer",
+        description="Which timer to control?",
+        items=enum_timer_items,
+    )
+    timer_op: bpy.props.EnumProperty(
         name="Timer Operation",
         items=[
-            ("START", "Start Timer", "Begin the countdown"),
-            ("STOP",  "Stop Timer",  "Stop the countdown immediately"),
+            ("START", "Start Timer", "Begin the countdown/countup"),
+            ("STOP",  "Stop Timer",  "Stop the timer immediately"),
         ],
         default="START"
     )
     interruptible: bpy.props.BoolProperty(
         name="Interruptible",
         default=False,
-        description="If True, the timer can continuously be restarted in-game.)"
+        description="If True, the timer can be restarted while running"
     )
 
 

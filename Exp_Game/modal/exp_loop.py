@@ -53,7 +53,6 @@ from ..reactions.exp_custom_ui import update_text_reactions
 from ..audio.exp_globals import update_sound_tasks
 from ..audio.exp_audio import get_global_audio_state_manager
 from ..developer.dev_stats import get_stats_tracker
-from ..animations.runtime_ik import apply_runtime_ik
 from ..animations.blend_system import (
     init_blend_system,
     shutdown_blend_system,
@@ -339,11 +338,6 @@ class GameLoop:
         armature = bpy.context.scene.target_armature
         if blend_system and armature:
             blend_system.apply_to_armature(armature)
-
-        # 5. Runtime IK overlay (after all animation poses are applied)
-        # IK modifies bones on top of animation - only if enabled in scene
-        if armature:
-            apply_runtime_ik(armature, agg_dt)
 
     def _poll_and_apply_engine_results(self):
         """

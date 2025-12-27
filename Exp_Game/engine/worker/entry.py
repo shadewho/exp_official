@@ -86,6 +86,9 @@ from animations.rig_cache import (
     _matrix_to_quat,
 )
 
+# Import full-body IK solver
+from animations.full_body import handle_full_body_ik
+
 
 # ============================================================================
 # DEBUG FLAG
@@ -1229,6 +1232,12 @@ def process_job(job) -> dict:
             # Input: {"chains": [{chain, target, root_pos, ...}, ...]}
             # Output: {"results": {chain: {upper_quat, lower_quat, ...}, ...}}
             result_data = _handle_ik_solve_batch(job.data)
+
+        elif job.job_type == "FULL_BODY_IK":
+            # Full-body IK solving (hips, legs, spine, arms, head)
+            # Input: {"constraints": {...}, "current_state": {...}, "armature_name": str}
+            # Output: {"bone_transforms": {...}, "constraints_satisfied": int, ...}
+            result_data = handle_full_body_ik(job.data, _cached_rigs)
 
         elif job.job_type == "CACHE_TRACKERS":
             # Cache serialized tracker definitions - delegated to interactions module

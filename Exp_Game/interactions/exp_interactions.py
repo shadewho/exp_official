@@ -6,14 +6,14 @@ from mathutils import Vector
 from ..developer.dev_debug_gate import should_print_debug
 from ..reactions.exp_reactions import ( execute_property_reaction,
                              execute_char_action_reaction, execute_custom_ui_text_reaction,
-                             execute_objective_counter_reaction,
-                             execute_objective_timer_reaction, execute_sound_reaction,
+                             execute_counter_update_reaction,
+                             execute_timer_control_reaction, execute_sound_reaction,
                              execute_custom_action_reaction,
 )
 from ..reactions.exp_transforms import execute_transform_reaction
 from ..reactions.exp_projectiles import execute_projectile_reaction, execute_hitscan_reaction
 from ..props_and_utils.exp_time import get_game_time
-from ..systems.exp_objectives import update_all_objective_timers
+from ..systems.exp_counters_timers import update_all_timers
 from ..reactions.exp_mobility_and_game_reactions import (
     execute_mobility_reaction,
     execute_mesh_visibility_reaction,
@@ -196,11 +196,14 @@ def log_aabb_stats():
 def init_reaction_node_cache(scene) -> int:
     """
     Build reaction_index -> node mapping at game start.
-    Eliminates node graph iteration during runtime.
+    Also syncs all dynamic inputs to reaction properties.
+    ZERO node graph access during runtime after this.
     Returns number of cached nodes.
     """
     global _reaction_node_cache
     _reaction_node_cache.clear()
+
+    reactions = getattr(scene, "reactions", [])
 
     for ng in bpy.data.node_groups:
         if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
@@ -209,8 +212,11 @@ def init_reaction_node_cache(scene) -> int:
             r_idx = getattr(node, "reaction_index", -1)
             if r_idx >= 0:
                 _reaction_node_cache[r_idx] = node
+                # Sync dynamic inputs NOW at game start, not at runtime
+                if 0 <= r_idx < len(reactions):
+                    _sync_dynamic_inputs_at_start(reactions[r_idx], node)
 
-    log_game("REACTION-CACHE", f"INIT cached={len(_reaction_node_cache)} reaction nodes")
+    log_game("REACTION-CACHE", f"INIT cached={len(_reaction_node_cache)} reaction nodes (inputs synced)")
     return len(_reaction_node_cache)
 
 
@@ -220,25 +226,12 @@ def reset_reaction_node_cache():
     _reaction_node_cache.clear()
 
 
-def _sync_dynamic_inputs_to_reaction(r, reaction_index):
+def _sync_dynamic_inputs_at_start(r, node):
     """
-    Before executing a reaction, resolve any linked data node inputs
-    and write them to the reaction definition.
-    Uses cached node lookup - NO node graph iteration during runtime.
-
-    Mapping for CUSTOM_ACTION:
-      - "Action" socket → custom_action_action
-      - "Object" socket → custom_action_target
-      - "Loop?" socket → custom_action_loop
-      - "Loop Duration" socket → custom_action_loop_duration
-      - "Speed" socket → custom_action_speed
+    Sync dynamic node inputs to reaction properties AT GAME START.
+    Called once per reaction node during init_reaction_node_cache.
+    NEVER called during runtime - all node graph access happens here.
     """
-    # O(1) lookup using cached mapping
-    node = _reaction_node_cache.get(reaction_index)
-    if not node:
-        return
-
-    # Check the node's inputs for linked data nodes
     for inp in getattr(node, "inputs", []):
         if not getattr(inp, "is_linked", False):
             continue
@@ -251,7 +244,7 @@ def _sync_dynamic_inputs_to_reaction(r, reaction_index):
         if socket_name == "Action" and hasattr(src_node, "export_action"):
             action = src_node.export_action()
             if action:
-                r.custom_action_action = action.name
+                r.custom_action_action = action
 
         elif socket_name == "Object" and hasattr(src_node, "export_object"):
             obj = src_node.export_object()
@@ -272,27 +265,20 @@ def _execute_reaction_now(r):
     """
     Execute a single reaction immediately (no scheduling).
     'DELAY' is handled at the sequencing level and is ignored here.
+    Dynamic inputs already synced at game start - ZERO node graph access here.
     """
     t = getattr(r, "reaction_type", "")
 
     if t == "DELAY":
         return  # sequencing-only marker
 
-    # Sync any dynamic node inputs before execution
-    scn = bpy.context.scene
-    reactions = getattr(scn, "reactions", [])
-    for idx, rx in enumerate(reactions):
-        if rx == r:
-            _sync_dynamic_inputs_to_reaction(r, idx)
-            break
-
-    # --- map reaction types to executors (same mapping you already use) ---
+    # --- map reaction types to executors ---
     if t == "CUSTOM_ACTION":
         execute_custom_action_reaction(r)
-    elif t == "OBJECTIVE_COUNTER":
-        execute_objective_counter_reaction(r)
-    elif t == "OBJECTIVE_TIMER":
-        execute_objective_timer_reaction(r)
+    elif t == "COUNTER_UPDATE":
+        execute_counter_update_reaction(r)
+    elif t == "TIMER_CONTROL":
+        execute_timer_control_reaction(r)
     elif t == "CHAR_ACTION":
         execute_char_action_reaction(r)
     elif t == "SOUND":
@@ -838,16 +824,13 @@ def check_interactions(context):
     scene = context.scene
     current_time = get_game_time()
 
-    # ─── CLAMP ANY INVALID trigger_mode VALUES ───
-    for inter in scene.custom_interactions:
-        allowed = [item[0] for item in trigger_mode_items(inter, context)]
-        if inter.trigger_mode not in allowed:
-            inter.trigger_mode = allowed[0]
+    # NOTE: trigger_mode validation removed from runtime (was running 30Hz)
+    # Validation happens at design-time in UI callbacks, not during gameplay
 
     pressed_this_frame = was_interact_pressed()
     pressed_action   = was_action_pressed()
 
-    update_all_objective_timers(context.scene)
+    update_all_timers(context.scene)
 
     # ========== OFFLOADED: PROXIMITY & COLLISION (handled by workers) ==========
     # Submit proximity/collision checks to workers (non-blocking, throttled)
@@ -867,8 +850,8 @@ def check_interactions(context):
             handle_interact_trigger(inter, current_time, pressed_this_frame, context)
         elif t == "ACTION":  #
             handle_action_trigger(inter, current_time, pressed_action)
-        elif t == "OBJECTIVE_UPDATE":
-            handle_objective_update_trigger(inter, current_time)
+        elif t == "COUNTER_UPDATE":
+            handle_counter_update_trigger(inter, current_time)
         elif t == "TIMER_COMPLETE":
             handle_timer_complete_trigger(inter)
         elif t == "ON_GAME_START":
@@ -989,11 +972,11 @@ def reset_all_interactions(scene):
         inter.is_in_zone = False
         inter.external_signal = False  # Clear tracker-driven signal
 
-        if inter.trigger_type == "OBJECTIVE_UPDATE":
-            if inter.objective_index.isdigit():
-                idx = int(inter.objective_index)
-                if 0 <= idx < len(scene.objectives):
-                    inter.last_known_count = scene.objectives[idx].current_value
+        if inter.trigger_type == "COUNTER_UPDATE":
+            if inter.counter_index.isdigit():
+                idx = int(inter.counter_index)
+                if hasattr(scene, "counters") and 0 <= idx < len(scene.counters):
+                    inter.last_known_count = scene.counters[idx].current_value
                 else:
                     inter.last_known_count = -1
             else:
@@ -1212,22 +1195,22 @@ def was_action_pressed():
 
 
 ###############################################################################
-# 8) Objective Trigger Helper
+# 8) Counter/Timer Trigger Helpers
 ###############################################################################
 
-def handle_objective_update_trigger(inter, current_time):
+def handle_counter_update_trigger(inter, current_time):
     scene = bpy.context.scene
 
-    # 1) Validate the objective index
-    if not inter.objective_index.isdigit():
+    # 1) Validate the counter index
+    if not inter.counter_index.isdigit():
         return
-    idx = int(inter.objective_index)
-    if idx < 0 or idx >= len(scene.objectives):
+    idx = int(inter.counter_index)
+    if not hasattr(scene, "counters") or idx < 0 or idx >= len(scene.counters):
         return
 
-    objv    = scene.objectives[idx]
+    counter = scene.counters[idx]
     old_val = inter.last_known_count
-    new_val = objv.current_value
+    new_val = counter.current_value
 
     # 2) If ONE_SHOT and already fired, bail out
     if inter.trigger_mode == "ONE_SHOT" and inter.has_fired:
@@ -1236,24 +1219,24 @@ def handle_objective_update_trigger(inter, current_time):
 
     # 3) Decide whether the condition is met right now
     should_fire = False
-    cond_value  = inter.objective_condition_value
+    cond_value = inter.counter_condition_value
 
-    if inter.objective_condition == "CHANGED":
+    if inter.counter_condition == "CHANGED":
         should_fire = (new_val != old_val)
 
-    elif inter.objective_condition == "INCREASED":
+    elif inter.counter_condition == "INCREASED":
         should_fire = (new_val > old_val)
 
-    elif inter.objective_condition == "DECREASED":
+    elif inter.counter_condition == "DECREASED":
         should_fire = (new_val < old_val and old_val >= 0)
 
-    elif inter.objective_condition == "EQUALS":
+    elif inter.counter_condition == "EQUALS":
         should_fire = (new_val == cond_value)
 
-    elif inter.objective_condition == "AT_LEAST":
+    elif inter.counter_condition == "AT_LEAST":
         should_fire = (new_val >= cond_value)
 
-    # 4) If it’s met, fire—honoring COOLDOWN
+    # 4) If it's met, fire—honoring COOLDOWN
     if should_fire:
         def _fire():
             if inter.trigger_delay > 0.0:
@@ -1278,16 +1261,16 @@ def handle_objective_update_trigger(inter, current_time):
 
 def handle_timer_complete_trigger(inter):
     scene = bpy.context.scene
-    idx_str = inter.timer_objective_index
+    idx_str = inter.timer_index
     if not idx_str.isdigit():
         return
 
     idx = int(idx_str)
-    if idx < 0 or idx >= len(scene.objectives):
+    if not hasattr(scene, "timers") or idx < 0 or idx >= len(scene.timers):
         return
 
-    objv = scene.objectives[idx]
-    if objv.just_finished:
+    timer = scene.timers[idx]
+    if timer.just_finished:
         current_time = get_game_time()
         if can_fire_trigger(inter, current_time):
             if inter.trigger_delay > 0.0:
@@ -1297,5 +1280,5 @@ def handle_timer_complete_trigger(inter):
             inter.has_fired = True
             inter.last_trigger_time = current_time
 
-            objv.timer_active = False
-            objv.just_finished = False
+            timer.is_active = False
+            timer.just_finished = False

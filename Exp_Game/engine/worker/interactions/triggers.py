@@ -120,11 +120,11 @@ def handle_interaction_check_batch(job_data: dict) -> dict:
                 b_minz -= margin
                 b_maxz += margin
 
-                # Check overlap on all axes
-                overlap_x = (a_minx <= b_maxx) and (a_maxx >= b_minx)
-                overlap_y = (a_miny <= b_maxy) and (a_maxy >= b_miny)
-                overlap_z = (a_minz <= b_maxz) and (a_maxz >= b_minz)
-                now_in_zone = overlap_x and overlap_y and overlap_z
+                # Check overlap on all axes - single expression for short-circuit evaluation
+                # If X fails, Y and Z won't be computed (Python 'and' short-circuits)
+                now_in_zone = ((a_minx <= b_maxx) and (a_maxx >= b_minx) and
+                               (a_miny <= b_maxy) and (a_maxy >= b_miny) and
+                               (a_minz <= b_maxz) and (a_maxz >= b_minz))
 
         # Determine transition
         if now_in_zone and not was_in_zone:

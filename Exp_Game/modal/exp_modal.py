@@ -20,7 +20,7 @@ from ..interactions.exp_interactions import set_interact_pressed, set_action_pre
 from ..reactions.exp_reactions import reset_all_tasks
 from ..props_and_utils.exp_time import init_time
 from ..reactions.exp_custom_ui import register_ui_draw, unregister_ui_draw, clear_all_text, show_controls_info
-from ..systems.exp_objectives import reset_all_objectives
+from ..systems.exp_counters_timers import reset_all_counters, reset_all_timers
 from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
 from ..audio import exp_globals
@@ -439,7 +439,8 @@ class ExpModal(bpy.types.Operator):
         # 4E) *** RESET ALL INTERACTIONS AND TASKS***
         reset_all_interactions(context.scene)
         reset_all_tasks()
-        reset_all_objectives(context.scene)
+        reset_all_counters(context.scene)
+        reset_all_timers(context.scene)
         reset_property_reactions(context.scene)   
 
 
@@ -808,11 +809,6 @@ class ExpModal(bpy.types.Operator):
         clear_font_cache()
         # ====================================
 
-        # ========== IK STATE CLEANUP ==========
-        from ..animations.runtime_ik import clear_ik_state
-        clear_ik_state()
-        # ====================================
-
         # ========== STATS CLEANUP ==========
         from ..developer.dev_stats import reset_stats
         reset_stats()
@@ -826,6 +822,11 @@ class ExpModal(bpy.types.Operator):
         # ========== CROSSHAIRS CLEANUP ==========
         from ..reactions.exp_crosshairs import disable_crosshairs
         disable_crosshairs()
+        # ====================================
+
+        # ========== PROJECTILE CLEANUP ==========
+        from ..reactions.exp_projectiles import clear as clear_projectiles
+        clear_projectiles()
         # ====================================
 
         # NOTE: Do NOT call reset_fullscreen_state() here!
@@ -1036,21 +1037,27 @@ class ExpModal(bpy.types.Operator):
         scene = bpy.context.scene
         mg = scene.mobility_game
 
-        # 1) Interact key => set/clear
+        # 1) Interact key => edge-triggered (only fires once per press, not on hold)
         if event.type == self.pref_interact_key:
             if event.value == 'PRESS':
-                set_interact_pressed(True)
+                if getattr(self, '_interact_key_released', True):
+                    set_interact_pressed(True)
+                    self._interact_key_released = False
             elif event.value == 'RELEASE':
                 set_interact_pressed(False)
+                self._interact_key_released = True
 
-        # 2) Action key => set/clear (global flag)
+        # 2) Action key => edge-triggered (only fires once per press, not on hold)
         if event.type == self.pref_action_key:
             if event.value == 'PRESS':
-                self.action_pressed = True  # local (optional for you)
-                set_action_pressed(True)    # global → interactions system
+                if getattr(self, '_action_key_released', True):
+                    self.action_pressed = True
+                    set_action_pressed(True)
+                    self._action_key_released = False
             elif event.value == 'RELEASE':
                 self.action_pressed = False
                 set_action_pressed(False)
+                self._action_key_released = True
 
         # 2.5) Reset key
         if event.type == self.pref_reset_key and event.value == 'PRESS':

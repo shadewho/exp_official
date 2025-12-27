@@ -494,6 +494,19 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_rig_vis_full_body_ik = bpy.props.BoolProperty(
+        name="Full-Body IK",
+        description=(
+            "Visualize full-body IK constraints and results:\n"
+            "• Hips drop indicator (vertical line)\n"
+            "• Foot grounding targets (green spheres)\n"
+            "• Hand reach targets (cyan spheres)\n"
+            "• Look-at target (magenta crosshair)\n"
+            "• Color indicates constraint satisfaction"
+        ),
+        default=True
+    )
+
     bpy.types.Scene.dev_rig_vis_line_width = bpy.props.FloatProperty(
         name="Line Width",
         description="Visualizer line thickness",
@@ -669,17 +682,18 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # RUNTIME IK SYSTEM
+    # UNIFIED IK SYSTEM
     # ══════════════════════════════════════════════════════════════════════════
 
-    bpy.types.Scene.dev_debug_runtime_ik = bpy.props.BoolProperty(
-        name="Runtime IK",
+    bpy.types.Scene.dev_debug_ik = bpy.props.BoolProperty(
+        name="IK Logs",
         description=(
-            "Runtime IK system diagnostics:\n"
-            "• IK job submission (target, chain, influence)\n"
-            "• Worker solve time (µs)\n"
-            "• Joint positions computed\n"
-            "• Blend with animation"
+            "Unified IK system diagnostics:\n"
+            "• BEFORE/AFTER skeleton state\n"
+            "• Constraint targets and distances\n"
+            "• Solve process (hips, legs, arms, head)\n"
+            "• Visualizer wake-up status\n"
+            "• Result summary (satisfied/failed/at-limit)"
         ),
         default=False
     )
@@ -1166,6 +1180,7 @@ def unregister_properties():
         'dev_rig_vis_ik_reach',
         'dev_rig_vis_bone_axes',
         'dev_rig_vis_active_mask',
+        'dev_rig_vis_full_body_ik',
         'dev_rig_vis_line_width',
         'dev_rig_vis_axis_length',
         'dev_rig_vis_text_overlay',
@@ -1186,8 +1201,8 @@ def unregister_properties():
         'dev_debug_transforms',
         'dev_debug_tracking',
 
-        # Runtime IK
-        'dev_debug_runtime_ik',
+        # Unified IK System
+        'dev_debug_ik',
         'dev_debug_ik_solve',
         'dev_debug_rig_state',
         'runtime_ik_enabled',
@@ -1256,6 +1271,9 @@ def unregister_properties():
         'runtime_ik_chain',
         'runtime_ik_influence',
         'runtime_ik_target',
+        # Replaced by unified dev_debug_ik
+        'dev_debug_full_body_ik',
+        'dev_debug_runtime_ik',
     ]
 
     for prop in old_props:

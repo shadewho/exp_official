@@ -380,4 +380,200 @@ pose_bone.rotation_quaternion = rotation
 
 ---
 
-**Last Updated**: 2025-12-26
+## Full-Body IK System (2025-12-27)
+
+### Architecture
+
+The Full-Body IK system coordinates the entire skeleton, not just isolated limbs.
+
+**Rig Hierarchy:**
+```
+Root (world anchor at Z=0) ← IK targets relative to this
+└── Hips (pelvis control) ← can translate/rotate for crouch/lean
+    ├── Spine → Spine1 → Spine2 ← leans toward reach targets
+    │   ├── NeckLower → NeckUpper → Head ← look-at
+    │   ├── LeftShoulder → Arm → ForeArm → Hand ← arm IK
+    │   └── RightShoulder → Arm → ForeArm → Hand ← arm IK
+    ├── LeftThigh → Shin → Foot ← leg IK (grounded)
+    └── RightThigh → Shin → Foot ← leg IK (grounded)
+```
+
+**Solve Order:**
+1. **Hips Position** - Center of mass, crouch amount
+2. **Leg IK** - Ground feet (compensate for Hips movement)
+3. **Spine Chain** - Lean toward hand targets
+4. **Arm IK** - Reach targets given new shoulder positions
+5. **Head/Neck** - Look-at target
+
+### IK Modes
+
+| Mode | Description |
+|------|-------------|
+| `FULL_BODY` | Whole skeleton responds to all targets |
+| `TWO_BONE` | Single limb chain (legacy, building block) |
+| `FOOT_GROUND` | Keep feet planted while body moves |
+| `LOOK_AT` | Head/neck tracking only |
+
+### Self-Verifying Diagnostics
+
+**CRITICAL**: The logs must tell us if the solve worked WITHOUT screenshots.
+
+```
+[FULL-BODY-IK F0001] ════════════════════════════════════════════
+[FULL-BODY-IK F0001] SOLVE START
+[FULL-BODY-IK F0001] ────────────────────────────────────────────
+[FULL-BODY-IK F0001] BEFORE:
+[FULL-BODY-IK F0001]   Root: pos=(0.00, 0.00, 0.00)
+[FULL-BODY-IK F0001]   Hips: pos=(0.00, 0.06, 1.00) rel_to_root
+[FULL-BODY-IK F0001]   Spine_lean: 0.0° (upright)
+[FULL-BODY-IK F0001]   L_foot: (−0.10, 0.00, 0.00)
+[FULL-BODY-IK F0001]   R_foot: (+0.10, 0.00, 0.00)
+[FULL-BODY-IK F0001]   L_hand: (−0.50, 0.00, 1.20)
+[FULL-BODY-IK F0001]   R_hand: (+0.50, 0.00, 1.20)
+[FULL-BODY-IK F0001] ────────────────────────────────────────────
+[FULL-BODY-IK F0001] TARGETS:
+[FULL-BODY-IK F0001]   Hips: drop=0.30m (crouch)
+[FULL-BODY-IK F0001]   L_foot: (−0.10, 0.00, 0.00) GROUNDED
+[FULL-BODY-IK F0001]   R_foot: (+0.10, 0.00, 0.00) GROUNDED
+[FULL-BODY-IK F0001]   R_hand: (+1.00, 0.50, 1.00) REACH
+[FULL-BODY-IK F0001] ────────────────────────────────────────────
+[FULL-BODY-IK F0001] SOLVING:
+[FULL-BODY-IK F0001]   [1] Hips: (0.00, 0.06, 1.00) → (0.00, 0.06, 0.70)
+[FULL-BODY-IK F0001]   [2] L_leg IK: thigh=45° shin=90° foot_err=0.1cm ✓
+[FULL-BODY-IK F0001]   [3] R_leg IK: thigh=45° shin=90° foot_err=0.2cm ✓
+[FULL-BODY-IK F0001]   [4] Spine: lean=15° toward reach
+[FULL-BODY-IK F0001]   [5] R_arm IK: reach_err=2.5cm (at limit) ⚠
+[FULL-BODY-IK F0001] ────────────────────────────────────────────
+[FULL-BODY-IK F0001] AFTER:
+[FULL-BODY-IK F0001]   Hips: (0.00, 0.06, 0.70) ✓ dropped 0.30m
+[FULL-BODY-IK F0001]   L_foot: (−0.10, 0.00, 0.001) err=0.1cm ✓
+[FULL-BODY-IK F0001]   R_foot: (+0.10, 0.00, 0.002) err=0.2cm ✓
+[FULL-BODY-IK F0001]   R_hand: (+0.95, 0.48, 0.98) err=2.5cm ⚠
+[FULL-BODY-IK F0001]   Joint_limits: 0 violations ✓
+[FULL-BODY-IK F0001] ────────────────────────────────────────────
+[FULL-BODY-IK F0001] RESULT: SUCCESS (4/5 constraints, 1 at limit)
+[FULL-BODY-IK F0001] ════════════════════════════════════════════
+```
+
+**Key Metrics (must be in logs):**
+- Position error per end-effector (cm)
+- Joint limit violations (count + which joints)
+- Solve time (µs)
+- Constraint satisfaction ratio
+
+### GPU Visualization
+
+The rig visualizer must show Full-Body IK state:
+
+| Element | Color | Description |
+|---------|-------|-------------|
+| Root anchor | White | World anchor position |
+| Hips control | Yellow | Pelvis position + translation from rest |
+| Spine lean | Orange arrow | Direction torso is leaning |
+| Foot targets | Green/Red | Ground targets (green=reached, red=error) |
+| Hand targets | Cyan/Red | Reach targets (cyan=reached, red=out of reach) |
+| Look-at | Magenta | Head target direction |
+| Center of mass | White cross | Balance point over feet |
+| Ground plane | Gray grid | Reference plane for foot grounding |
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `animations/full_body_ik.py` | (NEW) Full-body IK solver |
+| `engine/animations/full_body.py` | (NEW) Worker-side full-body solver |
+| `developer/rig_visualizer.py` | Update for full-body visualization |
+| `animations/test_panel.py` | Full-body IK test operators |
+
+---
+
+## Session Log: 2025-12-27 (Evening)
+
+### Where We Stopped
+
+Full-body IK system is now functional for **legs, arms, and hips**. Ready to add **spine IK chain** for extended reaching.
+
+### What We Have Working
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Leg IK** | ✅ Working | Direction-based rotation, knees bend FORWARD correctly |
+| **Arm IK** | ✅ Working | Direction-based rotation, elbows bend BACKWARD correctly |
+| **Cross-body Arms** | ✅ Working | Elbow circle geometry prevents arms clipping through body |
+| **Hips Drop** | ✅ Working | World-to-local coordinate transform, drops in correct axis |
+| **Region System** | ✅ Working | LEGS, LOWER_BODY, UPPER_BODY, FULL_BODY all unified |
+| **Diagnostics** | ✅ Working | Reports FAILED when targets missed by >5cm |
+| **Spine IK** | 🔜 Next | Graduated lean for extended reaching |
+
+### What We Fixed This Session
+
+1. **Knee Bend Direction** (critical fix)
+   - **Problem**: Knees bent BACKWARD instead of FORWARD
+   - **Root Cause**: Cross product order `cross(pole_vec, reach_dir)` gave wrong rotation axis
+   - **Fix**: Changed to `cross(reach_dir, pole_vec)` in `solve_leg_ik()`
+   - **File**: `engine/animations/ik.py:420`
+
+2. **Leg IK Rotation Method**
+   - **Problem**: Legs used raw quaternions from solver, didn't account for bone rest orientation
+   - **Fix**: Changed to direction-based rotation like arms:
+     - `solve_leg_ik()` returns `(thigh_dir, shin_dir, knee_pos)` - directions, not quaternions
+     - Caller uses `_compute_bone_rotation_to_direction()` for thigh
+     - Caller uses `_compute_child_rotation_for_ik()` for shin (accounts for parent rotation)
+   - **File**: `full_body_ik.py:1809-1838, 1870-1897`
+
+3. **Region Handling for "Legs Only"**
+   - **Problem**: LEGS region was moving hips when it shouldn't
+   - **Fix**: Removed 'LEGS' from `use_hips` check
+   - **File**: `test_panel.py:828`
+
+4. **Diagnostic Honesty**
+   - **Problem**: Logs said "SUCCESS" when feet were 16-23cm off target
+   - **Fix**: Added error checking - any target >5cm off now reports "FAILED" with `<<<MISSED TARGET>>>`
+   - **File**: `full_body_ik.py:758-807`
+
+### Key Insight: Direction-Based IK
+
+The working pattern for limb IK:
+
+```python
+# Solver returns DIRECTIONS (world-space vectors)
+upper_dir, lower_dir, joint_pos = solve_limb_ik(root, target, pole)
+
+# Convert to bone rotations using bone's actual rest orientation
+upper_quat = _compute_bone_rotation_to_direction(upper_bone, upper_dir, armature_matrix)
+lower_quat = _compute_child_rotation_for_ik(lower_bone, lower_dir, upper_quat, armature_matrix)
+```
+
+This works because:
+- Solver computes WHERE joints should be (pure geometry)
+- Rotation conversion accounts for each bone's rest orientation
+- Child bones account for parent's rotation (inherited transform)
+
+### Next Steps
+
+1. **Spine IK Chain** - Graduated lean toward reach targets
+   - Distribute rotation across Spine → Spine1 → Spine2
+   - Kick in when arm target is beyond comfortable reach
+   - Respect joint limits (max ~45° forward, ~30° side)
+
+2. **Train Claude Better on Movement**
+   - Document the direction-based rotation pattern more clearly
+   - Add examples of common movement scenarios
+   - Create reference for pole vector conventions
+
+3. **Real-Time IK Transitions**
+   - Blend between IK states smoothly
+   - Handle target changes mid-motion
+   - Integrate with animation state machine
+
+### Files Modified This Session
+
+| File | Changes |
+|------|---------|
+| `engine/animations/ik.py` | Fixed knee cross product order |
+| `animations/full_body_ik.py` | Direction-based leg rotation, honest diagnostics |
+| `animations/test_panel.py` | Fixed region handling |
+
+---
+
+**Last Updated**: 2025-12-27 ~10:30 PM EST

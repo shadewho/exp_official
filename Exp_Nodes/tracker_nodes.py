@@ -175,7 +175,7 @@ class StateTrackerNode(_ExploratoryNodeOnly, Node):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ContactTrackerNode(_ExploratoryNodeOnly, Node):
-    """Tracks mesh collision/contact. Outputs Bool."""
+    """Tracks proximity contact between two objects. Outputs Bool."""
     bl_idname = "ContactTrackerNodeType"
     bl_label = "Contact Tracker"
 
@@ -189,14 +189,13 @@ class ContactTrackerNode(_ExploratoryNodeOnly, Node):
         name="Target",
         description="Target object to check contact with"
     )
-    contact_collection: bpy.props.PointerProperty(
-        type=bpy.types.Collection,
-        name="Collection",
-        description="Collection of objects to check contact with"
-    )
-    use_collection: bpy.props.BoolProperty(
-        name="Use Collection",
-        default=False
+    contact_threshold: bpy.props.FloatProperty(
+        name="Threshold",
+        default=0.5,
+        min=0.01,
+        max=100.0,
+        unit='LENGTH',
+        description="Contact distance threshold in meters"
     )
     eval_hz: bpy.props.IntProperty(
         name="Eval Rate",
@@ -207,8 +206,7 @@ class ContactTrackerNode(_ExploratoryNodeOnly, Node):
     )
 
     def init(self, context):
-        self.width = 200
-        # Object inputs with inline property drawing
+        self.width = 180
         sock_obj = self.inputs.new(OBJECT_SOCKET, "Object")
         sock_obj.prop_name = "contact_object"
         sock_tgt = self.inputs.new(OBJECT_SOCKET, "Target")
@@ -216,24 +214,16 @@ class ContactTrackerNode(_ExploratoryNodeOnly, Node):
         self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
-        layout.prop(self, "use_collection")
-        if self.use_collection:
-            layout.prop(self, "contact_collection", text="")
-
-        layout.prop(self, "eval_hz", text="Hz")
+        row = layout.row(align=True)
+        row.prop(self, "contact_threshold", text="Dist")
+        row.prop(self, "eval_hz", text="Hz")
 
     def export_condition(self):
         """Export condition data for worker serialization."""
-        targets = []
-        if self.use_collection and self.contact_collection:
-            targets = [obj.name for obj in self.contact_collection.objects]
-        elif self.contact_target:
-            targets = [self.contact_target.name]
-
         return {
             'type': 'CONTACT',
             'object': self.contact_object.name if self.contact_object else "",
-            'targets': targets,
+            'target': self.contact_target.name if self.contact_target else "",
             'eval_hz': self.eval_hz,
         }
 

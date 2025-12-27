@@ -45,18 +45,16 @@ def update_text_reactions():
         sub = it.get("subtype", "STATIC")
 
         # ===============================
-        #  A) OBJECTIVE_TIMER_DISPLAY
+        #  A) TIMER_DISPLAY
         # ===============================
-        if sub == "OBJECTIVE_TIMER_DISPLAY":
-            idx_str = it.get("objective_index", "")
+        if sub == "TIMER_DISPLAY":
+            idx_str = it.get("timer_index", "")
             if idx_str.isdigit():
                 idx = int(idx_str)
                 scene = bpy.context.scene
-                if 0 <= idx < len(scene.objectives):
-                    objv = scene.objectives[idx]
-
-                    # Either way, we can format it as “seconds”:
-                    current_time_val = max(0.0, objv.timer_value)
+                if hasattr(scene, "timers") and 0 <= idx < len(scene.timers):
+                    timer = scene.timers[idx]
+                    current_time_val = max(0.0, timer.current_value)
                     it["text"] = format_hms(current_time_val)
 
             # Check indefinite vs ephemeral
@@ -68,21 +66,20 @@ def update_text_reactions():
                     keep_list.append(it)  # still within time
 
         # ===============================
-        #  B) OBJECTIVE (Simple Counter)
+        #  B) COUNTER_DISPLAY
         # ===============================
-        elif sub == "OBJECTIVE":
-            idx_str = it.get("objective_index", "")
+        elif sub == "COUNTER_DISPLAY":
+            idx_str = it.get("counter_index", "")
             if idx_str.isdigit():
                 idx = int(idx_str)
                 scene = bpy.context.scene
-                if 0 <= idx < len(scene.objectives):
-                    objv = scene.objectives[idx]
-                    # Retrieve the new properties. Provide sensible defaults if they aren’t set.
+                if hasattr(scene, "counters") and 0 <= idx < len(scene.counters):
+                    counter = scene.counters[idx]
                     prefix = it.get("custom_text_prefix", "")
                     suffix = it.get("custom_text_suffix", "")
                     include_counter = it.get("custom_text_include_counter", True)
                     if include_counter:
-                        it["text"] = f"{prefix}{objv.current_value}{suffix}"
+                        it["text"] = f"{prefix}{counter.current_value}{suffix}"
                     else:
                         it["text"] = f"{prefix}{suffix}"
 
@@ -343,15 +340,15 @@ class EXPLORE_OT_PreviewCustomText(bpy.types.Operator):
                 execute_custom_ui_text_reaction(reaction)
                 custom_text_count += 1
 
-        # For previewing objective counters and timer displays, override the text field with dummy text.
+        # For previewing counter/timer displays, override the text field with dummy text.
         for item in _reaction_texts:
             subtype = item.get("subtype", "STATIC")
-            if subtype == "OBJECTIVE":
-                prefix = item.get("custom_text_prefix", "Objective: ")
-                suffix = item.get("custom_text_suffix", " pts")
+            if subtype == "COUNTER_DISPLAY":
+                prefix = item.get("custom_text_prefix", "")
+                suffix = item.get("custom_text_suffix", "")
                 include_counter = item.get("custom_text_include_counter", True)
                 item["text"] = f"{prefix}42{suffix}" if include_counter else f"{prefix}{suffix}"
-            elif subtype == "OBJECTIVE_TIMER_DISPLAY":
+            elif subtype == "TIMER_DISPLAY":
                 item["text"] = "00:00s"
 
         # Ensure the draw handler is registered so that text is drawn.

@@ -282,7 +282,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_animations", text="Animation Logs")
             col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
             col.prop(scene, "dev_debug_anim_worker", text="Worker Logs")
-            col.prop(scene, "dev_debug_runtime_ik", text="IK Logs")
+            col.prop(scene, "dev_debug_ik", text="IK Logs")
             col.prop(scene, "dev_debug_ik_solve", text="IK Solve Details")
             col.prop(scene, "dev_debug_rig_state", text="Rig State (verbose)")
             col.prop(scene, "dev_debug_pose_blend", text="Pose Blend Logs")
@@ -324,16 +324,55 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             row.operator("anim2.probe_rig", text="Probe Rig", icon='BONE_DATA')
             row.operator("anim2.dump_orientations", text="Dump Axes", icon='ORIENTATION_LOCAL')
 
-            # ─── IK State Test ──────────────────────────────────────────────
+            # ─── IK System ──────────────────────────────────────────────────────
             ik_box = sub_box.box()
-            ik_box.label(text="IK State Analysis", icon='CON_KINEMATIC')
+            ik_box.label(text="IK System", icon='CON_KINEMATIC')
+
             col = ik_box.column(align=True)
-            col.prop(scene, "ik_test_chain", text="Chain")
-            col.prop(scene, "ik_test_target", text="Target")
+            col.prop(scene, "ik_region", text="Region")
+
+            ik_region = getattr(scene, 'ik_region', 'FULL_BODY')
+
+            # Show hips drop for regions that include hips
+            if ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS'):
+                col.prop(scene, "ik_hips_drop", text="Hips Drop")
+
+            col.separator(factor=0.5)
+
+            # Show relevant targets based on region
+            targets_box = col.box()
+            targets_box.label(text="Targets:", icon='EMPTY_AXIS')
+            tcol = targets_box.column(align=True)
+
+            # Determine which targets to show
+            show_left_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'LEFT_LEG')
+            show_right_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'RIGHT_LEG')
+            show_left_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'LEFT_ARM')
+            show_right_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'RIGHT_ARM')
+            show_look_at = ik_region in ('FULL_BODY', 'UPPER_BODY', 'HEAD')
+
+            if show_left_foot:
+                tcol.prop(scene, "ik_target_left_foot", text="L Foot")
+            if show_right_foot:
+                tcol.prop(scene, "ik_target_right_foot", text="R Foot")
+            if show_left_hand:
+                tcol.prop(scene, "ik_target_left_hand", text="L Hand")
+            if show_right_hand:
+                tcol.prop(scene, "ik_target_right_hand", text="R Hand")
+            if show_look_at:
+                tcol.prop(scene, "ik_target_look_at", text="Look At")
+
+            col.separator(factor=0.5)
+
+            # Action buttons
             row = col.row(align=True)
             row.scale_y = 1.2
-            row.operator("anim2.test_ik_state", text="Analyze", icon='VIEWZOOM')
-            row.operator("anim2.apply_ik", text="Apply IK", icon='CON_KINEMATIC')
+            row.operator("anim2.test_full_body_ik", text="Solve IK", icon='CON_KINEMATIC')
+            row.operator("anim2.crouch_test", text="Crouch", icon='TRIA_DOWN')
+
+            row = col.row(align=True)
+            row.operator("anim2.reset_pose", text="Reset Pose", icon='LOOP_BACK')
+
             col.separator(factor=0.5)
             col.prop(scene, "dev_debug_ik_visual", text="GPU Visualization")
 

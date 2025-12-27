@@ -29,6 +29,9 @@ _pending_tracker_job = None
 # Filtered object names - only objects referenced by trackers (Phase 1.1 optimization)
 _tracked_object_names: set = set()
 
+# Cached object references - avoids O(n) bpy.data.objects.get() lookups each frame
+_tracked_object_refs: dict = {}  # {name: bpy.types.Object}
+
 # Generation counter - increments on reset to invalidate stale results
 # Results with old generation are discarded to prevent false triggers after reset
 _tracker_generation: int = 0
@@ -99,12 +102,11 @@ def _serialize_node(node, visited: set) -> dict:
     # ─── Contact Tracker ───
     elif node_type == 'ContactTrackerNodeType':
         result['object'] = _resolve_object_name(node, "Object", "contact_object")
-        if node.use_collection and node.contact_collection:
-            result['targets'] = [o.name for o in node.contact_collection.objects]
-        else:
-            # Check if Target socket is connected to ObjectDataNode
-            target_name = _resolve_object_name(node, "Target", "contact_target")
-            result['targets'] = [target_name] if target_name else []
+        result['target'] = _resolve_object_name(node, "Target", "contact_target")
+
+        # Threshold with precomputed squared value for fast distance checks
+        threshold = getattr(node, 'contact_threshold', 0.5)
+        result['threshold_sq'] = threshold * threshold
         result['eval_hz'] = node.eval_hz
 
     # ─── Input Tracker ───
@@ -177,17 +179,23 @@ def serialize_tracker_graph(scene) -> list:
 
             inter_idx = getattr(node, 'interaction_index', -1)
             if inter_idx < 0:
+                log_game("TRACKERS", f"SERIALIZE_SKIP {node.name} no interaction_index")
                 continue
 
             # Check for connected condition
             condition_socket = node.inputs.get("Condition")
             if not condition_socket or not condition_socket.is_linked:
+                log_game("TRACKERS", f"SERIALIZE_SKIP {node.name} no Condition connected")
                 continue
 
             # Serialize the condition tree
             src_node = condition_socket.links[0].from_node
             visited = set()
-            condition_tree = _serialize_node(src_node, visited)
+            try:
+                condition_tree = _serialize_node(src_node, visited)
+            except Exception as e:
+                log_game("TRACKERS", f"SERIALIZE_ERROR {node.name}: {e}")
+                condition_tree = None
 
             if condition_tree:
                 trackers.append({
@@ -196,6 +204,10 @@ def serialize_tracker_graph(scene) -> list:
                     'tree_name': ng.name,
                     'condition_tree': condition_tree,
                 })
+                # DEBUG: Log what we serialized
+                log_game("TRACKERS", f"SERIALIZE_OK {node.name} obj={condition_tree.get('object','')} tgt={condition_tree.get('targets',[])}")
+            else:
+                log_game("TRACKERS", f"SERIALIZE_FAIL {node.name} condition_tree=None")
 
     log_game("TRACKERS", f"SERIALIZED {len(trackers)} tracker chains for worker")
     return trackers
@@ -224,14 +236,14 @@ def _extract_from_tree(node: dict):
     if obj_b:
         _tracked_object_names.add(obj_b)
 
-    # Contact tracker - has object and targets list
+    # Contact tracker - has object and target
     contact_obj = node.get("object")
     if contact_obj:
         _tracked_object_names.add(contact_obj)
 
-    for target in node.get("targets", []):
-        if target:
-            _tracked_object_names.add(target)
+    contact_target = node.get("target")
+    if contact_target:
+        _tracked_object_names.add(contact_target)
 
     # Recurse into logic gate inputs
     for child in node.get("inputs", []):
@@ -243,19 +255,30 @@ def _extract_referenced_objects(tracker_data: list) -> int:
     Extract all object names referenced by tracker nodes.
     Called after serialize_tracker_graph() to build the filter set.
 
+    Also caches object references for O(1) lookup during gameplay
+    (avoids O(n) bpy.data.objects.get() calls each frame).
+
     Returns the number of unique objects found.
     """
-    global _tracked_object_names
+    global _tracked_object_names, _tracked_object_refs
     _tracked_object_names.clear()
+    _tracked_object_refs.clear()
 
     for tracker in tracker_data:
         tree = tracker.get("condition_tree")
         if tree:
             _extract_from_tree(tree)
 
+    # Cache object references for O(1) lookup during gameplay
+    for name in _tracked_object_names:
+        obj = bpy.data.objects.get(name)
+        if obj:
+            _tracked_object_refs[name] = obj
+
     count = len(_tracked_object_names)
+    cached = len(_tracked_object_refs)
     if count > 0:
-        log_game("TRACKERS", f"FILTER_EXTRACTED {count} tracked objects: {sorted(_tracked_object_names)}")
+        log_game("TRACKERS", f"FILTER_EXTRACTED {count} tracked objects, {cached} cached refs: {sorted(_tracked_object_names)}")
     else:
         log_game("TRACKERS", "FILTER_EXTRACTED 0 objects (no position-based trackers)")
 
@@ -287,10 +310,11 @@ def collect_world_state(context) -> dict:
         positions[char.name] = (loc.x, loc.y, loc.z)
 
     # Only collect positions for objects referenced by trackers
+    # Uses cached object refs for O(1) lookup instead of O(n) bpy.data.objects.get()
     for name in _tracked_object_names:
         if name in positions:
             continue  # Already added (e.g., character)
-        obj = bpy.data.objects.get(name)
+        obj = _tracked_object_refs.get(name)
         if obj:
             loc = obj.matrix_world.translation
             positions[name] = (loc.x, loc.y, loc.z)
@@ -312,15 +336,11 @@ def collect_world_state(context) -> dict:
     # Game time
     game_time = get_game_time()
 
-    # Contacts (from physics system if available)
-    contacts = getattr(scn, 'exp_physics_contacts', {})
-
     return {
         'positions': positions,
         'char_state': char_state,
         'inputs': inputs,
         'game_time': game_time,
-        'contacts': dict(contacts) if contacts else {},
     }
 
 
@@ -503,10 +523,11 @@ def process_tracker_result(result) -> bool:
 
 def reset_tracker_state():
     """Reset tracker state cache. Call on game start/reset."""
-    global _current_operator, _tracked_object_names
+    global _current_operator, _tracked_object_names, _tracked_object_refs
     _current_operator = None
     _tracked_object_names.clear()
-    log_game("TRACKERS", "STATE_RESET (filter cleared)")
+    _tracked_object_refs.clear()
+    log_game("TRACKERS", "STATE_RESET (filter and refs cleared)")
 
 
 def reset_worker_trackers(modal, context) -> bool:

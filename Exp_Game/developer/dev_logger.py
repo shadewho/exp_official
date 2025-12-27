@@ -81,9 +81,10 @@ _CATEGORY_MAP = {
     'PROJECTILE': 'projectiles',
     'HITSCAN': 'hitscans',
 
-    # IK System
-    'IK': 'runtime_ik',
-    'IK-SOLVE': 'ik_solve',
+    # Unified IK System (formerly separate full-body and runtime IK)
+    'IK': 'ik',                      # Main IK logs (unified system)
+    'IK-SOLVE': 'ik_solve',          # Detailed solver math (step-by-step)
+    'FULL-BODY-IK': 'ik',            # Legacy alias → main IK logs
 
     # Rig State Logging (bone transforms, violations, collisions)
     'RIG': 'rig_state',

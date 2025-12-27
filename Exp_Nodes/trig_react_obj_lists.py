@@ -1,5 +1,5 @@
 # Exploratory/Exp_Nodes/trig_react_obj_lists.py
-# Read-only visualization of interactions, reactions, and objectives.
+# Read-only visualization of interactions, reactions, counters, and timers.
 # Includes orphan/stale detection for debugging.
 
 import bpy
@@ -24,7 +24,8 @@ def _collect_referenced_indices():
     referenced = {
         "interactions": set(),
         "reactions": set(),
-        "objectives": set(),
+        "counters": set(),
+        "timers": set(),
         "action_keys": set(),
     }
 
@@ -45,11 +46,17 @@ def _collect_referenced_indices():
                 if idx >= 0:
                     referenced["reactions"].add(idx)
 
-            # Objective nodes reference objectives
-            if getattr(node, "bl_idname", "") == "ObjectiveNodeType":
-                idx = getattr(node, "objective_index", -1)
+            # Counter nodes reference counters
+            if getattr(node, "bl_idname", "") == "CounterNodeType":
+                idx = getattr(node, "counter_index", -1)
                 if idx >= 0:
-                    referenced["objectives"].add(idx)
+                    referenced["counters"].add(idx)
+
+            # Timer nodes reference timers
+            if getattr(node, "bl_idname", "") == "TimerNodeType":
+                idx = getattr(node, "timer_index", -1)
+                if idx >= 0:
+                    referenced["timers"].add(idx)
 
             # Action key nodes reference action keys
             if getattr(node, "bl_idname", "") == "CreateActionKeyNodeType":
@@ -85,7 +92,7 @@ def _find_invalid_reaction_links(scn):
 # ─────────────────────────────────────────────────────────
 
 class EXPL_OT_delete_orphaned(bpy.types.Operator):
-    """Delete all orphaned interactions, reactions, and objectives that are not referenced by any node"""
+    """Delete all orphaned interactions, reactions, counters, and timers that are not referenced by any node"""
     bl_idname = "exploratory.delete_orphaned"
     bl_label = "Delete Orphaned"
     bl_options = {'REGISTER', 'UNDO'}
@@ -98,7 +105,7 @@ class EXPL_OT_delete_orphaned(bpy.types.Operator):
         scn = context.scene
         referenced = _collect_referenced_indices()
 
-        deleted_counts = {"interactions": 0, "reactions": 0, "objectives": 0}
+        deleted_counts = {"interactions": 0, "reactions": 0, "counters": 0, "timers": 0}
 
         # Delete orphaned reactions (reverse order to preserve indices)
         reactions = getattr(scn, "reactions", None)
@@ -118,14 +125,23 @@ class EXPL_OT_delete_orphaned(bpy.types.Operator):
                 interactions.remove(idx)
                 deleted_counts["interactions"] += 1
 
-        # Delete orphaned objectives (reverse order)
-        objectives = getattr(scn, "objectives", None)
-        if objectives:
-            ref_obj = referenced["objectives"]
-            to_delete = [i for i in range(len(objectives)) if i not in ref_obj]
+        # Delete orphaned counters (reverse order)
+        counters = getattr(scn, "counters", None)
+        if counters:
+            ref_cnt = referenced["counters"]
+            to_delete = [i for i in range(len(counters)) if i not in ref_cnt]
             for idx in reversed(to_delete):
-                objectives.remove(idx)
-                deleted_counts["objectives"] += 1
+                counters.remove(idx)
+                deleted_counts["counters"] += 1
+
+        # Delete orphaned timers (reverse order)
+        timers = getattr(scn, "timers", None)
+        if timers:
+            ref_tmr = referenced["timers"]
+            to_delete = [i for i in range(len(timers)) if i not in ref_tmr]
+            for idx in reversed(to_delete):
+                timers.remove(idx)
+                deleted_counts["timers"] += 1
 
         total = sum(deleted_counts.values())
         if total > 0:
@@ -134,8 +150,10 @@ class EXPL_OT_delete_orphaned(bpy.types.Operator):
                 parts.append(f"{deleted_counts['interactions']} interactions")
             if deleted_counts["reactions"]:
                 parts.append(f"{deleted_counts['reactions']} reactions")
-            if deleted_counts["objectives"]:
-                parts.append(f"{deleted_counts['objectives']} objectives")
+            if deleted_counts["counters"]:
+                parts.append(f"{deleted_counts['counters']} counters")
+            if deleted_counts["timers"]:
+                parts.append(f"{deleted_counts['timers']} timers")
             self.report({'INFO'}, f"Deleted {', '.join(parts)}")
         else:
             self.report({'INFO'}, "No orphaned items found")
@@ -272,12 +290,12 @@ class VIEW3D_PT_Exploratory_Reactions(bpy.types.Panel):
 
 
 # ─────────────────────────────────────────────────────────
-# Objectives Panel (Read-Only)
+# Counters Panel (Read-Only)
 # ─────────────────────────────────────────────────────────
 
-class VIEW3D_PT_Objectives(bpy.types.Panel):
-    bl_label = "Objectives"
-    bl_idname = "VIEW3D_PT_objectives"
+class VIEW3D_PT_Counters(bpy.types.Panel):
+    bl_label = "Counters"
+    bl_idname = "VIEW3D_PT_counters"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = "Exploratory"
@@ -291,39 +309,80 @@ class VIEW3D_PT_Objectives(bpy.types.Panel):
         layout = self.layout
         scn = context.scene
 
-        objectives = getattr(scn, "objectives", [])
+        counters = getattr(scn, "counters", [])
         referenced = _collect_referenced_indices()
-        ref_obj = referenced["objectives"]
+        ref_cnt = referenced["counters"]
 
-        if not objectives:
-            layout.label(text="No objectives defined.", icon='INFO')
+        if not counters:
+            layout.label(text="No counters defined.", icon='INFO')
             return
 
         # Count orphans
-        orphan_count = sum(1 for i in range(len(objectives)) if i not in ref_obj)
+        orphan_count = sum(1 for i in range(len(counters)) if i not in ref_cnt)
 
+        header = f"{len(counters)} counter(s)"
         if orphan_count:
-            layout.label(text=f"{orphan_count} orphaned objective(s)", icon='ERROR')
+            header += f" ({orphan_count} orphaned)"
+        layout.label(text=header)
 
-        for i, obj in enumerate(objectives):
-            is_orphan = i not in ref_obj
+        for i, cnt in enumerate(counters):
+            is_orphan = i not in ref_cnt
 
             row = layout.row()
             if is_orphan:
                 row.alert = True
 
-            # Determine type based on timer_mode
-            timer_mode = getattr(obj, "timer_mode", "NONE")
-            if timer_mode != "NONE":
-                obj_type = "Timer"
-                base_icon = 'TIME'
-            else:
-                obj_type = "Counter"
-                base_icon = 'LINENUMBERS_ON'
+            icon = 'ORPHAN_DATA' if is_orphan else 'LINENUMBERS_ON'
+            row.label(text=f"{i}: {cnt.name}", icon=icon)
+            row.label(text=f"(default: {cnt.default_value})")
 
-            icon = 'ORPHAN_DATA' if is_orphan else base_icon
-            row.label(text=f"{i}: {obj.name}", icon=icon)
-            row.label(text=f"({obj_type})")
+
+# ─────────────────────────────────────────────────────────
+# Timers Panel (Read-Only)
+# ─────────────────────────────────────────────────────────
+
+class VIEW3D_PT_Timers(bpy.types.Panel):
+    bl_label = "Timers"
+    bl_idname = "VIEW3D_PT_timers"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _in_exploratory_editor(context)
+
+    def draw(self, context):
+        layout = self.layout
+        scn = context.scene
+
+        timers = getattr(scn, "timers", [])
+        referenced = _collect_referenced_indices()
+        ref_tmr = referenced["timers"]
+
+        if not timers:
+            layout.label(text="No timers defined.", icon='INFO')
+            return
+
+        # Count orphans
+        orphan_count = sum(1 for i in range(len(timers)) if i not in ref_tmr)
+
+        header = f"{len(timers)} timer(s)"
+        if orphan_count:
+            header += f" ({orphan_count} orphaned)"
+        layout.label(text=header)
+
+        for i, tmr in enumerate(timers):
+            is_orphan = i not in ref_tmr
+
+            row = layout.row()
+            if is_orphan:
+                row.alert = True
+
+            icon = 'ORPHAN_DATA' if is_orphan else 'TIME'
+            row.label(text=f"{i}: {tmr.name}", icon=icon)
+            row.label(text=f"({tmr.timer_mode})")
 
 
 # ─────────────────────────────────────────────────────────

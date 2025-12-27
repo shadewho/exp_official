@@ -12,7 +12,7 @@ class VIEW3D_PT_ExploreByCode(bpy.types.Panel):
     bl_idname = "VIEW3D_PT_explore_by_code"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Exploratory"
+    bl_category = "Explore and Search"
 
     @classmethod
     def poll(cls, context):

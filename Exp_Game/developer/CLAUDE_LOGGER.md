@@ -107,9 +107,21 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | **Game Systems** |
 | `INTERACTIONS` | `interactions` | Interaction and reaction system |
 | `AUDIO` | `audio` | Audio playback and state |
+| `TRACKERS` | `trackers` | Tracker evaluation system |
+| **Animation System** |
 | `ANIMATIONS` | `animations` | Animation batch jobs, blending, bone updates |
-| `ANIM-CACHE` | `anim_cache` | Animation caching in workers, cache timing |
-| `ANIM-WORKER` | `anim_worker` | Animation worker designation, job routing, worker compute times |
+| `ANIM-CACHE` | `anim_cache` | Animation caching in workers |
+| `ANIM-WORKER` | `anim_worker` | Animation worker job routing |
+| `TEST_MODAL` | `animations` | Animation 2.0 test modal playback |
+| **Full-Body IK System** |
+| `FULL-BODY-IK` | `full_body_ik` | Full-body IK solver (Root/Hips/Spine/Limbs coordination) |
+| `IK` | `runtime_ik` | Runtime IK job submission and results |
+| `IK-SOLVE` | `ik_solve` | Detailed IK solver math (angles, targets, errors) |
+| `RIG` | `rig_state` | Rig state logging (bone transforms, joint limits) |
+| **Pose System** (Development/Testing) |
+| `POSES` | `poses` | Pose library capture/apply |
+| `POSE-CACHE` | `poses` | Pose cache transfer to workers |
+| `POSE-BLEND` | `pose_blend` | Pose-to-pose blending diagnostics |
 
 ---
 
@@ -290,5 +302,5 @@ Potential enhancements:
 
 ---
 
-**Last Updated**: 2025-12-11
-**Status**: Fully operational, unified physics (static + dynamic identical)
+**Last Updated**: 2025-12-27
+**Status**: Fully operational. Full-body IK logging added.

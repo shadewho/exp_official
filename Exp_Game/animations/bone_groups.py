@@ -7,7 +7,7 @@ Defines body part groupings for:
 - IK masking (apply IK to specific chains)
 - Partial body animations (play animation on subset of bones)
 
-Based on rig.md - 53 bones total.
+Based on rig.md - 54 bones total (including Root).
 """
 
 import numpy as np
@@ -63,22 +63,23 @@ BONE_INDEX: Dict[str, int] = {
     "RightHandRing1": 40,
     "RightHandRing2": 41,
     "RightHandRing3": 42,
-    "RightHandThumb1": 43,
-    "RightHandThumb2": 44,
-    "RightHandThumb3": 45,
-    "RightShin": 46,
-    "RightShoulder": 47,
-    "RightThigh": 48,
-    "RightToeBase": 49,
-    "Spine": 50,
-    "Spine1": 51,
-    "Spine2": 52,
+    "Root": 43,             # World anchor - IK targets relative to this
+    "RightHandThumb1": 44,
+    "RightHandThumb2": 45,
+    "RightHandThumb3": 46,
+    "RightShin": 47,
+    "RightShoulder": 48,
+    "RightThigh": 49,
+    "RightToeBase": 50,
+    "Spine": 51,
+    "Spine1": 52,
+    "Spine2": 53,
 }
 
 # Reverse lookup
 INDEX_TO_BONE: Dict[int, str] = {v: k for k, v in BONE_INDEX.items()}
 
-TOTAL_BONES = 53
+TOTAL_BONES = 54
 
 
 # =============================================================================
@@ -174,8 +175,10 @@ BONE_GROUPS: Dict[str, List[str]] = {
     "FOOT_L": ["LeftFoot", "LeftToeBase"],
     "FOOT_R": ["RightFoot", "RightToeBase"],
 
-    # Root only
-    "ROOT": ["Hips"],
+    # Root and Hips
+    "ROOT": ["Root"],              # World anchor bone
+    "HIPS": ["Hips"],              # Pelvis control bone
+    "ROOT_HIPS": ["Root", "Hips"], # Both for full-body IK
 }
 
 

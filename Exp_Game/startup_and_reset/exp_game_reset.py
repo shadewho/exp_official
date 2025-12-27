@@ -2,7 +2,7 @@
 
 import bpy
 from ..props_and_utils.exp_time import init_time
-from ..systems.exp_objectives import reset_all_objectives
+from ..systems.exp_counters_timers import reset_all_counters, reset_all_timers
 from ..reactions.exp_reactions import reset_all_tasks, _assign_safely
 from ..interactions.exp_interactions import reset_all_interactions
 from ..interactions.exp_tracker_eval import reset_worker_trackers
@@ -13,6 +13,7 @@ from ..reactions.exp_custom_ui import clear_all_text
 from ..systems.exp_performance import rearm_performance_after_reset
 from ..reactions.exp_crosshairs import disable_crosshairs
 from ..reactions.exp_tracking import clear as clear_tracking_tasks
+from ..reactions.exp_projectiles import clear as clear_projectiles
 
 def capture_scene_state(self, context):
     """
@@ -228,12 +229,14 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         from ..props_and_utils.exp_time import get_game_time
         modal_op._suppress_platform_delta_until = get_game_time() + 1e-6
 
-        # ─── 2) Reset interactions, tasks, objectives, and properties ─
+        # ─── 2) Reset interactions, tasks, counters, timers, and properties ─
         #    Now that game_time == 0.0, last_trigger_time will be set to 0.0.
         reset_all_interactions(context.scene)
         reset_all_tasks()
         clear_tracking_tasks()
-        reset_all_objectives(context.scene)
+        clear_projectiles()  # Delete spawned projectile/hitscan visual clones
+        reset_all_counters(context.scene)
+        reset_all_timers(context.scene)
         reset_property_reactions(context.scene)
 
         # ─── 2.5) Reset worker-side tracker state ─────────────────────────
