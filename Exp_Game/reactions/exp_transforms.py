@@ -13,6 +13,7 @@ import bpy
 from mathutils import Vector, Euler, Matrix
 from ..props_and_utils.exp_time import get_game_time
 from ..developer.dev_logger import log_game
+from .exp_bindings import resolve_vector, resolve_euler, resolve_float
 
 # ------------------------------
 # TransformTask + Manager
@@ -343,6 +344,9 @@ def execute_transform_reaction(reaction):
     Applies a transform reaction to either:
       - the scene's target_armature (if use_character=True), or
       - the specified transform_object.
+
+    Supports binding resolution for: transform_location, transform_rotation,
+    transform_scale, transform_duration (connected data nodes override properties).
     """
     scene = bpy.context.scene
 
@@ -359,8 +363,8 @@ def execute_transform_reaction(reaction):
     # 3) Ensure Euler XYZ rotation mode
     target_obj.rotation_mode = 'XYZ'
 
-    # 4) Clamp duration
-    duration = reaction.transform_duration
+    # 4) Resolve duration from binding or property
+    duration = resolve_float(reaction, "transform_duration", reaction.transform_duration)
     if duration < 0.0:
         duration = 0.0
 
@@ -413,10 +417,12 @@ def execute_transform_reaction(reaction):
 def apply_offset_transform(reaction, target_obj, duration):
     """
     Global offset around the object's current origin, preserving spin.
+    Uses binding resolution for location, rotation, scale.
     """
-    loc_off = Vector(reaction.transform_location)
-    rot_off = Euler(reaction.transform_rotation, 'XYZ')
-    scl_off = Vector(reaction.transform_scale)
+    # Resolve from bindings or fall back to reaction properties
+    loc_off = resolve_vector(reaction, "transform_location", reaction.transform_location)
+    rot_off = resolve_euler(reaction, "transform_rotation", reaction.transform_rotation)
+    scl_off = resolve_vector(reaction, "transform_scale", reaction.transform_scale)
 
     start_loc = target_obj.location.copy()
     start_rot = target_obj.rotation_euler.copy()
@@ -494,10 +500,11 @@ def apply_to_bone_transform(reaction, target_obj, duration):
 def apply_to_location_transform(reaction, target_obj, duration):
     """
     Interpret transform values as absolute world transforms.
+    Uses binding resolution for location, rotation, scale.
     """
-    end_loc = Vector(reaction.transform_location)
-    end_rot = Euler(reaction.transform_rotation, 'XYZ')
-    end_scl = Vector(reaction.transform_scale)
+    end_loc = resolve_vector(reaction, "transform_location", reaction.transform_location)
+    end_rot = resolve_euler(reaction, "transform_rotation", reaction.transform_rotation)
+    end_scl = resolve_vector(reaction, "transform_scale", reaction.transform_scale)
 
     schedule_transform(target_obj, end_loc, end_rot, end_scl, duration)
 
@@ -519,11 +526,12 @@ def apply_local_offset_transform(reaction, target_obj, duration):
       - Rotation: about the object's CURRENT LOCAL axes.
       - Translation: along local axes.
       - Scale: component-wise in local space.
+    Uses binding resolution for location, rotation, scale.
     """
     from math import tau
-    loc_off = Vector(reaction.transform_location)
-    rot_off = Euler(reaction.transform_rotation, 'XYZ')
-    scl_off = Vector(reaction.transform_scale)
+    loc_off = resolve_vector(reaction, "transform_location", reaction.transform_location)
+    rot_off = resolve_euler(reaction, "transform_rotation", reaction.transform_rotation)
+    scl_off = resolve_vector(reaction, "transform_scale", reaction.transform_scale)
 
     start_loc = target_obj.location.copy()
     start_rot_eul = target_obj.rotation_euler.copy()

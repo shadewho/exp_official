@@ -11,14 +11,16 @@ import time
 _cached_trackers = []
 _tracker_states = {}  # {interaction_index: last_bool_value}
 _tracker_last_eval = {}  # {interaction_index: last_eval_time}
+_tracker_primed = set()  # Trackers that have been evaluated at least once (prevents false trigger on first frame)
 
 
 def reset_tracker_state():
     """Reset all tracker state. Called on game reset."""
-    global _cached_trackers, _tracker_states, _tracker_last_eval
+    global _cached_trackers, _tracker_states, _tracker_last_eval, _tracker_primed
     _cached_trackers = []
     _tracker_states.clear()
     _tracker_last_eval.clear()
+    _tracker_primed.clear()
 
 
 def _compare(value: float, op: str, threshold: float) -> bool:
@@ -152,12 +154,13 @@ def handle_cache_trackers(job_data: dict) -> dict:
             "logs": [(category, message), ...],
         }
     """
-    global _cached_trackers, _tracker_states, _tracker_last_eval
+    global _cached_trackers, _tracker_states, _tracker_last_eval, _tracker_primed
 
     trackers = job_data.get("trackers", [])
     _cached_trackers = list(trackers)
     _tracker_states.clear()
     _tracker_last_eval.clear()
+    _tracker_primed.clear()  # Reset priming flags
 
     logs = [("TRACKERS", f"WORKER_CACHED {len(_cached_trackers)} tracker chains")]
 
@@ -196,13 +199,14 @@ def handle_evaluate_trackers(job_data: dict) -> dict:
             "logs": [(category, message), ...],
         }
     """
-    global _cached_trackers, _tracker_states, _tracker_last_eval
+    global _cached_trackers, _tracker_states, _tracker_last_eval, _tracker_primed
 
     calc_start = time.perf_counter()
     logs = []
 
     world_state = job_data.get("world_state", {})
     game_time = job_data.get("game_time", 0.0)
+    generation = job_data.get("generation", 0)  # Echo back for stale result detection
 
     if not _cached_trackers:
         return {
@@ -212,6 +216,7 @@ def handle_evaluate_trackers(job_data: dict) -> dict:
             "trackers_evaluated": 0,
             "calc_time_us": 0,
             "logs": [],
+            "generation": generation,
         }
 
     signal_updates = {}
@@ -239,10 +244,20 @@ def handle_evaluate_trackers(job_data: dict) -> dict:
 
         # Evaluate condition tree
         new_value = _eval_condition_tree(tree, world_state)
-        old_value = _tracker_states.get(inter_idx, False)
         evaluated += 1
 
-        # Track state change
+        # PRIMING: First evaluation stores initial state WITHOUT firing
+        # This prevents false triggers when condition starts as True
+        if inter_idx not in _tracker_primed:
+            _tracker_primed.add(inter_idx)
+            _tracker_states[inter_idx] = new_value
+            state_str = "TRUE" if new_value else "FALSE"
+            logs.append(("TRACKERS", f"PRIME inter={inter_idx} initial={state_str}"))
+            continue  # Don't fire on first evaluation
+
+        old_value = _tracker_states.get(inter_idx, False)
+
+        # Track state change (edge detection)
         if new_value != old_value:
             _tracker_states[inter_idx] = new_value
             signal_updates[str(inter_idx)] = new_value
@@ -265,4 +280,5 @@ def handle_evaluate_trackers(job_data: dict) -> dict:
         "trackers_evaluated": evaluated,
         "calc_time_us": calc_time_us,
         "logs": logs,
+        "generation": generation,
     }

@@ -1032,20 +1032,77 @@ class ReactionTransformNode(_ReactionNodeKind):
         # Keep base Reaction Input/Output
         super().init(context)
 
-        # NEW: optional Float Vector inputs.
-        # These do nothing unless linked. Each socket carries a metadata key
-        # that tells the generic sync pass which ReactionDefinition field to set.
-        s_loc = self.inputs.new("FloatVectorInputSocketType", "Location Vec")
-        try: s_loc["exp_vec_target"] = "transform_location"
-        except Exception: pass
+        # Vector inputs with inline property drawing (unified socket type)
+        # When not connected, draws the reaction property inline
+        s_loc = self.inputs.new("ExpVectorSocketType", "Location")
+        s_loc.reaction_prop = "transform_location"
 
-        s_rot = self.inputs.new("FloatVectorInputSocketType", "Rotation Vec")
-        try: s_rot["exp_vec_target"] = "transform_rotation"
-        except Exception: pass
+        s_rot = self.inputs.new("ExpVectorSocketType", "Rotation")
+        s_rot.reaction_prop = "transform_rotation"
 
-        s_scl = self.inputs.new("FloatVectorInputSocketType", "Scale Vec")
-        try: s_scl["exp_vec_target"] = "transform_scale"
-        except Exception: pass
+        s_scl = self.inputs.new("ExpVectorSocketType", "Scale")
+        s_scl.reaction_prop = "transform_scale"
+
+        # Duration as float input
+        s_dur = self.inputs.new("ExpFloatSocketType", "Duration")
+        s_dur.reaction_prop = "transform_duration"
+
+    def draw_buttons(self, context, layout):
+        """Custom draw that doesn't duplicate socket-drawn fields."""
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(scn.reactions)):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        # Name
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+
+        # Use Character toggle
+        header.prop(r, "use_character", text="Use Character as Target")
+        if getattr(r, "use_character", False):
+            char = getattr(bpy.context.scene, "target_armature", None)
+            header.label(text=f"Target: {char.name if char else '—'}", icon='ARMATURE_DATA')
+        else:
+            header.prop_search(r, "transform_object", bpy.context.scene, "objects", text="Target Object")
+
+        # Mode
+        header.prop(r, "transform_mode", text="Mode")
+        mode = getattr(r, "transform_mode", "OFFSET")
+
+        # TO_OBJECT mode specific fields
+        if mode == "TO_OBJECT":
+            row = header.row(align=True)
+            row.prop(r, "transform_to_use_character", text="Use Character as 'To Object'")
+            if getattr(r, "transform_to_use_character", False):
+                c = getattr(bpy.context.scene, "target_armature", None)
+                header.label(text=f"To Object: {c.name if c else '—'}", icon='ARMATURE_DATA')
+            else:
+                header.prop_search(r, "transform_to_object", bpy.context.scene, "objects", text="To Object")
+
+            col = header.column(align=True)
+            col.label(text="Copy Channels:")
+            col.prop(r, "transform_use_location", text="Location")
+            col.prop(r, "transform_use_rotation", text="Rotation")
+            col.prop(r, "transform_use_scale", text="Scale")
+
+        # TO_BONE mode specific fields
+        elif mode == "TO_BONE":
+            header.prop(r, "transform_to_bone_use_character", text="Use Character Armature")
+            if not getattr(r, "transform_to_bone_use_character", True):
+                header.prop_search(r, "transform_to_armature", bpy.context.scene, "objects", text="Armature")
+            header.prop(r, "transform_bone_name", text="Bone (name)")
+
+            col = header.column(align=True)
+            col.label(text="Copy Channels:")
+            col.prop(r, "transform_use_location", text="Location")
+            col.prop(r, "transform_use_rotation", text="Rotation")
+            col.prop(r, "transform_use_scale", text="Scale")
+
+        # NOTE: Location, Rotation, Scale, Duration are drawn by sockets (inline)
+        # Don't draw them here to avoid duplication
 
 class ReactionCustomTextNode(_ReactionNodeKind):
     bl_idname = "ReactionCustomTextNodeType"

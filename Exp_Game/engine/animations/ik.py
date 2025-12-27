@@ -554,24 +554,36 @@ def compute_elbow_pole_position(
         # Reaching straight up or down - elbow goes backward
         away = char_back
 
-    # Bias the away direction toward character's back
-    # This makes elbows prefer to bend backward naturally
-    back_bias = 0.4
-    pole_dir = normalize(away + char_back * back_bias + char_down * 0.2)
+    # Bias the away direction toward character's back AND outward from body
+    # This makes elbows prefer to bend backward naturally and prevents
+    # arm-through-body issues when reaching across
+    back_bias = 0.6  # Strong back bias to keep elbows behind
+    down_bias = 0.2
 
-    # Ensure pole is on correct side for each arm (prevents elbow flip)
+    # Compute side direction - elbows should bend OUTWARD from body
     char_right = np.cross(char_forward, char_up)
+    char_right = normalize(char_right)
+
+    # Add outward bias based on which arm
     if side == "L":
-        # Left elbow should be on left side or back
-        if np.dot(pole_dir, char_right) > 0.3:
-            # Pole is too far right, flip it
-            pole_dir = pole_dir - char_right * np.dot(pole_dir, char_right) * 1.5
+        side_bias = -char_right * 0.4  # Left elbow goes leftward
+    else:
+        side_bias = char_right * 0.4   # Right elbow goes rightward
+
+    pole_dir = normalize(away + char_back * back_bias + char_down * down_bias + side_bias)
+
+    # Ensure pole is on correct side for each arm (prevents elbow flip through body)
+    if side == "L":
+        # Left elbow must NOT be on right side of body
+        if np.dot(pole_dir, char_right) > 0.1:
+            # Pole is on wrong side, force it back/left
+            pole_dir = pole_dir - char_right * (np.dot(pole_dir, char_right) + 0.2)
             pole_dir = normalize(pole_dir)
     else:
-        # Right elbow should be on right side or back
-        if np.dot(pole_dir, char_right) < -0.3:
-            # Pole is too far left, flip it
-            pole_dir = pole_dir - char_right * np.dot(pole_dir, char_right) * 1.5
+        # Right elbow must NOT be on left side of body
+        if np.dot(pole_dir, char_right) < -0.1:
+            # Pole is on wrong side, force it back/right
+            pole_dir = pole_dir - char_right * (np.dot(pole_dir, char_right) - 0.2)
             pole_dir = normalize(pole_dir)
 
     # Position: midpoint of arm + offset in pole direction

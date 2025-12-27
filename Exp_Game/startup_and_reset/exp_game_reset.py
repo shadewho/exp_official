@@ -5,6 +5,8 @@ from ..props_and_utils.exp_time import init_time
 from ..systems.exp_objectives import reset_all_objectives
 from ..reactions.exp_reactions import reset_all_tasks, _assign_safely
 from ..interactions.exp_interactions import reset_all_interactions
+from ..interactions.exp_tracker_eval import reset_worker_trackers
+from ..reactions.exp_bindings import reset_bindings, serialize_reaction_bindings
 from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
@@ -233,6 +235,15 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         clear_tracking_tasks()
         reset_all_objectives(context.scene)
         reset_property_reactions(context.scene)
+
+        # ─── 2.5) Reset worker-side tracker state ─────────────────────────
+        #    Re-caches trackers which clears _tracker_primed, _tracker_states, etc.
+        reset_worker_trackers(modal_op, context)
+
+        # ─── 2.6) Reset and re-serialize reaction bindings ──────────────────
+        #    Clears cached bindings and re-serializes from node connections.
+        reset_bindings()
+        serialize_reaction_bindings(context.scene)
 
         # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
         clear_all_text()

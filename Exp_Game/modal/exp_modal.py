@@ -798,7 +798,9 @@ class ExpModal(bpy.types.Operator):
 
         # ========== AUDIO CLEANUP ==========
         from ..audio.exp_audio import reset_audio_managers
+        from ..audio.exp_globals import clear_modal_reference
         reset_audio_managers()
+        clear_modal_reference()  # Clear ACTIVE_MODAL_OP only on game END (not reset)
         # ====================================
 
         # ========== FONT CACHE CLEANUP ==========
@@ -988,7 +990,6 @@ class ExpModal(bpy.types.Operator):
         static_bvh = self.bvh_tree
         dyn_objects_map = getattr(self, "dynamic_objects_map", None)
         v_lin_map = getattr(self, "platform_linear_velocity_map", {})
-        v_ang_map = getattr(self, "platform_ang_velocity_map", {})
 
         # Resolve movement keys once for this batch
         resolved_keys = _resolved_move_keys(self)
@@ -1008,7 +1009,6 @@ class ExpModal(bpy.types.Operator):
                 static_bvh=static_bvh,
                 dynamic_map=dyn_objects_map,
                 platform_linear_velocity_map=v_lin_map,
-                platform_ang_velocity_map=v_ang_map,
                 engine=getattr(self, 'engine', None),  # Pass engine for offloading
                 context=context,  # Pass context for debug output
                 physics_frame=self._physics_frame,  # Pass frame number for correlation

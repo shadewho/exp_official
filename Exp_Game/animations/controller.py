@@ -324,7 +324,7 @@ class AnimationController:
     def get_compute_job_data(self) -> Dict[str, dict]:
         """
         Get job data for all objects with active animations.
-        Call after update_state() to get data for ANIMATION_COMPUTE jobs.
+        Call after update_state() to get data for ANIMATION_COMPUTE_BATCH jobs.
 
         Returns:
             Dict[object_name, job_data] where job_data is:
@@ -372,7 +372,7 @@ class AnimationController:
     ) -> int:
         """
         Apply transforms computed by worker.
-        Call after receiving ANIMATION_COMPUTE result.
+        Call after receiving ANIMATION_COMPUTE_BATCH result.
 
         Supports both:
         - Armatures: applies bone_transforms to pose bones

@@ -987,6 +987,7 @@ def reset_all_interactions(scene):
         inter.has_fired = False
         inter.last_trigger_time = now
         inter.is_in_zone = False
+        inter.external_signal = False  # Clear tracker-driven signal
 
         if inter.trigger_type == "OBJECTIVE_UPDATE":
             if inter.objective_index.isdigit():

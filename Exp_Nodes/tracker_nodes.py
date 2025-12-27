@@ -13,6 +13,11 @@ Node Types:
 - StateTrackerNode: Character state monitoring
 - InputTrackerNode: Input action monitoring (FORWARD, JUMP, etc)
 - LogicGateNode: AND/OR/NOT for combining bools
+
+SOCKETS:
+- Uses unified socket types from utility_nodes.py
+- ExpBoolSocketType, ExpObjectSocketType, ExpFloatSocketType
+- All sockets of same type can connect regardless of source node
 """
 
 import bpy
@@ -37,72 +42,15 @@ class _ExploratoryNodeOnly:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOCKET COLORS
+# UNIFIED SOCKET TYPE NAMES (from utility_nodes.py)
 # ══════════════════════════════════════════════════════════════════════════════
+# These are the bl_idname strings for the unified sockets.
+# Using these ensures all sockets of the same data type can connect.
 
-_COLOR_BOOL = (0.78, 0.55, 0.78, 1.0)      # Light pink (Blender standard)
-_COLOR_OBJECT = (0.90, 0.50, 0.20, 1.0)   # Orange
-_COLOR_FLOAT = (0.63, 0.63, 0.63, 1.0)    # Gray
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# INLINE SOCKETS (Draw property inline when not connected)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TrackerObjectInputSocket(bpy.types.NodeSocket):
-    """Object input that draws property inline when not connected."""
-    bl_idname = "TrackerObjectInputSocketType"
-    bl_label = "Object (Inline)"
-
-    prop_name: bpy.props.StringProperty(default="")
-
-    def draw(self, context, layout, node, text):
-        if self.is_linked:
-            layout.label(text=text or "Object")
-        else:
-            if self.prop_name and hasattr(node, self.prop_name):
-                layout.prop(node, self.prop_name, text="")
-            else:
-                layout.label(text=text or "Object")
-
-    def draw_color(self, context, node):
-        return _COLOR_OBJECT
-
-
-class TrackerFloatInputSocket(bpy.types.NodeSocket):
-    """Float input that draws property inline when not connected."""
-    bl_idname = "TrackerFloatInputSocketType"
-    bl_label = "Float (Inline)"
-
-    prop_name: bpy.props.StringProperty(default="")
-
-    def draw(self, context, layout, node, text):
-        if self.is_linked:
-            layout.label(text=text or "Value")
-        else:
-            if self.prop_name and hasattr(node, self.prop_name):
-                layout.prop(node, self.prop_name, text="")
-            else:
-                layout.label(text=text or "Value")
-
-    def draw_color(self, context, node):
-        return _COLOR_FLOAT
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TRACKER BOOL SOCKET (Unified - same type for input/output to allow connections)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TrackerBoolSocket(bpy.types.NodeSocket):
-    """Boolean socket for tracker conditions. Used for both input and output."""
-    bl_idname = "TrackerBoolSocketType"
-    bl_label = "Tracker Bool"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or ("Result" if self.is_output else "Input"))
-
-    def draw_color(self, context, node):
-        return _COLOR_BOOL
+BOOL_SOCKET = "ExpBoolSocketType"
+FLOAT_SOCKET = "ExpFloatSocketType"
+OBJECT_SOCKET = "ExpObjectSocketType"
+VECTOR_SOCKET = "ExpVectorSocketType"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -145,13 +93,13 @@ class DistanceTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 200
-        # Inline sockets - property drawn by socket when not connected
-        sock_a = self.inputs.new("TrackerObjectInputSocketType", "Object A")
+        # Object inputs with inline property drawing
+        sock_a = self.inputs.new(OBJECT_SOCKET, "Object A")
         sock_a.prop_name = "object_a"
-        sock_b = self.inputs.new("TrackerObjectInputSocketType", "Object B")
+        sock_b = self.inputs.new(OBJECT_SOCKET, "Object B")
         sock_b.prop_name = "object_b"
         # Bool output
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         # Operator and distance on same row
@@ -202,7 +150,7 @@ class StateTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "state", text="")
@@ -260,12 +208,12 @@ class ContactTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 200
-        # Inline sockets
-        sock_obj = self.inputs.new("TrackerObjectInputSocketType", "Object")
+        # Object inputs with inline property drawing
+        sock_obj = self.inputs.new(OBJECT_SOCKET, "Object")
         sock_obj.prop_name = "contact_object"
-        sock_tgt = self.inputs.new("TrackerObjectInputSocketType", "Target")
+        sock_tgt = self.inputs.new(OBJECT_SOCKET, "Target")
         sock_tgt.prop_name = "contact_target"
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "use_collection")
@@ -320,7 +268,7 @@ class InputTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "input_action", text="")
@@ -376,9 +324,9 @@ class GameTimeTrackerNode(_ExploratoryNodeOnly, Node):
     def init(self, context):
         self.width = 180
         # Float output for raw time value
-        self.outputs.new("FloatOutputSocketType", "Time")
+        self.outputs.new(FLOAT_SOCKET, "Time")
         # Bool output for comparison result
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "compare_enabled")
@@ -411,9 +359,9 @@ class LogicAndNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 100
-        self.inputs.new("TrackerBoolSocketType", "Input")
-        self.inputs.new("TrackerBoolSocketType", "Input")
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.inputs.new(BOOL_SOCKET, "Input")
+        self.inputs.new(BOOL_SOCKET, "Input")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def update(self):
         """Add/remove inputs dynamically based on connections."""
@@ -429,7 +377,7 @@ class LogicAndNode(_ExploratoryNodeOnly, Node):
 
         if unconnected == 0:
             # All inputs connected - add a new one
-            self.inputs.new("TrackerBoolSocketType", "Input")
+            self.inputs.new(BOOL_SOCKET, "Input")
         elif unconnected > 1:
             # More than one empty - remove extras from the end
             for i in range(len(self.inputs) - 1, -1, -1):
@@ -448,9 +396,9 @@ class LogicOrNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 100
-        self.inputs.new("TrackerBoolSocketType", "Input")
-        self.inputs.new("TrackerBoolSocketType", "Input")
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.inputs.new(BOOL_SOCKET, "Input")
+        self.inputs.new(BOOL_SOCKET, "Input")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def update(self):
         """Add/remove inputs dynamically based on connections."""
@@ -462,7 +410,7 @@ class LogicOrNode(_ExploratoryNodeOnly, Node):
         unconnected = total - connected
 
         if unconnected == 0:
-            self.inputs.new("TrackerBoolSocketType", "Input")
+            self.inputs.new(BOOL_SOCKET, "Input")
         elif unconnected > 1:
             for i in range(len(self.inputs) - 1, -1, -1):
                 if not self.inputs[i].is_linked and unconnected > 1:
@@ -480,8 +428,8 @@ class LogicNotNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 80
-        self.inputs.new("TrackerBoolSocketType", "Input")
-        self.outputs.new("TrackerBoolSocketType", "Result")
+        self.inputs.new(BOOL_SOCKET, "Input")
+        self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         pass
@@ -490,12 +438,10 @@ class LogicNotNode(_ExploratoryNodeOnly, Node):
 # ══════════════════════════════════════════════════════════════════════════════
 # REGISTRATION
 # ══════════════════════════════════════════════════════════════════════════════
+# NOTE: Sockets are registered in utility_nodes.py (unified socket types)
+# This file only registers the tracker node classes.
 
 classes = [
-    # Sockets (must register before nodes that use them)
-    TrackerObjectInputSocket,
-    TrackerFloatInputSocket,
-    TrackerBoolSocket,
     # Tracker nodes
     DistanceTrackerNode,
     StateTrackerNode,

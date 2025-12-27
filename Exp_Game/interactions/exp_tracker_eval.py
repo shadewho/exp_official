@@ -29,6 +29,10 @@ _pending_tracker_job = None
 # Filtered object names - only objects referenced by trackers (Phase 1.1 optimization)
 _tracked_object_names: set = set()
 
+# Generation counter - increments on reset to invalidate stale results
+# Results with old generation are discarded to prevent false triggers after reset
+_tracker_generation: int = 0
+
 
 def set_current_operator(op):
     """Set the current operator reference for input state access."""
@@ -39,6 +43,31 @@ def set_current_operator(op):
 # ══════════════════════════════════════════════════════════════════════════════
 # SERIALIZATION (Main Thread → Worker at game start)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _resolve_object_name(node, socket_name: str, fallback_prop: str) -> str:
+    """
+    Resolve object name from either a connected ObjectDataNode or inline property.
+
+    Args:
+        node: The tracker node
+        socket_name: Name of the input socket (e.g., "Object A")
+        fallback_prop: Name of the inline property (e.g., "object_a")
+
+    Returns:
+        Object name string for worker serialization
+    """
+    # Check if socket is connected
+    socket = node.inputs.get(socket_name)
+    if socket and socket.is_linked:
+        src_node = socket.links[0].from_node
+        # Check if source node has export_object_name (ObjectDataNode)
+        if hasattr(src_node, 'export_object_name'):
+            return src_node.export_object_name()
+
+    # Fall back to inline property
+    obj = getattr(node, fallback_prop, None)
+    return obj.name if obj else ""
+
 
 def _serialize_node(node, visited: set) -> dict:
     """
@@ -55,8 +84,8 @@ def _serialize_node(node, visited: set) -> dict:
 
     # ─── Distance Tracker ───
     if node_type == 'DistanceTrackerNodeType':
-        result['object_a'] = node.object_a.name if node.object_a else ""
-        result['object_b'] = node.object_b.name if node.object_b else ""
+        result['object_a'] = _resolve_object_name(node, "Object A", "object_a")
+        result['object_b'] = _resolve_object_name(node, "Object B", "object_b")
         result['op'] = node.operator
         result['value'] = node.distance
         result['eval_hz'] = node.eval_hz
@@ -69,13 +98,13 @@ def _serialize_node(node, visited: set) -> dict:
 
     # ─── Contact Tracker ───
     elif node_type == 'ContactTrackerNodeType':
-        result['object'] = node.contact_object.name if node.contact_object else ""
+        result['object'] = _resolve_object_name(node, "Object", "contact_object")
         if node.use_collection and node.contact_collection:
             result['targets'] = [o.name for o in node.contact_collection.objects]
-        elif node.contact_target:
-            result['targets'] = [node.contact_target.name]
         else:
-            result['targets'] = []
+            # Check if Target socket is connected to ObjectDataNode
+            target_name = _resolve_object_name(node, "Target", "contact_target")
+            result['targets'] = [target_name] if target_name else []
         result['eval_hz'] = node.eval_hz
 
     # ─── Input Tracker ───
@@ -101,6 +130,21 @@ def _serialize_node(node, visited: set) -> dict:
                 child = _serialize_node(src_node, visited)
                 if child:
                     result['inputs'].append(child)
+
+    # ─── Data Node Passthrough ───
+    # Data nodes (Boolean, Float, etc.) act as passthrough - follow their input
+    # This allows chaining: Tracker → Boolean → Boolean → Trigger
+    elif node_type in ('BoolDataNodeType', 'FloatDataNodeType', 'IntDataNodeType'):
+        # Check if the Input socket is connected
+        input_socket = node.inputs.get("Input")
+        if input_socket and input_socket.is_linked:
+            # Follow through to the source node
+            src_node = input_socket.links[0].from_node
+            return _serialize_node(src_node, visited)
+        else:
+            # No input connected - this is a static value, not useful for conditions
+            # Return None to indicate no valid condition source
+            return None
 
     return result
 
@@ -373,16 +417,19 @@ def submit_tracker_evaluation(modal, context) -> int:
 
     Returns job_id or -1 if not submitted.
     """
+    global _tracker_generation
+
     if not hasattr(modal, 'engine') or not modal.engine:
         return -1
 
     # Collect world state
     world_state = collect_world_state(context)
 
-    # Submit job (no pending tracking - just submit every frame)
+    # Submit job with generation to detect stale results after reset
     job_id = modal.engine.submit_job("EVALUATE_TRACKERS", {
         "world_state": world_state,
         "game_time": get_game_time(),
+        "generation": _tracker_generation,
     })
 
     return job_id if job_id is not None else -1
@@ -395,12 +442,20 @@ def apply_tracker_results(result) -> int:
 
     Returns number of signals changed.
     """
+    global _tracker_generation
+
     if not result.success:
         log_game("TRACKERS", f"EVAL_FAIL error={getattr(result, 'error', 'unknown')}")
         return 0
 
     result_data = result.result
     if not result_data:
+        return 0
+
+    # Check generation to discard stale results from before reset
+    result_generation = result_data.get("generation", -1)
+    if result_generation != _tracker_generation:
+        log_game("TRACKERS", f"DISCARD_STALE gen={result_generation} current={_tracker_generation}")
         return 0
 
     # Forward worker logs to main thread logging
@@ -452,3 +507,28 @@ def reset_tracker_state():
     _current_operator = None
     _tracked_object_names.clear()
     log_game("TRACKERS", "STATE_RESET (filter cleared)")
+
+
+def reset_worker_trackers(modal, context) -> bool:
+    """
+    Reset worker-side tracker state by re-caching trackers.
+    This clears _tracker_primed, _tracker_states, etc. in workers.
+    Call on game reset (not just game start).
+
+    Also increments generation counter to invalidate any stale results
+    that were computed before the reset.
+
+    Returns True if successful.
+    """
+    global _tracker_generation
+
+    # Increment generation to invalidate stale results from before reset
+    _tracker_generation += 1
+    log_game("TRACKERS", f"GENERATION_INCREMENT now={_tracker_generation}")
+
+    if not modal or not hasattr(modal, 'engine') or not modal.engine:
+        log_game("TRACKERS", "WORKER_RESET_SKIP no engine available")
+        return False
+
+    # Re-cache triggers the worker to clear all state
+    return cache_trackers_in_worker(modal, context)

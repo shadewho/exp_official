@@ -1034,30 +1034,6 @@ def register_properties():
         subtype='FACTOR'
     )
 
-    # Legacy properties kept for compatibility (will be removed later)
-    bpy.types.Scene.pose_blend_ik_enabled = bpy.props.BoolProperty(
-        name="IK Overlay",
-        description="(Legacy) Apply IK on top of the blended pose",
-        default=False
-    )
-    bpy.types.Scene.pose_blend_ik_chain = bpy.props.EnumProperty(
-        name="IK Chain",
-        description="(Legacy) Which limb to apply IK to",
-        items=[
-            ("NONE", "None", "No IK overlay"),
-            ("arm_L", "Left Arm", "Left arm IK"),
-            ("arm_R", "Right Arm", "Right arm IK"),
-            ("leg_L", "Left Leg", "Left leg IK"),
-            ("leg_R", "Right Leg", "Right leg IK"),
-        ],
-        default="NONE"
-    )
-    bpy.types.Scene.pose_blend_ik_target = bpy.props.PointerProperty(
-        name="IK Target",
-        description="(Legacy) Object for IK target",
-        type=bpy.types.Object
-    )
-
     bpy.types.Scene.pose_blend_auto_play = bpy.props.BoolProperty(
         name="Auto Play",
         description="Continuously blend back and forth for testing",
@@ -1069,6 +1045,24 @@ def register_properties():
         description="Time to blend from A to B (seconds)",
         default=1.0,
         min=0.1,
+        max=5.0,
+        unit='TIME'
+    )
+
+    bpy.types.Scene.pose_blend_hold_start = bpy.props.FloatProperty(
+        name="Hold Start",
+        description="Time to hold at Pose A before blending (seconds)",
+        default=1.0,
+        min=0.0,
+        max=5.0,
+        unit='TIME'
+    )
+
+    bpy.types.Scene.pose_blend_hold_end = bpy.props.FloatProperty(
+        name="Hold End",
+        description="Time to hold at Pose B after blending (seconds)",
+        default=1.0,
+        min=0.0,
         max=5.0,
         unit='TIME'
     )
@@ -1228,6 +1222,8 @@ def unregister_properties():
         'pose_blend_ik_influence',
         'pose_blend_auto_play',
         'pose_blend_duration',
+        'pose_blend_hold_start',
+        'pose_blend_hold_end',
 
         # Multi-Chain IK
         'pose_blend_ik_arm_L',
@@ -1238,11 +1234,6 @@ def unregister_properties():
         'pose_blend_ik_leg_L_target',
         'pose_blend_ik_leg_R',
         'pose_blend_ik_leg_R_target',
-
-        # Legacy IK (kept for compatibility)
-        'pose_blend_ik_enabled',
-        'pose_blend_ik_chain',
-        'pose_blend_ik_target',
 
         # Rig Analyzer
         'rig_analysis_report',

@@ -614,9 +614,129 @@ The Hips bone is listed in the table below for documentation completeness, but t
 
 ---
 
+## Bone Local Axis Orientations
+
+### Purpose
+
+**This section is critical for IK and procedural animation.**
+
+When we rotate a bone, we rotate around its LOCAL axes (X, Y, Z). But each bone has a different orientation in rest pose. Without knowing what each axis points to, we cannot:
+
+1. **Apply IK correctly** - To bend an elbow, we need to know WHICH axis to rotate around
+2. **Interpret joint limits** - "LeftShin X: [-150, 10]" is meaningless unless we know what X means for that bone
+3. **Validate poses** - We can't check if a knee is bending forward vs backward without knowing the axes
+
+### Axis Conventions
+
+- **Y-axis**: Points along the bone (head → tail). This is the "bone direction."
+- **X-axis**: Perpendicular to Y, typically the "twist" axis (rotating the limb like turning a doorknob)
+- **Z-axis**: Perpendicular to both, typically the "bend" axis for some bones
+
+### Key Insight for IK
+
+| Joint | Bend Motion | Which Axis | Direction |
+|-------|-------------|------------|-----------|
+| Elbow | Forearm swings forward/back | **ForeArm local Z** | Z points DOWN, so rotating around Z moves forearm in sagittal plane |
+| Knee | Shin swings forward/back | **Shin local X** | X points RIGHT, so rotating around X moves shin in sagittal plane |
+
+### Full Bone Orientation Table
+
+Each bone's local coordinate system in rest pose (T-pose).
+
+| Bone | +X Points | +Y Points | +Z Points |
+|------|-----------|-----------|-----------|
+| `Head` | LEFT | UP | FORWARD |
+| `Hips` | LEFT | UP | FORWARD |
+| `Spine` | LEFT | UP | FORWARD |
+| `Spine1` | LEFT | UP | FORWARD |
+| `Spine2` | LEFT | UP | FORWARD |
+| `NeckLower` | LEFT | UP | FORWARD |
+| `NeckUpper` | LEFT | UP | FORWARD |
+| `LeftShoulder` | BACK | LEFT | DOWN |
+| `LeftArm` | BACK | LEFT | DOWN |
+| `LeftForeArm` | BACK | LEFT | DOWN |
+| `LeftHand` | BACK | LEFT | DOWN |
+| `RightShoulder` | FORWARD | RIGHT | DOWN |
+| `RightArm` | FORWARD | RIGHT | DOWN |
+| `RightForeArm` | FORWARD | RIGHT | DOWN |
+| `RightHand` | FORWARD | RIGHT | DOWN |
+| `LeftThigh` | RIGHT | DOWN | FORWARD |
+| `LeftShin` | RIGHT | DOWN | FORWARD |
+| `LeftFoot` | RIGHT | FORWARD+DOWN | FORWARD+UP |
+| `LeftToeBase` | RIGHT | FORWARD | UP |
+| `RightThigh` | RIGHT | DOWN | FORWARD |
+| `RightShin` | RIGHT | DOWN | FORWARD |
+| `RightFoot` | RIGHT | FORWARD+DOWN | FORWARD+UP |
+| `RightToeBase` | RIGHT | FORWARD | UP |
+
+### IK Chain Axis Summary
+
+**Arms (in T-pose, arms horizontal):**
+```
+LeftArm:     Y → LEFT (toward elbow)
+             Z → DOWN (bend axis - elbow flexion)
+             X → BACK (twist axis - forearm rotation)
+
+RightArm:    Y → RIGHT (toward elbow)
+             Z → DOWN (bend axis - elbow flexion)
+             X → FORWARD (twist axis - forearm rotation)
+```
+
+**Legs (standing upright):**
+```
+LeftThigh:   Y → DOWN (toward knee)
+             Z → FORWARD (not primary bend axis)
+             X → RIGHT (bend axis - knee flexion)
+
+RightThigh:  Y → DOWN (toward knee)
+             Z → FORWARD (not primary bend axis)
+             X → RIGHT (bend axis - knee flexion)
+```
+
+### How to Use This Data
+
+**For IK Solving:**
+```python
+# To bend the right elbow (make forearm swing toward body):
+right_forearm.rotation_euler.z = bend_angle  # Z is the bend axis
+
+# To bend the right knee (make shin swing backward):
+right_shin.rotation_euler.x = -bend_angle  # X is the bend axis, negative = back
+```
+
+**For Pose Validation:**
+```python
+# Check if knee is bending correctly (forward, not backward)
+# Knee flexion is NEGATIVE X rotation (shin goes backward = knee bends forward)
+if right_shin.rotation_euler.x > 10:  # More than 10° positive = bending wrong way
+    print("ERROR: Knee bending backward!")
+```
+
+### Raw Vector Data
+
+For precise calculations, here are the exact axis vectors:
+
+| Bone | X Vector | Y Vector | Z Vector |
+|------|----------|----------|----------|
+| `RightArm` | (+0.02, +1.00, +0.02) | (+1.00, -0.01, -0.05) | (-0.05, +0.02, -1.00) |
+| `RightForeArm` | (-0.00, +1.00, +0.02) | (+1.00, +0.00, -0.00) | (-0.00, +0.02, -1.00) |
+| `RightHand` | (+0.00, +0.99, +0.13) | (+1.00, -0.01, +0.02) | (+0.02, +0.13, -0.99) |
+| `LeftArm` | (+0.01, -1.00, -0.02) | (-1.00, -0.01, -0.05) | (+0.05, +0.02, -1.00) |
+| `LeftForeArm` | (-0.00, -1.00, -0.02) | (-1.00, +0.00, -0.00) | (+0.00, +0.02, -1.00) |
+| `LeftHand` | (+0.00, -0.99, -0.12) | (-1.00, -0.01, +0.03) | (-0.03, +0.12, -0.99) |
+| `RightThigh` | (+1.00, +0.00, +0.06) | (+0.06, -0.00, -1.00) | (-0.00, +1.00, -0.00) |
+| `RightShin` | (+1.00, -0.01, +0.01) | (+0.01, -0.13, -0.99) | (+0.01, +0.99, -0.13) |
+| `RightFoot` | (+1.00, +0.01, +0.03) | (+0.01, +0.84, -0.55) | (-0.03, +0.54, +0.84) |
+| `LeftThigh` | (+1.00, -0.00, -0.06) | (-0.06, -0.00, -1.00) | (+0.00, +1.00, -0.00) |
+| `LeftShin` | (+1.00, +0.01, -0.01) | (-0.01, -0.15, -0.99) | (-0.01, +0.99, -0.15) |
+| `LeftFoot` | (+1.00, -0.01, -0.03) | (-0.01, +0.85, -0.53) | (+0.03, +0.53, +0.85) |
+
+---
+
 ## Version History
 
 | Date | Change |
 |------|--------|
+| 2025-12-26 | Added Bone Local Axis Orientations section |
 | 2025-12-25 | Added Joint Rotation Limits section |
 | 2025-12-20 | Initial comprehensive documentation |

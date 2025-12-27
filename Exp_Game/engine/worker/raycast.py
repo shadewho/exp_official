@@ -199,17 +199,12 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
             grid = dyn_mesh.get("grid")
 
             # AABB rejection first (world-space AABB vs world-space ray)
-            if aabb:
-                aabb_min, aabb_max = aabb
-                if not ray_aabb_intersect(ray_origin, ray_direction,
-                                          aabb_min, aabb_max, best_dist):
-                    continue  # Skip ALL triangles in this mesh!
-            # Fallback to sphere if no AABB
-            elif bounding_sphere:
-                sphere_center, sphere_radius = bounding_sphere
-                if not ray_sphere_intersect(ray_origin, ray_direction,
-                                           sphere_center, sphere_radius, best_dist):
-                    continue  # Skip ALL triangles in this mesh!
+            if not aabb:
+                continue  # Skip meshes without AABB - no fallback
+            aabb_min, aabb_max = aabb
+            if not ray_aabb_intersect(ray_origin, ray_direction,
+                                      aabb_min, aabb_max, best_dist):
+                continue  # Skip ALL triangles in this mesh!
 
             # Transform ray to LOCAL space (O(1) regardless of mesh complexity)
             if inv_matrix is None:
@@ -225,25 +220,17 @@ def unified_raycast(ray_origin, ray_direction, max_dist, grid_data, dynamic_mesh
             hit_dist = None
             hit_tri_idx = None
 
-            if grid:
-                # GRID-ACCELERATED: O(cells) instead of O(N)
-                tris_counter = [0]
-                grid_result = ray_grid_traverse(
-                    local_origin, local_direction, best_dist_local, grid, triangles, tris_counter
-                )
-                total_tris += tris_counter[0]
-                if grid_result:
-                    hit_dist, hit_tri_idx = grid_result
-            else:
-                # Fallback: brute-force (for meshes without grid)
-                for tri_idx, tri in enumerate(triangles):
-                    total_tris += 1
-                    hit, dist, _ = ray_triangle_intersect(
-                        local_origin, local_direction, tri[0], tri[1], tri[2]
-                    )
-                    if hit and dist < best_dist_local:
-                        hit_dist = dist
-                        hit_tri_idx = tri_idx
+            if not grid:
+                continue  # Skip meshes without spatial grid - no fallback
+
+            # GRID-ACCELERATED: O(cells) instead of O(N)
+            tris_counter = [0]
+            grid_result = ray_grid_traverse(
+                local_origin, local_direction, best_dist_local, grid, triangles, tris_counter
+            )
+            total_tris += tris_counter[0]
+            if grid_result:
+                hit_dist, hit_tri_idx = grid_result
 
             # Process hit - transform normal back to world space
             if hit_dist is not None and hit_tri_idx is not None:
@@ -407,17 +394,13 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
         matrix = dyn_mesh.get("matrix")
 
         # AABB rejection first (world-space AABB, world-space ray)
-        if aabb:
-            aabb_min, aabb_max = aabb
-            if not ray_aabb_intersect(ray_origin, ray_direction, aabb_min, aabb_max, best_dist):
-                if debug_log is not None:
-                    debug_log.append(f"AABB_REJECT ray=({ray_origin[0]:.1f},{ray_origin[1]:.1f},{ray_origin[2]:.1f}) dir=({ray_direction[0]:.2f},{ray_direction[1]:.2f},{ray_direction[2]:.2f}) aabb=[({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f})->({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})]")
-                continue  # Skip ALL triangles in this mesh!
-        # Fallback to sphere if no AABB
-        elif bounding_sphere:
-            center, radius = bounding_sphere
-            if not ray_sphere_intersect(ray_origin, ray_direction, center, radius, best_dist):
-                continue  # Skip ALL triangles in this mesh!
+        if not aabb:
+            continue  # Skip meshes without AABB - no fallback
+        aabb_min, aabb_max = aabb
+        if not ray_aabb_intersect(ray_origin, ray_direction, aabb_min, aabb_max, best_dist):
+            if debug_log is not None:
+                debug_log.append(f"AABB_REJECT ray=({ray_origin[0]:.1f},{ray_origin[1]:.1f},{ray_origin[2]:.1f}) dir=({ray_direction[0]:.2f},{ray_direction[1]:.2f},{ray_direction[2]:.2f}) aabb=[({aabb_min[0]:.1f},{aabb_min[1]:.1f},{aabb_min[2]:.1f})->({aabb_max[0]:.1f},{aabb_max[1]:.1f},{aabb_max[2]:.1f})]")
+            continue  # Skip ALL triangles in this mesh!
 
         # ═══════════════════════════════════════════════════════════════════
         # OPTIMIZED: Transform ray to LOCAL space (O(1) per mesh)
@@ -440,26 +423,16 @@ def test_dynamic_meshes_ray(ray_origin, ray_direction, max_dist, dynamic_meshes,
         hit_tri_idx = None
 
         # ═══════════════════════════════════════════════════════════════════
-        # GRID-ACCELERATED: Use 3D-DDA if grid available (O(cells) vs O(N))
+        # GRID-ACCELERATED: Use 3D-DDA (O(cells) vs O(N))
         # ═══════════════════════════════════════════════════════════════════
-        if grid:
-            grid_result = ray_grid_traverse(
-                local_origin, local_direction, best_dist_local, grid, triangles, tris_tested_counter
-            )
-            if grid_result:
-                hit_dist, hit_tri_idx = grid_result
-        else:
-            # Fallback: brute-force test all triangles (for meshes without grid)
-            for tri_idx, tri in enumerate(triangles):
-                if tris_tested_counter is not None:
-                    tris_tested_counter[0] += 1
+        if not grid:
+            continue  # Skip meshes without spatial grid - no fallback
 
-                hit, dist, _ = ray_triangle_intersect(
-                    local_origin, local_direction, tri[0], tri[1], tri[2]
-                )
-                if hit and dist < best_dist_local:
-                    hit_dist = dist
-                    hit_tri_idx = tri_idx
+        grid_result = ray_grid_traverse(
+            local_origin, local_direction, best_dist_local, grid, triangles, tris_tested_counter
+        )
+        if grid_result:
+            hit_dist, hit_tri_idx = grid_result
 
         # Process hit result
         if hit_dist is not None and hit_tri_idx is not None:

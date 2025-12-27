@@ -309,7 +309,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             # UNIFIED TEST SUITE
             # ═══════════════════════════════════════════════════════════════
             sub_box = box.box()
-            sub_box.label(text="Test Suite", icon='EXPERIMENTAL')
+            sub_box.label(text="Animation Test", icon='EXPERIMENTAL')
 
             # Armature (from Character panel)
             armature = scene.target_armature
@@ -319,147 +319,46 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             else:
                 sub_box.label(text="Set target armature in Character panel", icon='ERROR')
 
-            # Mode selector row
+            # Rig Probe buttons
             row = sub_box.row(align=True)
-            row.prop(scene, "test_mode", expand=True)
+            row.operator("anim2.probe_rig", text="Probe Rig", icon='BONE_DATA')
+            row.operator("anim2.dump_orientations", text="Dump Axes", icon='ORIENTATION_LOCAL')
 
-            mode = scene.test_mode
+            # ─── IK State Test ──────────────────────────────────────────────
+            ik_box = sub_box.box()
+            ik_box.label(text="IK State Analysis", icon='CON_KINEMATIC')
+            col = ik_box.column(align=True)
+            col.prop(scene, "ik_test_chain", text="Chain")
+            col.prop(scene, "ik_test_target", text="Target")
+            row = col.row(align=True)
+            row.scale_y = 1.2
+            row.operator("anim2.test_ik_state", text="Analyze", icon='VIEWZOOM')
+            row.operator("anim2.apply_ik", text="Apply IK", icon='CON_KINEMATIC')
+            col.separator(factor=0.5)
+            col.prop(scene, "dev_debug_ik_visual", text="GPU Visualization")
 
-            # Bone group (for Pose and IK modes, not for Pose Blend)
-            if mode in ('POSE', 'IK'):
-                sub_box.prop(scene, "test_bone_group", text="")
-
-            # Mode-specific options
+            # Animation options
             options_box = sub_box.box()
 
-            if mode == 'ANIMATION':
-                # Animation options
-                if ctrl.cache.count > 0:
-                    options_box.prop(props, "selected_animation", text="")
-                    row = options_box.row(align=True)
-                    row.prop(props, "play_speed")
-                    row.prop(props, "fade_time")
-                    row = options_box.row(align=True)
-                    row.prop(props, "loop_playback")
-                    row.prop(props, "playback_timeout")
-
-                    # A↔B crossfade loop toggle
-                    row = options_box.row()
-                    row.prop(scene, "test_blend_enabled", text="A↔B Crossfade")
-                    if scene.test_blend_enabled and ctrl.cache.count > 1:
-                        col = options_box.column(align=True)
-                        col.label(text="Animation B:")
-                        col.prop(props, "blend_animation", text="")
-                else:
-                    options_box.label(text="Bake animations first", icon='INFO')
-
-            elif mode == 'POSE':
-                # IK Pose Testing
-                if len(scene.pose_library) > 0:
-                    # Mode switch at top
-                    options_box.prop(scene, "pose_blend_mode", expand=True)
-                    options_box.separator()
-
-                    ik_mode = scene.pose_blend_mode
-
-                    if ik_mode == 'POSE_TO_POSE':
-                        # Pose to Pose: IK targets from Pose B
-                        row = options_box.row(align=True)
-                        row.label(text="A:")
-                        row.prop(scene, "pose_blend_a", text="")
-                        row = options_box.row(align=True)
-                        row.label(text="B:")
-                        row.prop(scene, "pose_blend_b", text="")
-
-                    else:
-                        # Pose to Target: IK targets from objects
-                        row = options_box.row(align=True)
-                        row.label(text="Pose:")
-                        row.prop(scene, "pose_blend_a", text="")
-
-                    # Loop duration
-                    options_box.prop(scene, "pose_blend_duration", text="Loop Time")
-
-                    # IK Chain Selection
-                    options_box.separator()
-                    options_box.label(text="IK Chains:", icon='CON_KINEMATIC')
-
-                    col = options_box.column(align=True)
-                    row = col.row(align=True)
-                    row.prop(scene, "pose_blend_ik_arm_L", text="L Arm", toggle=True)
-                    row.prop(scene, "pose_blend_ik_arm_R", text="R Arm", toggle=True)
-                    row = col.row(align=True)
-                    row.prop(scene, "pose_blend_ik_leg_L", text="L Leg", toggle=True)
-                    row.prop(scene, "pose_blend_ik_leg_R", text="R Leg", toggle=True)
-
-                    # Show target objects only in Pose to Target mode
-                    if ik_mode == 'POSE_TO_TARGET':
-                        col = options_box.column(align=True)
-                        if scene.pose_blend_ik_arm_L:
-                            col.prop(scene, "pose_blend_ik_arm_L_target", text="L Arm")
-                        if scene.pose_blend_ik_arm_R:
-                            col.prop(scene, "pose_blend_ik_arm_R_target", text="R Arm")
-                        if scene.pose_blend_ik_leg_L:
-                            col.prop(scene, "pose_blend_ik_leg_L_target", text="L Leg")
-                        if scene.pose_blend_ik_leg_R:
-                            col.prop(scene, "pose_blend_ik_leg_R_target", text="R Leg")
-
-                    # Shared influence
-                    options_box.prop(scene, "pose_blend_ik_influence", slider=True)
-
-                    # Joint limits toggle
-                    options_box.separator()
-                    options_box.prop(scene, "test_apply_joint_limits", text="Apply Joint Limits", icon='BONE_DATA')
-
-                    # Show current blend weight (read-only during playback)
-                    if is_test_modal_active():
-                        options_box.separator()
-                        options_box.label(text=f"Blend: {scene.pose_blend_weight:.0%}", icon='TIME')
-                else:
-                    options_box.label(text="No poses in library", icon='INFO')
-                    options_box.label(text="(Add poses in Character panel)")
-
-            elif mode == 'IK':
-                # IK options
-                options_box.prop(scene, "test_ik_chain", text="")
-
-                row = options_box.row()
-                row.prop(scene, "test_ik_target", text="Target")
-
-                if scene.test_ik_target:
-                    loc = scene.test_ik_target.matrix_world.translation
-                    options_box.label(text=f"Pos: ({loc.x:.2f}, {loc.y:.2f}, {loc.z:.2f})")
-
-                options_box.prop(scene, "test_ik_influence", slider=True)
-
+            if ctrl.cache.count > 0:
+                options_box.prop(props, "selected_animation", text="")
                 row = options_box.row(align=True)
-                row.prop(scene, "test_ik_pole", text="")
+                row.prop(props, "play_speed")
+                row = options_box.row(align=True)
+                row.prop(props, "loop_playback")
+                row.prop(props, "playback_timeout")
+            else:
+                options_box.label(text="Bake animations first", icon='INFO')
 
-                # Advanced toggle
-                row = options_box.row()
-                row.prop(scene, "test_ik_advanced", text="Advanced")
-
-                if scene.test_ik_advanced:
-                    col = options_box.column(align=True)
-                    col.prop(scene, "test_ik_target_xyz", text="")
-                    col.prop(scene, "test_ik_pole_offset")
-
-                # Runtime IK (gameplay)
-                options_box.separator()
-                row = options_box.row()
-                row.prop(scene, "runtime_ik_enabled", text="Runtime (Gameplay)")
-                if scene.runtime_ik_enabled:
-                    row.prop(scene, "runtime_ik_use_blend_system", text="", icon='OVERLAY', toggle=True)
-
-            # Unified Play/Stop/Reset buttons
+            # Play/Stop buttons
             row = sub_box.row(align=True)
             row.scale_y = 1.4
             row.operator("anim2.test_play", text="Play", icon='PLAY')
             row.operator("anim2.test_stop", text="Stop", icon='SNAP_FACE')
-            row.operator("anim2.test_reset", text="Reset", icon='LOOP_BACK')
+            row.operator("anim2.clear_cache", text="Clear", icon='LOOP_BACK')
 
-            # Status (for animation mode)
-            if mode == 'ANIMATION' and armature and armature.name in ctrl._states:
+            # Status
+            if armature and armature.name in ctrl._states:
                 state = ctrl._states[armature.name]
                 playing = [p for p in state.playing if not p.finished]
                 if playing:

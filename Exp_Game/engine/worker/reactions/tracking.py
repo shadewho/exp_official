@@ -69,10 +69,10 @@ def handle_tracking_batch(job_data: dict, grid_data, cached_dynamic_meshes, cach
 
             local_grid = cached.get("grid")
 
-            # Fallback bounding sphere if no AABB
-            bounding_sphere = None
+            # AABB is required - no fallback
             if world_aabb is None:
-                bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
+                continue
+            bounding_sphere = None
 
             unified_dynamic_meshes.append({
                 "obj_id": obj_id,

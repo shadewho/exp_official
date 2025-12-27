@@ -48,6 +48,7 @@ from ..interactions.exp_tracker_eval import (
     process_tracker_result,
     cache_trackers_in_worker,
 )
+from ..reactions.exp_bindings import serialize_reaction_bindings
 from ..reactions.exp_custom_ui import update_text_reactions
 from ..audio.exp_globals import update_sound_tasks
 from ..audio.exp_audio import get_global_audio_state_manager
@@ -87,6 +88,9 @@ class GameLoop:
         # Cache tracker node graph in workers
         import bpy
         cache_trackers_in_worker(op, bpy.context)
+
+        # Serialize reaction bindings (data node connections)
+        serialize_reaction_bindings(bpy.context.scene)
 
         # Initialize AABB cache for collision interactions (Phase 1.2)
         init_aabb_cache(bpy.context.scene)

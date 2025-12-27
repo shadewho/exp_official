@@ -472,8 +472,8 @@ class ExternalTriggerNode(_TriggerNodeKind):
     KIND = "EXTERNAL"
 
     def init(self, context):
-        # Accept bool input from trackers/logic gates
-        self.inputs.new('TrackerBoolSocketType', "Condition")
+        # Accept bool input from trackers/logic gates (unified socket type)
+        self.inputs.new('ExpBoolSocketType', "Condition")
         self.outputs.new('TriggerOutputSocketType', "Trigger Output")
         self.width = 300
         self._tint()

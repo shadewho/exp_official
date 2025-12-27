@@ -228,8 +228,13 @@ All computation happens in engine workers:
 - [x] Rig structure documentation (rig.md)
 - [x] Joint limit definitions (default_limits.py)
 - [x] Joint limit enforcement during blend (CACHE_JOINT_LIMITS)
+- [x] Bone orientation data extraction and documentation (rig.md)
+- [x] Two-bone IK with correct rotation math (ik_solver.py)
+- [x] Self-verifying diagnostic logging pattern
+- [x] Pose validation system (pose_validator.py)
 
 ### In Progress
+- [ ] Pole vector control (knee/elbow bend direction)
 - [ ] Coupling rules (bones that move together)
 - [ ] Spine IK chain
 - [ ] Full-body coordination
@@ -239,6 +244,115 @@ All computation happens in engine workers:
 - [ ] Automatic path finding between poses
 - [ ] Node System integration for gameplay
 - [ ] Multi-character support
+
+---
+
+## CRITICAL: Self-Verifying Diagnostics (2025-12-26)
+
+**LESSON LEARNED**: Diagnostic logs must VERIFY outputs, not just log inputs.
+
+When debugging IK or any rotation-based system, **do not rely on screenshots or user feedback**. The logs themselves must tell you if something worked or failed.
+
+### The Wrong Way (input-only logging)
+```
+log("applying rotation quaternion: (0.7, 0.1, 0.2, 0.3)")
+log("target direction: (0.5, 0.8, 0.1)")
+# No way to know if it actually worked!
+```
+
+### The Right Way (self-verifying logging)
+```python
+# BEFORE
+dir_before = (tail - head).normalized()
+log(f"BEFORE: dir=({dir_before.x:.3f},{dir_before.y:.3f},{dir_before.z:.3f})")
+log(f"WANT:   dir=({target_dir.x:.3f},{target_dir.y:.3f},{target_dir.z:.3f})")
+
+# Apply rotation...
+bpy.context.view_layer.update()
+
+# AFTER - VERIFY IT WORKED
+dir_after = (tail - head).normalized()
+angle_error = degrees(acos(dir_after.dot(target_dir)))
+log(f"AFTER:  dir=({dir_after.x:.3f},{dir_after.y:.3f},{dir_after.z:.3f})")
+log(f"VERIFY: angle_error={angle_error:.1f}deg")
+
+if angle_error > 5:
+    log("!!! ROTATION FAILED - bone not pointing at target !!!")
+```
+
+This pattern immediately reveals if the math is wrong - no screenshots needed.
+
+---
+
+## Bone Orientation Data (rig.md)
+
+The `rig.md` file now contains **bone local axis orientations** - critical data for IK.
+
+### Why This Matters
+Each bone has its own local coordinate system:
+- **Y-axis**: Points along the bone (head → tail)
+- **X-axis**: Perpendicular - often the "twist" axis
+- **Z-axis**: Perpendicular - often the "bend" axis
+
+For IK, you MUST know which axis to rotate around:
+- **Elbows**: Bend around forearm's local X or Z axis
+- **Knees**: Bend around shin's local X axis
+
+### Key Insight: Pole Vectors
+The **pole vector** controls where the elbow/knee points:
+- Legs: pole = `(0, 1, 0)` → knees point FORWARD
+- Arms: pole = `(0, -1, 0)` → elbows point BACKWARD
+
+Without the pole vector, `rotation_difference()` takes the shortest path, which may flip the joint in unexpected directions.
+
+### Bone Orientation Table
+See `rig.md` section "Bone Local Axis Orientations" for the complete table of every bone's X/Y/Z axes in world space at rest pose.
+
+---
+
+## IK Rotation Math (WORKING SOLUTION)
+
+After many failed attempts, this is the correct approach for rotating a bone to point at a target:
+
+```python
+# 1. Get bone's current Y-axis in world space
+bone_world = arm_matrix @ pose_bone.matrix
+bone_y_world = Vector((bone_world[0][1], bone_world[1][1], bone_world[2][1])).normalized()
+
+# 2. Get world rotation needed (shortest path)
+world_rotation = bone_y_world.rotation_difference(target_dir)
+
+# 3. Apply to get new world orientation
+bone_world_quat = bone_world.to_quaternion()
+new_world_quat = world_rotation @ bone_world_quat
+
+# 4. Convert to local pose rotation
+if pose_bone.parent:
+    parent_world_quat = (arm_matrix @ pose_bone.parent.matrix).to_quaternion()
+    parent_rest = pose_bone.parent.bone.matrix_local
+    bone_rest_in_parent = parent_rest.inverted() @ pose_bone.bone.matrix_local
+    bone_rest_in_parent_quat = bone_rest_in_parent.to_quaternion()
+
+    rotation = bone_rest_in_parent_quat.inverted() @ parent_world_quat.inverted() @ new_world_quat
+else:
+    bone_rest_world_quat = (arm_matrix @ pose_bone.bone.matrix_local).to_quaternion()
+    rotation = bone_rest_world_quat.inverted() @ new_world_quat
+
+pose_bone.rotation_quaternion = rotation
+```
+
+### Why Previous Attempts Failed
+1. **Matrix-based approach**: Building rotation matrices and transforming between spaces had sign/order errors
+2. **rotation_difference alone**: Gives shortest path but doesn't account for bone's rest orientation
+3. **Missing view_layer.update()**: Blender doesn't update bone positions until you call this
+
+### Key Files
+| File | Purpose |
+|------|---------|
+| `animations/ik_solver.py` | Two-bone IK solver with working rotation math |
+| `animations/ik_state.py` | IK state capture and analysis |
+| `animations/pose_validator.py` | Pose validation using joint limits |
+| `animations/rig_probe.py` | Rig diagnostics and bone orientation dump |
 
 ---
 
@@ -266,4 +380,4 @@ All computation happens in engine workers:
 
 ---
 
-**Last Updated**: 2025-12-25
+**Last Updated**: 2025-12-26

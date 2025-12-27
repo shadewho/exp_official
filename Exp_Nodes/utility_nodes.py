@@ -25,7 +25,16 @@ EXPL_TREE_ID = "ExploratoryNodesTreeType"
 
 
 # ═══════════════════════════════════════════════════════════
-# SOCKET TYPES
+# UNIFIED SOCKET TYPES
+# ═══════════════════════════════════════════════════════════
+#
+# ONE socket type per data type - all sockets of the same type
+# can connect to each other regardless of which node they're on.
+#
+# Features:
+# - prop_name: If set on an INPUT socket, draws the node property
+#              inline when not connected (for inline editing)
+# - Works for both inputs and outputs with same bl_idname
 # ═══════════════════════════════════════════════════════════
 
 # Colors for socket types (consistent visual language)
@@ -34,183 +43,289 @@ _COLOR_INT        = (0.35, 0.55, 0.80, 1.0)  # Blue
 _COLOR_BOOL       = (0.78, 0.55, 0.78, 1.0)  # Light pink (Blender standard)
 _COLOR_OBJECT     = (0.90, 0.50, 0.20, 1.0)  # Orange
 _COLOR_COLLECTION = (0.95, 0.95, 0.30, 1.0)  # Yellow
-_COLOR_ACTION     = (0.95, 0.85, 0.30, 1.0)  # Yellow (actions)
+_COLOR_ACTION     = (0.95, 0.85, 0.30, 1.0)  # Gold
 _COLOR_VECTOR     = (0.65, 0.40, 0.95, 1.0)  # Purple
 
 
+def _get_reaction_for_socket(node):
+    """
+    Helper for unified sockets to access reaction properties.
+    Returns the ReactionDefinition if node is a reaction node, else None.
+    """
+    if not hasattr(node, 'reaction_index'):
+        return None
+    idx = getattr(node, 'reaction_index', -1)
+    if idx < 0:
+        return None
+    scn = bpy.context.scene
+    reactions = getattr(scn, 'reactions', None)
+    if reactions and 0 <= idx < len(reactions):
+        return reactions[idx]
+    return None
+
+
 # ─────────────────────────────────────────────────────────
-# Float Sockets
+# Float Socket (unified)
 # ─────────────────────────────────────────────────────────
-class FloatInputSocket(bpy.types.NodeSocket):
-    bl_idname = "FloatInputSocketType"
-    bl_label = "Float (In)"
+class ExpFloatSocket(bpy.types.NodeSocket):
+    """Unified float socket - works for both input and output."""
+    bl_idname = "ExpFloatSocketType"
+    bl_label = "Float"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Float In")
+        if not self.is_output and not self.is_linked:
+            # Try reaction property first (for reaction nodes)
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    layout.prop(r, self.reaction_prop, text=text or "")
+                    return
+            # Then try node property
+            if self.prop_name and hasattr(node, self.prop_name):
+                layout.prop(node, self.prop_name, text=text or "")
+                return
+        layout.label(text=text or ("Float" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_FLOAT
 
 
-class FloatOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "FloatOutputSocketType"
-    bl_label = "Float (Out)"
+# ─────────────────────────────────────────────────────────
+# Integer Socket (unified)
+# ─────────────────────────────────────────────────────────
+class ExpIntSocket(bpy.types.NodeSocket):
+    """Unified integer socket - works for both input and output."""
+    bl_idname = "ExpIntSocketType"
+    bl_label = "Integer"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Float Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_FLOAT
-
-
-# ─────────────────────────────────────────────────────────
-# Integer Sockets
-# ─────────────────────────────────────────────────────────
-class IntInputSocket(bpy.types.NodeSocket):
-    bl_idname = "IntInputSocketType"
-    bl_label = "Integer (In)"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Int In")
+        if not self.is_output and not self.is_linked:
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    layout.prop(r, self.reaction_prop, text=text or "")
+                    return
+            if self.prop_name and hasattr(node, self.prop_name):
+                layout.prop(node, self.prop_name, text=text or "")
+                return
+        layout.label(text=text or ("Integer" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_INT
 
 
-class IntOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "IntOutputSocketType"
-    bl_label = "Integer (Out)"
+# ─────────────────────────────────────────────────────────
+# Boolean Socket (unified)
+# ─────────────────────────────────────────────────────────
+class ExpBoolSocket(bpy.types.NodeSocket):
+    """Unified boolean socket - works for both input and output."""
+    bl_idname = "ExpBoolSocketType"
+    bl_label = "Boolean"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Int Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_INT
-
-
-# ─────────────────────────────────────────────────────────
-# Boolean Sockets
-# ─────────────────────────────────────────────────────────
-class BoolInputSocket(bpy.types.NodeSocket):
-    bl_idname = "BoolInputSocketType"
-    bl_label = "Boolean (In)"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Bool In")
+        if not self.is_output and not self.is_linked:
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    layout.prop(r, self.reaction_prop, text=text or "")
+                    return
+            if self.prop_name and hasattr(node, self.prop_name):
+                layout.prop(node, self.prop_name, text=text or "")
+                return
+        layout.label(text=text or ("Result" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_BOOL
 
 
-class BoolOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "BoolOutputSocketType"
-    bl_label = "Boolean (Out)"
+# ─────────────────────────────────────────────────────────
+# Object Socket (unified)
+# ─────────────────────────────────────────────────────────
+class ExpObjectSocket(bpy.types.NodeSocket):
+    """Unified object socket - works for both input and output."""
+    bl_idname = "ExpObjectSocketType"
+    bl_label = "Object"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
+    use_prop_search: bpy.props.BoolProperty(
+        default=False,
+        description="Use prop_search for objects instead of direct prop"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Bool Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_BOOL
-
-
-# ─────────────────────────────────────────────────────────
-# Object Sockets
-# ─────────────────────────────────────────────────────────
-class ObjectInputSocket(bpy.types.NodeSocket):
-    bl_idname = "ObjectInputSocketType"
-    bl_label = "Object (In)"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Object In")
+        if not self.is_output and not self.is_linked:
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    if self.use_prop_search:
+                        layout.prop_search(r, self.reaction_prop, bpy.context.scene, "objects", text=text or "")
+                    else:
+                        layout.prop(r, self.reaction_prop, text="")
+                    return
+            if self.prop_name and hasattr(node, self.prop_name):
+                layout.prop(node, self.prop_name, text="")
+                return
+        layout.label(text=text or ("Object" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_OBJECT
 
 
-class ObjectOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "ObjectOutputSocketType"
-    bl_label = "Object (Out)"
+# ─────────────────────────────────────────────────────────
+# Collection Socket (unified)
+# ─────────────────────────────────────────────────────────
+class ExpCollectionSocket(bpy.types.NodeSocket):
+    """Unified collection socket - works for both input and output."""
+    bl_idname = "ExpCollectionSocketType"
+    bl_label = "Collection"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Object Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_OBJECT
-
-
-# ─────────────────────────────────────────────────────────
-# Collection Sockets
-# ─────────────────────────────────────────────────────────
-class CollectionInputSocket(bpy.types.NodeSocket):
-    bl_idname = "CollectionInputSocketType"
-    bl_label = "Collection (In)"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Collection In")
+        if not self.is_output and not self.is_linked:
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    layout.prop(r, self.reaction_prop, text="")
+                    return
+            if self.prop_name and hasattr(node, self.prop_name):
+                layout.prop(node, self.prop_name, text="")
+                return
+        layout.label(text=text or ("Collection" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_COLLECTION
 
 
-class CollectionOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "CollectionOutputSocketType"
-    bl_label = "Collection (Out)"
+# ─────────────────────────────────────────────────────────
+# Action Socket (unified)
+# ─────────────────────────────────────────────────────────
+class ExpActionSocket(bpy.types.NodeSocket):
+    """Unified action socket - works for both input and output."""
+    bl_idname = "ExpActionSocketType"
+    bl_label = "Action"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Collection Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_COLLECTION
-
-
-# ─────────────────────────────────────────────────────────
-# Action Sockets
-# ─────────────────────────────────────────────────────────
-class ActionInputSocket(bpy.types.NodeSocket):
-    bl_idname = "ActionInputSocketType"
-    bl_label = "Action (In)"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Action In")
+        if not self.is_output and not self.is_linked:
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    layout.prop(r, self.reaction_prop, text="")
+                    return
+            if self.prop_name and hasattr(node, self.prop_name):
+                layout.prop(node, self.prop_name, text="")
+                return
+        layout.label(text=text or ("Action" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_ACTION
 
 
-class ActionOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "ActionOutputSocketType"
-    bl_label = "Action (Out)"
+# ─────────────────────────────────────────────────────────
+# Vector Socket (unified)
+# ─────────────────────────────────────────────────────────
+class ExpVectorSocket(bpy.types.NodeSocket):
+    """Unified vector socket - works for both input and output."""
+    bl_idname = "ExpVectorSocketType"
+    bl_label = "Vector"
+
+    prop_name: bpy.props.StringProperty(
+        default="",
+        description="Node property to draw inline when not connected"
+    )
+    reaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Reaction property to draw inline (for reaction nodes)"
+    )
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text or "Action Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_ACTION
-
-
-# ─────────────────────────────────────────────────────────
-# Float Vector Sockets (existing)
-# ─────────────────────────────────────────────────────────
-class FloatVectorInputSocket(bpy.types.NodeSocket):
-    bl_idname = "FloatVectorInputSocketType"
-    bl_label = "Float Vector (In)"
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Vector In")
+        if not self.is_output and not self.is_linked:
+            if self.reaction_prop:
+                r = _get_reaction_for_socket(node)
+                if r and hasattr(r, self.reaction_prop):
+                    layout.prop(r, self.reaction_prop, text=text or "")
+                    return
+            if self.prop_name and hasattr(node, self.prop_name):
+                col = layout.column(align=True)
+                col.prop(node, self.prop_name, text="")
+                return
+        layout.label(text=text or ("Vector" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
         return _COLOR_VECTOR
 
 
-class FloatVectorOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "FloatVectorOutputSocketType"
-    bl_label = "Float Vector (Out)"
+# ═══════════════════════════════════════════════════════════
+# LEGACY SOCKET ALIASES (for backwards compatibility)
+# These just reference the unified types
+# ═══════════════════════════════════════════════════════════
+# Note: Old nodes using these will need updating, but the
+# bl_idname aliases help with transition
 
-    def draw(self, context, layout, node, text):
-        layout.label(text=text or "Vector Out")
-
-    def draw_color(self, context, node):
-        return _COLOR_VECTOR
+FloatInputSocket = ExpFloatSocket
+FloatOutputSocket = ExpFloatSocket
+IntInputSocket = ExpIntSocket
+IntOutputSocket = ExpIntSocket
+BoolInputSocket = ExpBoolSocket
+BoolOutputSocket = ExpBoolSocket
+ObjectInputSocket = ExpObjectSocket
+ObjectOutputSocket = ExpObjectSocket
+CollectionInputSocket = ExpCollectionSocket
+CollectionOutputSocket = ExpCollectionSocket
+ActionInputSocket = ExpActionSocket
+ActionOutputSocket = ExpActionSocket
+FloatVectorInputSocket = ExpVectorSocket
+FloatVectorOutputSocket = ExpVectorSocket
 
 
 # ═══════════════════════════════════════════════════════════
@@ -352,8 +467,8 @@ class FloatDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
-        self.inputs.new("FloatInputSocketType", "Input")
-        self.outputs.new("FloatOutputSocketType", "Value")
+        self.inputs.new("ExpFloatSocketType", "Input")
+        self.outputs.new("ExpFloatSocketType", "Value")
         self._ensure_uid(context)
         self._sync_value(context)
 
@@ -419,8 +534,8 @@ class IntDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
-        self.inputs.new("IntInputSocketType", "Input")
-        self.outputs.new("IntOutputSocketType", "Value")
+        self.inputs.new("ExpIntSocketType", "Input")
+        self.outputs.new("ExpIntSocketType", "Value")
         self._ensure_uid(context)
         self._sync_value(context)
 
@@ -483,8 +598,8 @@ class BoolDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
-        self.inputs.new("BoolInputSocketType", "Input")
-        self.outputs.new("BoolOutputSocketType", "Value")
+        self.inputs.new("ExpBoolSocketType", "Input")
+        self.outputs.new("ExpBoolSocketType", "Value")
         self._ensure_uid(context)
         self._sync_value(context)
 
@@ -526,6 +641,13 @@ class ObjectDataNode(_ExploratoryNodeOnly, Node):
         name="Object",
         update=lambda self, ctx: self._sync_value(ctx)
     )
+    use_character: bpy.props.BoolProperty(
+        name="Use Character",
+        default=False,
+        description="Use the scene's main character (scene.target_armature). "
+                    "Enable this instead of picking the armature directly, since "
+                    "the character is recreated at game start"
+    )
 
     def _ensure_uid(self, context):
         scn = context.scene if context else bpy.context.scene
@@ -547,8 +669,8 @@ class ObjectDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 200
-        self.inputs.new("ObjectInputSocketType", "Input")
-        self.outputs.new("ObjectOutputSocketType", "Object")
+        self.inputs.new("ExpObjectSocketType", "Input")
+        self.outputs.new("ExpObjectSocketType", "Object")
         self._ensure_uid(context)
         self._sync_value(context)
 
@@ -559,18 +681,33 @@ class ObjectDataNode(_ExploratoryNodeOnly, Node):
         # Don't call _ensure_uid here - writing not allowed in draw context
         layout.prop(self, "slot_name", text="Name")
         if not _input_linked(self, "Input"):
-            layout.prop(self, "target_object", text="")
+            layout.prop(self, "use_character", text="Use Character")
+            if self.use_character:
+                # Show indicator that character will be used
+                box = layout.box()
+                box.label(text="→ Character", icon='ARMATURE_DATA')
+            else:
+                layout.prop(self, "target_object", text="")
 
     def export_object(self):
         """API for other nodes to read this object."""
         upstream = _resolve_upstream_object(self, "Input")
         if upstream is not None:
             return upstream
+        # Use character if toggle is enabled
+        if self.use_character:
+            scn = bpy.context.scene
+            return getattr(scn, 'target_armature', None)
         has_val, obj, _ = get_object(self.slot_uid)
         return obj if has_val else self.target_object
 
     def export_object_name(self):
         """API for engine worker (string-based)."""
+        # Use character if toggle is enabled
+        if self.use_character:
+            scn = bpy.context.scene
+            char = getattr(scn, 'target_armature', None)
+            return char.name if char else ""
         obj = self.export_object()
         return obj.name if obj else ""
 
@@ -616,8 +753,8 @@ class CollectionDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 200
-        self.inputs.new("CollectionInputSocketType", "Input")
-        self.outputs.new("CollectionOutputSocketType", "Collection")
+        self.inputs.new("ExpCollectionSocketType", "Input")
+        self.outputs.new("ExpCollectionSocketType", "Collection")
         self._ensure_uid(context)
         self._sync_value(context)
 
@@ -687,8 +824,8 @@ class FloatVectorDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 200
-        self.inputs.new("FloatVectorInputSocketType", "Input")
-        self.outputs.new("FloatVectorOutputSocketType", "Vector")
+        self.inputs.new("ExpVectorSocketType", "Input")
+        self.outputs.new("ExpVectorSocketType", "Vector")
         self._ensure_uid(context)
         self._sync_value(context)
 
@@ -752,8 +889,8 @@ class ActionDataNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 200
-        self.inputs.new("ActionInputSocketType", "Input")
-        self.outputs.new("ActionOutputSocketType", "Action")
+        self.inputs.new("ExpActionSocketType", "Input")
+        self.outputs.new("ExpActionSocketType", "Action")
         self._ensure_uid(context)
         self._sync_value(context)
 

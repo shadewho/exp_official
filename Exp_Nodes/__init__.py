@@ -30,27 +30,14 @@ from ..Exp_Game.props_and_utils.trackers import (
 )
 
 from .utility_nodes import (
-    # Sockets - Float
-    FloatInputSocket,
-    FloatOutputSocket,
-    # Sockets - Integer
-    IntInputSocket,
-    IntOutputSocket,
-    # Sockets - Boolean
-    BoolInputSocket,
-    BoolOutputSocket,
-    # Sockets - Object
-    ObjectInputSocket,
-    ObjectOutputSocket,
-    # Sockets - Collection
-    CollectionInputSocket,
-    CollectionOutputSocket,
-    # Sockets - Action
-    ActionInputSocket,
-    ActionOutputSocket,
-    # Sockets - Float Vector
-    FloatVectorInputSocket,
-    FloatVectorOutputSocket,
+    # Unified Sockets (ONE type per data type for full connectivity)
+    ExpFloatSocket,
+    ExpIntSocket,
+    ExpBoolSocket,
+    ExpObjectSocket,
+    ExpCollectionSocket,
+    ExpActionSocket,
+    ExpVectorSocket,
     # Data Nodes
     FloatDataNode,
     IntDataNode,
@@ -88,9 +75,6 @@ from .action_key_nodes import CreateActionKeyNode
 
 # ── TRACKERS ──
 from .tracker_nodes import (
-    TrackerObjectInputSocket,
-    TrackerFloatInputSocket,
-    TrackerBoolSocket,
     DistanceTrackerNode,
     StateTrackerNode,
     ContactTrackerNode,
@@ -175,21 +159,14 @@ classes = [
 
 
 
-    # utilities - sockets
-    FloatInputSocket,
-    FloatOutputSocket,
-    IntInputSocket,
-    IntOutputSocket,
-    BoolInputSocket,
-    BoolOutputSocket,
-    ObjectInputSocket,
-    ObjectOutputSocket,
-    CollectionInputSocket,
-    CollectionOutputSocket,
-    ActionInputSocket,
-    ActionOutputSocket,
-    FloatVectorInputSocket,
-    FloatVectorOutputSocket,
+    # utilities - unified sockets (ONE type per data type for full connectivity)
+    ExpFloatSocket,
+    ExpIntSocket,
+    ExpBoolSocket,
+    ExpObjectSocket,
+    ExpCollectionSocket,
+    ExpActionSocket,
+    ExpVectorSocket,
     # utilities - data nodes
     FloatDataNode,
     IntDataNode,
@@ -252,11 +229,7 @@ classes = [
     NODE_MT_exploratory_add_utilities,
     NODE_MT_exploratory_add_trackers,
 
-    # tracker sockets (must register before nodes)
-    TrackerObjectInputSocket,
-    TrackerFloatInputSocket,
-    TrackerBoolSocket,
-    # tracker nodes
+    # tracker nodes (sockets use unified types from utility_nodes)
     DistanceTrackerNode,
     StateTrackerNode,
     ContactTrackerNode,

@@ -12,7 +12,6 @@ from ..reactions.exp_fonts import get_font_id_by_name
 _ui_draw_handler = None
 
 _reaction_texts = []  # store ratio-based data
-_ui_messages = []     # optional legacy debug messages
 
 def add_text_reaction(
     text_str,
@@ -113,27 +112,8 @@ def update_text_reactions():
 
 
 
-def add_ui_message(text, duration=3.0, indefinite=False):
-    if indefinite:
-        end_time = None
-    else:
-        end_time = time.time() + duration
-    _ui_messages.append((text, end_time, indefinite))
-
-def update_ui_messages():
-    now = time.time()
-    keep = []
-    for (txt, et, indef) in _ui_messages:
-        if indef or (et and et > now):
-            keep.append((txt, et, indef))
-    _ui_messages[:] = keep
-
-def clear_ui_messages():
-    _ui_messages.clear()
-
 def clear_all_text():
     clear_text_reactions()
-    clear_ui_messages()
 
 def draw_ui_callback():
     # Find the 3D View "WINDOW" region
@@ -217,25 +197,6 @@ def draw_ui_callback():
         r, g, b, a = color_rgba
         blf.color(font_id, r, g, b, a)
         blf.draw(font_id, text_str)
-
-    # ------------------------------------------------------------------------
-    # 2) Optional legacy debug messages (unchanged)
-    font_id = 0
-    blf.size(font_id, 20)
-    line_gap = 24
-    center_x = width // 2
-    center_y = height // 2
-    reversed_msgs = list(reversed(_ui_messages))
-
-    for i, (msg_txt, msg_et, msg_indef) in enumerate(reversed_msgs):
-        tw, th = blf.dimensions(font_id, msg_txt)
-        x = center_x - (tw / 2)
-        y = center_y + (i * line_gap)
-        blf.position(font_id, x, y, 0)
-        blf.color(font_id, 1, 1, 1, 1)
-        blf.draw(font_id, msg_txt)
-
-
 
 
 def compute_anchored_position(width, height, text_w, text_h, anchor, margin_x_px, margin_y_px):

@@ -1,726 +1,360 @@
 # CLAUDE_NODES.md
 
-This file provides guidance to Claude Code when working with the Exploratory node system.
+Guide for working with the Exploratory node system.
 
-**REQUIRED READING:** Before working on ANY node system features, read `../Exp_Game/CLAUDE.md` for the complete ENGINE-FIRST architecture.
-
----
-
-## ⚠️ CRITICAL: Socket Layout Requirements ⚠️
-
-**SOCKETS MUST ALWAYS BE INLINE WITH THEIR DATA FIELDS. NEVER SEPARATE THEM.**
-
-```
-❌ WRONG - Sockets at bottom, fields at top:
-┌─────────────────────────┐
-│  [Object Picker]        │
-│  [Object Picker]        │
-│  [Operator] [Distance]  │
-│  Hz: 10                 │
-│                         │
-│  ● Object A             │  ← TERRIBLE! Sockets disconnected from fields
-│  ● Object B             │
-│  ● Distance             │
-└─────────────────────────┘
-
-✅ CORRECT - Sockets inline with their fields:
-┌─────────────────────────┐
-│  ● [Object Picker]      │  ← Socket inline with its data field
-│  ● [Object Picker]      │  ← Socket inline with its data field
-│  [Operator] ● [Distance]│  ← Socket inline with its data field
-│  Hz: 10                 │
-└─────────────────────────┘
-```
-
-**HOW TO IMPLEMENT:**
-- Do NOT create input sockets in `init()` and then draw fields separately in `draw_buttons()`
-- Use the socket's `draw()` method to render the property inline when not connected
-- Store `prop_name` on sockets to know which node property to draw
-- When socket is linked, show only the socket dot and label
-- When socket is NOT linked, draw the property picker/field inline
-
-**This applies to ALL nodes with connectable inputs. No exceptions.**
+**REQUIRED:** Read `../Exp_Game/CLAUDE.md` for ENGINE-FIRST architecture.
 
 ---
 
-## CRITICAL: Architecture Principles
+## 🎯 THE GOAL: Procedural & Dynamic Node System
 
-### 1. Node Graph = Design-Time Configuration ONLY
+Build a **universal, procedural system** where:
+- All data types have **one socket type** that connects to any compatible socket
+- Data flows freely between nodes (Float → Float, Vector → Vector, Bool → Bool)
+- The system is **scalable** - add new nodes that plug into existing infrastructure
+- Everything is **design-time configuration** - nodes are never read during gameplay
 
+**Universal Socket Types (Implemented):**
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  NODE GRAPH (Exp_Nodes/)                                     │
-│  • Visual design-time editor                                 │
-│  • Configures triggers, reactions, trackers, conditions      │
-│  • Writes to scene properties                                │
-│  • NEVER evaluated at runtime                                │
-│  • NEVER traversed during gameplay                           │
-└─────────────────────────────────────────────────────────────┘
-                        ↓ writes configuration to
-┌─────────────────────────────────────────────────────────────┐
-│  SCENE PROPERTIES (bpy.types.Scene)                          │
-│  • scene.custom_interactions (trigger definitions)           │
-│  • scene.reactions (reaction definitions)                    │
-│  • scene.trackers (NEW: runtime state tracking)              │
-│  • scene.conditions (NEW: conditional logic)                 │
-│  • Bindings: which parameters use dynamic values             │
-└─────────────────────────────────────────────────────────────┘
-                        ↓ snapshot sent to
-┌─────────────────────────────────────────────────────────────┐
-│  ENGINE WORKER (multiprocessing)                             │
-│  • Updates all trackers every frame                          │
-│  • Evaluates all conditions                                  │
-│  • Resolves dynamic parameter bindings                       │
-│  • Returns: which triggers to fire, resolved values          │
-│  • NO bpy access - pure Python computation                   │
-└─────────────────────────────────────────────────────────────┘
-                        ↓ results applied by
-┌─────────────────────────────────────────────────────────────┐
-│  MAIN THREAD (30Hz modal)                                    │
-│  • Receives worker results                                   │
-│  • Fires triggers with resolved values                       │
-│  • Executes reactions (bpy writes only)                      │
-│  • Snapshots new state for next frame                        │
-└─────────────────────────────────────────────────────────────┘
+ExpBoolSocketType   → ALL bool connections
+ExpFloatSocketType  → ALL float connections
+ExpVectorSocketType → ALL vector connections (location, rotation, scale, any 3D)
+ExpObjectSocketType → ALL object references
 ```
 
-### 2. Engine Worker Does ALL Computation
+Any node outputting a Float can connect to ANY node accepting a Float. Same for all types.
 
-**The engine worker (in `/Exp_Game/engine/`) MUST handle:**
-- Tracker value updates (reading object positions, speeds, states)
-- Condition evaluation (comparisons, AND/OR logic)
-- Dynamic parameter resolution (looking up bound values)
-- Distance calculations, vector math, threshold checks
+---
 
-**The main thread ONLY does:**
-- bpy property reads (snapshotting)
-- bpy property writes (applying results)
-- Firing reactions
+## 🚫 CRITICAL: NEVER Read Nodes at Runtime
 
-### 3. Performance is Non-Negotiable
+**The node graph is ONLY for design-time configuration. It is NEVER traversed during gameplay.**
 
 ```
-❌ NEVER: Evaluate node graph connections at runtime
-❌ NEVER: Traverse nodes during gameplay
-❌ NEVER: Do math on main thread that could be in worker
-❌ NEVER: Poll or check values on main thread
+❌ NEVER DO THIS:
+def execute_reaction(reaction):
+    # Find the node, traverse connections, read values
+    for node in node_tree.nodes:
+        if node.is_linked_to(reaction):
+            value = node.get_connected_value()  # WRONG!
 
-✅ ALWAYS: Pre-compute configuration at design time
-✅ ALWAYS: Snapshot state, send to worker, poll results
-✅ ALWAYS: Offload comparisons/math to worker
-✅ ALWAYS: Use non-blocking patterns
+✅ ALWAYS DO THIS:
+def execute_reaction(reaction):
+    # Use pre-serialized bindings (baked at game start)
+    value = resolve_vector(reaction, "location", reaction.location)
+```
+
+**Why this matters:**
+- Node traversal is SLOW (O(n) connections, Python overhead)
+- Blender node API has overhead on every access
+- Main thread must stay lean for 30Hz gameplay
+- Workers can't access bpy anyway
+
+**The Pattern:**
+```
+DESIGN TIME              GAME START                 RUNTIME
+┌─────────────┐         ┌─────────────────┐        ┌─────────────────┐
+│ Node Graph  │ ──────► │ Serialize to    │ ──────►│ Fast dict       │
+│ (visual UI) │         │ flat data       │        │ lookups only    │
+└─────────────┘         └─────────────────┘        └─────────────────┘
+     USER                   ONCE                      EVERY FRAME
 ```
 
 ---
 
-## THE NEW ARCHITECTURE: Trackers + Data Nodes + Dynamic Inputs
+## 🔗 Implemented Systems
 
-### Overview
+### 1. Tracker System (Worker-Offloaded)
 
-The system has three new concepts:
+Trackers evaluate conditions in the engine worker, not main thread.
 
-1. **Trackers** - Named data streams updated every frame in the engine worker
-2. **Data Nodes** - Visual nodes that define values (hardcoded or from trackers)
-3. **Dynamic Inputs** - Interaction/Reaction parameters that can be bound to data sources
+**Flow:**
+1. **Game Start:** `serialize_tracker_graph()` → flat condition trees
+2. **Each Frame:** `collect_world_state()` → positions, inputs, char_state
+3. **Worker:** `_eval_condition_tree()` → evaluate conditions
+4. **Result:** `apply_tracker_results()` → set `external_signal` on triggers
 
-### Trackers (Engine-Side State Tracking)
+**Supported Trackers:**
+- `DistanceTrackerNodeType` - distance between objects
+- `StateTrackerNodeType` - character state (grounded, jumping, etc.)
+- `ContactTrackerNodeType` - collision contacts
+- `InputTrackerNodeType` - key presses
+- `GameTimeTrackerNodeType` - elapsed time
+- `LogicAnd/Or/NotNodeType` - combine conditions
 
-A **Tracker** is a named lens into any piece of runtime data. Trackers are:
-- Defined at design-time via Tracker Nodes
-- Updated every frame in the engine worker
-- Available for conditions and dynamic parameter binding
+**Key Files:**
+- `Exp_Game/interactions/exp_tracker_eval.py` - serialization & results
+- `Exp_Game/engine/worker/interactions/trackers.py` - worker evaluation
 
-**Tracker Categories:**
+### 2. Reaction Binding System (Implemented)
 
-| Category | Source Type | Examples |
-|----------|-------------|----------|
-| **Object Property** | `OBJECT_PROPERTY` | `door.location.z`, `light.energy`, `enemy["health"]` |
-| **Object Relationship** | `DISTANCE`, `ANGLE`, `CONTACT` | `distance(player, goal)`, `is_touching(player, lava)` |
-| **Character State** | `CHARACTER_*` | `CHARACTER_SPEED`, `CHARACTER_GROUNDED`, `CHARACTER_SPRINTING` |
-| **World/System** | `GAME_TIME`, `OBJECTIVE_VALUE` | `game_time`, `objective["score"].value` |
-| **Computed** | `EXPRESSION` | `tracker_a - tracker_b`, `tracker_x * 2.0` |
+Data nodes can connect to reaction inputs (Transform location, duration, etc.)
 
-**Tracker Definition (Scene Property):**
+**Flow:**
+1. **Game Start:** `serialize_reaction_bindings()` → scan connections, bake values
+2. **Runtime:** `resolve_vector(reaction, "param", default)` → fast lookup
 
+**Supported:**
 ```python
-class TrackerDefinition(PropertyGroup):
-    name: StringProperty()                    # "player_speed"
-    tracker_type: EnumProperty(...)           # OBJECT_PROPERTY, DISTANCE, CHARACTER_SPEED, etc.
-    data_type: EnumProperty(...)              # FLOAT, INT, BOOL, VECTOR, OBJECT
-
-    # Source configuration (varies by tracker_type)
-    source_object: PointerProperty(...)       # For OBJECT_PROPERTY
-    property_path: StringProperty()           # For OBJECT_PROPERTY
-    object_a: PointerProperty(...)            # For DISTANCE, CONTACT
-    object_b: PointerProperty(...)            # For DISTANCE, CONTACT
-
-    # Runtime state (updated by engine worker)
-    current_value_float: FloatProperty()
-    current_value_int: IntProperty()
-    current_value_bool: BoolProperty()
-    current_value_vector: FloatVectorProperty()
+resolve_vector(reaction, "transform_location", reaction.transform_location)
+resolve_euler(reaction, "transform_rotation", reaction.transform_rotation)
+resolve_float(reaction, "transform_duration", reaction.transform_duration)
+resolve_object(reaction, "target", reaction.target_object)
+resolve_bool(reaction, "enabled", reaction.enabled)
+resolve_int(reaction, "count", reaction.count)
 ```
 
-**Engine Worker Updates Trackers:**
+**Key Files:**
+- `Exp_Game/reactions/exp_bindings.py` - serialization & resolution
+- `Exp_Game/reactions/exp_transforms.py` - uses bindings
 
-```python
-# In engine worker (every frame)
-def update_trackers(snapshot):
-    results = {}
-    for tracker in snapshot["trackers"]:
-        if tracker["type"] == "OBJECT_PROPERTY":
-            # Read from snapshot (no bpy access in worker!)
-            obj_data = snapshot["objects"][tracker["object_name"]]
-            value = resolve_property_path(obj_data, tracker["property_path"])
-            results[tracker["name"]] = value
+### 3. Data Nodes (Implemented)
 
-        elif tracker["type"] == "DISTANCE":
-            pos_a = snapshot["objects"][tracker["object_a"]]["location"]
-            pos_b = snapshot["objects"][tracker["object_b"]]["location"]
-            results[tracker["name"]] = distance(pos_a, pos_b)
+Universal value sources that connect to any matching socket:
 
-        elif tracker["type"] == "CHARACTER_SPEED":
-            results[tracker["name"]] = snapshot["character"]["speed"]
-
-    return results
-```
-
-### Data Nodes (Design-Time Value Sources)
-
-**Data Nodes** produce typed values that can be wired into interaction/reaction parameters.
-
-| Node Type | Output Type | Value Source |
-|-----------|-------------|--------------|
-| `FloatNode` | float | Hardcoded value OR bound to float tracker |
-| `IntNode` | int | Hardcoded value OR bound to int tracker |
-| `BoolNode` | bool | Hardcoded value OR bound to bool tracker |
-| `VectorNode` | (x,y,z) | Hardcoded value OR bound to vector tracker |
-| `ObjectNode` | object ref | Hardcoded object OR bound to object tracker |
-| `TrackerNode` | any (typed) | Defines a new tracker, outputs its value |
-| `ConditionNode` | bool | Compares values, outputs true/false |
-
-**Data Node Sockets:**
-
-```python
-# Socket types for data flow
-class FloatInputSocket(NodeSocket): ...
-class FloatOutputSocket(NodeSocket): ...
-class IntInputSocket(NodeSocket): ...
-class IntOutputSocket(NodeSocket): ...
-class BoolInputSocket(NodeSocket): ...
-class BoolOutputSocket(NodeSocket): ...
-class VectorInputSocket(NodeSocket): ...
-class VectorOutputSocket(NodeSocket): ...
-class ObjectInputSocket(NodeSocket): ...
-class ObjectOutputSocket(NodeSocket): ...
-```
-
-### Dynamic Inputs (Bindable Parameters)
-
-Every parameter on every interaction/reaction can be either:
-- **Hardcoded** - User types in a value, stored directly
-- **Bound** - Linked to a data source (tracker, computed value, etc.)
-
-**Example: Proximity Trigger with Dynamic Distance**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Tracker Node                                                │
-│  Name: "alert_range"                                         │
-│  Type: OBJECT_PROPERTY                                       │
-│  Object: AlertRangeSphere                                    │
-│  Property: scale.x                                           │
-│  └─ [Float Output] ─────────────────┐                       │
-└─────────────────────────────────────────────────────────────┘
-                                      │
-┌─────────────────────────────────────────────────────────────┐
-│  Proximity Trigger Node                                      │
-│  Object A: [Character]                                       │
-│  Object B: Enemy                                             │
-│  Distance: [Float Input] ←──────────┘ (bound to tracker)    │
-│  └─ [Trigger Output] → ...                                  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Binding Storage:**
-
-```python
-class ParameterBinding(PropertyGroup):
-    parameter_name: StringProperty()      # "proximity_distance"
-    binding_type: EnumProperty(...)       # HARDCODED, TRACKER, COMPUTED
-    tracker_name: StringProperty()        # If bound to tracker
-
-class InteractionDefinition(PropertyGroup):
-    # ... existing fields ...
-
-    # NEW: Parameter bindings
-    bindings: CollectionProperty(type=ParameterBinding)
-
-    # Existing hardcoded values remain for when binding_type == HARDCODED
-    proximity_distance: FloatProperty()
-```
-
-**Resolution at Runtime (Engine Worker):**
-
-```python
-def resolve_interaction_parameters(interaction, tracker_values):
-    resolved = {}
-
-    for binding in interaction["bindings"]:
-        param = binding["parameter_name"]
-
-        if binding["type"] == "HARDCODED":
-            resolved[param] = interaction[param]  # Use stored value
-
-        elif binding["type"] == "TRACKER":
-            resolved[param] = tracker_values[binding["tracker_name"]]
-
-    return resolved
-```
+| Node | Socket Type | Property |
+|------|-------------|----------|
+| `FloatDataNode` | `ExpFloatSocketType` | `value` |
+| `IntDataNode` | `ExpIntSocketType` | `value` |
+| `BoolDataNode` | `ExpBoolSocketType` | `value` |
+| `FloatVectorDataNode` | `ExpVectorSocketType` | `value` |
+| `ObjectDataNode` | `ExpObjectSocketType` | `target_object` / `use_character` |
 
 ---
 
-## CONDITIONS: Logical Evaluation
+## 🚨 State Reset Requirements
 
-Conditions allow creators to define complex trigger logic:
+**ALL state MUST be reset on game start/reset/end:**
 
-```
-IF character_speed >= 5.0 AND wall_contact == True
-THEN fire trigger
-```
+| State | Location | Reset Function |
+|-------|----------|----------------|
+| `_tracker_primed` | worker | `handle_cache_trackers()` |
+| `_tracker_states` | worker | `handle_cache_trackers()` |
+| `_tracker_generation` | main | `reset_worker_trackers()` |
+| `_reaction_bindings` | main | `reset_bindings()` |
+| `inter.external_signal` | scene | `reset_all_interactions()` |
+| `inter.has_fired` | scene | `reset_all_interactions()` |
 
-**Condition Definition:**
-
-```python
-class ConditionDefinition(PropertyGroup):
-    name: StringProperty()
-
-    # Left side
-    left_source: EnumProperty(...)        # TRACKER, LITERAL
-    left_tracker: StringProperty()         # If source is TRACKER
-    left_value_float: FloatProperty()      # If source is LITERAL
-
-    # Comparison
-    operator: EnumProperty(...)            # EQ, NE, LT, LE, GT, GE
-
-    # Right side
-    right_source: EnumProperty(...)
-    right_tracker: StringProperty()
-    right_value_float: FloatProperty()
-
-    # Combination (for compound conditions)
-    combinator: EnumProperty(...)          # NONE, AND, OR
-    next_condition: IntProperty()          # Index of chained condition
-```
-
-**Condition Node:**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Condition Node                                              │
-│  ├─ [Float Input] Left ←── Tracker or Float Node            │
-│  ├─ Operator: >= (dropdown)                                  │
-│  ├─ [Float Input] Right ←── Tracker, Float Node, or literal │
-│  └─ [Bool Output] ──→ To Condition Trigger or AND/OR node  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Condition Trigger Node:**
-
-A new trigger type that fires when a condition becomes true:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Condition Trigger Node                                      │
-│  ├─ [Bool Input] Condition ←── Condition Node output        │
-│  ├─ Mode: ON_BECOME_TRUE / WHILE_TRUE / ON_CHANGE           │
-│  └─ [Trigger Output] → Reactions...                          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Engine Worker Evaluates Conditions:**
-
-```python
-def evaluate_conditions(conditions, tracker_values, previous_states):
-    results = []
-
-    for cond in conditions:
-        left = resolve_value(cond["left"], tracker_values)
-        right = resolve_value(cond["right"], tracker_values)
-
-        current = compare(left, cond["operator"], right)
-        previous = previous_states.get(cond["name"], False)
-
-        # Edge detection
-        if cond["mode"] == "ON_BECOME_TRUE":
-            if current and not previous:
-                results.append(cond["trigger_index"])
-
-        elif cond["mode"] == "WHILE_TRUE":
-            if current:
-                results.append(cond["trigger_index"])
-
-    return results, {c["name"]: current for c in conditions}
-```
+**Why:** Stale state causes false triggers. The `external_signal` bug (fixed today) caused triggers to fire immediately after reset because the signal wasn't cleared.
 
 ---
 
-## EXAMPLE: Complete Data Flow
+## ⚠️ Node Layout Architecture (CRITICAL)
 
-**User Goal:** "If character is sprinting AND touches a wall, make them fall and set speed to 0"
+**All nodes MUST follow the inline socket pattern. Sockets are drawn WITH their data fields, not separately.**
 
-**Node Graph (Design-Time):**
+### The Golden Rule
 
 ```
-┌─────────────────┐     ┌─────────────────┐
-│ Tracker Node    │     │ Tracker Node    │
-│ "char_speed"    │     │ "wall_contact"  │
-│ CHARACTER_SPEED │     │ CONTACT         │
-│ [Float Out]─────│──┐  │ [Bool Out]──────│──┐
-└─────────────────┘  │  └─────────────────┘  │
-                     │                        │
-┌────────────────────│────────────────────────│───────────────┐
-│ Condition Node     │                        │               │
-│ Left: ←────────────┘                        │               │
-│ Operator: >=                                │               │
-│ Right: 5.0 (hardcoded sprint threshold)     │               │
-│ [Bool Out]────────────────────────────────┐ │               │
-└───────────────────────────────────────────│─│───────────────┘
-                                            │ │
-┌───────────────────────────────────────────│─│───────────────┐
-│ AND Node                                  │ │               │
-│ [Bool In A] ←─────────────────────────────┘ │               │
-│ [Bool In B] ←───────────────────────────────┘               │
-│ [Bool Out]──────────────────────────────────────────────┐   │
-└─────────────────────────────────────────────────────────│───┘
-                                                          │
-┌─────────────────────────────────────────────────────────│───┐
-│ Condition Trigger Node                                  │   │
-│ [Bool In] ←─────────────────────────────────────────────┘   │
-│ Mode: ON_BECOME_TRUE                                        │
-│ [Trigger Out]───→ [Fall Reaction] ───→ [Set Speed Reaction] │
-└─────────────────────────────────────────────────────────────┘
+✅ CORRECT - Inline Layout:          ❌ WRONG - Separated Layout:
+┌──────────────────────────┐        ┌──────────────────────────┐
+│  Distance Tracker        │        │  Distance Tracker        │
+├──────────────────────────┤        ├──────────────────────────┤
+│ ● Object A: [Cube    ▼]  │        │  Object A: [Cube    ▼]   │
+│ ● Object B: [Sphere  ▼]  │        │  Object B: [Sphere  ▼]   │
+│   Distance < [5.0    ]   │        │  Distance < [5.0    ]    │
+│   Hz: [10]               │        │  Hz: [10]                │
+├──────────────────────────┤        │                          │
+│              Condition ○ │        │  ● Object A              │
+└──────────────────────────┘        │  ● Object B              │
+                                    │              Condition ○ │
+                                    └──────────────────────────┘
+       Socket ● is NEXT to               Sockets are BELOW
+       its property field                their property fields
 ```
 
-**Scene Properties (Written at Design-Time):**
+### Why This Matters
+
+1. **Visual clarity** - User sees socket and its field together
+2. **Connection feedback** - When connected, the field hides (socket takes over)
+3. **Compact nodes** - No wasted vertical space
+4. **Intuitive wiring** - Wire goes TO the field it affects
+
+### Implementation Pattern
+
+**Socket classes define `draw()` to render inline with properties:**
 
 ```python
-scene.trackers = [
-    {"name": "char_speed", "type": "CHARACTER_SPEED", "data_type": "FLOAT"},
-    {"name": "wall_contact", "type": "CONTACT", "object_a": character, "object_b_tag": "wall", "data_type": "BOOL"},
-]
+class ExpVectorSocketType(NodeSocket):
+    bl_idname = "ExpVectorSocketType"
+    bl_label = "Vector"
 
-scene.conditions = [
-    {"name": "is_sprinting", "left_tracker": "char_speed", "op": "GE", "right_value": 5.0},
-]
+    # Property shown when NOT connected
+    value: FloatVectorProperty(subtype='XYZ')
 
-scene.custom_interactions[X] = {
-    "trigger_type": "CONDITION",
-    "condition_mode": "ON_BECOME_TRUE",
-    "condition_expression": "is_sprinting AND wall_contact",
-    "reaction_links": [fall_reaction_idx, set_speed_reaction_idx],
-}
+    # Links to reaction property for binding system
+    reaction_prop: StringProperty()
 
-scene.reactions[set_speed_idx] = {
-    "reaction_type": "SET_TRACKER",
-    "target_tracker": "char_speed",
-    "value": 0.0,
-}
+    def draw(self, context, layout, node, text):
+        if self.is_linked:
+            # Connected - just show socket name
+            layout.label(text=text)
+        elif self.reaction_prop and hasattr(node, 'reaction'):
+            # Reaction node - show the reaction's property inline
+            layout.prop(node.reaction, self.reaction_prop, text=text)
+        else:
+            # Data node - show socket's own value
+            layout.prop(self, "value", text=text)
+
+    def draw_color(self, context, node):
+        return (0.4, 0.4, 0.8, 1.0)  # Blue for vectors
 ```
 
-**Engine Worker (Every Frame):**
+**Node classes use socket's `prop_name` or `reaction_prop`:**
 
 ```python
-def engine_frame(snapshot):
-    # 1. Update all trackers
-    tracker_values = update_trackers(snapshot)
-    # tracker_values = {"char_speed": 7.2, "wall_contact": True}
+class DistanceTrackerNodeType(Node):
+    bl_idname = "DistanceTrackerNodeType"
+    bl_label = "Distance Tracker"
 
-    # 2. Evaluate all conditions
-    condition_results = evaluate_conditions(snapshot["conditions"], tracker_values)
-    # condition_results = {"is_sprinting": True}
+    # Non-socket properties (no connection needed)
+    eval_hz: IntProperty(name="Hz", default=10, min=1, max=60)
 
-    # 3. Evaluate compound expressions
-    expression_results = evaluate_expressions(snapshot["expressions"], condition_results, tracker_values)
-    # "is_sprinting AND wall_contact" = True AND True = True
+    def init(self, context):
+        # Input sockets - will draw inline with their fields
+        obj_a = self.inputs.new("ExpObjectSocketType", "Object A")
+        obj_a.prop_name = "object_a"  # Property on THIS node
 
-    # 4. Check for edge transitions (became true this frame)
-    triggers_to_fire = check_edge_triggers(expression_results, previous_states)
-    # triggers_to_fire = [interaction_X]
+        obj_b = self.inputs.new("ExpObjectSocketType", "Object B")
+        obj_b.prop_name = "object_b"
 
-    # 5. Resolve dynamic parameters for triggered interactions
-    resolved_params = {}
-    for trigger in triggers_to_fire:
-        resolved_params[trigger] = resolve_parameters(trigger, tracker_values)
+        dist = self.inputs.new("ExpFloatSocketType", "Distance")
+        dist.prop_name = "distance_threshold"
 
-    return {
-        "triggers": triggers_to_fire,
-        "resolved_params": resolved_params,
-        "tracker_values": tracker_values,
-    }
+        # Output socket
+        self.outputs.new("ExpBoolSocketType", "Condition")
+
+    def draw_buttons(self, context, layout):
+        # Only draw properties WITHOUT sockets
+        layout.prop(self, "eval_hz")
+        # DO NOT draw object_a, object_b, distance here!
+        # The sockets handle those in their draw() method
 ```
 
-**Main Thread (Applies Results):**
+### Reaction Node Pattern
+
+**Reaction nodes link sockets to reaction properties via `reaction_prop`:**
 
 ```python
-def apply_engine_results(results):
-    for trigger_idx in results["triggers"]:
-        interaction = scene.custom_interactions[trigger_idx]
-        params = results["resolved_params"][trigger_idx]
+class TransformReactionNodeType(Node):
+    bl_idname = "TransformReactionNodeType"
+    bl_label = "Transform"
 
-        fire_interaction(interaction, params)
+    @property
+    def reaction(self):
+        # Get the actual reaction from scene.reactions
+        return get_reaction_by_index(self.reaction_index)
+
+    def init(self, context):
+        # Each socket's reaction_prop points to the reaction's property
+        loc = self.inputs.new("ExpVectorSocketType", "Location")
+        loc.reaction_prop = "transform_location"
+
+        rot = self.inputs.new("ExpVectorSocketType", "Rotation")
+        rot.reaction_prop = "transform_rotation"
+
+        dur = self.inputs.new("ExpFloatSocketType", "Duration")
+        dur.reaction_prop = "transform_duration"
+
+    def draw_buttons(self, context, layout):
+        r = self.reaction
+        if not r:
+            layout.label(text="No reaction linked")
+            return
+
+        # Only draw non-socket properties
+        layout.prop(r, "transform_mode")
+        layout.prop(r, "easing")
+        # Location, Rotation, Duration are drawn by their sockets!
 ```
+
+### Socket Type Reference
+
+| Socket Type | Color | Use For |
+|-------------|-------|---------|
+| `ExpBoolSocketType` | Red | Conditions, toggles, enables |
+| `ExpFloatSocketType` | Gray | Numbers, durations, distances |
+| `ExpIntSocketType` | Green | Counts, indices |
+| `ExpVectorSocketType` | Blue | Positions, rotations, scales |
+| `ExpObjectSocketType` | Orange | Blender object references |
+
+### Data Node Pattern (Value Sources)
+
+```python
+class FloatVectorDataNode(Node):
+    bl_idname = "FloatVectorDataNode"
+    bl_label = "Vector"
+
+    value: FloatVectorProperty(name="Value", subtype='XYZ')
+
+    def init(self, context):
+        out = self.outputs.new("ExpVectorSocketType", "Vector")
+        out.prop_name = "value"  # Socket draws this node's value property
+
+    def draw_buttons(self, context, layout):
+        # Nothing here - socket handles the value display
+        pass
+```
+
+### Checklist for New Nodes
+
+- [ ] All connectable properties have a socket
+- [ ] Socket's `prop_name` or `reaction_prop` is set correctly
+- [ ] `draw_buttons()` only draws non-socket properties
+- [ ] Socket `draw()` method shows property when not connected
+- [ ] Socket `draw()` method shows label only when connected
 
 ---
 
-## FILE STRUCTURE
+## 📁 File Structure
 
 ```
 Exp_Nodes/
-├── CLAUDE_NODES.md              ← YOU ARE HERE
-├── __init__.py                  ← Registration
-├── base_nodes.py                ← Base classes
-├── node_editor.py               ← Tree, sockets, menus, panel
-│
-├── trigger_nodes.py             ← Trigger nodes (Proximity, Collision, etc.)
-├── reaction_nodes.py            ← Reaction nodes (Transform, Sound, etc.)
-├── objective_nodes.py           ← Objective node
-├── action_key_nodes.py          ← Action Key node
-│
-├── data_nodes.py                ← NEW: Float, Int, Bool, Vector, Object nodes
-├── tracker_nodes.py             ← NEW: Tracker definition nodes
-├── condition_nodes.py           ← NEW: Condition, AND, OR, NOT nodes
-│
-├── utility_nodes.py             ← Utility nodes (Delay, legacy Capture)
-└── trig_react_obj_lists.py      ← N-Panel debug visualization
+├── utility_nodes.py      ← Data nodes (Float, Vector, Object, etc.)
+├── tracker_nodes.py      ← Tracker nodes (Distance, State, Input, etc.)
+├── trigger_nodes.py      ← Trigger nodes (External, Proximity, etc.)
+├── reaction_nodes.py     ← Reaction nodes (Transform, Sound, etc.)
+└── node_editor.py        ← Tree, unified sockets, menus
+
+Exp_Game/
+├── reactions/exp_bindings.py           ← Binding serialization & resolution
+├── interactions/exp_tracker_eval.py    ← Tracker serialization & results
+├── engine/worker/interactions/trackers.py ← Worker-side evaluation
+└── startup_and_reset/exp_game_reset.py ← State reset
 ```
 
 ---
 
-## N-PANEL DEBUG VISUALIZATION
+## 🔧 Adding Bindings to New Reactions
 
-**File:** `trig_react_obj_lists.py`
+```python
+# 1. In reaction node init(), create socket with reaction_prop:
+s = self.inputs.new("ExpVectorSocketType", "Location")
+s.reaction_prop = "my_location_prop"
 
-The N-Panel provides read-only debugging views:
-- Lists all interactions with their chained reactions
-- Lists all reactions in the library
-- Lists all objectives
-- **Detects orphans** - items with no node reference
-- **Detects invalid links** - broken reaction indices
+# 2. In executor, use resolve function:
+from ..reactions.exp_bindings import resolve_vector
 
-**This is for debugging only.** The panels don't edit anything - they just show what exists and flag problems.
+def execute_my_reaction(reaction):
+    loc = resolve_vector(reaction, "my_location_prop", reaction.my_location_prop)
+```
 
 ---
 
-## CURRENT IMPLEMENTATION: Worker-Offloaded Trackers
+## 📋 Today's Fixes (Session Summary)
 
-### Backend Data Flow (IMPLEMENTED)
-
-The tracker system is now fully worker-offloaded. Here's how it works:
-
-#### 1. Game Start: Serialization
-
-**File:** `Exp_Game/interactions/exp_tracker_eval.py`
-
-At game start, `cache_trackers_in_worker()` is called from `GameLoop.__init__()`:
-
-```python
-# Called once at game start
-serialize_tracker_graph(scene) → returns list of tracker definitions
-
-# Each tracker definition contains:
-{
-    'interaction_index': int,      # Which ExternalTriggerNode this feeds
-    'trigger_node': str,           # Node name for debugging
-    'tree_name': str,              # Node tree name
-    'condition_tree': {            # Recursively serialized node tree
-        'type': 'DistanceTrackerNodeType',
-        'object_a': 'Player',
-        'object_b': 'Goal',
-        'op': 'LT',
-        'value': 5.0,
-        'eval_hz': 10,
-        'inputs': [...]            # For logic gates (AND/OR/NOT)
-    }
-}
-```
-
-#### 2. Worker Cache: CACHE_TRACKERS Job
-
-**File:** `Exp_Game/engine/worker/entry.py`
-
-Worker receives and caches tracker definitions:
-
-```python
-# Worker-side caches (global in entry.py)
-_cached_trackers = []           # Serialized tracker definitions
-_tracker_states = {}            # {inter_idx: last_bool} for edge detection
-_tracker_last_eval = {}         # {inter_idx: last_eval_time} for Hz throttling
-```
-
-#### 3. Per-Frame: World State Collection
-
-**File:** `Exp_Game/interactions/exp_tracker_eval.py`
-
-Each frame, `collect_world_state()` gathers minimal data for evaluation:
-
-```python
-{
-    'positions': {'Player': (x,y,z), 'Enemy': (x,y,z), ...},
-    'char_state': 'RUNNING' | 'IDLE' | 'JUMPING' | ...,
-    'inputs': {'FORWARD': True, 'JUMP': False, ...},
-    'game_time': 12.5,
-    'contacts': {'Player': ['Ground', 'Wall'], ...}
-}
-```
-
-#### 4. Per-Frame: EVALUATE_TRACKERS Job
-
-**File:** `Exp_Game/engine/worker/entry.py`
-
-Worker evaluates all cached trackers with current world state:
-
-```python
-def _handle_evaluate_trackers(job_data):
-    for tracker in _cached_trackers:
-        # Hz throttling
-        if game_time - last_eval < eval_interval:
-            continue
-
-        # Recursive condition tree evaluation
-        new_value = _eval_condition_tree(tree, world_state)
-
-        # Edge detection
-        if new_value != old_value:
-            signal_updates[inter_idx] = new_value
-
-    return {
-        'signal_updates': {0: True, 3: False, ...},
-        'fired_indices': [0],
-        'calc_time_us': 45.0
-    }
-```
-
-#### 5. Main Thread: Apply Results
-
-**File:** `Exp_Game/modal/exp_loop.py`
-
-Results are polled and applied:
-
-```python
-def _poll_tracker_results(self):
-    results = op.engine.poll_results(max_results=10)
-    for result in results:
-        if process_tracker_result(op, result):
-            # Sets inter.external_signal based on signal_updates
-            continue
-```
-
-Then `check_interactions()` → `handle_external_trigger()` fires when `external_signal` is True.
-
-### Worker-Side Condition Evaluation
-
-**File:** `Exp_Game/engine/worker/entry.py`
-
-The `_eval_condition_tree()` function recursively evaluates:
-
-| Node Type | Evaluation |
-|-----------|------------|
-| `DistanceTrackerNodeType` | `distance(obj_a, obj_b) <op> threshold` |
-| `StateTrackerNodeType` | `char_state == target_state` (or NOT) |
-| `ContactTrackerNodeType` | `obj in targets` contact check |
-| `InputTrackerNodeType` | `inputs[action] == is_pressed` |
-| `GameTimeTrackerNodeType` | `game_time <op> threshold` |
-| `LogicAndNodeType` | `all(children)` |
-| `LogicOrNodeType` | `any(children)` |
-| `LogicNotNodeType` | `not child` |
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `Exp_Nodes/tracker_nodes.py` | Node UI definitions |
-| `Exp_Game/interactions/exp_tracker_eval.py` | Serialization, world state, result application |
-| `Exp_Game/engine/worker/entry.py` | Worker caches and evaluation logic |
-| `Exp_Game/modal/exp_loop.py` | Job submission and result polling |
-
-### Performance
-
-- **Serialization**: Once at game start (no per-frame node traversal)
-- **World state**: Minimal data (~100 bytes per object)
-- **Evaluation**: Worker-side, parallel with main thread
-- **Hz throttling**: Per-tracker, respects eval_hz setting (max 30)
-- **Edge detection**: Only signal changes sent back to main thread
+1. **Tracker Priming** - Added `_tracker_primed` set to prevent false trigger on first evaluation
+2. **Generation Counter** - Added `_tracker_generation` to discard stale results after reset
+3. **External Signal Reset** - Fixed `inter.external_signal` not being cleared on reset
+4. **Reaction Bindings** - Implemented full binding system for Transform reactions
+5. **Universal Sockets** - Unified all socket types so same-type nodes can connect
 
 ---
 
-## IMPLEMENTATION PHASES
+## 💡 Core Principle
 
-### Phase 1: Tracker Infrastructure (Engine-Side)
+**Nodes are the paintbrush, not the painting.**
 
-1. Define `TrackerDefinition` PropertyGroup
-2. Add `scene.trackers` CollectionProperty
-3. Implement tracker update logic in engine worker
-4. Create snapshot pattern for object state
-5. Test with CHARACTER_SPEED tracker
+They configure the system at design-time. The engine worker runs the system at runtime.
 
-### Phase 2: Tracker Nodes (Design-Time)
-
-1. Create `TrackerNode` base class
-2. Implement CHARACTER_SPEED, CHARACTER_GROUNDED nodes
-3. Implement OBJECT_PROPERTY tracker node
-4. Implement DISTANCE tracker node
-5. Add tracker output sockets
-
-### Phase 3: Data Nodes
-
-1. Create FloatNode (hardcoded + tracker binding)
-2. Create IntNode
-3. Create BoolNode
-4. Create VectorNode
-5. Create ObjectNode
-
-### Phase 4: Dynamic Parameter Binding
-
-1. Add `bindings` to InteractionDefinition
-2. Add `bindings` to ReactionDefinition
-3. Modify trigger nodes to have optional input sockets
-4. Modify reaction nodes to have optional input sockets
-5. Implement binding resolution in engine worker
-
-### Phase 5: Conditions
-
-1. Create ConditionNode (comparison logic)
-2. Create AND, OR, NOT nodes
-3. Create ConditionTrigger node
-4. Implement condition evaluation in engine worker
-5. Implement edge detection (ON_BECOME_TRUE)
-
-### Phase 6: Advanced Trackers
-
-1. CONTACT tracker (collision/touching state)
-2. ANGLE tracker (angle between objects)
-3. EXPRESSION tracker (computed from other trackers)
-4. Custom property trackers
-
----
-
-## KEY PRINCIPLES SUMMARY
-
-1. **Node graph is design-time only** - Never traversed at runtime
-2. **Engine worker does ALL computation** - Trackers, conditions, math
-3. **Main thread only does bpy** - Reads and writes, nothing else
-4. **Parameters can be hardcoded OR bound** - Flexible data flow
-5. **Trackers are the runtime truth** - Updated every frame in worker
-6. **Conditions enable complex logic** - Without runtime node traversal
-7. **Performance is non-negotiable** - If it's not in the worker, it's wrong
-
----
-
-## REMEMBER
-
-The nodes are the **paintbrush**, not the **painting**.
-
-They configure the system. They don't run the system.
-
-The engine worker runs the system.
+Never traverse nodes during gameplay. Always serialize to flat data structures.

@@ -79,6 +79,13 @@ from animations.joint_limits import (
     clamp_rotation,
 )
 
+# Import rig cache for worker-based forward kinematics + IK
+from animations.rig_cache import (
+    RigFK,
+    compute_point_at_target_quat,
+    _matrix_to_quat,
+)
+
 
 # ============================================================================
 # DEBUG FLAG
@@ -114,6 +121,10 @@ _animations_numpy_ready = False
 # Pose library cache: {pose_name: {bone_transforms: {bone: [10 floats]}, source_armature: str}}
 # Sent once via CACHE_POSES job. Used by PLAY_POSE jobs for pose playback.
 _cached_poses = {}
+
+# Rig cache: {armature_name: RigFK instance}
+# Sent once via CACHE_RIG job. Used for worker-based forward kinematics + IK.
+_cached_rigs = {}
 
 # NOTE: Tracker state moved to worker/interactions/trackers.py
 
@@ -296,64 +307,6 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
             result["object_transform"] = tuple(blended_obj.tolist())
 
     return result
-
-
-def _handle_animation_compute(job_data: dict) -> dict:
-    """
-    Handle ANIMATION_COMPUTE job - compute blended pose from playing animations.
-    LEGACY: Single object per job. Use ANIMATION_COMPUTE_BATCH for better performance.
-
-    Input job_data:
-        {
-            "object_name": str,
-            "playing": [
-                {"anim_name": str, "time": float, "weight": float, "looping": bool},
-                ...
-            ]
-        }
-
-    Returns:
-        {
-            "success": bool,
-            "bone_transforms": {bone_name: (10-float tuple), ...},
-            "bones_count": int,
-            "anims_blended": int,
-            "calc_time_us": float,
-            "logs": [(category, message), ...]
-        }
-    """
-    calc_start = time.perf_counter()
-    logs = []
-
-    object_name = job_data.get("object_name", "Unknown")
-    playing_list = job_data.get("playing", [])
-
-    result = _compute_single_object_pose(object_name, playing_list, logs)
-
-    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
-
-    # Build log message
-    anim_names = result.get("anim_names", [])
-    anim_str = " + ".join(anim_names) if anim_names and len(anim_names) <= 3 else f"{len(anim_names)} anims"
-    has_bones = result["bones_count"] > 0
-    has_obj = result.get("object_transform") is not None
-    if has_bones or has_obj:
-        parts = []
-        if has_bones:
-            parts.append(f"{result['bones_count']} bones")
-        if has_obj:
-            parts.append("obj_xform")
-        logs.append(("ANIMATIONS", f"{object_name}: {anim_str} | {' + '.join(parts)} | {calc_time_us:.0f}µs"))
-
-    return {
-        "success": True,
-        "bone_transforms": result["bone_transforms"],
-        "object_transform": result.get("object_transform"),
-        "bones_count": result["bones_count"],
-        "anims_blended": result["anims_blended"],
-        "calc_time_us": calc_time_us,
-        "logs": logs
-    }
 
 
 def _handle_animation_compute_batch(job_data: dict) -> dict:
@@ -590,43 +543,183 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
         if limits_applied > 0:
             logs.append(("JOINT-LIMITS", f"Clamped {limits_applied} bones: {', '.join(clamped_bones_list[:5])}{'...' if len(clamped_bones_list) > 5 else ''}"))
 
-    # Process IK chains
+    # Process IK chains using delta-based approach (fully worker-based)
+    # This requires: armature_world matrix, armature_name for rig cache lookup
     ik_results = {}
-    for ik_data in ik_chains:
-        chain = ik_data.get("chain")
-        target = np.array(ik_data.get("target", [0, 0, 0]), dtype=np.float32)
-        influence = ik_data.get("influence", 1.0)
-        root_pos = np.array(ik_data.get("root_pos", [0, 0, 0]), dtype=np.float32)
+    armature_name = job_data.get("armature_name", "")
+    armature_world_flat = job_data.get("armature_world")
 
-        # Get character orientation for pole calculation
-        char_forward = np.array(ik_data.get("char_forward", [0, 1, 0]), dtype=np.float32)
-        char_right = np.array(ik_data.get("char_right", [1, 0, 0]), dtype=np.float32)
-        char_up = np.array(ik_data.get("char_up", [0, 0, 1]), dtype=np.float32)
+    # Get cached rig for FK computation
+    rig_fk = _cached_rigs.get(armature_name) if armature_name else None
 
-        # Parse chain type
-        parts = chain.split('_') if chain else []
-        if len(parts) != 2:
-            continue
-        limb_type, side = parts[0], parts[1]
-        is_leg = (limb_type == "leg")
+    if ik_chains and rig_fk and rig_fk.is_ready() and armature_world_flat:
+        # Convert armature world matrix from flat list to numpy
+        armature_world = np.array(armature_world_flat, dtype=np.float32).reshape(4, 4).T
 
-        # Compute pole position and solve IK
-        if is_leg:
-            pole_pos = compute_knee_pole_position(root_pos, target, char_forward, char_right, side, 0.5)
-            upper_quat, lower_quat, joint_world = solve_leg_ik(root_pos, target, pole_pos, side)
-        else:
-            pole_pos = compute_elbow_pole_position(root_pos, target, char_forward, char_up, side, 0.3)
-            upper_quat, lower_quat, joint_world = solve_arm_ik(root_pos, target, pole_pos, side)
+        # Extract bone quaternions and locations from blended transforms
+        bone_quats = {}
+        bone_locs = {}
+        for bone_name, xform in bone_transforms.items():
+            bone_quats[bone_name] = (xform[0], xform[1], xform[2], xform[3])
+            bone_locs[bone_name] = (xform[4], xform[5], xform[6])
 
-        ik_results[chain] = {
-            "upper_quat": tuple(upper_quat.tolist()) if isinstance(upper_quat, np.ndarray) else tuple(upper_quat),
-            "lower_quat": tuple(lower_quat.tolist()) if isinstance(lower_quat, np.ndarray) else tuple(lower_quat),
-            "joint_world": tuple(joint_world.tolist()) if isinstance(joint_world, np.ndarray) else tuple(joint_world),
-            "pole_pos": tuple(pole_pos.tolist()) if isinstance(pole_pos, np.ndarray) else tuple(pole_pos),
-            "target": tuple(target.tolist()),
-            "influence": influence,
-        }
+        # Compute forward kinematics - bone world matrices from FK blend
+        world_matrices = rig_fk.compute_world_matrices(armature_world, bone_quats, bone_locs)
 
+        # Process each IK chain
+        for ik_data in ik_chains:
+            chain = ik_data.get("chain")
+            target = np.array(ik_data.get("target", [0, 0, 0]), dtype=np.float32)
+            influence = ik_data.get("influence", 1.0)
+
+            # Get character orientation for pole calculation
+            char_forward = np.array(ik_data.get("char_forward", [0, 1, 0]), dtype=np.float32)
+            char_right = np.array(ik_data.get("char_right", [1, 0, 0]), dtype=np.float32)
+            char_up = np.array(ik_data.get("char_up", [0, 0, 1]), dtype=np.float32)
+
+            # Parse chain type
+            parts = chain.split('_') if chain else []
+            if len(parts) != 2:
+                continue
+            limb_type, side = parts[0], parts[1]
+            is_leg = (limb_type == "leg")
+
+            # Get chain definition
+            chain_def = LEG_IK.get(chain) if is_leg else ARM_IK.get(chain)
+            if not chain_def:
+                continue
+
+            root_bone = chain_def['root']
+            mid_bone = chain_def['mid']
+            tip_bone = chain_def['tip']
+
+            # Get bone world positions from FK
+            root_head, root_tail = rig_fk.get_bone_head_tail(root_bone, world_matrices)
+            mid_head, mid_tail = rig_fk.get_bone_head_tail(mid_bone, world_matrices)
+
+            # Compute pole and solve IK to get joint world position
+            if is_leg:
+                pole_pos = compute_knee_pole_position(root_head, target, char_forward, char_right, side, 0.5)
+                _, _, joint_world = solve_leg_ik(root_head, target, pole_pos, side)
+            else:
+                pole_pos = compute_elbow_pole_position(root_head, target, char_forward, char_up, side, 0.3)
+                _, _, joint_world = solve_arm_ik(root_head, target, pole_pos, side)
+
+            # DELTA-BASED IK: Use point_bone_at_target approach
+            # Root bone points at joint, mid bone points at target
+
+            # Get bone world matrices and extract rotations
+            root_world_mat = world_matrices.get(root_bone, np.eye(4))
+            mid_world_mat = world_matrices.get(mid_bone, np.eye(4))
+
+            root_world_rot = _matrix_to_quat(root_world_mat)
+            mid_world_rot = _matrix_to_quat(mid_world_mat)
+
+            # Get rest local rotations
+            root_rest = rig_fk.get_rest_local(root_bone)
+            mid_rest = rig_fk.get_rest_local(mid_bone)
+            root_rest_rot = _matrix_to_quat(root_rest)
+            mid_rest_rot = _matrix_to_quat(mid_rest)
+
+            # Get parent world rotations
+            root_parent = rig_fk.get_parent(root_bone)
+            mid_parent = rig_fk.get_parent(mid_bone)  # This should be root_bone
+
+            root_parent_world_rot = None
+            if root_parent and root_parent in world_matrices:
+                root_parent_world_rot = _matrix_to_quat(world_matrices[root_parent])
+
+            mid_parent_world_rot = _matrix_to_quat(world_matrices.get(root_bone, np.eye(4)))
+
+            # Compute delta-based IK quaternions
+            # STEP 1: Compute root bone rotation to point at joint
+            upper_local_quat = compute_point_at_target_quat(
+                bone_head=root_head,
+                bone_tail=root_tail,
+                bone_world_rot=root_world_rot,
+                target_world=joint_world,
+                rest_local_rot=root_rest_rot,
+                parent_world_rot=root_parent_world_rot
+            )
+
+            # STEP 2: Recompute root's world matrix with new rotation
+            # This is needed because mid bone's position depends on root's rotation
+            from animations.rig_cache import _quat_loc_to_matrix
+            root_new_pose_mat = _quat_loc_to_matrix(
+                tuple(upper_local_quat.tolist()),
+                bone_locs.get(root_bone, (0, 0, 0))
+            )
+            root_rest_local = rig_fk.get_rest_local(root_bone)
+            if root_parent and root_parent in world_matrices:
+                root_parent_world = world_matrices[root_parent]
+            else:
+                root_parent_world = armature_world
+            root_new_world = root_parent_world @ root_rest_local @ root_new_pose_mat
+
+            # STEP 3: Compute mid bone's new world position (depends on root)
+            mid_new_pose_mat = _quat_loc_to_matrix(
+                bone_quats.get(mid_bone, (1, 0, 0, 0)),
+                bone_locs.get(mid_bone, (0, 0, 0))
+            )
+            mid_rest_local = rig_fk.get_rest_local(mid_bone)
+            mid_new_world = root_new_world @ mid_rest_local @ mid_new_pose_mat
+
+            # Get mid's new head/tail positions
+            mid_new_head = mid_new_world[:3, 3].copy()
+            mid_length = rig_fk.get_length(mid_bone)
+            mid_new_tail = mid_new_head + mid_new_world[:3, 1] * mid_length
+            mid_new_world_rot = _matrix_to_quat(mid_new_world)
+
+            # Get root's new world rotation for mid's parent
+            root_new_world_rot = _matrix_to_quat(root_new_world)
+
+            # STEP 4: Compute mid bone rotation to point at target
+            lower_local_quat = compute_point_at_target_quat(
+                bone_head=mid_new_head,
+                bone_tail=mid_new_tail,
+                bone_world_rot=mid_new_world_rot,
+                target_world=target,
+                rest_local_rot=mid_rest_rot,
+                parent_world_rot=root_new_world_rot
+            )
+
+            # Apply IK with influence
+            if influence < 1.0:
+                # Slerp between original FK quat and IK quat
+                orig_upper = np.array(bone_quats.get(root_bone, (1,0,0,0)), dtype=np.float32)
+                orig_lower = np.array(bone_quats.get(mid_bone, (1,0,0,0)), dtype=np.float32)
+                upper_local_quat = slerp_vectorized(
+                    orig_upper.reshape(1, 4),
+                    upper_local_quat.reshape(1, 4),
+                    influence
+                )[0]
+                lower_local_quat = slerp_vectorized(
+                    orig_lower.reshape(1, 4),
+                    lower_local_quat.reshape(1, 4),
+                    influence
+                )[0]
+
+            # Update bone_transforms with IK result
+            if root_bone in bone_transforms:
+                orig = list(bone_transforms[root_bone])
+                orig[0:4] = upper_local_quat.tolist()
+                bone_transforms[root_bone] = tuple(orig)
+
+            if mid_bone in bone_transforms:
+                orig = list(bone_transforms[mid_bone])
+                orig[0:4] = lower_local_quat.tolist()
+                bone_transforms[mid_bone] = tuple(orig)
+
+            # Store result info
+            ik_results[chain] = {
+                "upper_quat": tuple(upper_local_quat.tolist()),
+                "lower_quat": tuple(lower_local_quat.tolist()),
+                "joint_world": tuple(joint_world.tolist()) if isinstance(joint_world, np.ndarray) else tuple(joint_world),
+                "pole_pos": tuple(pole_pos.tolist()) if isinstance(pole_pos, np.ndarray) else tuple(pole_pos),
+                "target": tuple(target.tolist()),
+                "influence": influence,
+                "fk_based": True,  # Flag that this used delta-based IK
+            }
     calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
     # Build log message with limit info if any were applied
@@ -1082,12 +1175,41 @@ def process_job(job) -> dict:
                     "error": "No joint limits data provided"
                 }
 
-        elif job.job_type == "ANIMATION_COMPUTE":
-            # Compute blended pose from multiple playing animations
-            # Input: list of {anim_name, time, weight} for each playing animation
-            # Output: blended bone transforms ready to apply via bpy
-            # LEGACY: Use ANIMATION_COMPUTE_BATCH for better performance
-            result_data = _handle_animation_compute(job.data)
+        elif job.job_type == "CACHE_RIG":
+            # Cache rig data for worker-based forward kinematics + IK.
+            # Sent ONCE at game start. Used by POSE_BLEND_COMPUTE for full FK/IK.
+            global _cached_rigs
+            rig_data = job.data.get("rig_data", {})
+            armature_name = job.data.get("armature_name", "")
+
+            if rig_data and armature_name:
+                # Create RigFK instance and load data
+                rig_fk = RigFK()
+                success = rig_fk.load(rig_data)
+
+                if success:
+                    _cached_rigs[armature_name] = rig_fk
+
+                    bone_count = rig_fk.bone_count
+                    logs = [("ANIM-WORKER", f"CACHE_RIG {armature_name} {bone_count} bones")]
+
+                    result_data = {
+                        "success": True,
+                        "armature_name": armature_name,
+                        "bone_count": bone_count,
+                        "message": "Rig cached successfully for FK/IK",
+                        "logs": logs
+                    }
+                else:
+                    result_data = {
+                        "success": False,
+                        "error": "Failed to load rig data"
+                    }
+            else:
+                result_data = {
+                    "success": False,
+                    "error": "Missing rig_data or armature_name"
+                }
 
         elif job.job_type == "ANIMATION_COMPUTE_BATCH":
             # OPTIMIZED: Compute blended poses for ALL objects in ONE job

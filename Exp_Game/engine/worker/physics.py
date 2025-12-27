@@ -183,13 +183,10 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
 
         # inv_matrix already cached - no per-frame computation needed!
 
-        # OPTIMIZED: Skip bounding sphere computation - unified_raycast uses AABB first
-        # Bounding sphere is only a fallback, and we always have AABB from local_aabb transform
-        # This saves ~200 ops per mesh per frame (center calc + sqrt for radius)
-        # If AABB is somehow None, fall back to cached radius
-        bounding_sphere = None
+        # AABB is required - no fallback
         if not world_aabb:
-            bounding_sphere = ((0, 0, 0), cached.get("radius", 1.0))
+            continue  # Skip meshes without AABB
+        bounding_sphere = None
 
         # Add to unified format - triangles stay in LOCAL space!
         unified_dynamic_meshes.append({
@@ -635,32 +632,6 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
                     vx -= bn_x * vn
                     vy -= bn_y * vn
 
-                # ─────────────────────────────────────────────────────────
-                # AIRBORNE STEEP SLOPE BLOCKING (backup to Step 4.5)
-                # ─────────────────────────────────────────────────────────
-                # If airborne and hitting a steep surface, block uphill velocity
-                # This is a backup - Step 4.5 pre-blocking is the primary defense
-                if not on_ground:
-                    # Calculate slope angle from normal
-                    slope_angle = math.degrees(math.acos(min(1.0, max(-1.0, bn_z))))
-
-                    # If hitting a steep slope (> slope_limit_deg)
-                    if slope_angle > slope_limit_deg:
-                        # Calculate uphill direction (XY projection of normal, negated)
-                        bn_xy_len = math.sqrt(bn_x*bn_x + bn_y*bn_y)
-                        if bn_xy_len > 0.001:
-                            uphill_x = -bn_x / bn_xy_len
-                            uphill_y = -bn_y / bn_xy_len
-
-                            # Check if moving uphill
-                            uphill_vel = vx * uphill_x + vy * uphill_y
-
-                            if uphill_vel > 0.0:
-                                # Just remove uphill velocity, no pushback
-                                # (Pushback causes stuck-in-mesh issues)
-                                vx = vx - uphill_x * uphill_vel
-                                vy = vy - uphill_y * uphill_vel
-
             # Debug logging
             if debug_horizontal:
                 if best_n is not None:
@@ -1078,52 +1049,14 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
             n_y = gn_y / gn_len
             n_z = gn_z / gn_len
 
-            # UPHILL BLOCKING: Remove uphill velocity component (moved here to use current frame's normal)
-            gn_xy_len = math.sqrt(n_x*n_x + n_y*n_y)
-            if gn_xy_len > 0.001:
-                # Normalize uphill direction
-                # CRITICAL: Normal points DOWN the slope (outward from surface)
-                # To get uphill, we need to NEGATE it!
-                uphill_x = -n_x / gn_xy_len
-                uphill_y = -n_y / gn_xy_len
-
-                # Project current velocity onto uphill direction
-                uphill_vel = vx * uphill_x + vy * uphill_y
-
-                # Slope angle already calculated above
-
-                # POST-MOVEMENT CORRECTION: Gentle backup if Step 4.5 missed anything
-                # (Step 4.5 does main blocking BEFORE movement)
-                if slope_angle > 65.0 and uphill_vel > 0.0:
-                    # Just remove any remaining uphill velocity, minimal force
-                    vx = vx - uphill_x * uphill_vel
-                    vy = vy - uphill_y * uphill_vel
-
-                    # Very gentle correction only
-                    downhill_x = -uphill_x
-                    downhill_y = -uphill_y
-                    vx += downhill_x * 2.0  # Minimal correction
-                    vy += downhill_y * 2.0
-
+            # Z position clamp on steep slopes
+            if slope_angle > 65.0 and on_ground:
+                # If character somehow moved upward on steep slope, clamp to ground level
+                max_allowed_z = ground_hit_z if ground_hit_z is not None else pz
+                if pz > max_allowed_z:
                     if debug_slopes:
-                        worker_logs.append(("SLOPES", f"POST-CORRECT angle={slope_angle:.0f}° (backup)"))
-
-                # Slopes slope_limit_deg-65°: Gentle correction
-                elif slope_angle > slope_limit_deg and uphill_vel > 0.0:
-                    # Just remove uphill velocity, no pushback
-                    vx = vx - uphill_x * uphill_vel
-                    vy = vy - uphill_y * uphill_vel
-
-                # CRITICAL: On slopes > 65°, CLAMP Z position to prevent upward movement
-                # This is the nuclear option - directly prevent position from moving up
-                if slope_angle > 65.0 and on_ground:
-                    # If character somehow moved upward on steep slope, FORCE them back down
-                    # Store ground contact Z as maximum allowed Z
-                    max_allowed_z = ground_hit_z if ground_hit_z is not None else pz
-                    if pz > max_allowed_z:
-                        if debug_slopes:
-                            worker_logs.append(("SLOPES", f"Z-CLAMP angle={slope_angle:.0f}° prevented {pz - max_allowed_z:.3f}m upward movement"))
-                        pz = max_allowed_z  # FORCE character to ground level or below
+                        worker_logs.append(("SLOPES", f"Z-CLAMP angle={slope_angle:.0f}° prevented {pz - max_allowed_z:.3f}m upward movement"))
+                    pz = max_allowed_z
 
             # Compute slide direction (down the slope in XY plane)
             # The normal points OUT of the slope surface.

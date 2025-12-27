@@ -672,8 +672,7 @@ class KinematicCharacterController:
         camera_yaw: float,
         static_bvh,  # Not used - worker has cached grid
         dynamic_map,
-        platform_linear_velocity_map=None,  # DEPRECATED - kept for API compat
-        platform_ang_velocity_map=None,     # DEPRECATED - kept for API compat
+        platform_linear_velocity_map=None,
         engine=None,
         context=None,
         physics_frame=0,
