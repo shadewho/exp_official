@@ -27,28 +27,24 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import time
 
-from .ik import (
+from .ik_chains import LEG_IK, ARM_IK, IK_TOLERANCES
+from .ik_math import normalize, quat_from_two_vectors, quat_multiply, quat_rotate_vector
+from .ik_solver import (
     solve_leg_ik,
     solve_arm_ik,
     compute_knee_pole_position,
     compute_elbow_pole_position,
-    LEG_IK,
-    ARM_IK,
-    normalize,
-    quat_from_two_vectors,
-    quat_multiply,
-    quat_rotate_vector,
 )
 
 
 # =============================================================================
-# CONSTANTS
+# CONSTANTS - Using centralized tolerances from ik_chains
 # =============================================================================
 
-# Constraint satisfaction thresholds (in meters)
-FOOT_ERROR_THRESHOLD = 0.01      # 1cm - feet must be very accurate
-HAND_ERROR_THRESHOLD = 0.03      # 3cm - hands can have more tolerance
-HIPS_ERROR_THRESHOLD = 0.005     # 0.5cm - hips position should be precise
+# Re-export for local use (values come from IK_TOLERANCES class)
+FOOT_ERROR_THRESHOLD = IK_TOLERANCES.FOOT_ERROR
+HAND_ERROR_THRESHOLD = IK_TOLERANCES.HAND_ERROR
+HIPS_ERROR_THRESHOLD = IK_TOLERANCES.HIPS_ERROR
 
 # Spine chain bones (Hips → Spine → Spine1 → Spine2 → Neck)
 SPINE_CHAIN = ["Hips", "Spine", "Spine1", "Spine2", "Neck"]
@@ -221,6 +217,7 @@ def solve_full_body_ik(
             knee_pole=knee_pole,
             side=side,
             char_forward=char_forward,  # Critical for high kicks
+            char_up=char_up,  # For knee hinge axis
         )
 
         # Store bone transforms
@@ -332,6 +329,8 @@ def solve_full_body_ik(
             hand_target=root_pos + hand_target,
             elbow_pole=elbow_pole,
             side=side,
+            char_forward=char_forward,
+            char_up=char_up,
         )
 
         # Check if target is reachable

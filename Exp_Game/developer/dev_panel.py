@@ -216,6 +216,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_hitscans", text="Hitscans")
             col.prop(scene, "dev_debug_transforms", text="Transforms")
             col.prop(scene, "dev_debug_tracking", text="Tracking (Track To)")
+            col.prop(scene, "dev_debug_ragdoll", text="Ragdoll")
 
         # ═══════════════════════════════════════════════════════════════
         # Animation 2.0 (Collapsible)
@@ -375,6 +376,87 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
 
             col.separator(factor=0.5)
             col.prop(scene, "dev_debug_ik_visual", text="GPU Visualization")
+
+            # ─── IK Test Session (Data Collection) ─────────────────────────────
+            test_box = sub_box.box()
+            test_box.label(text="IK Test Session", icon='EXPERIMENTAL')
+
+            if scene.ik_test_session_active:
+                # Session is active - show rating UI
+                col = test_box.column(align=True)
+
+                # Current test - BIG and clear
+                if scene.ik_test_current_description:
+                    row = col.row()
+                    row.alert = True
+                    row.label(text=scene.ik_test_current_description, icon='POSE_HLT')
+
+                # Goal text - what should happen
+                if scene.ik_test_goal_text:
+                    box2 = col.box()
+                    box2.label(text="GOAL:", icon='FORWARD')
+                    # Word wrap the goal text
+                    for line in scene.ik_test_goal_text.split('. '):
+                        if line.strip():
+                            box2.label(text=line.strip() + ('.' if not line.endswith('.') else ''))
+
+                # Success criteria - how to judge
+                if scene.ik_test_success_criteria:
+                    box2 = col.box()
+                    box2.label(text="JUDGE BY:", icon='VIEWZOOM')
+                    # Split GOOD/BAD criteria
+                    criteria = scene.ik_test_success_criteria
+                    if "GOOD:" in criteria and "BAD:" in criteria:
+                        parts = criteria.split("BAD:")
+                        good_part = parts[0].replace("GOOD:", "").strip()
+                        bad_part = parts[1].strip() if len(parts) > 1 else ""
+                        row = box2.row()
+                        row.label(text=f"GOOD: {good_part}", icon='CHECKMARK')
+                        row = box2.row()
+                        row.alert = True
+                        row.label(text=f"BAD: {bad_part}", icon='X')
+                    else:
+                        box2.label(text=criteria)
+
+                col.separator(factor=0.5)
+
+                # Stats
+                row = col.row()
+                row.label(text=f"Good: {scene.ik_test_good_count}", icon='CHECKMARK')
+                row.label(text=f"Bad: {scene.ik_test_bad_count}", icon='X')
+
+                col.separator(factor=0.5)
+
+                # Rating buttons - 4 options
+                # Row 1: GOOD
+                row = col.row(align=True)
+                row.scale_y = 1.8
+                row.operator("anim2.rate_good", text="GOOD", icon='CHECKMARK')
+
+                # Row 2: BAD options
+                col.label(text="If BAD, what's wrong?")
+                row = col.row(align=True)
+                row.scale_y = 1.5
+                row.alert = True
+                row.operator("anim2.rate_bad_rotation", text="Rotation")
+                row.operator("anim2.rate_bad_position", text="Position")
+                row.operator("anim2.rate_bad_both", text="Both")
+
+                col.separator(factor=0.5)
+
+                # Note input - for adding context to failures
+                col.label(text="Add Note (optional):", icon='TEXT')
+                col.prop(scene, "ik_test_note", text="")
+
+                col.separator(factor=0.5)
+
+                # Stop button
+                col.operator("anim2.stop_test_session", text="Stop & Save Session", icon='FILE_TICK')
+            else:
+                # Session not active - show start button
+                col = test_box.column()
+                col.label(text="Collect IK pose data for analysis", icon='INFO')
+                col.operator("anim2.start_test_session", text="Start Test Session", icon='PLAY')
 
             # Animation options
             options_box = sub_box.box()

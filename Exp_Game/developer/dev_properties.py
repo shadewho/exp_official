@@ -681,6 +681,19 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_ragdoll = bpy.props.BoolProperty(
+        name="Ragdoll",
+        description=(
+            "Ragdoll physics diagnostics (worker-offloaded):\n"
+            "• Active ragdolls (armature, duration)\n"
+            "• Bone state submission (positions, velocities)\n"
+            "• Worker physics (Verlet, collisions, constraints)\n"
+            "• Apply results (bone transforms)\n"
+            "• Recovery blend status"
+        ),
+        default=False
+    )
+
     # ══════════════════════════════════════════════════════════════════════════
     # UNIFIED IK SYSTEM
     # ══════════════════════════════════════════════════════════════════════════
@@ -1200,6 +1213,7 @@ def unregister_properties():
         'dev_debug_hitscans',
         'dev_debug_transforms',
         'dev_debug_tracking',
+        'dev_debug_ragdoll',
 
         # Unified IK System
         'dev_debug_ik',

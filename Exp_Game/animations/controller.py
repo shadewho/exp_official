@@ -27,6 +27,18 @@ from ..engine.animations.data import BakedAnimation, Transform
 from ..engine.animations.cache import AnimationCache
 
 
+def _has_significant_delta(prev: tuple, new: tuple, eps: float = 1e-5) -> bool:
+    """Return True if any component differs more than eps."""
+    if prev is None or new is None:
+        return True
+    if len(prev) != len(new):
+        return True
+    for a, b in zip(prev, new):
+        if abs(a - b) > eps:
+            return True
+    return False
+
+
 @dataclass
 class PlayingAnimation:
     """
@@ -94,6 +106,10 @@ class AnimationController:
 
         # Global time scale (1.0 = normal, 0.5 = half speed)
         self.time_scale: float = 1.0
+
+        # Last applied transforms to skip redundant bpy writes
+        self._last_bone_transforms: Dict[str, Dict[str, tuple]] = {}
+        self._last_object_transforms: Dict[str, tuple] = {}
 
     # =========================================================================
     # CACHE MANAGEMENT
@@ -261,11 +277,15 @@ class AnimationController:
     def clear(self) -> None:
         """Clear all animation states (not the cache)."""
         self._states.clear()
+        self._last_bone_transforms.clear()
+        self._last_object_transforms.clear()
 
     def clear_all(self) -> None:
         """Clear both states and cache."""
         self._states.clear()
         self.cache.clear()
+        self._last_bone_transforms.clear()
+        self._last_object_transforms.clear()
 
     # =========================================================================
     # WORKER-OFFLOADED METHODS
@@ -391,6 +411,7 @@ class AnimationController:
             return 0
 
         count = 0
+        bone_cache = self._last_bone_transforms.setdefault(object_name, {})
 
         # Apply bone transforms (for armatures)
         if obj.type == 'ARMATURE' and bone_transforms:
@@ -401,6 +422,11 @@ class AnimationController:
                 if pose_bone is None:
                     continue
 
+                prev_transform = bone_cache.get(bone_name)
+                if prev_transform is not None and not _has_significant_delta(prev_transform, transform):
+                    # Skip redundant write
+                    continue
+
                 # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
                 qw, qx, qy, qz = transform[0:4]
                 lx, ly, lz = transform[4:7]
@@ -409,20 +435,24 @@ class AnimationController:
                 pose_bone.rotation_quaternion = (qw, qx, qy, qz)
                 pose_bone.location = (lx, ly, lz)
                 pose_bone.scale = (sx, sy, sz)
+                bone_cache[bone_name] = transform
                 count += 1
 
         # Apply object-level transform (for mesh, empty, etc. OR armature root motion)
         if object_transform is not None:
-            # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
-            qw, qx, qy, qz = object_transform[0:4]
-            lx, ly, lz = object_transform[4:7]
-            sx, sy, sz = object_transform[7:10]
+            prev_object = self._last_object_transforms.get(object_name)
+            if prev_object is None or _has_significant_delta(prev_object, object_transform):
+                # Transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
+                qw, qx, qy, qz = object_transform[0:4]
+                lx, ly, lz = object_transform[4:7]
+                sx, sy, sz = object_transform[7:10]
 
-            obj.rotation_mode = 'QUATERNION'
-            obj.rotation_quaternion = (qw, qx, qy, qz)
-            obj.location = (lx, ly, lz)
-            obj.scale = (sx, sy, sz)
-            count += 1
+                obj.rotation_mode = 'QUATERNION'
+                obj.rotation_quaternion = (qw, qx, qy, qz)
+                obj.location = (lx, ly, lz)
+                obj.scale = (sx, sy, sz)
+                self._last_object_transforms[object_name] = object_transform
+                count += 1
 
         return count
 

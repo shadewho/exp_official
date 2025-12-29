@@ -43,7 +43,7 @@ def bake_action(
 
     Args:
         action: Blender Action to bake
-        fps: Frames per second (default 30)
+        fps: Source frames per second of the action (will be clamped to 30 for output)
         bone_filter: Optional set of bone names to include (None = all)
 
     Returns:
@@ -52,9 +52,20 @@ def bake_action(
     if action is None:
         raise ValueError("Cannot bake None action")
 
+    # Clamp to fixed runtime rate (30Hz)
+    target_fps = DEFAULT_FPS
+
+    # Source fps (from scene/action); fall back to DEFAULT_FPS if invalid
+    source_fps = fps if fps and fps > 0 else DEFAULT_FPS
+
     frame_start, frame_end = action.frame_range
-    frame_count = int(frame_end - frame_start) + 1
-    duration = frame_count / fps
+    raw_frame_count = int(frame_end - frame_start) + 1
+
+    # Duration based on source fps
+    duration = (raw_frame_count - 1) / source_fps if raw_frame_count > 1 else 0.0
+
+    # Number of samples at target fps (include last frame)
+    sample_frames = max(1, int(round(duration * target_fps)) + 1)
 
     all_fcurves = _get_all_fcurves(action)
     bone_fcurves, object_fcurves = _categorize_fcurves(all_fcurves)
@@ -66,18 +77,29 @@ def bake_action(
 
     if bone_fcurves:
         bone_names, bone_transforms, animated_mask = _bake_bones_numpy(
-            bone_fcurves, frame_start, frame_count, bone_filter
+            bone_fcurves,
+            frame_start,
+            sample_frames,
+            source_fps,
+            target_fps,
+            bone_filter
         )
 
     # Bake object transforms (if has object FCurves)
     object_transforms = None
     if object_fcurves:
-        object_transforms = _bake_object_numpy(object_fcurves, frame_start, frame_count)
+        object_transforms = _bake_object_numpy(
+            object_fcurves,
+            frame_start,
+            sample_frames,
+            source_fps,
+            target_fps
+        )
 
     return BakedAnimation(
         name=action.name,
         duration=duration,
-        fps=fps,
+        fps=target_fps,
         bone_names=bone_names,
         bone_transforms=bone_transforms,
         animated_mask=animated_mask,
@@ -140,7 +162,9 @@ def _categorize_fcurves(fcurves) -> Tuple[Dict, Dict]:
 def _bake_bones_numpy(
     bone_fcurves: Dict,
     frame_start: float,
-    frame_count: int,
+    sample_frames: int,
+    source_fps: float,
+    target_fps: float,
     bone_filter: Optional[Set[str]]
 ) -> Tuple[List[str], np.ndarray, np.ndarray]:
     """
@@ -152,7 +176,7 @@ def _bake_bones_numpy(
     Returns:
         (bone_names, bone_transforms, animated_mask)
         - bone_names: List[str] of bone names in order
-        - bone_transforms: np.ndarray shape (num_frames, num_bones, 10)
+        - bone_transforms: np.ndarray shape (sample_frames, num_bones, 10)
         - animated_mask: np.ndarray bool shape (num_bones,) - True if bone animates
     """
     # Get all bone names from FCurves (no armature validation)
@@ -169,8 +193,8 @@ def _bake_bones_numpy(
     bones_to_bake.sort()
     num_bones = len(bones_to_bake)
 
-    # Pre-allocate numpy array: (frames, bones, 10)
-    transforms = np.zeros((frame_count, num_bones, 10), dtype=np.float32)
+    # Pre-allocate numpy array: (sample_frames, bones, 10)
+    transforms = np.zeros((sample_frames, num_bones, 10), dtype=np.float32)
 
     # Set identity defaults (quat w=1, scale=1)
     transforms[:, :, 0] = 1.0  # quat_w
@@ -182,10 +206,12 @@ def _bake_bones_numpy(
     for bone_idx, bone_name in enumerate(bones_to_bake):
         fcurves = bone_fcurves[bone_name]
 
-        for frame_idx in range(frame_count):
-            frame_num = frame_start + frame_idx
+        for sample_idx in range(sample_frames):
+            # Map target sample time to source frame domain
+            t_seconds = sample_idx / target_fps
+            frame_num = frame_start + t_seconds * source_fps
             transform = _sample_transform(fcurves, frame_num)
-            transforms[frame_idx, bone_idx, :] = transform
+            transforms[sample_idx, bone_idx, :] = transform
 
     # Detect static bones (all frames identical within threshold)
     animated_mask = _detect_animated_bones(transforms)
@@ -196,15 +222,17 @@ def _bake_bones_numpy(
 def _bake_object_numpy(
     object_fcurves: Dict,
     frame_start: float,
-    frame_count: int
+    sample_frames: int,
+    source_fps: float,
+    target_fps: float
 ) -> np.ndarray:
     """
     Bake object-level transforms to numpy array.
 
     Returns:
-        np.ndarray shape (num_frames, 10)
+        np.ndarray shape (sample_frames, 10)
     """
-    transforms = np.zeros((frame_count, 10), dtype=np.float32)
+    transforms = np.zeros((sample_frames, 10), dtype=np.float32)
 
     # Set identity defaults
     transforms[:, 0] = 1.0  # quat_w
@@ -212,10 +240,12 @@ def _bake_object_numpy(
     transforms[:, 8] = 1.0  # scale_y
     transforms[:, 9] = 1.0  # scale_z
 
-    for frame_idx in range(frame_count):
-        frame_num = frame_start + frame_idx
+    for sample_idx in range(sample_frames):
+        # Map target sample time to source frame domain
+        t_seconds = sample_idx / target_fps
+        frame_num = frame_start + t_seconds * source_fps
         transform = _sample_transform(object_fcurves, frame_num)
-        transforms[frame_idx, :] = transform
+        transforms[sample_idx, :] = transform
 
     return transforms
 

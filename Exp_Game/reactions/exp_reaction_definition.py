@@ -235,6 +235,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
+            ("RAGDOLL",           "Ragdoll",              "Simulate bone physics with collision"),
         ],
         default="CUSTOM_ACTION"
     )
@@ -1020,6 +1021,42 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Max Runtime (sec)",
         default=0.0, min=0.0, soft_max=120.0,
         description="0 = unlimited. Stops automatically after this many seconds"
+    )
+
+
+    # --------------------------------------------------
+    # RAGDOLL REACTION FIELDS
+    # --------------------------------------------------
+    ragdoll_target_use_character: bpy.props.BoolProperty(
+        name="Use Character",
+        default=True,
+        description="If True, ragdoll the scene.target_armature; else use the specified armature"
+    )
+    ragdoll_target_armature: bpy.props.PointerProperty(
+        name="Target Armature",
+        type=bpy.types.Object,
+        description="Armature to ragdoll if 'Use Character' is False"
+    )
+    ragdoll_duration: bpy.props.FloatProperty(
+        name="Duration (sec)",
+        default=2.0, min=0.1, max=30.0,
+        description="How long the ragdoll simulation runs"
+    )
+    ragdoll_gravity_multiplier: bpy.props.FloatProperty(
+        name="Gravity Multiplier",
+        default=1.0, min=0.0, max=3.0,
+        description="Multiply scene gravity for ragdoll (1.0 = normal, 0.5 = floaty)"
+    )
+    ragdoll_impulse_strength: bpy.props.FloatProperty(
+        name="Impulse Strength",
+        default=5.0, min=0.0, max=50.0,
+        description="Initial force applied when ragdoll starts (knockback)"
+    )
+    ragdoll_impulse_direction: bpy.props.FloatVectorProperty(
+        name="Impulse Direction",
+        default=(0.0, 0.0, 1.0),
+        subtype='DIRECTION',
+        description="Direction of initial impulse (normalized)"
     )
 
 

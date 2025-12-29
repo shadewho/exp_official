@@ -21,7 +21,7 @@ from bpy.types import Operator
 from mathutils import Vector
 
 from ..developer.dev_logger import log_game, start_session, export_game_log, clear_log
-from ..engine.animations.ik import LEG_IK, ARM_IK
+from ..engine.animations.ik_chains import LEG_IK, ARM_IK
 
 
 # Expected bone positions from rig.md (key bones only)

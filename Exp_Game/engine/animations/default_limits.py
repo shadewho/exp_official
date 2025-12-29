@@ -37,14 +37,16 @@ DEFAULT_JOINT_LIMITS = {
     "RightHand": {"X": [-90, 90], "Y": [0, 0], "Z": [-60, 60]},
 
     # Left Leg
+    # Note: Shin Y/Z limits relaxed based on IK test data - user marked poses with
+    # Y:-16° and Z:-15° as visually correct. Original limits were too restrictive.
     "LeftThigh": {"X": [-90, 120], "Y": [-40, 40], "Z": [-20, 80]},
-    "LeftShin": {"X": [-150, 10], "Y": [-10, 10], "Z": [0, 0]},
+    "LeftShin": {"X": [-150, 10], "Y": [-20, 20], "Z": [-15, 15]},
     "LeftFoot": {"X": [-80, 45], "Y": [-30, 30], "Z": [-40, 40]},
     "LeftToeBase": {"X": [-40, 40], "Y": [0, 0], "Z": [0, 0]},
 
     # Right Leg (Mirrored)
     "RightThigh": {"X": [-90, 120], "Y": [-40, 40], "Z": [-80, 20]},
-    "RightShin": {"X": [-150, 10], "Y": [-10, 10], "Z": [0, 0]},
+    "RightShin": {"X": [-150, 10], "Y": [-20, 20], "Z": [-15, 15]},
     "RightFoot": {"X": [-80, 45], "Y": [-30, 30], "Z": [-40, 40]},
     "RightToeBase": {"X": [-40, 40], "Y": [0, 0], "Z": [0, 0]},
 

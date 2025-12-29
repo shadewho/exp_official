@@ -468,16 +468,18 @@ The Hips bone is listed in the table below for documentation completeness, but t
 | Bone | X | Y | Z |
 |------|---|---|---|
 | LeftThigh | [-90, 120] | [-40, 40] | [-20, 80] |
-| LeftShin | [-150, 10] | [-10, 10] | [0, 0] |
+| LeftShin | [-150, 10] | [-20, 20] | [-15, 15] |
 | LeftFoot | [-80, 45] | [-30, 30] | [-40, 40] |
 | LeftToeBase | [-40, 40] | [0, 0] | [0, 0] |
+
+*Note: Shin Y/Z limits relaxed from [-10,10]/[0,0] to [-20,20]/[-15,15] based on IK test data analysis (2025-12-29).*
 
 ### Right Leg (Mirrored)
 
 | Bone | X | Y | Z |
 |------|---|---|---|
 | RightThigh | [-90, 120] | [-40, 40] | [-80, 20] |
-| RightShin | [-150, 10] | [-10, 10] | [0, 0] |
+| RightShin | [-150, 10] | [-20, 20] | [-15, 15] |
 | RightFoot | [-80, 45] | [-30, 30] | [-40, 40] |
 | RightToeBase | [-40, 40] | [0, 0] | [0, 0] |
 
@@ -540,11 +542,11 @@ The Hips bone is listed in the table below for documentation completeness, but t
   "RightHand": {"X": [-90, 90], "Y": [0, 0], "Z": [-60, 60]},
 
   "LeftThigh": {"X": [-90, 120], "Y": [-40, 40], "Z": [-20, 80]},
-  "LeftShin": {"X": [-150, 10], "Y": [-10, 10], "Z": [0, 0]},
+  "LeftShin": {"X": [-150, 10], "Y": [-20, 20], "Z": [-15, 15]},
   "LeftFoot": {"X": [-80, 45], "Y": [-30, 30], "Z": [-40, 40]},
   "LeftToeBase": {"X": [-40, 40], "Y": [0, 0], "Z": [0, 0]},
   "RightThigh": {"X": [-90, 120], "Y": [-40, 40], "Z": [-80, 20]},
-  "RightShin": {"X": [-150, 10], "Y": [-10, 10], "Z": [0, 0]},
+  "RightShin": {"X": [-150, 10], "Y": [-20, 20], "Z": [-15, 15]},
   "RightFoot": {"X": [-80, 45], "Y": [-30, 30], "Z": [-40, 40]},
   "RightToeBase": {"X": [-40, 40], "Y": [0, 0], "Z": [0, 0]},
 
@@ -707,6 +709,7 @@ For precise calculations, here are the exact axis vectors:
 
 | Date | Change |
 |------|--------|
+| 2025-12-29 | Relaxed Shin Y/Z limits based on IK test data analysis |
 | 2025-12-26 | Added Bone Local Axis Orientations section |
 | 2025-12-25 | Added Joint Rotation Limits section |
 | 2025-12-20 | Initial comprehensive documentation |

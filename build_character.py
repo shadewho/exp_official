@@ -323,3 +323,4 @@ class EXPLORATORY_OT_BuildArmature(bpy.types.Operator):
 
         self.report({'INFO'}, f"Armature appended: {chosen.name}")
         return {'FINISHED'}
+    

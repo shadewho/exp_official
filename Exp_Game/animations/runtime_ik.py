@@ -27,9 +27,9 @@ from typing import Optional, Tuple, Dict, TYPE_CHECKING
 from mathutils import Vector, Quaternion
 
 # Import worker-safe IK solver
-from ..engine.animations.ik import (
+from ..engine.animations.ik_chains import LEG_IK, ARM_IK
+from ..engine.animations.ik_solver import (
     solve_two_bone_ik,
-    LEG_IK, ARM_IK,
     compute_knee_pole_position,
     compute_elbow_pole_position,
 )

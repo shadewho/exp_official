@@ -21,6 +21,10 @@ USER_PROFILE_BASE_URLS = {
 BASE_URL = BASE_URLS.get(ENVIRONMENT, BASE_URLS['production'])
 USER_PROFILE_BASE_URL = USER_PROFILE_BASE_URLS.get(ENVIRONMENT, USER_PROFILE_BASE_URLS['production'])
 
+TOKEN_EXCHANGE_ENDPOINT = f"{BASE_URL}/api/token_exchange"
+
+
+
 # Define specific endpoints for the blender API
 LOGIN_ENDPOINT = f"{BASE_URL}/api/login"
 LOGOUT_ENDPOINT = f"{BASE_URL}/api/logout"

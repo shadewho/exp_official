@@ -29,6 +29,7 @@ from ..reactions.exp_action_keys import (
 )
 from ..reactions.exp_parenting import execute_parenting_reaction
 from ..reactions.exp_tracking import execute_tracking_reaction
+from ..reactions.exp_ragdoll import execute_ragdoll_reaction
 from .exp_tracker_eval import reset_tracker_state
 from ..developer.dev_logger import log_game
 
@@ -307,6 +308,8 @@ def _execute_reaction_now(r):
         execute_parenting_reaction(r)
     elif t == "TRACK_TO":
         execute_tracking_reaction(r)
+    elif t == "RAGDOLL":
+        execute_ragdoll_reaction(r)
 
 
 def _execute_reaction_list_now(reactions):

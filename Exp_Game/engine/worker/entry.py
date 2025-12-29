@@ -48,6 +48,7 @@ from worker.reactions import (
     handle_hitscan_batch,
     handle_transform_batch,
     handle_tracking_batch,
+    handle_ragdoll_update_batch,
 )
 
 # Import animation math from single source of truth (no duplicates!)
@@ -60,14 +61,13 @@ from animations.blend import (
 )
 
 # Import IK solver for worker-side IK computation
-from animations.ik import (
+from animations.ik_chains import LEG_IK, ARM_IK
+from animations.ik_solver import (
     solve_two_bone_ik,
     solve_leg_ik,
     solve_arm_ik,
     compute_knee_pole_position,
     compute_elbow_pole_position,
-    LEG_IK,
-    ARM_IK,
 )
 
 # Import joint limits for anatomical constraints during pose blending
@@ -603,10 +603,10 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
             # Compute pole and solve IK to get joint world position
             if is_leg:
                 pole_pos = compute_knee_pole_position(root_head, target, char_forward, char_right, side, 0.5)
-                _, _, joint_world = solve_leg_ik(root_head, target, pole_pos, side)
+                _, _, joint_world = solve_leg_ik(root_head, target, pole_pos, side, char_forward, char_up)
             else:
                 pole_pos = compute_elbow_pole_position(root_head, target, char_forward, char_up, side, 0.3)
-                _, _, joint_world = solve_arm_ik(root_head, target, pole_pos, side)
+                _, _, joint_world = solve_arm_ik(root_head, target, pole_pos, side, char_forward, char_up)
 
             # DELTA-BASED IK: Use point_bone_at_target approach
             # Root bone points at joint, mid bone points at target
@@ -808,11 +808,11 @@ def _handle_ik_solve_batch(job_data: dict) -> dict:
         if is_leg:
             chain_def = LEG_IK.get(chain, {})
             pole_pos = compute_knee_pole_position(root_pos, target, char_forward, char_right, side, 0.5)
-            upper_quat, lower_quat, joint_world = solve_leg_ik(root_pos, target, pole_pos, side)
+            upper_quat, lower_quat, joint_world = solve_leg_ik(root_pos, target, pole_pos, side, char_forward, char_up)
         else:
             chain_def = ARM_IK.get(chain, {})
             pole_pos = compute_elbow_pole_position(root_pos, target, char_forward, char_up, side, 0.3)
-            upper_quat, lower_quat, joint_world = solve_arm_ik(root_pos, target, pole_pos, side)
+            upper_quat, lower_quat, joint_world = solve_arm_ik(root_pos, target, pole_pos, side, char_forward, char_up)
 
         # Calculate reach info
         reach_dist = float(np.linalg.norm(target - root_pos))
@@ -1277,6 +1277,15 @@ def process_job(job) -> dict:
             # Tracking movement (sweep/slide/gravity) - offloaded from main thread
             # Uses unified_raycast for collision detection
             result_data = handle_tracking_batch(
+                job.data,
+                _cached_grid,
+                _cached_dynamic_meshes,
+                _cached_dynamic_transforms
+            )
+
+        elif job.job_type == "RAGDOLL_UPDATE_BATCH":
+            # Ragdoll bone physics simulation - gravity + ray collision
+            result_data = handle_ragdoll_update_batch(
                 job.data,
                 _cached_grid,
                 _cached_dynamic_meshes,

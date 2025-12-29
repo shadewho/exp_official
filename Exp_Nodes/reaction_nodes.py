@@ -1139,3 +1139,54 @@ class ReactionCrosshairsNode(_ReactionNodeKind):
     bl_idname = "ReactionCrosshairsNodeType"
     bl_label  = "Enable Crosshairs"
     KIND = "ENABLE_CROSSHAIRS"
+
+
+class ReactionRagdollNode(_ReactionNodeKind):
+    bl_idname = "ReactionRagdollNodeType"
+    bl_label  = "Ragdoll"
+    KIND = "RAGDOLL"
+
+    def init(self, context):
+        super().init(context)
+
+        # Duration socket
+        s_dur = self.inputs.new("ExpFloatSocketType", "Duration")
+        s_dur.reaction_prop = "ragdoll_duration"
+
+        # Gravity multiplier socket
+        s_grav = self.inputs.new("ExpFloatSocketType", "Gravity Mult")
+        s_grav.reaction_prop = "ragdoll_gravity_multiplier"
+
+        # Impulse strength socket
+        s_imp = self.inputs.new("ExpFloatSocketType", "Impulse Strength")
+        s_imp.reaction_prop = "ragdoll_impulse_strength"
+
+        # Impulse direction socket
+        s_dir = self.inputs.new("ExpVectorSocketType", "Impulse Direction")
+        s_dir.reaction_prop = "ragdoll_impulse_direction"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        # Target section
+        tgt = layout.box()
+        tgt.label(text="Target")
+        tgt.prop(r, "ragdoll_target_use_character", text="Use Character")
+        if not getattr(r, "ragdoll_target_use_character", True):
+            tgt.prop_search(r, "ragdoll_target_armature", bpy.context.scene, "objects", text="Armature")
+        else:
+            char = getattr(bpy.context.scene, "target_armature", None)
+            tgt.label(text=f"Armature: {char.name if char else '—'}", icon='ARMATURE_DATA')
+
+        # Info box
+        info = layout.box()
+        info.label(text="Simulates bone physics with collision.", icon='PHYSICS')
+        info.label(text="Blocks all animations until complete.")

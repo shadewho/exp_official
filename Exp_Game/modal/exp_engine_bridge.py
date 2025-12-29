@@ -72,10 +72,13 @@ def init_engine(modal, context) -> tuple[bool, str]:
         print(f"[STARTUP 2/5] ✓ All workers alive and running")
 
     # ─── STEP 3: PING Verification ───
+    # NOTE: 15 second timeout handles "cold start" after extended idle.
+    # When Blender sits idle, Windows swaps numpy to disk. Workers need
+    # time to reload it before responding to PING.
     if startup_logs:
         print(f"\n[STARTUP 3/5] Verifying worker responsiveness (PING check)...")
 
-    if not modal.engine.wait_for_readiness(timeout=5.0):
+    if not modal.engine.wait_for_readiness(timeout=15.0):
         error_msg = "Engine workers not responding to PING"
         if startup_logs:
             print(f"[STARTUP 3/5] ✗ FAILED: {error_msg}")
@@ -110,7 +113,7 @@ def init_engine(modal, context) -> tuple[bool, str]:
         if startup_logs:
             print(f"[STARTUP 4/5] Grid jobs submitted, waiting for all workers to confirm...")
 
-        if not modal.engine.verify_grid_cache(timeout=5.0):
+        if not modal.engine.verify_grid_cache(timeout=15.0):
             error_msg = "Not all workers cached spatial grid"
             if startup_logs:
                 print(f"[STARTUP 4/5] ✗ FAILED: {error_msg}")

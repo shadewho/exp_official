@@ -26,7 +26,7 @@ from bpy.types import Operator, PropertyGroup
 from bpy.props import FloatProperty, BoolProperty, EnumProperty, PointerProperty
 
 from ..engine.animations.baker import bake_action
-from ..engine.animations.ik import LEG_IK, ARM_IK
+from ..engine.animations.ik_chains import LEG_IK, ARM_IK
 from ..engine import EngineCore
 from .controller import AnimationController
 from ..developer.dev_logger import start_session, log_game, log_worker_messages, export_game_log, clear_log
@@ -42,6 +42,115 @@ from ..developer.gpu_utils import (
     crosshair_verts,
     arrow_head_verts,
 )
+from .rig_test_data.test_suite import (
+    build_default_plan,
+    SessionRecorder,
+    evaluate_pose,
+    IKTestCase,
+    human_goal_text,
+    human_judge_text,
+    OUTPUT_DIR,
+)
+
+
+# =============================================================================
+# GPU TEST TARGET VISUALIZER
+# =============================================================================
+# Draws ALL IK targets during test sessions with distinct colors and labels
+
+_test_target_handler = None
+_test_target_data = None
+
+# Target colors - distinct and visible
+TARGET_COLORS = {
+    "L_HAND": (0.2, 0.6, 1.0, 0.95),    # Blue - left hand
+    "R_HAND": (1.0, 0.4, 0.2, 0.95),    # Orange - right hand
+    "L_FOOT": (0.2, 1.0, 0.4, 0.95),    # Green - left foot
+    "R_FOOT": (1.0, 1.0, 0.2, 0.95),    # Yellow - right foot
+    "LOOK_AT": (1.0, 0.2, 1.0, 0.95),   # Magenta - look at
+    "LEAN": (0.6, 0.2, 1.0, 0.95),      # Purple - lean/spine
+}
+
+
+def _draw_test_targets():
+    """GPU draw callback for test target visualization."""
+    global _test_target_data
+
+    if _test_target_data is None:
+        return
+
+    gpu.state.depth_test_set('NONE')
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(3.0)
+
+    shader = get_cached_shader()
+    all_verts = []
+    all_colors = []
+
+    for target in _test_target_data:
+        tag = target.get('tag', '')
+        pos = target.get('pos')
+        if not pos:
+            continue
+
+        color = TARGET_COLORS.get(tag, (1.0, 1.0, 1.0, 0.9))
+
+        # Draw crosshair at target
+        size = 0.08
+        extend_batch_data(all_verts, all_colors, crosshair_verts(pos, size), color)
+
+        # Draw sphere wireframe
+        extend_batch_data(all_verts, all_colors, sphere_wire_verts(pos, 0.06, CIRCLE_8), color)
+
+        # Draw direction indicator from origin toward target (shows which way target is)
+        origin = target.get('origin')
+        if origin:
+            # Line from origin to target
+            all_verts.extend([origin, pos])
+            all_colors.extend([(*color[:3], 0.4), color])
+
+    if all_verts:
+        batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
+        shader.bind()
+        batch.draw(shader)
+
+    gpu.state.line_width_set(1.0)
+    gpu.state.depth_test_set('NONE')
+    gpu.state.blend_set('NONE')
+
+
+def enable_test_target_visualizer():
+    """Register test target visualization draw handler."""
+    global _test_target_handler
+    if _test_target_handler is None:
+        _test_target_handler = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_test_targets, (), 'WINDOW', 'POST_VIEW'
+        )
+
+
+def disable_test_target_visualizer():
+    """Unregister test target visualization draw handler."""
+    global _test_target_handler, _test_target_data
+    if _test_target_handler is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_test_target_handler, 'WINDOW')
+        except:
+            pass
+        _test_target_handler = None
+    _test_target_data = None
+
+
+def set_test_target_data(targets: list):
+    """
+    Set target data for GPU visualization.
+
+    Args:
+        targets: List of dicts with 'tag', 'pos', and optional 'origin'
+    """
+    global _test_target_data
+    _test_target_data = targets
+    if _test_target_handler is None:
+        enable_test_target_visualizer()
 
 
 # =============================================================================
@@ -593,7 +702,7 @@ class ANIM2_OT_TestIKState(Operator):
         log_ik_state(state)
 
         # Update GPU visualization
-        from ..engine.animations.ik import LEG_IK, ARM_IK
+        from ..engine.animations.ik_chains import LEG_IK, ARM_IK
         chain_def = ARM_IK.get(chain) or LEG_IK.get(chain, {})
         max_reach = chain_def.get('reach', 0.5)
 
@@ -1058,6 +1167,415 @@ class ANIM2_OT_TestStop(Operator):
 
 
 # =============================================================================
+# IK TEST SESSION v2 (structured, auto-evaluated)
+# =============================================================================
+
+_test_plan: list[IKTestCase] = []
+_test_index: int = 0
+_current_test: IKTestCase = None
+_session_recorder: SessionRecorder = None
+_last_solver_diagnostics: dict = {}  # Captured from last IK solve
+
+
+def get_last_solver_diagnostics() -> dict:
+    """Get solver diagnostics from the last IK solve (for test capture)."""
+    return _last_solver_diagnostics.copy()
+
+
+def _clear_test_markers():
+    """Clear test marker empties and GPU visualization."""
+    to_remove = [obj for obj in bpy.data.objects if obj.name.startswith("_IK_TARGET_")]
+    for obj in to_remove:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    # Also clear GPU visualization
+    disable_test_target_visualizer()
+
+
+def _spawn_target_marker(name: str, position: tuple):
+    empty = bpy.data.objects.new(f"_IK_TARGET_{name}", None)
+    bpy.context.scene.collection.objects.link(empty)
+    empty.empty_display_type = 'SPHERE'
+    empty.empty_display_size = 0.08
+    empty.location = position
+    empty.show_in_front = True
+    return empty
+
+
+def _apply_current_test(context, rig_heights=None):
+    """Reset pose, place markers, run IK solve for current test."""
+    global _current_test
+    if not _current_test:
+        return
+
+    scene = context.scene
+    armature = scene.target_armature
+
+    _clear_test_markers()
+
+    for pose_bone in armature.pose.bones:
+        pose_bone.rotation_mode = 'QUATERNION'
+        pose_bone.rotation_quaternion = (1, 0, 0, 0)
+        pose_bone.location = (0, 0, 0)
+        pose_bone.scale = (1, 1, 1)
+
+    # Get armature world origin - this is what targets are relative to
+    # The test targets use world-space Z values (Z=0 is ground, Z=1.5 is shoulder height)
+    # They are offsets from the armature's world origin, NOT from the Root bone head
+    arm_origin = armature.matrix_world.translation
+    root_world = (float(arm_origin.x), float(arm_origin.y), float(arm_origin.z))
+
+    # Build GPU visualization data for all targets
+    gpu_targets = []
+
+    def place(tag, target):
+        if not target:
+            return None
+        # Convert root-relative target to world position
+        world_pos = (
+            root_world[0] + float(target[0]),
+            root_world[1] + float(target[1]),
+            root_world[2] + float(target[2])
+        )
+        _spawn_target_marker(tag, world_pos)
+        # Add to GPU vis data
+        gpu_targets.append({
+            'tag': tag,
+            'pos': world_pos,
+            'origin': root_world,
+        })
+        return world_pos
+
+    place("L_FOOT", _current_test.left_foot_target)
+    place("R_FOOT", _current_test.right_foot_target)
+    place("L_HAND", _current_test.left_hand_target)
+    place("R_HAND", _current_test.right_hand_target)
+    place("LOOK_AT", _current_test.look_at_target)
+    place("LEAN", _current_test.lean_target)
+
+    # Enable GPU visualization of targets
+    set_test_target_data(gpu_targets)
+
+    from .full_body_ik import FullBodyIK
+
+    ik = FullBodyIK(armature)
+    if _current_test.hip_drop > 0:
+        ik.set_hips_drop(_current_test.hip_drop)
+    if _current_test.left_foot_target or _current_test.right_foot_target:
+        ik.set_foot_targets(left_pos=_current_test.left_foot_target, right_pos=_current_test.right_foot_target)
+    if _current_test.left_hand_target or _current_test.right_hand_target:
+        ik.set_hand_targets(left_pos=_current_test.left_hand_target, right_pos=_current_test.right_hand_target)
+    if _current_test.look_at_target:
+        ik.set_look_at(_current_test.look_at_target)
+    if _current_test.lean_target:
+        ik.set_spine_lean(_current_test.lean_target)
+
+    ik.solve(use_engine=False)
+    context.view_layer.update()
+
+    # Store solver diagnostics for test session
+    global _last_solver_diagnostics
+    _last_solver_diagnostics = ik.get_solver_diagnostics()
+
+    scene.ik_test_current_description = _current_test.description
+    scene.ik_test_goal_text = _build_detailed_goal_text(_current_test, rig_heights)
+    scene.ik_test_success_criteria = _build_detailed_judge_text(_current_test)
+
+
+def _build_detailed_judge_text(test: IKTestCase) -> str:
+    """
+    Build detailed judge criteria based on which targets are active.
+    Lists specific checks for each active target.
+    """
+    checks = []
+
+    if test.left_hand_target:
+        checks.append("L.Hand at BLUE target? Elbow back/down?")
+    if test.right_hand_target:
+        checks.append("R.Hand at ORANGE target? Elbow back/down?")
+    if test.left_foot_target:
+        checks.append("L.Foot at GREEN target? Knee forward?")
+    if test.right_foot_target:
+        checks.append("R.Foot at YELLOW target? Knee forward?")
+    if test.look_at_target:
+        checks.append("Head facing MAGENTA target?")
+    if test.lean_target:
+        checks.append("Spine leaning toward PURPLE target?")
+    if test.hip_drop > 0:
+        checks.append(f"Hips dropped {test.hip_drop*100:.0f}cm?")
+
+    if not checks:
+        return human_judge_text(test)
+
+    return " | ".join(checks)
+
+
+def _build_detailed_goal_text(test: IKTestCase, rig_heights: dict = None) -> str:
+    """
+    Build detailed goal text with specific target positions.
+    Shows exactly which targets are active and where they are.
+    """
+    parts = []
+
+    def pos_str(p):
+        """Format position as readable string."""
+        if not p:
+            return None
+        x, y, z = p
+        # Describe position relative to character
+        lr = "left" if x < -0.1 else "right" if x > 0.1 else "center"
+        fb = "forward" if y > 0.15 else "back" if y < -0.15 else ""
+        height = f"Z={z:.2f}m"
+        return f"{lr} {fb} {height}".strip().replace("  ", " ")
+
+    # List all active targets with positions
+    if test.left_hand_target:
+        parts.append(f"L.Hand -> {pos_str(test.left_hand_target)}")
+    if test.right_hand_target:
+        parts.append(f"R.Hand -> {pos_str(test.right_hand_target)}")
+    if test.left_foot_target:
+        parts.append(f"L.Foot -> {pos_str(test.left_foot_target)}")
+    if test.right_foot_target:
+        parts.append(f"R.Foot -> {pos_str(test.right_foot_target)}")
+    if test.look_at_target:
+        parts.append(f"Look -> {pos_str(test.look_at_target)}")
+    if test.lean_target:
+        parts.append(f"Lean -> {pos_str(test.lean_target)}")
+    if test.hip_drop > 0:
+        parts.append(f"Hip drop: {test.hip_drop*100:.0f}cm")
+
+    if not parts:
+        return test.description
+
+    return " | ".join(parts)
+
+
+def _advance_test(context, rig_heights=None):
+    """Move to next test in plan and apply it."""
+    global _test_index, _current_test, _session_recorder
+    if not _test_plan:
+        return
+
+    # Check if we've completed all tests
+    if _test_index >= len(_test_plan):
+        # Auto-save and end session
+        saved = None
+        if _session_recorder:
+            saved = _session_recorder.save()
+            _session_recorder = None
+
+        _clear_test_markers()
+        _current_test = None
+        context.scene.ik_test_session_active = False
+        context.scene.ik_test_current_description = "SESSION COMPLETE"
+        context.scene.ik_test_goal_text = f"All {len(_test_plan)} tests rated!"
+        context.scene.ik_test_success_criteria = f"Saved to: {saved}" if saved else "No data saved"
+        return
+
+    _current_test = _test_plan[_test_index]
+    _test_index += 1
+    _apply_current_test(context, rig_heights)
+
+
+def _compute_rig_heights(armature) -> dict:
+    """Derive rig-relative heights from rest pose (world space)."""
+    if not armature:
+        return {}
+    arm_mat = armature.matrix_world
+
+    # World-space bounding box for top/ground reference
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        eval_obj = armature.evaluated_get(depsgraph)
+        bbox_world = [eval_obj.matrix_world @ Vector(corner) for corner in eval_obj.bound_box]
+        min_z = min(v.z for v in bbox_world)
+        max_z = max(v.z for v in bbox_world)
+    except Exception:
+        min_z = armature.location.z if armature.location else 0.0
+        max_z = min_z + 2.0
+
+    head_bone = armature.pose.bones.get("Head")
+    spine2_bone = armature.pose.bones.get("Spine2") or armature.pose.bones.get("Spine1") or armature.pose.bones.get("Spine")
+    hips_bone = armature.pose.bones.get("Hips")
+    knee_bone = armature.pose.bones.get("LeftShin") or armature.pose.bones.get("RightShin")
+    l_shoulder = armature.pose.bones.get("LeftArm")
+    r_shoulder = armature.pose.bones.get("RightArm")
+
+    def z_of(b):
+        return (arm_mat @ b.head).z if b else None
+
+    head_z = max_z if max_z is not None else z_of(head_bone)
+    if head_bone:
+        head_z = z_of(head_bone)
+    spine2_z = z_of(spine2_bone)
+    hips_z = z_of(hips_bone)
+    knee_z = z_of(knee_bone)
+
+    shoulder_z = None
+    if l_shoulder and r_shoulder:
+        shoulder_z = ((arm_mat @ l_shoulder.head).z + (arm_mat @ r_shoulder.head).z) / 2
+    elif l_shoulder:
+        shoulder_z = (arm_mat @ l_shoulder.head).z
+    elif r_shoulder:
+        shoulder_z = (arm_mat @ r_shoulder.head).z
+
+    ground = min_z
+
+    return {
+        "ground": ground,
+        "head": head_z if head_z is not None else ground + 1.8,
+        "shoulder": shoulder_z if shoulder_z is not None else (head_z - 0.25 if head_z else ground + 1.5),
+        "chest": spine2_z if spine2_z is not None else ground + 1.2,
+        "hip": hips_z if hips_z is not None else ground + 1.0,
+        "knee": knee_z if knee_z is not None else ground + 0.5,
+    }
+
+
+class ANIM2_OT_StartTestSession(Operator):
+    """Start structured IK test session"""
+    bl_idname = "anim2.start_test_session"
+    bl_label = "Start Testing"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        armature = getattr(context.scene, 'target_armature', None)
+        return armature and armature.type == 'ARMATURE'
+
+    def execute(self, context):
+        global _test_plan, _test_index, _session_recorder
+
+        armature = context.scene.target_armature
+        rig_heights = _compute_rig_heights(armature)
+
+        _test_plan = build_default_plan(rig_heights)
+        _test_index = 0
+        _session_recorder = SessionRecorder(OUTPUT_DIR)
+
+        context.scene.ik_test_session_active = True
+        context.scene.ik_test_good_count = 0
+        context.scene.ik_test_bad_count = 0
+        _advance_test(context, rig_heights)
+
+        self.report({'INFO'}, f"Test session started ({len(_test_plan)} tests). Rate each pose.")
+        return {'FINISHED'}
+
+
+def _record_and_next(context, verdict: str, category: str):
+    global _session_recorder, _current_test
+    if not _session_recorder or not _current_test:
+        return
+
+    armature = context.scene.target_armature
+    evaluation = evaluate_pose(armature, _current_test)
+
+    # Get the note from the UI property
+    note = getattr(context.scene, 'ik_test_note', "") or ""
+    _session_recorder.record(_current_test, evaluation, verdict, category, note=note)
+
+    # Clear the note for the next test
+    context.scene.ik_test_note = ""
+
+    # Stats
+    if verdict == "good":
+        context.scene.ik_test_good_count += 1
+    else:
+        context.scene.ik_test_bad_count += 1
+
+    rig_heights = _compute_rig_heights(armature)
+    _advance_test(context, rig_heights)
+
+
+class ANIM2_OT_RateGood(Operator):
+    bl_idname = "anim2.rate_good"
+    bl_label = "GOOD"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.ik_test_session_active and _current_test is not None
+
+    def execute(self, context):
+        _record_and_next(context, "good", "good")
+        return {'FINISHED'}
+
+
+class ANIM2_OT_RateBadRotation(Operator):
+    bl_idname = "anim2.rate_bad_rotation"
+    bl_label = "BAD ROTATION"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.ik_test_session_active and _current_test is not None
+
+    def execute(self, context):
+        _record_and_next(context, "bad", "rotation")
+        return {'FINISHED'}
+
+
+class ANIM2_OT_RateBadPosition(Operator):
+    bl_idname = "anim2.rate_bad_position"
+    bl_label = "BAD POSITION"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.ik_test_session_active and _current_test is not None
+
+    def execute(self, context):
+        _record_and_next(context, "bad", "position")
+        return {'FINISHED'}
+
+
+class ANIM2_OT_RateBadBoth(Operator):
+    bl_idname = "anim2.rate_bad_both"
+    bl_label = "BAD BOTH"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.ik_test_session_active and _current_test is not None
+
+    def execute(self, context):
+        _record_and_next(context, "bad", "both")
+        return {'FINISHED'}
+
+
+class ANIM2_OT_StopTestSession(Operator):
+    """Stop test session and save results"""
+    bl_idname = "anim2.stop_test_session"
+    bl_label = "Stop & Save"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.ik_test_session_active
+
+    def execute(self, context):
+        global _session_recorder, _current_test
+
+        saved = None
+        if _session_recorder:
+            saved = _session_recorder.save()
+
+        _clear_test_markers()
+        _session_recorder = None
+        _current_test = None
+        context.scene.ik_test_session_active = False
+        context.scene.ik_test_good_count = 0
+        context.scene.ik_test_bad_count = 0
+        context.scene.ik_test_current_description = ""
+        context.scene.ik_test_goal_text = ""
+        context.scene.ik_test_success_criteria = ""
+
+        if saved:
+            self.report({'INFO'}, f"Saved session to {saved}")
+        else:
+            self.report({'WARNING'}, "No session to save")
+        return {'FINISHED'}
+
+
+# =============================================================================
 # REGISTRATION
 # =============================================================================
 
@@ -1075,7 +1593,46 @@ def register():
     bpy.utils.register_class(ANIM2_OT_CrouchTest)
     bpy.utils.register_class(ANIM2_OT_ResetPose)
 
+    # IK Test Session operators
+    bpy.utils.register_class(ANIM2_OT_StartTestSession)
+    bpy.utils.register_class(ANIM2_OT_RateGood)
+    bpy.utils.register_class(ANIM2_OT_RateBadRotation)
+    bpy.utils.register_class(ANIM2_OT_RateBadPosition)
+    bpy.utils.register_class(ANIM2_OT_RateBadBoth)
+    bpy.utils.register_class(ANIM2_OT_StopTestSession)
+
     bpy.types.Scene.anim2_test = bpy.props.PointerProperty(type=ANIM2_TestProperties)
+
+    # IK Test Session properties
+    bpy.types.Scene.ik_test_session_active = bpy.props.BoolProperty(
+        name="Test Session Active",
+        default=False
+    )
+    bpy.types.Scene.ik_test_good_count = bpy.props.IntProperty(
+        name="Good Count",
+        default=0
+    )
+    bpy.types.Scene.ik_test_bad_count = bpy.props.IntProperty(
+        name="Bad Count",
+        default=0
+    )
+    bpy.types.Scene.ik_test_current_description = bpy.props.StringProperty(
+        name="Current Test",
+        default=""
+    )
+    bpy.types.Scene.ik_test_goal_text = bpy.props.StringProperty(
+        name="Goal Text",
+        default=""
+    )
+    bpy.types.Scene.ik_test_success_criteria = bpy.props.StringProperty(
+        name="Success Criteria",
+        default=""
+    )
+    bpy.types.Scene.ik_test_note = bpy.props.StringProperty(
+        name="Note",
+        description="Add a note to this test result (optional)",
+        default=""
+    )
 
     # ─── Unified IK System ───────────────────────────────────────────────
     # Region selector - what parts of the body to control
@@ -1125,6 +1682,13 @@ def register():
 
 
 def unregister():
+    # IK Test Session properties
+    for prop in ['ik_test_session_active', 'ik_test_good_count', 'ik_test_bad_count',
+                 'ik_test_current_description', 'ik_test_goal_text', 'ik_test_success_criteria',
+                 'ik_test_note']:
+        if hasattr(bpy.types.Scene, prop):
+            delattr(bpy.types.Scene, prop)
+
     # IK properties
     for prop in ['ik_region', 'ik_hips_drop', 'ik_target_look_at', 'ik_target_right_hand',
                  'ik_target_left_hand', 'ik_target_right_foot', 'ik_target_left_foot']:
@@ -1132,6 +1696,14 @@ def unregister():
             delattr(bpy.types.Scene, prop)
 
     del bpy.types.Scene.anim2_test
+
+    # IK Test Session operators
+    bpy.utils.unregister_class(ANIM2_OT_StopTestSession)
+    bpy.utils.unregister_class(ANIM2_OT_RateBadBoth)
+    bpy.utils.unregister_class(ANIM2_OT_RateBadPosition)
+    bpy.utils.unregister_class(ANIM2_OT_RateBadRotation)
+    bpy.utils.unregister_class(ANIM2_OT_RateGood)
+    bpy.utils.unregister_class(ANIM2_OT_StartTestSession)
 
     bpy.utils.unregister_class(ANIM2_OT_ResetPose)
     bpy.utils.unregister_class(ANIM2_OT_CrouchTest)

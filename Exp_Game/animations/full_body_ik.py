@@ -44,7 +44,16 @@ from typing import Optional, Dict, List, Tuple
 from mathutils import Vector, Quaternion, Matrix, Euler
 
 from ..developer.dev_logger import log_game
-from ..engine.animations.ik import LEG_IK, ARM_IK, solve_leg_ik, solve_arm_ik, compute_knee_pole_position, compute_elbow_pole_position
+from ..engine.animations.ik_chains import LEG_IK, ARM_IK
+from ..engine.animations.ik_solver import (
+    solve_leg_ik,
+    solve_arm_ik,
+    compute_knee_pole_position,
+    compute_elbow_pole_position,
+    get_last_solve_diagnostics,
+    clear_diagnostics,
+)
+from .transform_chain import TransformChainTracker
 
 
 def _force_log(msg: str):
@@ -58,6 +67,60 @@ def _force_log(msg: str):
         'category': 'IK-DIAG',
         'message': msg
     })
+
+
+def _clamp_quaternion_to_limits(quat: Quaternion, bone_name: str) -> Quaternion:
+    """
+    Clamp a quaternion's rotation to respect joint limits.
+
+    Converts to euler, clamps each axis, converts back.
+    This ensures anatomical constraints are respected (e.g., ForeArm.X = 0).
+
+    Args:
+        quat: The computed quaternion rotation
+        bone_name: Bone name to look up limits
+
+    Returns:
+        Clamped quaternion (or original if no limits defined)
+    """
+    from ..engine.animations.default_limits import get_bone_limit
+
+    limits = get_bone_limit(bone_name)
+    if not limits:
+        return quat
+
+    # Convert to euler (XYZ order matches Blender default)
+    euler = quat.to_euler('XYZ')
+
+    # Get current values in degrees
+    x_deg = math.degrees(euler.x)
+    y_deg = math.degrees(euler.y)
+    z_deg = math.degrees(euler.z)
+
+    # Clamp each axis
+    x_limits = limits.get("X", [-180, 180])
+    y_limits = limits.get("Y", [-180, 180])
+    z_limits = limits.get("Z", [-180, 180])
+
+    x_clamped = max(x_limits[0], min(x_limits[1], x_deg))
+    y_clamped = max(y_limits[0], min(y_limits[1], y_deg))
+    z_clamped = max(z_limits[0], min(z_limits[1], z_deg))
+
+    # Check if clamping occurred
+    clamped = (x_deg != x_clamped or y_deg != y_clamped or z_deg != z_clamped)
+
+    if clamped:
+        _force_log(f"  [CLAMP] {bone_name}:")
+        if abs(x_deg - x_clamped) > 0.1:
+            _force_log(f"    X: {x_deg:.1f}° -> {x_clamped:.1f}° (limit {x_limits})")
+        if abs(y_deg - y_clamped) > 0.1:
+            _force_log(f"    Y: {y_deg:.1f}° -> {y_clamped:.1f}° (limit {y_limits})")
+        if abs(z_deg - z_clamped) > 0.1:
+            _force_log(f"    Z: {z_deg:.1f}° -> {z_clamped:.1f}° (limit {z_limits})")
+
+    # Convert back to quaternion
+    clamped_euler = Euler((math.radians(x_clamped), math.radians(y_clamped), math.radians(z_clamped)), 'XYZ')
+    return clamped_euler.to_quaternion()
 
 
 # =============================================================================
@@ -242,6 +305,9 @@ class FullBodyConstraints:
     hips_drop: float = 0.0  # Meters to drop hips (crouch)
     hips_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # XYZ offset
 
+    # Spine lean (target position for spine to lean toward)
+    spine_lean_target: Optional[Tuple[float, float, float]] = None  # Root-relative world position
+
     def to_dict(self) -> dict:
         return {
             "left_foot": self.left_foot.to_dict() if self.left_foot else None,
@@ -251,6 +317,7 @@ class FullBodyConstraints:
             "look_at": self.look_at.to_dict() if self.look_at else None,
             "hips_drop": self.hips_drop,
             "hips_offset": self.hips_offset,
+            "spine_lean_target": self.spine_lean_target,
         }
 
     def get_active_count(self) -> int:
@@ -267,6 +334,8 @@ class FullBodyConstraints:
         if self.look_at and self.look_at.enabled:
             count += 1
         if abs(self.hips_drop) > 0.001:
+            count += 1
+        if self.spine_lean_target is not None:
             count += 1
         return count
 
@@ -344,6 +413,19 @@ class FullBodyIK:
         self._last_state: Optional[FullBodyState] = None
         self._last_result: Optional[FullBodyResult] = None
         self._solve_count = 0
+        self._last_solver_diagnostics: Dict = {}  # Diagnostics from last solve
+        self._conversion_diagnostics: Dict = {}  # Direction-to-rotation conversion diagnostics
+
+    def get_solver_diagnostics(self) -> Dict:
+        """Get diagnostics from the last IK solve. Includes solver internal state + conversion."""
+        # Merge solver diagnostics with conversion diagnostics
+        result = self._last_solver_diagnostics.copy()
+        result.update(self._conversion_diagnostics)
+        return result
+
+    def _record_conversion(self, key: str, value):
+        """Record a conversion diagnostic value."""
+        self._conversion_diagnostics[key] = value
 
     # =========================================================================
     # CONSTRAINT SETTERS
@@ -415,6 +497,18 @@ class FullBodyIK:
     def set_hips_offset(self, offset: Tuple[float, float, float]):
         """Set hips XYZ offset for weight shift/lean."""
         self.constraints.hips_offset = offset
+
+    def set_spine_lean(self, target: Optional[Tuple[float, float, float]]):
+        """
+        Set spine lean target (Root-relative position).
+
+        The spine chain (Spine, Spine1, Spine2) will rotate to lean toward
+        this target position. Useful for reaching, leaning, and combined poses.
+
+        Args:
+            target: Target position to lean toward (None to disable)
+        """
+        self.constraints.spine_lean_target = target
 
     def clear_constraints(self):
         """Clear all constraints."""
@@ -597,6 +691,123 @@ class FullBodyIK:
             _force_log( "  (none)")
 
         _force_log( f"  TOTAL: {active} active constraints")
+
+    def _apply_spine_twist_for_cross_body(
+        self,
+        armature,
+        target_world: np.ndarray,
+        side: str,
+        result,  # FullBodyResult
+    ) -> bool:
+        """
+        Apply spine twist (Z rotation) when arm target crosses body centerline.
+
+        For cross-body reaches (e.g., right hand reaching to left side), the arm
+        alone cannot reach far enough. Rotating the spine toward the target brings
+        the shoulder closer, making the reach achievable.
+
+        Args:
+            armature: Blender armature object
+            target_world: World-space target position for the hand
+            side: "L" or "R" for which arm
+            result: FullBodyResult to store bone transforms
+
+        Returns:
+            True if twist was applied, False otherwise
+        """
+        pose_bones = armature.pose.bones
+
+        # Get shoulder position
+        arm_matrix = armature.matrix_world
+        if side == "L":
+            arm_bone = pose_bones.get("LeftArm")
+            shoulder_x_offset = -0.136  # Left shoulder is at negative X
+        else:
+            arm_bone = pose_bones.get("RightArm")
+            shoulder_x_offset = 0.136  # Right shoulder is at positive X
+
+        if not arm_bone:
+            return False
+
+        shoulder_world = arm_matrix @ arm_bone.head
+        shoulder_x = shoulder_world.x
+        target_x = target_world[0]
+
+        # Determine if this is a cross-body reach
+        # Left arm: cross-body if target is to the RIGHT of body center
+        # Right arm: cross-body if target is to the LEFT of body center
+        body_center_x = 0.0
+        cross_threshold = 0.15  # 15cm past center before we start rotating
+
+        if side == "L":
+            cross_amount = target_x - body_center_x - cross_threshold
+            is_cross_body = cross_amount > 0
+        else:
+            cross_amount = body_center_x - cross_threshold - target_x
+            is_cross_body = cross_amount > 0
+
+        if not is_cross_body:
+            return False
+
+        # Calculate twist angle: more cross = more twist
+        # Max twist: ~45 degrees when target is 50cm+ past center
+        max_twist_rad = math.radians(45)
+        twist_factor = min(cross_amount / 0.5, 1.0)  # Scale to max at 50cm cross
+        total_twist_rad = twist_factor * max_twist_rad
+
+        # Direction of twist: toward target
+        # Left arm crossing right → rotate spine counterclockwise (positive Z)
+        # Right arm crossing left → rotate spine clockwise (negative Z)
+        if side == "L":
+            twist_rad = -total_twist_rad  # Rotate toward right (negative Z in bone-local)
+        else:
+            twist_rad = total_twist_rad  # Rotate toward left (positive Z in bone-local)
+
+        self._log_solve_step("SPINE_TWIST",
+            f"{side} arm cross-body: target_x={target_x:.3f}, cross={cross_amount:.3f}m, "
+            f"twist={math.degrees(twist_rad):.1f}deg")
+
+        # Distribute twist across spine bones (each gets 1/3)
+        per_bone_twist = twist_rad / 3.0
+
+        spine_bones = [
+            (pose_bones.get("Spine"), "Spine"),
+            (pose_bones.get("Spine1"), "Spine1"),
+            (pose_bones.get("Spine2"), "Spine2"),
+        ]
+
+        for bone, name in spine_bones:
+            if not bone:
+                continue
+
+            # Apply Z rotation (twist around vertical axis)
+            twist_euler = Euler((0, 0, per_bone_twist), 'XYZ')
+            twist_quat = twist_euler.to_quaternion()
+
+            # If bone already has a rotation from lean, combine them
+            if name in result.bone_transforms:
+                existing = result.bone_transforms[name]
+                existing_quat = Quaternion((existing[0], existing[1], existing[2], existing[3]))
+                combined_quat = existing_quat @ twist_quat
+                result.bone_transforms[name] = [
+                    combined_quat.w, combined_quat.x, combined_quat.y, combined_quat.z,
+                    0, 0, 0
+                ]
+            else:
+                result.bone_transforms[name] = [
+                    twist_quat.w, twist_quat.x, twist_quat.y, twist_quat.z,
+                    0, 0, 0
+                ]
+
+            bone.rotation_mode = 'QUATERNION'
+            bone.rotation_quaternion = twist_quat
+
+            self._log_solve_step("SPINE_TWIST", f"{name}: applied {math.degrees(per_bone_twist):.1f}deg twist")
+
+        # Update view layer so shoulder position updates before arm IK
+        bpy.context.view_layer.update()
+
+        return True
 
     def _log_solve_step(self, step: str, detail: str):
         """Log individual solve step - always logged (not gated)."""
@@ -1308,7 +1519,8 @@ class FullBodyIK:
         child_bone: bpy.types.PoseBone,
         target_dir: Vector,
         parent_local_quat: Quaternion,
-        arm_matrix: Matrix
+        arm_matrix: Matrix,
+        limb_id: str = ""
     ) -> Quaternion:
         """
         Compute child bone rotation for IK, accounting for parent's rotation.
@@ -1322,6 +1534,7 @@ class FullBodyIK:
             target_dir: World-space direction the child should point
             parent_local_quat: The LOCAL quaternion we're applying to the parent
             arm_matrix: Armature's world matrix
+            limb_id: Limb identifier for diagnostics (e.g., "L_LEG", "R_ARM")
 
         Returns:
             Local quaternion for the child bone
@@ -1401,6 +1614,15 @@ class FullBodyIK:
         _force_log(f"    verify_Y_world=({verify_y_world.x:.2f}, {verify_y_world.y:.2f}, {verify_y_world.z:.2f})")
         _force_log(f"    verify_error={result_angle:.1f}° {'✓OK' if result_angle < 1.0 else '❌WRONG'}")
 
+        # Record conversion diagnostics for analysis
+        if limb_id:
+            prefix = f"conv_{limb_id.lower()}_child"
+            self._record_conversion(f"{prefix}_target_dir", f"({target_dir.x:.3f}, {target_dir.y:.3f}, {target_dir.z:.3f})")
+            self._record_conversion(f"{prefix}_quat", f"({local_quat.w:.3f}, {local_quat.x:.3f}, {local_quat.y:.3f}, {local_quat.z:.3f})")
+            self._record_conversion(f"{prefix}_verify_dir", f"({verify_y_world.x:.3f}, {verify_y_world.y:.3f}, {verify_y_world.z:.3f})")
+            self._record_conversion(f"{prefix}_verify_err", round(result_angle, 1))
+            self._record_conversion(f"{prefix}_verify_ok", result_angle < 1.0)
+
         return local_quat
 
     # =========================================================================
@@ -1447,7 +1669,7 @@ class FullBodyIK:
         Returns:
             Tuple of (fixed_upper_dir, fixed_lower_dir, fixed_elbow_pos)
         """
-        from ..engine.animations.ik import normalize, quat_from_axis_angle, quat_rotate_vector
+        from ..engine.animations.ik_math import normalize, quat_from_axis_angle, quat_rotate_vector
 
         shoulder_pos = np.asarray(shoulder_pos, dtype=np.float32)
         target_pos = np.asarray(target_pos, dtype=np.float32)
@@ -1543,13 +1765,20 @@ class FullBodyIK:
             behind_valid = forward_offset <= 0.08  # 8cm tolerance for cross-body
             behind_score = -forward_offset  # Prefer more backward
 
+            # Constraint 3: Elbow position relative to shoulder (vertical)
+            elbow_z = test_elbow[2]
+            shoulder_z = shoulder_pos[2]
+            vertical_offset = elbow_z - shoulder_z  # Positive = elbow above shoulder
+            down_score = -vertical_offset  # Prefer elbow BELOW shoulder (more negative = better)
+
             if not side_valid or not behind_valid:
                 continue  # Skip invalid positions
 
             # Score: prefer anatomically natural positions
             # Higher side_score = elbow more on correct side
             # Higher behind_score = elbow more behind
-            score = side_score * 2.0 + behind_score * 1.5
+            # Higher down_score = elbow more DOWN (critical for upward reaches!)
+            score = side_score * 2.0 + behind_score * 1.5 + down_score * 3.0
 
             if score > best_score:
                 best_score = score
@@ -1587,7 +1816,11 @@ class FullBodyIK:
                 else:
                     side_penalty = max(0, -test_elbow[0]) * 2  # Penalty for being on left
 
-                total_badness = forward_offset + side_penalty
+                # CRITICAL: Penalize being ABOVE shoulder (elbow should go DOWN)
+                upward_offset = test_elbow[2] - shoulder_pos[2]
+                up_penalty = max(0, upward_offset) * 4  # Strong penalty for elbow being UP
+
+                total_badness = forward_offset + side_penalty + up_penalty
 
                 if total_badness < best_backward:
                     best_backward = total_badness
@@ -1640,10 +1873,17 @@ class FullBodyIK:
         # Build job data
         job_data = self._build_job_data(before_state)
 
+        # Clear diagnostics before solving
+        clear_diagnostics()
+        self._conversion_diagnostics = {}  # Clear conversion diagnostics too
+
         if use_engine:
             result = self._solve_via_engine(job_data, before_state)
         else:
             result = self._solve_local(job_data, before_state)
+
+        # Capture solver diagnostics (only works for local solve, not engine)
+        self._last_solver_diagnostics = get_last_solve_diagnostics()
 
         result.solve_time_us = (time.perf_counter() - start_time) * 1_000_000
 
@@ -1807,6 +2047,111 @@ class FullBodyIK:
         bpy.context.view_layer.update()
 
         # =====================================================================
+        # STEP 1.5: SPINE LEAN (if target set)
+        # =====================================================================
+        if self.constraints.spine_lean_target is not None:
+            self._log_solve_step("SPINE", "solving lean...")
+
+            # Get spine bones
+            spine_bone = pose_bones.get("Spine")
+            spine1_bone = pose_bones.get("Spine1")
+            spine2_bone = pose_bones.get("Spine2")
+            hips_bone = pose_bones.get("Hips")
+
+            if spine_bone and spine1_bone and spine2_bone and hips_bone:
+                # Convert lean target from root-relative to world
+                lean_target = self.constraints.spine_lean_target
+                lean_target_world = root_pos + np.array(lean_target, dtype=np.float32)
+
+                # Get current hips position (after any drop applied)
+                hips_world = arm_matrix @ hips_bone.head
+                hips_pos = np.array([hips_world.x, hips_world.y, hips_world.z], dtype=np.float32)
+
+                # Direction from hips to lean target
+                lean_dir = lean_target_world - hips_pos
+                lean_dist = np.linalg.norm(lean_dir)
+
+                if lean_dist > 0.01:
+                    lean_dir = lean_dir / lean_dist
+
+                    self._log_solve_step("SPINE", f"lean_target_world=({lean_target_world[0]:.3f}, {lean_target_world[1]:.3f}, {lean_target_world[2]:.3f})")
+                    self._log_solve_step("SPINE", f"lean_dir=({lean_dir[0]:.3f}, {lean_dir[1]:.3f}, {lean_dir[2]:.3f})")
+
+                    # Get vertical (rest direction) and lean direction in bone-local terms
+                    # Spine bones point "up" in rest pose (approximately +Z world when character stands)
+                    up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+                    # Compute total lean angle
+                    # Dynamic max based on target height - lower targets need more lean
+                    lean_angle_rad = np.arccos(np.clip(np.dot(lean_dir, up), -1.0, 1.0))
+
+                    # Base max: 70 degrees for normal reaches
+                    # Extended max: 90 degrees for very low targets (picking up from ground)
+                    # Scale based on how much the target is below hips
+                    target_below_hips = hips_pos[2] - lean_target_world[2]  # positive if target is lower
+                    if target_below_hips > 0.5:  # target is well below hips (e.g., ground level)
+                        max_lean_rad = 1.57  # 90 degrees for ground-level reaches
+                        self._log_solve_step("SPINE", f"LOW TARGET: +90deg max lean (target {target_below_hips:.2f}m below hips)")
+                    elif target_below_hips > 0.2:  # target is moderately below hips
+                        max_lean_rad = 1.22  # 70 degrees
+                        self._log_solve_step("SPINE", f"MID TARGET: +70deg max lean (target {target_below_hips:.2f}m below hips)")
+                    else:  # target at or above hips
+                        max_lean_rad = 0.87  # 50 degrees
+                        self._log_solve_step("SPINE", f"HIGH TARGET: +50deg max lean")
+
+                    lean_angle_rad = min(lean_angle_rad, max_lean_rad)
+
+                    # Distribute lean across 3 spine bones (each gets 1/3)
+                    per_bone_angle = lean_angle_rad / 3.0
+
+                    self._log_solve_step("SPINE", f"total_lean={np.degrees(lean_angle_rad):.1f}deg per_bone={np.degrees(per_bone_angle):.1f}deg")
+
+                    # Compute rotation axis (perpendicular to up and lean direction)
+                    lean_axis = np.cross(up, lean_dir)
+                    lean_axis_len = np.linalg.norm(lean_axis)
+
+                    if lean_axis_len > 0.001:
+                        lean_axis = lean_axis / lean_axis_len
+
+                        # Apply lean to each spine bone
+                        for bone, name in [(spine_bone, "Spine"), (spine1_bone, "Spine1"), (spine2_bone, "Spine2")]:
+                            # Create rotation quaternion for this bone's portion of the lean
+                            axis_vec = Vector(lean_axis)
+                            lean_quat = Quaternion(axis_vec, per_bone_angle)
+
+                            # Transform to bone-local space
+                            bone_rest = bone.bone.matrix_local
+                            bone_rest_rot = bone_rest.to_3x3()
+                            local_axis = bone_rest_rot.inverted() @ axis_vec
+                            local_quat = Quaternion(local_axis, per_bone_angle)
+
+                            bone.rotation_mode = 'QUATERNION'
+                            bone.rotation_quaternion = local_quat
+
+                            result.bone_transforms[name] = [
+                                local_quat.w, local_quat.x, local_quat.y, local_quat.z,
+                                0, 0, 0
+                            ]
+
+                            self._log_solve_step("SPINE", f"{name}: applied {np.degrees(per_bone_angle):.1f}deg lean")
+
+                        result.constraints_satisfied += 1
+                    else:
+                        self._log_solve_step("SPINE", "Lean direction parallel to up - no rotation needed")
+                else:
+                    self._log_solve_step("SPINE", "Lean target too close to hips - skipping")
+            else:
+                missing = []
+                if not spine_bone: missing.append("Spine")
+                if not spine1_bone: missing.append("Spine1")
+                if not spine2_bone: missing.append("Spine2")
+                if not hips_bone: missing.append("Hips")
+                self._log_solve_step("SPINE", f"Missing bones: {', '.join(missing)}")
+
+            # Force update for arm/leg IK
+            bpy.context.view_layer.update()
+
+        # =====================================================================
         # STEP 2: LEFT LEG IK
         # =====================================================================
         if self.constraints.left_foot and self.constraints.left_foot.enabled:
@@ -1834,8 +2179,8 @@ class FullBodyIK:
                 self._log_solve_step("L_LEG", f"dist={hip_to_target:.3f}m reach={max_reach:.3f}m {'REACHABLE' if hip_to_target <= max_reach else 'AT_LIMIT'}")
 
                 # Solve IK - returns DIRECTIONS not quaternions
-                # Pass char_forward so knee bends correctly even for high kicks
-                thigh_dir, shin_dir, knee_pos = solve_leg_ik(hip_pos, target_world, knee_pole, "L", char_forward)
+                # Pass char_forward and char_up so knee bends correctly even for high kicks
+                thigh_dir, shin_dir, knee_pos = solve_leg_ik(hip_pos, target_world, knee_pole, "L", char_forward, char_up)
 
                 # Log computed directions
                 self._log_solve_step("L_LEG", f"COMPUTED thigh_dir=({thigh_dir[0]:.3f}, {thigh_dir[1]:.3f}, {thigh_dir[2]:.3f})")
@@ -1849,21 +2194,23 @@ class FullBodyIK:
                     char_forward, is_leg=True
                 )
 
-                # Compute rotations - PARENT FIRST, then child relative to rotated parent
-                # Same pattern as arms: direction -> bone rotation
-                self._log_solve_step("L_LEG", "Computing bone rotations...")
+                # Compute rotations using TransformChainTracker
+                # This correctly handles parent-child dependencies without stale data
+                self._log_solve_step("L_LEG", "Computing bone rotations via TransformChainTracker...")
 
-                # Thigh: simple rotation from rest to target direction
-                thigh_quat = self._compute_bone_rotation_to_direction(left_thigh, Vector(thigh_dir), arm_matrix)
-
-                # Shin: must account for thigh's rotation (child inherits parent rotation)
-                shin_quat = self._compute_child_rotation_for_ik(
-                    left_shin, Vector(shin_dir), thigh_quat, arm_matrix
-                )
+                chain = TransformChainTracker(self.armature)
+                # CRITICAL: Compute parent (thigh) first, then child (shin)
+                # The chain tracker uses thigh's pending rotation when computing shin
+                thigh_quat = chain.compute_rotation_to_direction("LeftThigh", Vector(thigh_dir))
+                shin_quat = chain.compute_rotation_to_direction("LeftShin", Vector(shin_dir))
 
                 # Store transforms
                 result.bone_transforms["LeftThigh"] = [thigh_quat.w, thigh_quat.x, thigh_quat.y, thigh_quat.z, 0, 0, 0]
                 result.bone_transforms["LeftShin"] = [shin_quat.w, shin_quat.x, shin_quat.y, shin_quat.z, 0, 0, 0]
+
+                # Store chain diagnostics for test session analysis
+                chain_diag = chain.get_diagnostics()
+                self._record_conversion("l_leg_chain_diag", chain_diag)
 
                 result.constraints_satisfied += 1
                 if hip_to_target > max_reach:
@@ -1896,8 +2243,8 @@ class FullBodyIK:
                 self._log_solve_step("R_LEG", f"dist={hip_to_target:.3f}m reach={max_reach:.3f}m {'REACHABLE' if hip_to_target <= max_reach else 'AT_LIMIT'}")
 
                 # Solve IK - returns DIRECTIONS not quaternions
-                # Pass char_forward so knee bends correctly even for high kicks
-                thigh_dir, shin_dir, knee_pos = solve_leg_ik(hip_pos, target_world, knee_pole, "R", char_forward)
+                # Pass char_forward and char_up so knee bends correctly even for high kicks
+                thigh_dir, shin_dir, knee_pos = solve_leg_ik(hip_pos, target_world, knee_pole, "R", char_forward, char_up)
 
                 # Log computed directions
                 self._log_solve_step("R_LEG", f"COMPUTED thigh_dir=({thigh_dir[0]:.3f}, {thigh_dir[1]:.3f}, {thigh_dir[2]:.3f})")
@@ -1911,19 +2258,19 @@ class FullBodyIK:
                     char_forward, is_leg=True
                 )
 
-                # Compute rotations - PARENT FIRST, then child relative to rotated parent
-                self._log_solve_step("R_LEG", "Computing bone rotations...")
+                # Compute rotations using TransformChainTracker
+                self._log_solve_step("R_LEG", "Computing bone rotations via TransformChainTracker...")
 
-                # Thigh: simple rotation from rest to target direction
-                thigh_quat = self._compute_bone_rotation_to_direction(right_thigh, Vector(thigh_dir), arm_matrix)
-
-                # Shin: must account for thigh's rotation (child inherits parent rotation)
-                shin_quat = self._compute_child_rotation_for_ik(
-                    right_shin, Vector(shin_dir), thigh_quat, arm_matrix
-                )
+                chain = TransformChainTracker(self.armature)
+                thigh_quat = chain.compute_rotation_to_direction("RightThigh", Vector(thigh_dir))
+                shin_quat = chain.compute_rotation_to_direction("RightShin", Vector(shin_dir))
 
                 result.bone_transforms["RightThigh"] = [thigh_quat.w, thigh_quat.x, thigh_quat.y, thigh_quat.z, 0, 0, 0]
                 result.bone_transforms["RightShin"] = [shin_quat.w, shin_quat.x, shin_quat.y, shin_quat.z, 0, 0, 0]
+
+                # Store chain diagnostics
+                chain_diag = chain.get_diagnostics()
+                self._record_conversion("r_leg_chain_diag", chain_diag)
 
                 result.constraints_satisfied += 1
                 if hip_to_target > max_reach:
@@ -1940,11 +2287,19 @@ class FullBodyIK:
             left_arm = pose_bones.get("LeftArm")
             left_forearm = pose_bones.get("LeftForeArm")
             if left_arm and left_forearm:
-                shoulder_world = arm_matrix @ left_arm.head
-                shoulder_pos = np.array([shoulder_world.x, shoulder_world.y, shoulder_world.z], dtype=np.float32)
-
+                # Get initial target position
                 target_rel = self.constraints.left_hand.position
                 target_world = root_pos + np.array(target_rel, dtype=np.float32)
+
+                # Check for cross-body reach and apply spine twist if needed
+                # This must happen BEFORE getting shoulder position, as twist moves the shoulder
+                twisted = self._apply_spine_twist_for_cross_body(self.armature, target_world, "L", result)
+                if twisted:
+                    # Re-get shoulder position after twist was applied
+                    arm_matrix = self.armature.matrix_world  # May have changed
+
+                shoulder_world = arm_matrix @ left_arm.head
+                shoulder_pos = np.array([shoulder_world.x, shoulder_world.y, shoulder_world.z], dtype=np.float32)
 
                 elbow_pole = compute_elbow_pole_position(shoulder_pos, target_world, char_forward, char_up, "L")
 
@@ -1966,8 +2321,8 @@ class FullBodyIK:
                 self._log_solve_step("L_ARM", f"dist={shoulder_to_target:.3f}m reach={max_reach:.3f}m {'REACHABLE' if shoulder_to_target <= max_reach else 'AT_LIMIT'}")
 
                 # Solve for DIRECTIONS (not quaternions)
-                # Pass char_forward for cross-body constraint (elbow must stay behind shoulder)
-                upper_dir, lower_dir, elbow_pos = solve_arm_ik(shoulder_pos, target_world, elbow_pole, "L", char_forward)
+                # Pass char_forward and char_up for anatomical constraints
+                upper_dir, lower_dir, elbow_pos = solve_arm_ik(shoulder_pos, target_world, elbow_pole, "L", char_forward, char_up)
 
                 # ═══════════════════════════════════════════════════════════════════
                 # CROSS-BODY ANALYSIS - Check anatomical validity BEFORE proceeding
@@ -2002,26 +2357,53 @@ class FullBodyIK:
                     char_forward, is_leg=False
                 )
 
-                # Compute rotations - PARENT FIRST, then child relative to rotated parent
-                self._log_solve_step("L_ARM", "Computing bone rotations...")
+                # Compute rotations using TransformChainTracker
+                self._log_solve_step("L_ARM", "Computing bone rotations via TransformChainTracker...")
 
-                # Upper arm: simple rotation from rest to target
-                upper_quat = self._compute_bone_rotation_to_direction(left_arm, Vector(upper_dir), arm_matrix)
-
-                # Lower arm: must account for upper arm's rotation!
-                # After upper arm rotates, forearm's starting direction changes
-                lower_quat = self._compute_child_rotation_for_ik(
-                    left_forearm, Vector(lower_dir), upper_quat, arm_matrix
-                )
+                chain = TransformChainTracker(self.armature)
+                # Upper arm first (with joint limits)
+                upper_quat = chain.compute_rotation_to_direction("LeftArm", Vector(upper_dir), clamp_to_limits=True)
+                # Forearm second - chain tracker uses upper_quat when computing
+                lower_quat = chain.compute_rotation_to_direction("LeftForeArm", Vector(lower_dir), clamp_to_limits=True)
 
                 result.bone_transforms["LeftArm"] = [upper_quat.w, upper_quat.x, upper_quat.y, upper_quat.z, 0, 0, 0]
                 result.bone_transforms["LeftForeArm"] = [lower_quat.w, lower_quat.x, lower_quat.y, lower_quat.z, 0, 0, 0]
+
+                # Store chain diagnostics
+                chain_diag = chain.get_diagnostics()
+                self._record_conversion("l_arm_chain_diag", chain_diag)
 
                 result.constraints_satisfied += 1
                 if shoulder_to_target > max_reach:
                     result.constraints_at_limit += 1
             else:
                 self._log_solve_step("L_ARM", "LeftArm or LeftForeArm BONE NOT FOUND")
+        else:
+            # =====================================================================
+            # LEFT ARM: NO TARGET - Apply neutral relaxed pose
+            # =====================================================================
+            # When left arm has no IK target, set it to a natural relaxed position
+            # instead of leaving it in T-pose (which looks robotic).
+            #
+            # Neutral pose: arm slightly down from horizontal, elbow slightly bent
+            # From rig.md: LeftArm Z is the "bend" axis, positive Z rotates arm DOWN
+            # =====================================================================
+            self._log_solve_step("L_ARM", "No target - applying neutral relaxed pose")
+
+            # LeftArm: rotate down 25 degrees from T-pose
+            # LeftForeArm: slight elbow bend of 15 degrees
+            neutral_arm_euler = Euler((0, 0, math.radians(25)), 'XYZ')
+            neutral_forearm_euler = Euler((0, 0, math.radians(15)), 'XYZ')
+
+            neutral_arm_quat = neutral_arm_euler.to_quaternion()
+            neutral_forearm_quat = neutral_forearm_euler.to_quaternion()
+
+            result.bone_transforms["LeftArm"] = [
+                neutral_arm_quat.w, neutral_arm_quat.x, neutral_arm_quat.y, neutral_arm_quat.z, 0, 0, 0
+            ]
+            result.bone_transforms["LeftForeArm"] = [
+                neutral_forearm_quat.w, neutral_forearm_quat.x, neutral_forearm_quat.y, neutral_forearm_quat.z, 0, 0, 0
+            ]
 
         # =====================================================================
         # STEP 5: RIGHT ARM IK
@@ -2032,11 +2414,19 @@ class FullBodyIK:
             right_arm = pose_bones.get("RightArm")
             right_forearm = pose_bones.get("RightForeArm")
             if right_arm and right_forearm:
-                shoulder_world = arm_matrix @ right_arm.head
-                shoulder_pos = np.array([shoulder_world.x, shoulder_world.y, shoulder_world.z], dtype=np.float32)
-
+                # Get initial target position
                 target_rel = self.constraints.right_hand.position
                 target_world = root_pos + np.array(target_rel, dtype=np.float32)
+
+                # Check for cross-body reach and apply spine twist if needed
+                # This must happen BEFORE getting shoulder position, as twist moves the shoulder
+                twisted = self._apply_spine_twist_for_cross_body(self.armature, target_world, "R", result)
+                if twisted:
+                    # Re-get shoulder position after twist was applied
+                    arm_matrix = self.armature.matrix_world  # May have changed
+
+                shoulder_world = arm_matrix @ right_arm.head
+                shoulder_pos = np.array([shoulder_world.x, shoulder_world.y, shoulder_world.z], dtype=np.float32)
 
                 elbow_pole = compute_elbow_pole_position(shoulder_pos, target_world, char_forward, char_up, "R")
 
@@ -2058,8 +2448,8 @@ class FullBodyIK:
                 self._log_solve_step("R_ARM", f"dist={shoulder_to_target:.3f}m reach={max_reach:.3f}m {'REACHABLE' if shoulder_to_target <= max_reach else 'AT_LIMIT'}")
 
                 # Solve for DIRECTIONS (not quaternions)
-                # Pass char_forward for cross-body constraint (elbow must stay behind shoulder)
-                upper_dir, lower_dir, elbow_pos = solve_arm_ik(shoulder_pos, target_world, elbow_pole, "R", char_forward)
+                # Pass char_forward and char_up for anatomical constraints
+                upper_dir, lower_dir, elbow_pos = solve_arm_ik(shoulder_pos, target_world, elbow_pole, "R", char_forward, char_up)
 
                 # ═══════════════════════════════════════════════════════════════════
                 # CROSS-BODY ANALYSIS - Check anatomical validity BEFORE proceeding
@@ -2094,25 +2484,51 @@ class FullBodyIK:
                     char_forward, is_leg=False
                 )
 
-                # Compute rotations - PARENT FIRST, then child relative to rotated parent
-                self._log_solve_step("R_ARM", "Computing bone rotations...")
+                # Compute rotations using TransformChainTracker
+                self._log_solve_step("R_ARM", "Computing bone rotations via TransformChainTracker...")
 
-                # Upper arm: simple rotation from rest to target
-                upper_quat = self._compute_bone_rotation_to_direction(right_arm, Vector(upper_dir), arm_matrix)
-
-                # Lower arm: must account for upper arm's rotation!
-                lower_quat = self._compute_child_rotation_for_ik(
-                    right_forearm, Vector(lower_dir), upper_quat, arm_matrix
-                )
+                chain = TransformChainTracker(self.armature)
+                upper_quat = chain.compute_rotation_to_direction("RightArm", Vector(upper_dir), clamp_to_limits=True)
+                lower_quat = chain.compute_rotation_to_direction("RightForeArm", Vector(lower_dir), clamp_to_limits=True)
 
                 result.bone_transforms["RightArm"] = [upper_quat.w, upper_quat.x, upper_quat.y, upper_quat.z, 0, 0, 0]
                 result.bone_transforms["RightForeArm"] = [lower_quat.w, lower_quat.x, lower_quat.y, lower_quat.z, 0, 0, 0]
+
+                # Store chain diagnostics
+                chain_diag = chain.get_diagnostics()
+                self._record_conversion("r_arm_chain_diag", chain_diag)
 
                 result.constraints_satisfied += 1
                 if shoulder_to_target > max_reach:
                     result.constraints_at_limit += 1
             else:
                 self._log_solve_step("R_ARM", "RightArm or RightForeArm BONE NOT FOUND")
+        else:
+            # =====================================================================
+            # RIGHT ARM: NO TARGET - Apply neutral relaxed pose
+            # =====================================================================
+            # When right arm has no IK target, set it to a natural relaxed position
+            # instead of leaving it in T-pose (which looks robotic).
+            #
+            # Neutral pose: arm slightly down from horizontal, elbow slightly bent
+            # From rig.md: RightArm Z is negative to go DOWN (mirrored from left)
+            # =====================================================================
+            self._log_solve_step("R_ARM", "No target - applying neutral relaxed pose")
+
+            # RightArm: rotate down 25 degrees from T-pose (negative Z for right side)
+            # RightForeArm: slight elbow bend of 15 degrees (negative Z for right side)
+            neutral_arm_euler = Euler((0, 0, math.radians(-25)), 'XYZ')
+            neutral_forearm_euler = Euler((0, 0, math.radians(-15)), 'XYZ')
+
+            neutral_arm_quat = neutral_arm_euler.to_quaternion()
+            neutral_forearm_quat = neutral_forearm_euler.to_quaternion()
+
+            result.bone_transforms["RightArm"] = [
+                neutral_arm_quat.w, neutral_arm_quat.x, neutral_arm_quat.y, neutral_arm_quat.z, 0, 0, 0
+            ]
+            result.bone_transforms["RightForeArm"] = [
+                neutral_forearm_quat.w, neutral_forearm_quat.x, neutral_forearm_quat.y, neutral_forearm_quat.z, 0, 0, 0
+            ]
 
         # =====================================================================
         # STEP 6: HEAD LOOK-AT
@@ -2276,6 +2692,104 @@ class FullBodyIK:
         # Force Blender to update
         bpy.context.view_layer.update()
         _force_log("-" * 70)
+
+        # POST-APPLY VERIFICATION: Check actual bone directions after rotation is applied
+        self._verify_post_apply_directions(pose_bones, arm_matrix)
+
+    def _verify_post_apply_directions(self, pose_bones, arm_matrix: Matrix):
+        """
+        After applying rotations, verify the actual bone directions match what we computed.
+        This catches any discrepancy between our math and Blender's actual transform.
+
+        Uses the new TransformChainTracker diagnostics format.
+        """
+        import numpy as np
+
+        _force_log("=" * 70)
+        _force_log("POST-APPLY VERIFICATION (TransformChainTracker):")
+
+        # Check leg bones - shin should point from knee to ankle
+        for side, prefix, thigh_name, shin_name in [
+            ("L", "l_leg", "LeftThigh", "LeftShin"),
+            ("R", "r_leg", "RightThigh", "RightShin")
+        ]:
+            shin = pose_bones.get(shin_name)
+            if shin:
+                # Get shin's actual Y direction in world space (after all rotations applied)
+                shin_world_mat = arm_matrix @ shin.matrix
+                shin_y_world = shin_world_mat.to_3x3() @ Vector((0, 1, 0))
+                shin_y_world.normalize()
+
+                # Record actual direction
+                self._record_conversion(
+                    f"postapply_{prefix}_shin_y",
+                    f"({shin_y_world.x:.3f}, {shin_y_world.y:.3f}, {shin_y_world.z:.3f})"
+                )
+
+                # Get the target direction from chain diagnostics
+                chain_diag = self._conversion_diagnostics.get(f"{prefix}_chain_diag", {})
+                target_tuple = chain_diag.get(f"{shin_name}_target_dir")
+
+                if target_tuple:
+                    target_vec = Vector(target_tuple).normalized()
+                    _force_log(f"  {shin_name}:")
+                    _force_log(f"    wanted_dir=({target_vec.x:.3f}, {target_vec.y:.3f}, {target_vec.z:.3f})")
+                    _force_log(f"    actual_Y=({shin_y_world.x:.3f}, {shin_y_world.y:.3f}, {shin_y_world.z:.3f})")
+
+                    # Compute error
+                    dot = max(-1.0, min(1.0, shin_y_world.dot(target_vec)))
+                    error_deg = math.degrees(math.acos(dot))
+                    self._record_conversion(f"postapply_{prefix}_error", round(error_deg, 1))
+
+                    # Also get the chain's inline verify error for comparison
+                    inline_err = chain_diag.get(f"{shin_name}_verify_error", -1)
+
+                    status = "✓OK" if error_deg < 5.0 else "❌MISMATCH"
+                    _force_log(f"    chain_verify_error={inline_err:.1f}° (computed before apply)")
+                    _force_log(f"    POSTAPPLY ERROR: {error_deg:.1f}° {status}")
+
+                    if error_deg > 5.0 and inline_err < 1.0:
+                        _force_log(f"    >>> BUG: Chain said OK but post-apply says WRONG! <<<")
+
+        # Check arm bones similarly
+        for side, prefix, upper_name, lower_name in [
+            ("L", "l_arm", "LeftArm", "LeftForeArm"),
+            ("R", "r_arm", "RightArm", "RightForeArm")
+        ]:
+            forearm = pose_bones.get(lower_name)
+            if forearm:
+                forearm_world_mat = arm_matrix @ forearm.matrix
+                forearm_y_world = forearm_world_mat.to_3x3() @ Vector((0, 1, 0))
+                forearm_y_world.normalize()
+
+                self._record_conversion(
+                    f"postapply_{prefix}_forearm_y",
+                    f"({forearm_y_world.x:.3f}, {forearm_y_world.y:.3f}, {forearm_y_world.z:.3f})"
+                )
+
+                chain_diag = self._conversion_diagnostics.get(f"{prefix}_chain_diag", {})
+                target_tuple = chain_diag.get(f"{lower_name}_target_dir")
+
+                if target_tuple:
+                    target_vec = Vector(target_tuple).normalized()
+                    _force_log(f"  {lower_name}:")
+                    _force_log(f"    wanted_dir=({target_vec.x:.3f}, {target_vec.y:.3f}, {target_vec.z:.3f})")
+                    _force_log(f"    actual_Y=({forearm_y_world.x:.3f}, {forearm_y_world.y:.3f}, {forearm_y_world.z:.3f})")
+
+                    dot = max(-1.0, min(1.0, forearm_y_world.dot(target_vec)))
+                    error_deg = math.degrees(math.acos(dot))
+                    self._record_conversion(f"postapply_{prefix}_error", round(error_deg, 1))
+
+                    inline_err = chain_diag.get(f"{lower_name}_verify_error", -1)
+
+                    status = "✓OK" if error_deg < 5.0 else "❌MISMATCH"
+                    _force_log(f"    chain_verify_error={inline_err:.1f}° (computed before apply)")
+                    _force_log(f"    POSTAPPLY ERROR: {error_deg:.1f}° {status}")
+
+                    if error_deg > 5.0 and inline_err < 1.0:
+                        _force_log(f"    >>> BUG: Chain said OK but post-apply says WRONG! <<<")
+
+        _force_log("=" * 70)
 
     def _compute_errors(self, result: FullBodyResult, after_state: FullBodyState) -> FullBodyResult:
         """Compute position errors between targets and achieved positions."""

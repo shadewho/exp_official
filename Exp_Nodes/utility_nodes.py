@@ -260,10 +260,10 @@ class ExpActionSocket(bpy.types.NodeSocket):
             if self.reaction_prop:
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
-                    layout.prop(r, self.reaction_prop, text="")
+                    layout.prop_search(r, self.reaction_prop, bpy.data, "actions", text=text or "")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
-                layout.prop(node, self.prop_name, text="")
+                layout.prop_search(node, self.prop_name, bpy.data, "actions", text=text or "")
                 return
         layout.label(text=text or ("Action" if self.is_output else "Input"))
 

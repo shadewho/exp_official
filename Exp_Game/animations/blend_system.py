@@ -212,6 +212,52 @@ class BlendSystem:
         return self._locomotion_lock_time > 0.0
 
     # =========================================================================
+    # RAGDOLL LOCK (Blocks ALL animations during ragdoll)
+    # =========================================================================
+
+    def start_ragdoll_lock(self, armature_name: str, duration: float) -> None:
+        """
+        Lock animations for ragdoll duration.
+        This is stronger than locomotion lock - blocks ALL animation changes.
+        """
+        if not hasattr(self, '_ragdoll_active'):
+            self._ragdoll_active = {}
+
+        import time
+        self._ragdoll_active[armature_name] = time.time() + duration
+        self.lock_locomotion(duration + 0.5)  # Extra buffer for recovery
+        log_game("ANIMATIONS", f"RAGDOLL_LOCK armature={armature_name} duration={duration:.2f}s")
+
+    def end_ragdoll_lock(self, armature_name: str) -> None:
+        """Remove ragdoll lock for an armature."""
+        if hasattr(self, '_ragdoll_active'):
+            self._ragdoll_active.pop(armature_name, None)
+        log_game("ANIMATIONS", f"RAGDOLL_UNLOCK armature={armature_name}")
+
+    def is_ragdoll_active(self, armature_name: str = None) -> bool:
+        """
+        Check if ragdoll is blocking animations.
+
+        Args:
+            armature_name: Specific armature to check, or None for any ragdoll
+        """
+        if not hasattr(self, '_ragdoll_active'):
+            return False
+
+        import time
+        now = time.time()
+
+        if armature_name:
+            end_time = self._ragdoll_active.get(armature_name, 0)
+            return now < end_time
+        else:
+            # Check if ANY ragdoll is active
+            for end_time in self._ragdoll_active.values():
+                if now < end_time:
+                    return True
+            return False
+
+    # =========================================================================
     # LAYER MANAGEMENT
     # =========================================================================
 

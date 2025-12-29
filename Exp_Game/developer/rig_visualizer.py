@@ -282,7 +282,7 @@ def _compute_bone_group_colors() -> Dict[str, Tuple]:
 def _draw_ik_chains(armature, all_verts, all_colors, scene):
     """Draw IK chains (upper and lower bones)."""
     from ..animations.runtime_ik import get_ik_state, is_ik_active
-    from ..engine.animations.ik import LEG_IK, ARM_IK
+    from ..engine.animations.ik_chains import LEG_IK, ARM_IK
 
     state = get_ik_state()
     chains_data = state.get("chains", {})
@@ -318,7 +318,7 @@ def _draw_ik_chains(armature, all_verts, all_colors, scene):
 
 def _draw_default_ik_chains(armature, all_verts, all_colors):
     """Draw IK chain bones when no IK is active (show structure)."""
-    from ..engine.animations.ik import LEG_IK, ARM_IK
+    from ..engine.animations.ik_chains import LEG_IK, ARM_IK
 
     pose_bones = armature.pose.bones
     arm_matrix = armature.matrix_world
@@ -421,7 +421,7 @@ def _draw_ik_poles(armature, all_verts, all_colors, scene):
 def _draw_ik_reach(armature, all_verts, all_colors, scene):
     """Draw IK reach spheres from root joints."""
     from ..animations.runtime_ik import get_ik_state
-    from ..engine.animations.ik import LEG_IK, ARM_IK
+    from ..engine.animations.ik_chains import LEG_IK, ARM_IK
 
     state = get_ik_state()
     chains_data = state.get("chains", {})

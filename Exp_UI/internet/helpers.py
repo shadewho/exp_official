@@ -4,8 +4,10 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
+import requests
 from ..main_config import (
-    LOGIN_PAGE_ENDPOINT, BLENDER_LOGIN_SUCCESS_ENDPOINT, BLENDER_CALLBACK_URL
+    LOGIN_PAGE_ENDPOINT, BLENDER_LOGIN_SUCCESS_ENDPOINT, BLENDER_CALLBACK_URL,
+    TOKEN_EXCHANGE_ENDPOINT,
 )
 
 import socketserver
@@ -87,28 +89,45 @@ class CallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         if parsed_path.path == '/callback':
-            params = urllib.parse.parse_qs(self.path)
             params = urllib.parse.parse_qs(parsed_path.query)
-            token = params.get("token", [None])[0]
-            if token:
-                print(f"Received token: {token}")
-                save_token(token)
-                # Schedule usage data fetch in main thread after 1 second
-                bpy.app.timers.register(fetch_usage_on_login, first_interval=1.0)
-                self.send_response(302)
-                self.send_header("Location", BLENDER_LOGIN_SUCCESS_ENDPOINT)
-                self.send_header("Connection", "close")
-                self.end_headers()
-                try:
-                    self.wfile.flush()
-                except Exception as e:
-                    print("Error flushing response:", e)
-                # Shutdown the server in a separate thread so the response can complete.
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
-            else:
-                self.send_error(400, "Missing token parameter.")
+            code = params.get("code", [None])[0]
+            if not code:
+                self.send_error(400, "Missing code parameter.")
+                return
+
+            try:
+                resp = requests.post(
+                    TOKEN_EXCHANGE_ENDPOINT,
+                    json={"code": code},
+                    timeout=5
+                )
+                if resp.status_code != 200:
+                    self.send_error(resp.status_code, resp.text)
+                    return
+                data = resp.json()
+                token = data.get("token")
+                if not token:
+                    self.send_error(401, "Token missing in exchange response.")
+                    return
+            except Exception as e:
+                self.send_error(500, f"Token exchange failed: {e}")
+                return
+
+            print("Received token via exchange")
+            save_token(token)
+            bpy.app.timers.register(fetch_usage_on_login, first_interval=1.0)
+            self.send_response(302)
+            self.send_header("Location", BLENDER_LOGIN_SUCCESS_ENDPOINT)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.flush()
+            except Exception as e:
+                print("Error flushing response:", e)
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
         else:
             self.send_error(404)
+
 
 
 def start_local_server(port=8000):

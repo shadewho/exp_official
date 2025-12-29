@@ -33,6 +33,13 @@ from ..reactions.exp_tracking import (
     submit_tracking_batch,
     apply_tracking_results,
 )
+from ..reactions.exp_ragdoll import (
+    init_ragdoll_system,
+    shutdown_ragdoll_system,
+    has_active_ragdolls,
+    submit_ragdoll_update,
+    process_ragdoll_results,
+)
 from ..systems.exp_performance import update_performance_culling, apply_cull_result
 from ..physics.exp_dynamic import update_dynamic_meshes
 from ..physics.exp_view import (
@@ -100,9 +107,13 @@ class GameLoop:
         # Initialize reaction node cache (eliminates node graph iteration for dynamic inputs)
         init_reaction_node_cache(bpy.context.scene)
 
+        # Initialize ragdoll system
+        init_ragdoll_system()
+
     def shutdown(self):
         """Clean up game loop resources (called when game stops)."""
         shutdown_blend_system()
+        shutdown_ragdoll_system()
     # ---------- Public API ----------
 
     def on_timer(self, context):
@@ -181,6 +192,10 @@ class GameLoop:
             if engine and engine.is_alive():
                 submit_hitscan_batch(engine)
                 submit_projectile_update(engine, dt_sim)
+
+                # B1d) Submit ragdoll physics update (if any active)
+                if has_active_ragdolls():
+                    submit_ragdoll_update(engine, dt_sim)
 
             # B3) Distance-based culling (has its own throttling): once
             update_performance_culling(op, context)
@@ -331,12 +346,16 @@ class GameLoop:
         # 3. Same-frame sync: poll for results immediately
         # Worker compute is fast (~100µs), so we wait up to 2ms
         # This applies the base locomotion animation to the armature
-        poll_animation_results_with_timeout(op, timeout=0.002)
+        # SKIP if ragdoll is active - ragdoll controls the armature
+        ragdoll_active = blend_system and blend_system.is_ragdoll_active()
+        if not ragdoll_active:
+            poll_animation_results_with_timeout(op, timeout=0.002)
 
         # 4. Apply blend system OVERLAY on top of locomotion
         # This must happen AFTER worker results are applied so overlays work correctly
+        # SKIP if ragdoll is active
         armature = bpy.context.scene.target_armature
-        if blend_system and armature:
+        if blend_system and armature and not ragdoll_active:
             blend_system.apply_to_armature(armature)
 
     def _poll_and_apply_engine_results(self):
@@ -592,6 +611,19 @@ class GameLoop:
                         apply_tracking_results(result)
                     except Exception as e:
                         print(f"[GameLoop] Error applying tracking results: {e}")
+
+                elif result.job_type == "RAGDOLL_UPDATE_BATCH":
+                    # Apply ragdoll physics results from worker
+                    try:
+                        updated_ragdolls = result.result.get("updated_ragdolls", [])
+                        process_ragdoll_results(updated_ragdolls)
+                        # Process worker logs
+                        worker_logs = result.result.get("logs", [])
+                        if worker_logs:
+                            from ..developer.dev_logger import log_worker_messages
+                            log_worker_messages(worker_logs)
+                    except Exception as e:
+                        print(f"[GameLoop] Error applying ragdoll results: {e}")
 
             else:
                 # Job failed - already logged in process_engine_result
