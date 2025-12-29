@@ -107,7 +107,6 @@ if not _IS_WORKER_PROCESS:
 
     # --- Animation 2.0 Operators & Properties ---
     from .animations import test_panel as anim2_test_panel
-    from .animations import rig_probe as rig_probe_module
 
     # --- Pose Library ---
     from .animations import pose_library as pose_lib
@@ -263,7 +262,6 @@ if not _IS_WORKER_PROCESS:
 
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.register()
-        rig_probe_module.register()
 
         # ─── Pose Library ──────────────────────────────
         pose_lib.register_pose_library()
@@ -361,7 +359,6 @@ if not _IS_WORKER_PROCESS:
         pose_lib.unregister_pose_library()
 
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
-        rig_probe_module.unregister()
         anim2_test_panel.unregister()
 
         # ─── Animation Engine ──────────────────────────────

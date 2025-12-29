@@ -841,6 +841,12 @@ class BlendSystem:
         if not armature or armature.type != 'ARMATURE':
             return 0
 
+        # Check if PHYSICS channel is active - if so, don't apply animations
+        from .layer_manager import get_layer_manager_for, AnimChannel
+        layer_mgr = get_layer_manager_for(armature)
+        if layer_mgr and layer_mgr.is_channel_active(AnimChannel.PHYSICS):
+            return 0  # Physics system controls the armature
+
         # Sample current armature pose to use as base (preserves locomotion)
         current_pose = self._sample_armature_pose(armature)
 

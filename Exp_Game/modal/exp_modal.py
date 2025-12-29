@@ -48,7 +48,8 @@ from .exp_engine_bridge import (
     shutdown_animations,
     cache_animations_in_workers,
     cache_poses_in_workers,
-    cache_joint_limits_in_workers,
+    init_animation_layer_manager,
+    shutdown_animation_layer_manager,
 )
 
 def _first_view3d_r3d():
@@ -579,8 +580,9 @@ class ExpModal(bpy.types.Operator):
             # Cache pose library in workers (must happen AFTER engine is running)
             cache_poses_in_workers(self, context)
 
-            # Cache joint limits in workers (must happen AFTER engine is running)
-            cache_joint_limits_in_workers(self, context)
+            # Initialize animation layer manager and disable native action evaluation
+            # CRITICAL: Prevents Blender's C-level action from overwriting ragdoll/IK transforms
+            init_animation_layer_manager(self, context)
 
             # Initialize interaction offload tracking
             self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job
@@ -774,6 +776,11 @@ class ExpModal(bpy.types.Operator):
 
         # ========== ANIMATION SHUTDOWN ==========
         shutdown_animations(self, context)
+        # ========================================
+
+        # ========== LAYER MANAGER SHUTDOWN ==========
+        # Restore native action before engine shutdown
+        shutdown_animation_layer_manager(self, context)
         # ========================================
 
         # ========== ENGINE SHUTDOWN ==========

@@ -1,59 +1,123 @@
 # Exp_Game/reactions/exp_ragdoll.py
 """
-SIMPLE Ragdoll System - Main Thread Side
+Ragdoll System - Main Thread (Rig Agnostic)
 
-Main thread responsibilities (MINIMAL):
-1. Start ragdoll: capture bone positions, create instance
-2. Each frame: send bone states to worker, receive new positions
-3. Apply: set bone positions/rotations from worker results
+Captures per-bone static data at start, sends to worker each frame.
+Worker handles bone physics, main thread applies results + handles position drop.
 
-ALL physics happens in worker. Main thread just marshals data.
+Works on ANY armature - no hardcoded bone names or assumptions.
 """
 import bpy
-from mathutils import Vector, Matrix, Quaternion
+import math
+from mathutils import Vector, Euler, Matrix
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any, Optional
 
 from ..props_and_utils.exp_time import get_game_time
 from ..developer.dev_logger import log_game
+from ..animations.layer_manager import get_layer_manager_for, AnimChannel
 
 
 def _log(msg: str):
-    """Log if debug enabled."""
-    try:
-        scene = bpy.context.scene
-        if scene and getattr(scene, "dev_debug_ragdoll", False):
-            log_game("RAGDOLL", msg)
-    except Exception:
-        pass
+    """Log ragdoll messages."""
+    log_game("RAGDOLL", msg)
 
 
-# ─────────────────────────────────────────────────────────
+# =============================================================================
+# POSITION DROP CONSTANTS
+# =============================================================================
+
+DROP_GRAVITY = -12.0         # m/s^2 (softer than real gravity for game feel)
+DROP_DAMPING = 0.95          # Velocity damping on ground hit
+FLOOR_OFFSET = 0.1           # Keep character slightly above floor
+DROP_DURATION = 0.5          # How long the drop phase lasts (seconds)
+
+
+# =============================================================================
+# ROLE DETECTION (RIG AGNOSTIC)
+# =============================================================================
+
+CORE_KEYWORDS = ["spine", "hip", "pelvis", "torso", "chest", "root"]
+HEAD_KEYWORDS = ["head", "neck", "skull"]
+HAND_KEYWORDS = ["hand", "finger", "thumb", "index", "middle", "ring", "pinky",
+                 "foot", "toe", "ankle"]
+LIMB_KEYWORDS = ["arm", "leg", "thigh", "shin", "calf", "forearm", "shoulder",
+                 "elbow", "knee", "wrist"]
+
+
+def _detect_bone_role(bone_name: str, depth: int) -> str:
+    """Detect bone role from name patterns and hierarchy depth."""
+    name_lower = bone_name.lower()
+
+    for kw in CORE_KEYWORDS:
+        if kw in name_lower:
+            return "core"
+
+    for kw in HEAD_KEYWORDS:
+        if kw in name_lower:
+            return "head"
+
+    for kw in HAND_KEYWORDS:
+        if kw in name_lower:
+            return "hand"
+
+    for kw in LIMB_KEYWORDS:
+        if kw in name_lower:
+            return "limb"
+
+    if depth > 5:
+        return "hand"
+
+    return "limb"
+
+
+def _is_ground_bone(bone_name: str) -> bool:
+    """Check if bone should have ground contact."""
+    name_lower = bone_name.lower()
+    ground_keywords = ["foot", "toe", "hip", "pelvis", "heel"]
+    return any(kw in name_lower for kw in ground_keywords)
+
+
+def _get_bone_depth(bone) -> int:
+    """Get depth in hierarchy (0 = root)."""
+    depth = 0
+    parent = bone.parent
+    while parent:
+        depth += 1
+        parent = parent.parent
+    return depth
+
+
+# =============================================================================
 # STATE
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 
 @dataclass
 class RagdollInstance:
-    """Active ragdoll."""
+    """Active ragdoll state."""
     ragdoll_id: int
     armature: Any
     armature_name: str
     start_time: float
     duration: float
-    gravity_multiplier: float
 
-    # Bone hierarchy (computed once at start)
-    bone_order: List[str] = field(default_factory=list)
-    bone_parents: Dict[str, str] = field(default_factory=dict)
-    bone_lengths: Dict[str, float] = field(default_factory=dict)
+    # Per-bone static data (captured once at start)
+    bone_data: Dict[str, dict] = field(default_factory=dict)
 
-    # Per-frame state (positions and velocities)
-    bone_states: Dict[str, dict] = field(default_factory=dict)
+    # Per-bone dynamic state (updated each frame)
+    bone_physics: Dict[str, dict] = field(default_factory=dict)
 
-    # Impulse (first frame only)
-    impulse: Optional[tuple] = None
-    impulse_bone: Optional[str] = None
-    impulse_applied: bool = False
+    # Initial rotations for blending back
+    initial_rotations: Dict[str, tuple] = field(default_factory=dict)
+
+    # Track initialization
+    initialized: bool = False
+
+    # Position drop physics (main thread handles this)
+    initial_position: tuple = (0.0, 0.0, 0.0)
+    drop_velocity: float = 0.0      # Z velocity for drop
+    ground_z: float = 0.0           # Floor level
+    drop_active: bool = True        # Is the drop phase active
 
 
 # Module state
@@ -61,9 +125,9 @@ _active_ragdolls: Dict[int, RagdollInstance] = {}
 _next_id: int = 0
 
 
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 # PUBLIC API
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 
 def has_active_ragdolls() -> bool:
     return len(_active_ragdolls) > 0
@@ -82,12 +146,12 @@ def shutdown_ragdoll_system():
     _log("System shutdown")
 
 
-# ─────────────────────────────────────────────────────────
-# EXECUTE REACTION (Start ragdoll)
-# ─────────────────────────────────────────────────────────
+# =============================================================================
+# EXECUTE REACTION
+# =============================================================================
 
 def execute_ragdoll_reaction(r):
-    """Start ragdoll on armature."""
+    """Start ragdoll on armature - captures all bone data."""
     global _next_id
 
     scene = bpy.context.scene
@@ -104,131 +168,178 @@ def execute_ragdoll_reaction(r):
 
     armature_id = id(armature)
 
-    # Already ragdolling?
     if armature_id in _active_ragdolls:
         _log(f"Already ragdolling {armature.name}")
         return
 
-    # Get properties
     duration = getattr(r, "ragdoll_duration", 2.0)
-    gravity_mult = getattr(r, "ragdoll_gravity_multiplier", 1.0)
-    impulse_strength = getattr(r, "ragdoll_impulse_strength", 5.0)
-    impulse_dir = tuple(getattr(r, "ragdoll_impulse_direction", (0, 0, 1)))
+    _log(f"Starting ragdoll on {armature.name}, duration={duration}s")
 
-    # Normalize impulse
-    imp_vec = Vector(impulse_dir).normalized() * impulse_strength
-    impulse = (imp_vec.x, imp_vec.y, imp_vec.z)
+    # Capture initial position for drop
+    initial_pos = tuple(armature.location)
 
-    _log(f"Starting ragdoll on {armature.name}")
-    _log(f"  Duration: {duration}s, Gravity mult: {gravity_mult}")
-    _log(f"  Impulse: {impulse}")
+    # Get ground Z - try KCC first, then scene floor
+    ground_z = 0.0
+    if hasattr(scene, 'kcc_grounded_z'):
+        ground_z = scene.kcc_grounded_z
+    elif hasattr(scene, 'floor_z'):
+        ground_z = scene.floor_z
 
-    # Extract bone hierarchy
-    bone_order, bone_parents, bone_lengths = _extract_bones(armature)
-    _log(f"  Bones: {len(bone_order)} ({bone_order[:3]}...)")
+    # Capture per-bone static data
+    bone_data = {}
+    bone_physics = {}
+    initial_rotations = {}
 
-    # Capture current pose as initial state
-    bone_states = _capture_pose(armature, bone_order)
-    _log(f"  Captured {len(bone_states)} bone positions")
+    for bone in armature.pose.bones:
+        bone_name = bone.name
+        depth = _get_bone_depth(bone)
+        role = _detect_bone_role(bone_name, depth)
+        is_ground = _is_ground_bone(bone_name)
 
-    # Create instance
+        rest_mat = bone.bone.matrix_local.to_3x3()
+        rest_matrix_flat = [
+            rest_mat[0][0], rest_mat[0][1], rest_mat[0][2],
+            rest_mat[1][0], rest_mat[1][1], rest_mat[1][2],
+            rest_mat[2][0], rest_mat[2][1], rest_mat[2][2],
+        ]
+
+        bone_tip_local = tuple(bone.bone.tail_local)
+
+        default_limit = 1.22
+        secondary_limit = 0.52
+
+        limits = {
+            "x": [-default_limit, default_limit],
+            "y": [-secondary_limit, secondary_limit],
+            "z": [-default_limit, default_limit],
+        }
+
+        if role == "core":
+            limits = {"x": [-0.8, 0.8], "y": [-0.8, 0.8], "z": [-0.8, 0.8]}
+        elif role == "head":
+            limits = {"x": [-1.0, 1.0], "y": [-1.2, 1.2], "z": [-0.6, 0.6]}
+        elif role == "hand":
+            limits = {"x": [-1.5, 1.5], "y": [-0.5, 0.5], "z": [-1.5, 1.5]}
+
+        bone_data[bone_name] = {
+            "rest_matrix": rest_matrix_flat,
+            "role": role,
+            "limits": limits,
+            "is_ground_bone": is_ground,
+            "bone_tip_local": bone_tip_local,
+        }
+
+        bone_physics[bone_name] = {
+            "rot": (0.0, 0.0, 0.0),
+            "ang_vel": (0.0, 0.0, 0.0),
+        }
+
+        pb = armature.pose.bones.get(bone_name)
+        if pb:
+            if pb.rotation_mode == 'QUATERNION':
+                rot = pb.rotation_quaternion.to_euler('XYZ')
+            else:
+                rot = pb.rotation_euler
+            initial_rotations[bone_name] = (rot.x, rot.y, rot.z)
+
+    _log(f"  Captured {len(bone_data)} bones, ground_z={ground_z:.2f}")
+
     instance = RagdollInstance(
         ragdoll_id=_next_id,
         armature=armature,
         armature_name=armature.name,
         start_time=get_game_time(),
         duration=duration,
-        gravity_multiplier=gravity_mult,
-        bone_order=bone_order,
-        bone_parents=bone_parents,
-        bone_lengths=bone_lengths,
-        bone_states=bone_states,
-        impulse=impulse,
-        impulse_bone=bone_order[0] if bone_order else None,  # Apply to root
+        bone_data=bone_data,
+        bone_physics=bone_physics,
+        initial_rotations=initial_rotations,
+        initialized=False,
+        initial_position=initial_pos,
+        drop_velocity=0.0,
+        ground_z=ground_z + FLOOR_OFFSET,
+        drop_active=True,
     )
 
     _active_ragdolls[armature_id] = instance
     _next_id += 1
 
-    # Lock animations
     _lock_animations(armature.name, duration)
+
+    layer_manager = get_layer_manager_for(armature)
+    if layer_manager:
+        layer_manager.activate_channel(
+            channel=AnimChannel.PHYSICS,
+            influence=1.0,
+            fade_in=0.0,
+        )
+        _log("PHYSICS channel activated")
 
     _log(f"Ragdoll {instance.ragdoll_id} started")
 
 
-def _extract_bones(armature) -> tuple:
-    """Extract bone hierarchy in parent-first order."""
-    bone_order = []
-    bone_parents = {}
-    bone_lengths = {}
+# =============================================================================
+# POSITION DROP (Main Thread - cheap physics)
+# =============================================================================
 
-    arm_data = armature.data
+def _update_position_drop(instance: RagdollInstance, dt: float):
+    """
+    Apply simple gravity drop to armature position.
+    Main thread handles this - just gravity + floor collision.
+    """
+    if not instance.drop_active:
+        return
 
-    # BFS from roots
-    roots = [b for b in arm_data.bones if b.parent is None]
-    queue = list(roots)
+    armature = instance.armature
+    if not armature:
+        return
 
-    while queue:
-        bone = queue.pop(0)
-        bone_order.append(bone.name)
-        bone_parents[bone.name] = bone.parent.name if bone.parent else None
-        bone_lengths[bone.name] = bone.length
+    # Check if drop phase should end (time-based)
+    elapsed = get_game_time() - instance.start_time
+    if elapsed > DROP_DURATION:
+        instance.drop_active = False
+        return
 
-        for child in bone.children:
-            queue.append(child)
+    try:
+        current_z = armature.location.z
+    except ReferenceError:
+        return
 
-    return bone_order, bone_parents, bone_lengths
+    # Apply gravity
+    instance.drop_velocity += DROP_GRAVITY * dt
 
+    # Integrate position
+    new_z = current_z + instance.drop_velocity * dt
 
-def _capture_pose(armature, bone_order: List[str]) -> Dict[str, dict]:
-    """Initialize bone states for ragdoll."""
-    states = {}
+    # Ground collision
+    if new_z <= instance.ground_z:
+        new_z = instance.ground_z
+        instance.drop_velocity *= -DROP_DAMPING  # Bounce with damping
 
-    for i, bone_name in enumerate(bone_order):
-        pb = armature.pose.bones.get(bone_name)
-        if not pb:
-            continue
+        # Stop bouncing if velocity is small
+        if abs(instance.drop_velocity) < 0.5:
+            instance.drop_velocity = 0.0
+            instance.drop_active = False
 
-        is_root = (i == 0)
-
-        if is_root:
-            # Root: track position offset (starts at 0)
-            states[bone_name] = {
-                "pos": (0.0, 0.0, 0.0),  # position OFFSET, not world pos
-                "vel": (0.0, 0.0, 0.0),
-                "rot": (0.0, 0.0, 0.0),
-                "rot_vel": (0.0, 0.0, 0.0),
-            }
-        else:
-            # Non-root: track rotation offset
-            states[bone_name] = {
-                "pos": (0.0, 0.0, 0.0),
-                "vel": (0.0, 0.0, 0.0),
-                "rot": (0.0, 0.0, 0.0),
-                "rot_vel": (0.0, 0.0, 0.0),
-            }
-
-    return states
+    # Apply to armature
+    armature.location.z = new_z
 
 
-# ─────────────────────────────────────────────────────────
-# SUBMIT JOB (Each frame)
-# ─────────────────────────────────────────────────────────
+# =============================================================================
+# SUBMIT JOB
+# =============================================================================
 
 def submit_ragdoll_update(engine, dt: float):
-    """Submit ragdoll job to worker."""
+    """Submit ragdoll job to worker with full bone data."""
     if not _active_ragdolls:
         return
 
-    scene = bpy.context.scene
-    base_gravity = -21.0
-    if hasattr(scene, "char_physics"):
-        base_gravity = getattr(scene.char_physics, "gravity", -21.0)
+    # First, update position drop for all ragdolls (main thread physics)
+    for armature_id, inst in list(_active_ragdolls.items()):
+        _update_position_drop(inst, dt)
 
     ragdolls_data = []
 
     for armature_id, inst in list(_active_ragdolls.items()):
-        # Check armature still valid
         try:
             _ = inst.armature.name
         except (ReferenceError, AttributeError):
@@ -236,29 +347,26 @@ def submit_ragdoll_update(engine, dt: float):
             del _active_ragdolls[armature_id]
             continue
 
-        # Time remaining
         elapsed = get_game_time() - inst.start_time
         time_left = max(0, inst.duration - elapsed)
 
-        # Apply gravity multiplier per-ragdoll
-        ragdoll_gravity = (0.0, 0.0, base_gravity * inst.gravity_multiplier)
+        world_mat = inst.armature.matrix_world
+        armature_matrix = [
+            world_mat[0][0], world_mat[0][1], world_mat[0][2], world_mat[0][3],
+            world_mat[1][0], world_mat[1][1], world_mat[1][2], world_mat[1][3],
+            world_mat[2][0], world_mat[2][1], world_mat[2][2], world_mat[2][3],
+            world_mat[3][0], world_mat[3][1], world_mat[3][2], world_mat[3][3],
+        ]
 
-        # Build data for worker
-        data = {
+        ragdolls_data.append({
             "id": inst.ragdoll_id,
             "time_remaining": time_left,
-            "bone_order": inst.bone_order,
-            "bone_states": inst.bone_states,
-            "gravity": ragdoll_gravity,
-        }
-
-        # Impulse on first frame
-        if not inst.impulse_applied and inst.impulse:
-            data["impulse"] = inst.impulse
-            data["impulse_bone"] = inst.impulse_bone
-            inst.impulse_applied = True
-
-        ragdolls_data.append(data)
+            "bone_data": inst.bone_data,
+            "bone_physics": inst.bone_physics,
+            "armature_matrix": armature_matrix,
+            "ground_z": inst.ground_z,
+            "initialized": inst.initialized,
+        })
 
     if not ragdolls_data:
         return
@@ -270,27 +378,24 @@ def submit_ragdoll_update(engine, dt: float):
 
     job_id = engine.submit_job("RAGDOLL_UPDATE_BATCH", job_data)
     if job_id is not None and job_id >= 0:
-        _log(f"Submitted job {job_id}: {len(ragdolls_data)} ragdolls, dt={dt:.4f}")
+        _log(f"Submitted job {job_id}: {len(ragdolls_data)} ragdolls")
 
 
-# ─────────────────────────────────────────────────────────
-# PROCESS RESULTS (From worker)
-# ─────────────────────────────────────────────────────────
+# =============================================================================
+# PROCESS RESULTS
+# =============================================================================
 
 def process_ragdoll_results(results: List[dict]):
     """Apply worker results to armatures."""
     if not results:
         return
 
-    _log(f"Processing {len(results)} results")
-
     for result in results:
         ragdoll_id = result.get("id")
-        bone_rotations = result.get("bone_rotations", {})
-        bone_states = result.get("bone_states", {})
+        bone_physics = result.get("bone_physics", {})
         finished = result.get("finished", False)
+        initialized = result.get("initialized", False)
 
-        # Find instance
         instance = None
         armature_id = None
         for aid, inst in _active_ragdolls.items():
@@ -300,70 +405,60 @@ def process_ragdoll_results(results: List[dict]):
                 break
 
         if not instance:
-            _log(f"  No instance for ragdoll {ragdoll_id}")
             continue
 
-        _log(f"  Ragdoll {ragdoll_id}: {len(bone_rotations)} bones, finished={finished}")
+        instance.bone_physics = bone_physics
+        instance.initialized = initialized
 
-        # Update state for next frame
-        instance.bone_states = bone_states
+        _apply_ragdoll(instance)
 
-        # Apply to armature
-        _apply_ragdoll(instance, bone_rotations)
-
-        # Handle finish
         if finished:
-            _log(f"  Ragdoll {ragdoll_id} finished")
+            _log(f"Ragdoll {ragdoll_id} finished - restoring locomotion")
             _reset_pose(instance)
             _unlock_animations(instance.armature_name)
+
+            layer_manager = get_layer_manager_for(instance.armature)
+            if layer_manager:
+                layer_manager.deactivate_channel(
+                    channel=AnimChannel.PHYSICS,
+                    fade_out=0.3,
+                )
+                _log("PHYSICS channel deactivated")
+
             del _active_ragdolls[armature_id]
 
 
-def _apply_ragdoll(instance: RagdollInstance, bone_rotations: dict):
-    """
-    Apply ragdoll transforms to armature.
-
-    Root bone: position offset (drops/moves the character)
-    Other bones: rotation offset (makes them droop/sway)
-    """
+def _apply_ragdoll(instance: RagdollInstance):
+    """Apply bone rotations - combines initial pose with physics offset."""
     armature = instance.armature
     if not armature:
         return
 
     try:
-        _ = armature.name
         pose_bones = armature.pose.bones
     except ReferenceError:
-        _log("Armature became invalid, skipping")
         return
 
-    root_name = instance.bone_order[0] if instance.bone_order else None
-
-    for i, bone_name in enumerate(instance.bone_order):
-        if bone_name not in bone_rotations:
-            continue
-
+    for bone_name, physics in instance.bone_physics.items():
         pb = pose_bones.get(bone_name)
         if not pb:
             continue
 
-        is_root = (bone_name == root_name)
+        physics_rot = physics.get("rot", (0.0, 0.0, 0.0))
+        initial_rot = instance.initial_rotations.get(bone_name, (0.0, 0.0, 0.0))
 
-        if is_root:
-            # Root: bone_rotations contains position OFFSET
-            pos_offset = bone_rotations[bone_name]
-            pb.location = Vector(pos_offset)
-        else:
-            # Non-root: bone_rotations contains euler rotation offset
-            rot = bone_rotations[bone_name]
-            from mathutils import Euler
-            euler = Euler((rot[0], rot[1], rot[2]), 'XYZ')
-            pb.rotation_mode = 'QUATERNION'
-            pb.rotation_quaternion = euler.to_quaternion()
+        final_rot = (
+            initial_rot[0] + physics_rot[0],
+            initial_rot[1] + physics_rot[1],
+            initial_rot[2] + physics_rot[2],
+        )
+
+        pb.rotation_mode = 'XYZ'
+        pb.rotation_euler = Euler(final_rot, 'XYZ')
 
 
 def _reset_pose(instance: RagdollInstance):
-    """Reset armature to rest pose when ragdoll finishes."""
+    """Reset armature pose to initial state."""
     armature = instance.armature
     if not armature:
         return
@@ -373,16 +468,16 @@ def _reset_pose(instance: RagdollInstance):
     except ReferenceError:
         return
 
-    for bone_name in instance.bone_order:
+    for bone_name, initial_rot in instance.initial_rotations.items():
         pb = pose_bones.get(bone_name)
         if pb:
-            pb.location = Vector((0, 0, 0))
-            pb.rotation_quaternion = Quaternion()
+            pb.rotation_mode = 'XYZ'
+            pb.rotation_euler = Euler(initial_rot, 'XYZ')
 
 
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 # ANIMATION LOCKING
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 
 def _lock_animations(armature_name: str, duration: float):
     try:
@@ -409,9 +504,9 @@ def _unlock_animations(armature_name: str):
     _log(f"Unlocked animations for {armature_name}")
 
 
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 # CLEANUP
-# ─────────────────────────────────────────────────────────
+# =============================================================================
 
 def clear():
     global _active_ragdolls

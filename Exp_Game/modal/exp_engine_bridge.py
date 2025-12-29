@@ -18,6 +18,13 @@ import bpy
 from ..engine import EngineCore
 from ..engine.animations.baker import bake_action
 from ..animations.controller import AnimationController
+from ..animations.layer_manager import (
+    init_layer_managers,
+    shutdown_layer_managers,
+    update_all_managers,
+    get_layer_manager,
+    get_layer_manager_for,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -854,79 +861,52 @@ def cache_poses_in_workers(modal, context) -> bool:
     return True
 
 
+# Joint limits caching removed - not needed for rigid animations
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOINT LIMITS CACHING
+# LAYER MANAGER LIFECYCLE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def cache_joint_limits_in_workers(modal, context) -> bool:
+def init_animation_layer_manager(modal, context) -> bool:
     """
-    Cache joint limits in the ANIMATION WORKER for anatomical pose constraints.
-    MUST be called AFTER init_engine() since it needs workers to be running.
+    Initialize layer managers for ALL animated objects.
 
-    Joint limits are applied during POSE_BLEND_COMPUTE to ensure poses
-    stay within anatomically valid ranges.
+    CRITICAL: This prevents Blender's C-level action evaluator from overwriting
+    pose bone transforms set by Python (ragdoll, physics, etc.).
+
+    Must be called AFTER animation caching is complete.
 
     Args:
         modal: ExpModal operator instance
         context: Blender context
 
     Returns:
-        True if caching succeeded
+        True if successful
     """
-    from ..developer.dev_logger import log_game
-    from ..engine.animations.default_limits import get_default_limits
+    debug = getattr(context.scene, "dev_debug_animations", False)
 
-    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
-        log_game("JOINT-LIMITS", "SKIP engine not available")
-        return False
+    # Initialize layer managers for all animated objects
+    count = init_layer_managers()
 
-    # Get default joint limits from the standard rig definition
-    limits_data = get_default_limits()
-
-    if not limits_data:
-        log_game("JOINT-LIMITS", "EMPTY no joint limits defined")
-        return True  # No limits is not an error
-
-    bone_count = len(limits_data)
-    axis_count = sum(len(bone_limits) for bone_limits in limits_data.values())
-    log_game("JOINT-LIMITS", f"CACHING {bone_count} bones, {axis_count} axis constraints")
-
-    # Send cache to ANIMATION WORKER ONLY
-    transfer_start = time.perf_counter()
-    job_id = modal.engine.submit_job(
-        "CACHE_JOINT_LIMITS",
-        {"limits": limits_data},
-        check_overload=False,
-        target_worker=ANIMATION_WORKER_ID
-    )
-
-    # Wait for cache confirmation from animation worker
-    if job_id is not None and job_id >= 0:
-        start_time = time.perf_counter()
-        timeout = 1.0
-        confirmed = False
-
-        while not confirmed:
-            if time.perf_counter() - start_time > timeout:
-                log_game("JOINT-LIMITS", f"TIMEOUT worker={ANIMATION_WORKER_ID} cache not confirmed")
-                break
-
-            results = list(modal.engine.poll_results(max_results=50))
-            for result in results:
-                if result.job_type == "CACHE_JOINT_LIMITS" and result.success:
-                    if result.worker_id == ANIMATION_WORKER_ID:
-                        confirmed = True
-                        break
-
-            if confirmed:
-                break
-            time.sleep(0.002)
-
-        transfer_elapsed_ms = (time.perf_counter() - transfer_start) * 1000
-
-        if confirmed:
-            log_game("JOINT-LIMITS", f"CACHE_OK worker={ANIMATION_WORKER_ID} {bone_count}bones {axis_count}axes ({transfer_elapsed_ms:.0f}ms)")
-        else:
-            log_game("JOINT-LIMITS", f"CACHE_FAIL worker={ANIMATION_WORKER_ID} timeout after {transfer_elapsed_ms:.0f}ms")
+    if debug:
+        print(f"[LAYER_MANAGER] Initialized {count} layer managers for animated objects")
 
     return True
+
+
+def shutdown_animation_layer_manager(modal, context) -> None:
+    """
+    Shutdown all layer managers and restore native actions.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+    """
+    debug = getattr(context.scene, "dev_debug_animations", False)
+
+    # Shutdown all layer managers (restores all native actions)
+    shutdown_layer_managers()
+
+    if debug:
+        print("[LAYER_MANAGER] All layer managers shutdown")

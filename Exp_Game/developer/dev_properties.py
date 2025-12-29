@@ -348,61 +348,6 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # IK VISUAL DEBUG (3D Viewport Overlay)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_debug_ik_visual = bpy.props.BoolProperty(
-        name="Enable IK Visual Debug",
-        description=(
-            "Real-time 3D visualization of IK system:\n"
-            "• IK targets (spheres at goal positions)\n"
-            "• Bone chains (lines from root to tip)\n"
-            "• Reach limits (transparent spheres)\n"
-            "• Pole vectors (arrows showing bend direction)\n"
-            "• Joint positions (knee/elbow markers)"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_ik_visual_targets = bpy.props.BoolProperty(
-        name="IK Targets",
-        description="Draw IK target positions as spheres (green = reachable, red = out of reach)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_debug_ik_visual_chains = bpy.props.BoolProperty(
-        name="Bone Chains",
-        description="Draw bone chains as lines (cyan = upper bone, magenta = lower bone)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_debug_ik_visual_reach = bpy.props.BoolProperty(
-        name="Reach Limits",
-        description="Draw maximum reach sphere from root joint (transparent yellow)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_debug_ik_visual_poles = bpy.props.BoolProperty(
-        name="Pole Vectors",
-        description="Draw pole direction arrows (orange = bend direction hint)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_debug_ik_visual_joints = bpy.props.BoolProperty(
-        name="Joint Markers",
-        description="Draw markers at joint positions (root, mid, tip)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_debug_ik_line_width = bpy.props.FloatProperty(
-        name="Line Width",
-        description="IK visual debug line thickness (1.0-10.0)",
-        default=2.5,
-        min=1.0,
-        max=10.0
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
     # RIG VISUALIZER (Comprehensive animation system debug)
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -695,71 +640,6 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # UNIFIED IK SYSTEM
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_debug_ik = bpy.props.BoolProperty(
-        name="IK Logs",
-        description=(
-            "Unified IK system diagnostics:\n"
-            "• BEFORE/AFTER skeleton state\n"
-            "• Constraint targets and distances\n"
-            "• Solve process (hips, legs, arms, head)\n"
-            "• Visualizer wake-up status\n"
-            "• Result summary (satisfied/failed/at-limit)"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_ik_solve = bpy.props.BoolProperty(
-        name="IK Solve Details",
-        description=(
-            "Detailed IK solver diagnostics:\n"
-            "• Target position and reach distance\n"
-            "• Pole position (computed or manual)\n"
-            "• Solved quaternions (world and local)\n"
-            "• Bone chain hierarchy transforms\n"
-            "• Joint limit violations"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_rig_state = bpy.props.BoolProperty(
-        name="Rig State",
-        description=(
-            "Full rig state logging for debugging:\n"
-            "• All bone positions (world space)\n"
-            "• All bone rotations (local euler degrees)\n"
-            "• Joint limit violations (anatomical limits)\n"
-            "• Self-collision detection (arm through body)\n"
-            "• IK chain states before/after solving\n"
-            "\n"
-            "WARNING: Produces verbose output. Use for short tests."
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.runtime_ik_enabled = bpy.props.BoolProperty(
-        name="Enable Runtime IK",
-        description="Enable real-time IK solving during gameplay",
-        default=False
-    )
-
-    bpy.types.Scene.runtime_ik_use_blend_system = bpy.props.BoolProperty(
-        name="Use BlendSystem",
-        description=(
-            "Route IK through BlendSystem (production path).\n"
-            "When enabled, sets IK target via blend_sys.set_ik_target_object().\n"
-            "Logs will show 'src=BlendSystem' instead of 'src=SceneProps'.\n"
-            "Use this to test the same code path that reactions will use."
-        ),
-        default=False
-    )
-
-    # NOTE: runtime_ik_chain, runtime_ik_influence, runtime_ik_target removed
-    # Runtime IK now uses unified test_ik_* properties from Test Suite
-
-    # ══════════════════════════════════════════════════════════════════════════
     # POSE LIBRARY SYSTEM
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -867,11 +747,7 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.test_apply_joint_limits = bpy.props.BoolProperty(
-        name="Apply Joint Limits",
-        description="Enforce anatomical rotation limits during pose blending",
-        default=True
-    )
+    # Joint limits property removed - not needed for rigid animations
 
     # --- Pose Mode Options ---
     # Note: Uses existing pose_test_name, pose_test_blend_time from above
@@ -1174,26 +1050,12 @@ def unregister_properties():
         'dev_debug_kcc_visual_line_width',
         'dev_debug_kcc_visual_vector_scale',
 
-        # IK visual debug
-        'dev_debug_ik_visual',
-        'dev_debug_ik_visual_targets',
-        'dev_debug_ik_visual_chains',
-        'dev_debug_ik_visual_reach',
-        'dev_debug_ik_visual_poles',
-        'dev_debug_ik_visual_joints',
-        'dev_debug_ik_line_width',
-
         # Rig visualizer
         'dev_rig_visualizer_enabled',
         'dev_rig_vis_bone_groups',
         'dev_rig_vis_selected_group',
-        'dev_rig_vis_ik_chains',
-        'dev_rig_vis_ik_targets',
-        'dev_rig_vis_ik_poles',
-        'dev_rig_vis_ik_reach',
         'dev_rig_vis_bone_axes',
         'dev_rig_vis_active_mask',
-        'dev_rig_vis_full_body_ik',
         'dev_rig_vis_line_width',
         'dev_rig_vis_axis_length',
         'dev_rig_vis_text_overlay',
@@ -1215,14 +1077,6 @@ def unregister_properties():
         'dev_debug_tracking',
         'dev_debug_ragdoll',
 
-        # Unified IK System
-        'dev_debug_ik',
-        'dev_debug_ik_solve',
-        'dev_debug_rig_state',
-        'runtime_ik_enabled',
-        'runtime_ik_use_blend_system',
-        # runtime_ik_chain, runtime_ik_influence, runtime_ik_target moved to old_props
-
         # Pose Library
         'dev_debug_poses',
         'dev_debug_pose_blend',
@@ -1230,39 +1084,6 @@ def unregister_properties():
         'pose_test_blend_time',
         'pose_blend_enabled',
         # pose_test_bone_group moved to old_props (replaced by test_bone_group)
-
-        # Unified Test Suite
-        'test_mode',
-        'test_bone_group',
-        'test_blend_enabled',
-        'test_ik_chain',
-        'test_ik_target',
-        'test_ik_influence',
-        'test_ik_pole',
-        'test_ik_advanced',
-        'test_ik_target_xyz',
-        'test_ik_pole_offset',
-
-        # Pose Blend Mode
-        'pose_blend_mode',
-        'pose_blend_a',
-        'pose_blend_b',
-        'pose_blend_weight',
-        'pose_blend_ik_influence',
-        'pose_blend_auto_play',
-        'pose_blend_duration',
-        'pose_blend_hold_start',
-        'pose_blend_hold_end',
-
-        # Multi-Chain IK
-        'pose_blend_ik_arm_L',
-        'pose_blend_ik_arm_L_target',
-        'pose_blend_ik_arm_R',
-        'pose_blend_ik_arm_R_target',
-        'pose_blend_ik_leg_L',
-        'pose_blend_ik_leg_L_target',
-        'pose_blend_ik_leg_R',
-        'pose_blend_ik_leg_R_target',
 
         # Rig Analyzer
         'rig_analysis_report',
@@ -1276,18 +1097,68 @@ def unregister_properties():
             delattr(bpy.types.Scene, prop)
 
     # Clean up OLD properties from previous versions (migration)
+    # These properties are no longer defined but may exist in saved scenes
     old_props = [
         # Replaced by unified test_bone_group
         'pose_test_bone_group',
         # Removed - IK Test section merged into unified Test Suite
         'dev_section_ik',
-        # Replaced by unified test_ik_* properties
+        # Old IK properties (replaced by Neural IK)
         'runtime_ik_chain',
         'runtime_ik_influence',
         'runtime_ik_target',
-        # Replaced by unified dev_debug_ik
         'dev_debug_full_body_ik',
         'dev_debug_runtime_ik',
+        # IK Visual Debug (removed - old limb-based IK)
+        'dev_debug_ik_visual',
+        'dev_debug_ik_visual_targets',
+        'dev_debug_ik_visual_chains',
+        'dev_debug_ik_visual_reach',
+        'dev_debug_ik_visual_poles',
+        'dev_debug_ik_visual_joints',
+        'dev_debug_ik_line_width',
+        # Rig Visualizer IK properties (removed)
+        'dev_rig_vis_ik_chains',
+        'dev_rig_vis_ik_targets',
+        'dev_rig_vis_ik_poles',
+        'dev_rig_vis_ik_reach',
+        'dev_rig_vis_full_body_ik',
+        # Unified IK System (removed - replaced by Neural IK)
+        'dev_debug_ik',
+        'dev_debug_ik_solve',
+        'dev_debug_rig_state',
+        'runtime_ik_enabled',
+        'runtime_ik_use_blend_system',
+        # Test IK properties (removed)
+        'test_mode',
+        'test_bone_group',
+        'test_blend_enabled',
+        'test_ik_chain',
+        'test_ik_target',
+        'test_ik_influence',
+        'test_ik_pole',
+        'test_ik_advanced',
+        'test_ik_target_xyz',
+        'test_ik_pole_offset',
+        # Pose Blend Mode (removed)
+        'pose_blend_mode',
+        'pose_blend_a',
+        'pose_blend_b',
+        'pose_blend_weight',
+        'pose_blend_ik_influence',
+        'pose_blend_auto_play',
+        'pose_blend_duration',
+        'pose_blend_hold_start',
+        'pose_blend_hold_end',
+        # Multi-Chain IK (removed)
+        'pose_blend_ik_arm_L',
+        'pose_blend_ik_arm_L_target',
+        'pose_blend_ik_arm_R',
+        'pose_blend_ik_arm_R_target',
+        'pose_blend_ik_leg_L',
+        'pose_blend_ik_leg_L_target',
+        'pose_blend_ik_leg_R',
+        'pose_blend_ik_leg_R_target',
     ]
 
     for prop in old_props:

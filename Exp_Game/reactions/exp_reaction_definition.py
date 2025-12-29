@@ -1042,22 +1042,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         default=2.0, min=0.1, max=30.0,
         description="How long the ragdoll simulation runs"
     )
-    ragdoll_gravity_multiplier: bpy.props.FloatProperty(
-        name="Gravity Multiplier",
-        default=1.0, min=0.0, max=3.0,
-        description="Multiply scene gravity for ragdoll (1.0 = normal, 0.5 = floaty)"
-    )
-    ragdoll_impulse_strength: bpy.props.FloatProperty(
-        name="Impulse Strength",
-        default=5.0, min=0.0, max=50.0,
-        description="Initial force applied when ragdoll starts (knockback)"
-    )
-    ragdoll_impulse_direction: bpy.props.FloatVectorProperty(
-        name="Impulse Direction",
-        default=(0.0, 0.0, 1.0),
-        subtype='DIRECTION',
-        description="Direction of initial impulse (normalized)"
-    )
 
 
 def register_reaction_library_properties():

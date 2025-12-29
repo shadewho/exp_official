@@ -1149,21 +1149,9 @@ class ReactionRagdollNode(_ReactionNodeKind):
     def init(self, context):
         super().init(context)
 
-        # Duration socket
+        # Duration socket - only input needed
         s_dur = self.inputs.new("ExpFloatSocketType", "Duration")
         s_dur.reaction_prop = "ragdoll_duration"
-
-        # Gravity multiplier socket
-        s_grav = self.inputs.new("ExpFloatSocketType", "Gravity Mult")
-        s_grav.reaction_prop = "ragdoll_gravity_multiplier"
-
-        # Impulse strength socket
-        s_imp = self.inputs.new("ExpFloatSocketType", "Impulse Strength")
-        s_imp.reaction_prop = "ragdoll_impulse_strength"
-
-        # Impulse direction socket
-        s_dir = self.inputs.new("ExpVectorSocketType", "Impulse Direction")
-        s_dir.reaction_prop = "ragdoll_impulse_direction"
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -1188,5 +1176,4 @@ class ReactionRagdollNode(_ReactionNodeKind):
 
         # Info box
         info = layout.box()
-        info.label(text="Simulates bone physics with collision.", icon='PHYSICS')
-        info.label(text="Blocks all animations until complete.")
+        info.label(text="Character collapses - all bones go limp.", icon='PHYSICS')

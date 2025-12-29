@@ -113,11 +113,6 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | `ANIM-CACHE` | `anim_cache` | Animation caching in workers |
 | `ANIM-WORKER` | `anim_worker` | Animation worker job routing |
 | `TEST_MODAL` | `animations` | Animation 2.0 test modal playback |
-| **Full-Body IK System** |
-| `FULL-BODY-IK` | `full_body_ik` | Full-body IK solver (Root/Hips/Spine/Limbs coordination) |
-| `IK` | `runtime_ik` | Runtime IK job submission and results |
-| `IK-SOLVE` | `ik_solve` | Detailed IK solver math (angles, targets, errors) |
-| `RIG` | `rig_state` | Rig state logging (bone transforms, joint limits) |
 | **Pose System** (Development/Testing) |
 | `POSES` | `poses` | Pose library capture/apply |
 | `POSE-CACHE` | `poses` | Pose cache transfer to workers |

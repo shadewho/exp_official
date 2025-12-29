@@ -1,32 +1,21 @@
 # Exp_Game/animations/test_panel.py
 """
-Animation 2.0 Test Suite - Full-Body IK Architecture
+Animation Test Panel - STRIPPED DOWN VERSION
 
-Test panel for developing and testing animation techniques:
-- Animation playback with worker-based blending
-- Full-Body IK system (Root → Hips → Spine → Limbs)
-- GPU visualization for debugging
+Only contains:
+- Animation playback testing
+- Basic GPU visualization for targets
+- Reset pose operator
 
-IK Modes:
-- FULL_BODY: Whole skeleton responds to targets (crouch, reach, lean)
-- TWO_BONE: Single limb chain solving (legacy, building block)
-- FOOT_GROUND: Keep feet planted during body movement
-- LOOK_AT: Head/neck tracking
-
-Rig Structure (see rig.md):
-- Root: World anchor at origin (IK targets relative to this)
-- Hips: Pelvis control (translates for crouch, rotates for lean)
-- Spine: Torso chain (leans toward reach targets)
-- Limbs: Two-bone IK chains (arms, legs)
+ALL IK CODE HAS BEEN REMOVED - Starting fresh with neural network approach.
 """
 
 import bpy
 import time
 from bpy.types import Operator, PropertyGroup
-from bpy.props import FloatProperty, BoolProperty, EnumProperty, PointerProperty
+from bpy.props import FloatProperty, BoolProperty, EnumProperty
 
 from ..engine.animations.baker import bake_action
-from ..engine.animations.ik_chains import LEG_IK, ARM_IK
 from ..engine import EngineCore
 from .controller import AnimationController
 from ..developer.dev_logger import start_session, log_game, log_worker_messages, export_game_log, clear_log
@@ -37,46 +26,32 @@ from ..developer.gpu_utils import (
     get_cached_shader,
     CIRCLE_8,
     sphere_wire_verts,
-    layered_sphere_verts,
     extend_batch_data,
     crosshair_verts,
-    arrow_head_verts,
-)
-from .rig_test_data.test_suite import (
-    build_default_plan,
-    SessionRecorder,
-    evaluate_pose,
-    IKTestCase,
-    human_goal_text,
-    human_judge_text,
-    OUTPUT_DIR,
 )
 
 
 # =============================================================================
-# GPU TEST TARGET VISUALIZER
+# GPU TARGET VISUALIZER (kept - useful for any system)
 # =============================================================================
-# Draws ALL IK targets during test sessions with distinct colors and labels
 
-_test_target_handler = None
-_test_target_data = None
+_target_handler = None
+_target_data = None
 
-# Target colors - distinct and visible
 TARGET_COLORS = {
-    "L_HAND": (0.2, 0.6, 1.0, 0.95),    # Blue - left hand
-    "R_HAND": (1.0, 0.4, 0.2, 0.95),    # Orange - right hand
-    "L_FOOT": (0.2, 1.0, 0.4, 0.95),    # Green - left foot
-    "R_FOOT": (1.0, 1.0, 0.2, 0.95),    # Yellow - right foot
-    "LOOK_AT": (1.0, 0.2, 1.0, 0.95),   # Magenta - look at
-    "LEAN": (0.6, 0.2, 1.0, 0.95),      # Purple - lean/spine
+    "L_HAND": (0.2, 0.6, 1.0, 0.95),
+    "R_HAND": (1.0, 0.4, 0.2, 0.95),
+    "L_FOOT": (0.2, 1.0, 0.4, 0.95),
+    "R_FOOT": (1.0, 1.0, 0.2, 0.95),
+    "LOOK_AT": (1.0, 0.2, 1.0, 0.95),
+    "HIPS": (0.6, 0.2, 1.0, 0.95),
 }
 
 
-def _draw_test_targets():
-    """GPU draw callback for test target visualization."""
-    global _test_target_data
-
-    if _test_target_data is None:
+def _draw_targets():
+    """GPU draw callback for target visualization."""
+    global _target_data
+    if _target_data is None:
         return
 
     gpu.state.depth_test_set('NONE')
@@ -87,25 +62,18 @@ def _draw_test_targets():
     all_verts = []
     all_colors = []
 
-    for target in _test_target_data:
+    for target in _target_data:
         tag = target.get('tag', '')
         pos = target.get('pos')
         if not pos:
             continue
 
         color = TARGET_COLORS.get(tag, (1.0, 1.0, 1.0, 0.9))
-
-        # Draw crosshair at target
-        size = 0.08
-        extend_batch_data(all_verts, all_colors, crosshair_verts(pos, size), color)
-
-        # Draw sphere wireframe
+        extend_batch_data(all_verts, all_colors, crosshair_verts(pos, 0.08), color)
         extend_batch_data(all_verts, all_colors, sphere_wire_verts(pos, 0.06, CIRCLE_8), color)
 
-        # Draw direction indicator from origin toward target (shows which way target is)
         origin = target.get('origin')
         if origin:
-            # Line from origin to target
             all_verts.extend([origin, pos])
             all_colors.extend([(*color[:3], 0.4), color])
 
@@ -115,181 +83,34 @@ def _draw_test_targets():
         batch.draw(shader)
 
     gpu.state.line_width_set(1.0)
-    gpu.state.depth_test_set('NONE')
     gpu.state.blend_set('NONE')
 
 
-def enable_test_target_visualizer():
-    """Register test target visualization draw handler."""
-    global _test_target_handler
-    if _test_target_handler is None:
-        _test_target_handler = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_test_targets, (), 'WINDOW', 'POST_VIEW'
+def enable_target_visualizer():
+    global _target_handler
+    if _target_handler is None:
+        _target_handler = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_targets, (), 'WINDOW', 'POST_VIEW'
         )
 
 
-def disable_test_target_visualizer():
-    """Unregister test target visualization draw handler."""
-    global _test_target_handler, _test_target_data
-    if _test_target_handler is not None:
+def disable_target_visualizer():
+    global _target_handler, _target_data
+    if _target_handler is not None:
         try:
-            bpy.types.SpaceView3D.draw_handler_remove(_test_target_handler, 'WINDOW')
+            bpy.types.SpaceView3D.draw_handler_remove(_target_handler, 'WINDOW')
         except:
             pass
-        _test_target_handler = None
-    _test_target_data = None
+        _target_handler = None
+    _target_data = None
 
 
-def set_test_target_data(targets: list):
-    """
-    Set target data for GPU visualization.
-
-    Args:
-        targets: List of dicts with 'tag', 'pos', and optional 'origin'
-    """
-    global _test_target_data
-    _test_target_data = targets
-    if _test_target_handler is None:
-        enable_test_target_visualizer()
-
-
-# =============================================================================
-# GPU IK VISUALIZER
-# =============================================================================
-
-_ik_draw_handler = None
-_ik_vis_data = None
-
-
-def _draw_ik_visual():
-    """GPU draw callback for IK visualization."""
-    global _ik_vis_data
-
-    scene = bpy.context.scene
-    if not getattr(scene, 'dev_debug_ik_visual', False):
-        return
-
-    # Check for runtime IK state
-    from .runtime_ik import get_ik_state, is_ik_active
-    runtime_state = get_ik_state()
-
-    if is_ik_active() and runtime_state.get("active"):
-        vis_data = _build_ik_vis_data(runtime_state)
-    elif _ik_vis_data is not None:
-        vis_data = _ik_vis_data
-    else:
-        return
-
-    # GPU state
-    gpu.state.depth_test_set('NONE')
-    gpu.state.blend_set('ALPHA')
-    gpu.state.line_width_set(getattr(scene, 'dev_debug_ik_line_width', 2.5))
-
-    shader = get_cached_shader()
-    all_verts = []
-    all_colors = []
-
-    # Draw targets
-    if 'targets' in vis_data:
-        for target in vis_data['targets']:
-            pos = target['pos']
-            reachable = target.get('reachable', True)
-            color = (0.2, 1.0, 0.2, 0.9) if reachable else (1.0, 0.2, 0.2, 0.9)
-            extend_batch_data(all_verts, all_colors, sphere_wire_verts(pos, 0.05, CIRCLE_8), color)
-
-    # Draw chains
-    if 'chains' in vis_data:
-        for chain in vis_data['chains']:
-            root, mid, tip = chain['root'], chain['mid'], chain['tip']
-            all_verts.extend([root, mid])
-            all_colors.extend([(0.0, 1.0, 1.0, 0.9)] * 2)
-            all_verts.extend([mid, tip])
-            all_colors.extend([(1.0, 0.0, 1.0, 0.9)] * 2)
-
-    # Draw reach spheres
-    if 'reach_spheres' in vis_data:
-        for sphere in vis_data['reach_spheres']:
-            extend_batch_data(
-                all_verts, all_colors,
-                layered_sphere_verts(sphere['center'], sphere['radius'], (-0.5, 0.0, 0.5), CIRCLE_8),
-                (1.0, 0.8, 0.0, 0.2)
-            )
-
-    # Draw joints
-    if 'joints' in vis_data:
-        for joint in vis_data['joints']:
-            pos = joint['pos']
-            color = (1.0, 1.0, 1.0, 0.9) if joint.get('type') == 'root' else (0.0, 1.0, 1.0, 0.9)
-            extend_batch_data(all_verts, all_colors, crosshair_verts(pos, 0.03), color)
-
-    # Draw
-    if all_verts:
-        batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
-        shader.bind()
-        batch.draw(shader)
-
-    # Reset
-    gpu.state.line_width_set(1.0)
-    gpu.state.depth_test_set('NONE')
-    gpu.state.blend_set('NONE')
-
-
-def _build_ik_vis_data(state: dict) -> dict:
-    """Build visualization data from runtime IK state."""
-    vis_data = {'targets': [], 'chains': [], 'reach_spheres': [], 'joints': []}
-
-    target = state.get('last_target')
-    mid_pos = state.get('last_mid_pos')
-    root_pos = state.get('root_pos')
-    chain_name = state.get('chain', 'arm_R')
-    reachable = state.get('reachable', True)
-
-    if target is None or root_pos is None:
-        return vis_data
-
-    # Get chain reach
-    chain_def = LEG_IK.get(chain_name) or ARM_IK.get(chain_name, {})
-    max_reach = chain_def.get('reach', 0.5)
-
-    vis_data['targets'].append({'pos': tuple(target), 'reachable': reachable})
-
-    if mid_pos is not None:
-        vis_data['chains'].append({'root': tuple(root_pos), 'mid': tuple(mid_pos), 'tip': tuple(target)})
-
-    vis_data['reach_spheres'].append({'center': tuple(root_pos), 'radius': max_reach})
-    vis_data['joints'].append({'pos': tuple(root_pos), 'type': 'root'})
-    if mid_pos is not None:
-        vis_data['joints'].append({'pos': tuple(mid_pos), 'type': 'mid'})
-    vis_data['joints'].append({'pos': tuple(target), 'type': 'tip'})
-
-    return vis_data
-
-
-def enable_ik_visualizer():
-    """Register IK visualization draw handler."""
-    global _ik_draw_handler
-    if _ik_draw_handler is None:
-        _ik_draw_handler = bpy.types.SpaceView3D.draw_handler_add(_draw_ik_visual, (), 'WINDOW', 'POST_VIEW')
-
-
-def disable_ik_visualizer():
-    """Unregister IK visualization draw handler."""
-    global _ik_draw_handler, _ik_vis_data
-    if _ik_draw_handler is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(_ik_draw_handler, 'WINDOW')
-        except:
-            pass
-        _ik_draw_handler = None
-    _ik_vis_data = None
-
-
-def set_ik_vis_data(data: dict):
-    """Set visualization data from external source."""
-    global _ik_vis_data
-    _ik_vis_data = data
-    if _ik_draw_handler is None:
-        enable_ik_visualizer()
+def set_target_data(targets: list):
+    """Set target data for GPU visualization."""
+    global _target_data
+    _target_data = targets
+    if _target_handler is None:
+        enable_target_visualizer()
 
 
 # =============================================================================
@@ -301,7 +122,6 @@ _test_controller = None
 
 
 def get_test_engine() -> EngineCore:
-    """Get or create test engine."""
     global _test_engine
     if _test_engine is None or not _test_engine.is_alive():
         _test_engine = EngineCore()
@@ -312,7 +132,6 @@ def get_test_engine() -> EngineCore:
 
 
 def get_test_controller() -> AnimationController:
-    """Get or create test controller."""
     global _test_controller
     if _test_controller is None:
         _test_controller = AnimationController()
@@ -320,17 +139,13 @@ def get_test_controller() -> AnimationController:
 
 
 def reset_test_controller():
-    """Reset test controller and engine."""
     global _test_controller, _test_engine
-
-    # Export logs
     if _test_engine is not None:
         export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
         clear_log()
         _test_engine.shutdown()
         _test_engine = None
-
-    disable_ik_visualizer()
+    disable_target_visualizer()
     _test_controller = None
 
 
@@ -346,78 +161,54 @@ class ANIM2_OT_BakeAll(Operator):
 
     def execute(self, context):
         start_time = time.perf_counter()
-
         reset_test_controller()
         ctrl = get_test_controller()
         engine = get_test_engine()
 
         baked_count = 0
-        failed = []
-
         for action in bpy.data.actions:
             try:
                 anim = bake_action(action)
                 ctrl.add_animation(anim)
                 baked_count += 1
             except Exception as e:
-                failed.append(f"{action.name}: {e}")
+                pass
 
-        # Cache in workers
         if baked_count > 0 and engine.is_alive():
             cache_data = ctrl.get_cache_data_for_workers()
             engine.broadcast_job("CACHE_ANIMATIONS", cache_data)
-
-            # Wait for confirmation
-            wait_start = time.perf_counter()
-            while (time.perf_counter() - wait_start) < 1.0:
-                results = list(engine.poll_results(max_results=20))
-                for r in results:
-                    if r.job_type == "CACHE_ANIMATIONS" and r.success:
-                        break
-                time.sleep(0.01)
+            time.sleep(0.1)
 
         elapsed = (time.perf_counter() - start_time) * 1000
-
-        if failed:
-            self.report({'WARNING'}, f"Baked {baked_count} actions ({elapsed:.0f}ms). {len(failed)} failed.")
-        else:
-            self.report({'INFO'}, f"Baked {baked_count} actions in {elapsed:.0f}ms")
-
+        self.report({'INFO'}, f"Baked {baked_count} actions in {elapsed:.0f}ms")
         return {'FINISHED'}
 
 
-class ANIM2_OT_StopAll(Operator):
-    """Stop all animations"""
-    bl_idname = "anim2.stop_all"
-    bl_label = "Stop All"
-    bl_options = {'REGISTER'}
+class ANIM2_OT_ResetPose(Operator):
+    """Reset armature to rest pose"""
+    bl_idname = "anim2.reset_pose"
+    bl_label = "Reset Pose"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        armature = getattr(context.scene, 'target_armature', None)
+        return armature and armature.type == 'ARMATURE'
 
     def execute(self, context):
-        global _stop_requested
-        _stop_requested = True
-
-        ctrl = get_test_controller()
-        if ctrl:
-            ctrl.clear_all()
-
-        self.report({'INFO'}, "Stopped all animations")
-        return {'FINISHED'}
-
-
-class ANIM2_OT_ClearCache(Operator):
-    """Clear animation cache and shutdown test engine"""
-    bl_idname = "anim2.clear_cache"
-    bl_label = "Clear Cache"
-    bl_options = {'REGISTER'}
-
-    def execute(self, context):
-        reset_test_controller()
-        self.report({'INFO'}, "Animation cache cleared, engine stopped")
+        armature = context.scene.target_armature
+        for pose_bone in armature.pose.bones:
+            pose_bone.rotation_mode = 'QUATERNION'
+            pose_bone.rotation_quaternion = (1, 0, 0, 0)
+            pose_bone.location = (0, 0, 0)
+            pose_bone.scale = (1, 1, 1)
+        context.view_layer.update()
+        self.report({'INFO'}, "Pose reset")
         return {'FINISHED'}
 
 
 # =============================================================================
-# TEST MODAL (ANIMATION PLAYBACK ONLY)
+# TEST MODAL (ANIMATION PLAYBACK)
 # =============================================================================
 
 _active_test_modal = None
@@ -447,23 +238,16 @@ class ANIM2_OT_TestModal(Operator):
     _timer = None
     _last_time: float = 0.0
     _start_time: float = 0.0
-    _frame_count: int = 0
 
     def invoke(self, context, event):
         global _active_test_modal
-
         self._last_time = time.perf_counter()
         self._start_time = time.perf_counter()
-        self._frame_count = 0
 
         wm = context.window_manager
         self._timer = wm.event_timer_add(1/30, window=context.window)
         wm.modal_handler_add(self)
-
         _active_test_modal = self
-        start_session()
-        log_game("TEST_MODAL", "Started animation playback")
-
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
@@ -479,83 +263,56 @@ class ANIM2_OT_TestModal(Operator):
             return {'CANCELLED'}
 
         if event.type == 'TIMER':
-            scene = context.scene
-            props = scene.anim2_test
-            armature = getattr(scene, 'target_armature', None)
-
+            props = context.scene.anim2_test
+            armature = getattr(context.scene, 'target_armature', None)
             if not armature:
                 self.cancel(context)
                 return {'CANCELLED'}
 
-            # Check timeout
             timeout = getattr(props, 'playback_timeout', 20.0)
             if timeout > 0 and (time.perf_counter() - self._start_time) >= timeout:
                 self.cancel(context)
                 return {'CANCELLED'}
 
-            # Update timing
             current = time.perf_counter()
             dt = current - self._last_time
             self._last_time = current
-            self._frame_count += 1
-
-            # Step animation
             self._step_animation(context, dt, armature)
-
             return {'RUNNING_MODAL'}
 
         return {'PASS_THROUGH'}
 
     def _step_animation(self, context, dt: float, armature):
-        """Update and apply animation."""
         ctrl = get_test_controller()
         engine = get_test_engine()
-
         if not ctrl or not engine or not engine.is_alive():
             return
 
-        # Update controller state
         ctrl.update_state(dt)
-
-        # Get job data and submit to engine
         jobs_data = ctrl.get_compute_job_data()
         if not jobs_data:
             return
 
-        # Submit batch job
         job_id = engine.submit_job("ANIMATION_COMPUTE_BATCH", {"objects": jobs_data})
         if job_id is None or job_id < 0:
             return
 
-        # Poll for result (with short timeout)
         poll_start = time.perf_counter()
-        while (time.perf_counter() - poll_start) < 0.005:  # 5ms max
+        while (time.perf_counter() - poll_start) < 0.005:
             results = list(engine.poll_results(max_results=10))
             for result in results:
                 if result.job_type == "ANIMATION_COMPUTE_BATCH" and result.job_id == job_id:
                     if result.success:
                         self._apply_result(armature, result.result)
-                        # Log worker messages
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            log_worker_messages(worker_logs)
                     return
             time.sleep(0.0001)
 
     def _apply_result(self, armature, result_data: dict):
-        """Apply animation result to armature."""
         results_dict = result_data.get("results", {})
-        if not results_dict:
-            return
-
         for object_name, obj_result in results_dict.items():
             if object_name != armature.name:
                 continue
-
             bone_transforms = obj_result.get("bone_transforms", {})
-            if not bone_transforms:
-                continue
-
             pose_bones = armature.pose.bones
             for bone_name, transform in bone_transforms.items():
                 pose_bone = pose_bones.get(bone_name)
@@ -564,30 +321,18 @@ class ANIM2_OT_TestModal(Operator):
                     pose_bone.rotation_quaternion = (transform[0], transform[1], transform[2], transform[3])
                     pose_bone.location = (transform[4], transform[5], transform[6])
                     pose_bone.scale = (transform[7], transform[8], transform[9])
-
             bpy.context.view_layer.update()
 
     def cancel(self, context):
         global _active_test_modal
-
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
             self._timer = None
-
-        elapsed = time.perf_counter() - self._start_time
-        if elapsed > 0:
-            fps = self._frame_count / elapsed
-            log_game("TEST_MODAL", f"Stopped: {self._frame_count} frames in {elapsed:.1f}s ({fps:.1f} fps)")
-
-        if context.scene.dev_export_session_log:
-            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-            clear_log()
-
         _active_test_modal = None
 
 
 # =============================================================================
-# PROPERTIES (MINIMAL)
+# PROPERTIES
 # =============================================================================
 
 def get_animation_items(self, context):
@@ -599,31 +344,22 @@ def get_animation_items(self, context):
 
 
 class ANIM2_TestProperties(PropertyGroup):
-    """Minimal test properties."""
-
     selected_animation: EnumProperty(
         name="Animation",
-        description="Animation to play",
         items=get_animation_items
     )
-
     play_speed: FloatProperty(
         name="Speed",
-        description="Playback speed",
         default=1.0,
         min=0.1,
         max=3.0
     )
-
     loop_playback: BoolProperty(
         name="Loop",
-        description="Loop animation",
         default=True
     )
-
     playback_timeout: FloatProperty(
         name="Timeout",
-        description="Auto-stop after seconds (0 = no timeout)",
         default=20.0,
         min=0.0,
         max=300.0
@@ -631,472 +367,7 @@ class ANIM2_TestProperties(PropertyGroup):
 
 
 # =============================================================================
-# UNIFIED IK SYSTEM
-# =============================================================================
-# Single IK system - select which body regions to control.
-# All IK is handled through one interface.
-
-
-def get_ik_region_items(self, context):
-    """Return available IK regions - what parts of the body to control."""
-    return [
-        ("FULL_BODY", "Full Body", "Control entire skeleton: hips, spine, all limbs"),
-        ("LOWER_BODY", "Lower Body", "Hips and legs only"),
-        ("UPPER_BODY", "Upper Body", "Spine, arms, and head"),
-        ("LEGS", "Legs Only", "Both legs"),
-        ("ARMS", "Arms Only", "Both arms"),
-        ("LEFT_LEG", "Left Leg", "Left leg chain"),
-        ("RIGHT_LEG", "Right Leg", "Right leg chain"),
-        ("LEFT_ARM", "Left Arm", "Left arm chain"),
-        ("RIGHT_ARM", "Right Arm", "Right arm chain"),
-        ("HEAD", "Head/Neck", "Head look-at only"),
-    ]
-
-
-# =============================================================================
-# IK STATE TEST OPERATOR
-# =============================================================================
-
-class ANIM2_OT_TestIKState(Operator):
-    """Analyze current IK state and log to diagnostics file"""
-    bl_idname = "anim2.test_ik_state"
-    bl_label = "Analyze IK State"
-    bl_options = {'REGISTER'}
-
-    @classmethod
-    def poll(cls, context):
-        armature = getattr(context.scene, 'target_armature', None)
-        if not armature or armature.type != 'ARMATURE':
-            return False
-        target = getattr(context.scene, 'ik_test_target', None)
-        return target is not None
-
-    def execute(self, context):
-        from .ik_state import compute_ik_state, log_ik_state
-
-        scene = context.scene
-        armature = scene.target_armature
-        target_obj = scene.ik_test_target
-        chain = scene.ik_test_chain
-
-        if not armature or not target_obj:
-            self.report({'ERROR'}, "Set armature and target object")
-            return {'CANCELLED'}
-
-        # Start log session
-        start_session()
-
-        # Get target world position
-        target_pos = target_obj.matrix_world.translation
-
-        # Compute IK state
-        state = compute_ik_state(
-            armature=armature,
-            chain=chain,
-            target_pos=target_pos,
-            target_object_name=target_obj.name,
-            frame=context.scene.frame_current
-        )
-
-        # Log the state
-        log_ik_state(state)
-
-        # Update GPU visualization
-        from ..engine.animations.ik_chains import LEG_IK, ARM_IK
-        chain_def = ARM_IK.get(chain) or LEG_IK.get(chain, {})
-        max_reach = chain_def.get('reach', 0.5)
-
-        vis_data = {
-            'targets': [{'pos': state.target_pos, 'reachable': state.reachable}],
-            'chains': [{'root': state.root_pos, 'mid': state.mid_pos, 'tip': state.tip_pos}],
-            'reach_spheres': [{'center': state.root_pos, 'radius': max_reach}],
-            'joints': [
-                {'pos': state.root_pos, 'type': 'root'},
-                {'pos': state.mid_pos, 'type': 'mid'},
-                {'pos': state.tip_pos, 'type': 'tip'},
-            ]
-        }
-        set_ik_vis_data(vis_data)
-
-        # Export log
-        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-        clear_log()
-
-        # Report result
-        error_cm = state.error_distance * 100
-        if state.bend_correct and state.reachable:
-            self.report({'INFO'}, f"IK OK: error={error_cm:.1f}cm, {state.bend_direction} bend")
-        else:
-            problems = []
-            if not state.bend_correct:
-                problems.append(f"bend={state.bend_direction} (should be {state.bend_expected})")
-            if not state.reachable:
-                problems.append("unreachable")
-            self.report({'WARNING'}, f"IK issues: {', '.join(problems)}")
-
-        return {'FINISHED'}
-
-
-class ANIM2_OT_ApplyIK(Operator):
-    """Solve IK and apply to armature - moves bones toward target"""
-    bl_idname = "anim2.apply_ik"
-    bl_label = "Apply IK"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        armature = getattr(context.scene, 'target_armature', None)
-        if not armature or armature.type != 'ARMATURE':
-            return False
-        target = getattr(context.scene, 'ik_test_target', None)
-        return target is not None
-
-    def execute(self, context):
-        from .ik_solver import solve_two_bone_ik, apply_ik_to_chain, get_bend_hint
-        from .ik_state import compute_ik_state, log_ik_state
-
-        scene = context.scene
-        armature = scene.target_armature
-        target_obj = scene.ik_test_target
-        chain = scene.ik_test_chain
-
-        if not armature or not target_obj:
-            self.report({'ERROR'}, "Set armature and target object")
-            return {'CANCELLED'}
-
-        # Start log session
-        start_session()
-
-        # Get chain definition
-        is_arm = chain.startswith("arm")
-        chain_def = ARM_IK.get(chain) if is_arm else LEG_IK.get(chain)
-
-        if not chain_def:
-            self.report({'ERROR'}, f"Unknown chain: {chain}")
-            return {'CANCELLED'}
-
-        # Log BEFORE state
-        log_game("IK_APPLY", "=" * 60)
-        log_game("IK_APPLY", "BEFORE IK APPLICATION:")
-        target_pos = target_obj.matrix_world.translation
-        before_state = compute_ik_state(armature, chain, target_pos, target_obj.name, scene.frame_current)
-        log_ik_state(before_state)
-
-        # Get bone positions
-        pose_bones = armature.pose.bones
-        root_bone = pose_bones.get(chain_def["root"])
-        mid_bone = pose_bones.get(chain_def["mid"])
-
-        if not root_bone or not mid_bone:
-            self.report({'ERROR'}, "Missing bones in chain")
-            return {'CANCELLED'}
-
-        arm_matrix = armature.matrix_world
-        root_pos = arm_matrix @ root_bone.head
-        upper_length = root_bone.bone.length
-        lower_length = mid_bone.bone.length
-
-        # Get anatomically correct bend direction
-        bend_hint = get_bend_hint(chain, armature)
-
-        log_game("IK_APPLY", "-" * 60)
-        log_game("IK_APPLY", "SOLVING IK:")
-
-        # Solve IK
-        solution = solve_two_bone_ik(
-            root_pos=root_pos,
-            upper_length=upper_length,
-            lower_length=lower_length,
-            target_pos=target_pos,
-            bend_hint=bend_hint,
-            debug=True
-        )
-
-        if not solution.success:
-            self.report({'ERROR'}, "IK solve failed")
-            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-            clear_log()
-            return {'CANCELLED'}
-
-        log_game("IK_APPLY", "-" * 60)
-        log_game("IK_APPLY", "APPLYING TO BONES:")
-
-        # Apply solution to bones
-        success = apply_ik_to_chain(armature, chain, solution, debug=True)
-
-        if not success:
-            self.report({'ERROR'}, "Failed to apply IK to bones")
-            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-            clear_log()
-            return {'CANCELLED'}
-
-        # Force scene update
-        context.view_layer.update()
-
-        # Log AFTER state
-        log_game("IK_APPLY", "-" * 60)
-        log_game("IK_APPLY", "AFTER IK APPLICATION:")
-        after_state = compute_ik_state(armature, chain, target_pos, target_obj.name, scene.frame_current)
-        log_ik_state(after_state)
-
-        # Validate the resulting pose
-        from .pose_validator import validate_pose
-        validation = validate_pose(armature, chain=chain, target_pos=target_pos, debug=True)
-
-        # Summary
-        log_game("IK_APPLY", "=" * 60)
-        log_game("IK_APPLY", f"ERROR: {before_state.error_distance*100:.1f}cm -> {after_state.error_distance*100:.1f}cm")
-        if after_state.error_distance < before_state.error_distance:
-            improvement = (before_state.error_distance - after_state.error_distance) * 100
-            log_game("IK_APPLY", f"  Improved by {improvement:.1f}cm")
-        else:
-            log_game("IK_APPLY", f"  WARNING: Error increased!")
-
-        log_game("IK_APPLY", f"VALIDATION: {validation.summary}")
-        log_game("IK_APPLY", f"  Score: {validation.score:.2f}")
-        log_game("IK_APPLY", "=" * 60)
-
-        # Update GPU visualization with solution
-        max_reach = chain_def.get('reach', 0.5)
-        vis_data = {
-            'targets': [{'pos': tuple(solution.target_pos), 'reachable': not solution.clamped}],
-            'chains': [{'root': tuple(solution.root_pos), 'mid': tuple(solution.mid_pos), 'tip': tuple(solution.tip_pos)}],
-            'reach_spheres': [{'center': tuple(solution.root_pos), 'radius': max_reach}],
-            'joints': [
-                {'pos': tuple(solution.root_pos), 'type': 'root'},
-                {'pos': tuple(solution.mid_pos), 'type': 'mid'},
-                {'pos': tuple(solution.tip_pos), 'type': 'tip'},
-            ]
-        }
-        set_ik_vis_data(vis_data)
-
-        # Export log
-        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-        clear_log()
-
-        # Report result based on validation
-        if validation.valid:
-            self.report({'INFO'}, f"IK VALID: error={validation.ik_error_cm:.1f}cm, score={validation.score:.2f}")
-        else:
-            self.report({'WARNING'}, f"IK INVALID: {validation.summary}")
-
-        return {'FINISHED'}
-
-
-# =============================================================================
-# FULL-BODY IK TEST OPERATOR
-# =============================================================================
-
-class ANIM2_OT_TestFullBodyIK(Operator):
-    """Solve IK for selected body region"""
-    bl_idname = "anim2.test_full_body_ik"
-    bl_label = "Solve IK"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        armature = getattr(context.scene, 'target_armature', None)
-        return armature and armature.type == 'ARMATURE'
-
-    def execute(self, context):
-        from .full_body_ik import get_full_body_ik, IKTarget
-
-        scene = context.scene
-        armature = scene.target_armature
-        ik_region = getattr(scene, 'ik_region', 'FULL_BODY')
-
-        if not armature:
-            self.report({'ERROR'}, "No armature selected")
-            return {'CANCELLED'}
-
-        # Start log session
-        start_session()
-
-        # Get or create IK controller
-        fbik = get_full_body_ik(armature)
-        if not fbik:
-            self.report({'ERROR'}, "Failed to create IK controller")
-            return {'CANCELLED'}
-
-        # Clear previous constraints
-        fbik.clear_constraints()
-
-        log_game("IK", f"Region: {ik_region}")
-
-        # Get root position for converting world -> root-relative
-        root_bone = armature.pose.bones.get("Root")
-        arm_matrix = armature.matrix_world
-        root_world = (arm_matrix @ root_bone.head) if root_bone else armature.location
-
-        # Determine which constraints to set based on region
-        use_left_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'LEFT_LEG')
-        use_right_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'RIGHT_LEG')
-        use_left_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'LEFT_ARM')
-        use_right_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'RIGHT_ARM')
-        use_look_at = ik_region in ('FULL_BODY', 'UPPER_BODY', 'HEAD')
-        use_hips = ik_region in ('FULL_BODY', 'LOWER_BODY')  # LEGS means legs ONLY - no hips
-
-        # Apply hips drop if relevant
-        if use_hips:
-            hips_drop = getattr(scene, 'ik_hips_drop', 0.0)
-            if abs(hips_drop) > 0.001:
-                fbik.set_hips_drop(hips_drop)
-                log_game("IK", f"Hips drop: {hips_drop:.3f}m")
-
-        # Set targets from scene objects
-        if use_left_foot:
-            obj = getattr(scene, 'ik_target_left_foot', None)
-            if obj:
-                pos = tuple(obj.matrix_world.translation - root_world)
-                fbik.constraints.left_foot = IKTarget(pos, True, 1.0)
-                log_game("IK", f"L Foot target: {pos}")
-
-        if use_right_foot:
-            obj = getattr(scene, 'ik_target_right_foot', None)
-            if obj:
-                pos = tuple(obj.matrix_world.translation - root_world)
-                fbik.constraints.right_foot = IKTarget(pos, True, 1.0)
-                log_game("IK", f"R Foot target: {pos}")
-
-        if use_left_hand:
-            obj = getattr(scene, 'ik_target_left_hand', None)
-            if obj:
-                pos = tuple(obj.matrix_world.translation - root_world)
-                fbik.constraints.left_hand = IKTarget(pos, True, 1.0)
-                log_game("IK", f"L Hand target: {pos}")
-
-        if use_right_hand:
-            obj = getattr(scene, 'ik_target_right_hand', None)
-            if obj:
-                pos = tuple(obj.matrix_world.translation - root_world)
-                fbik.constraints.right_hand = IKTarget(pos, True, 1.0)
-                log_game("IK", f"R Hand target: {pos}")
-
-        if use_look_at:
-            obj = getattr(scene, 'ik_target_look_at', None)
-            if obj:
-                pos = tuple(obj.matrix_world.translation - root_world)
-                fbik.constraints.look_at = IKTarget(pos, True, 1.0)
-                log_game("IK", f"Look-at target: {pos}")
-
-        # If no targets set and region includes feet, ground them
-        if fbik.constraints.get_active_count() == 0 and use_left_foot and use_right_foot:
-            fbik.ground_feet()
-            log_game("IK", "No targets - grounding feet at current positions")
-
-        # Solve
-        log_game("IK", "=" * 60)
-        result = fbik.solve(use_engine=False)
-
-        # Force update
-        context.view_layer.update()
-
-        # Export log
-        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-        clear_log()
-
-        # Report result
-        if result.success:
-            self.report({'INFO'}, f"IK [{ik_region}]: {result.constraints_satisfied}/{result.constraints_total} solved, {result.solve_time_us:.0f}μs")
-        else:
-            self.report({'WARNING'}, f"IK [{ik_region}]: {result.constraints_satisfied}/{result.constraints_total} solved")
-
-        return {'FINISHED'}
-
-
-class ANIM2_OT_CrouchTest(Operator):
-    """Test crouch by dropping hips and solving leg IK"""
-    bl_idname = "anim2.crouch_test"
-    bl_label = "Test Crouch"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    crouch_amount: FloatProperty(
-        name="Crouch",
-        description="Crouch amount (0=standing, 1=full crouch)",
-        default=0.5,
-        min=0.0,
-        max=1.0
-    )
-
-    @classmethod
-    def poll(cls, context):
-        armature = getattr(context.scene, 'target_armature', None)
-        return armature and armature.type == 'ARMATURE'
-
-    def execute(self, context):
-        from .full_body_ik import get_full_body_ik
-
-        scene = context.scene
-        armature = scene.target_armature
-
-        # Start log session
-        start_session()
-
-        # Get FullBodyIK controller
-        fbik = get_full_body_ik(armature)
-        if not fbik:
-            self.report({'ERROR'}, "Failed to create FullBodyIK controller")
-            return {'CANCELLED'}
-
-        # Apply crouch
-        log_game("FULL-BODY-IK", f"CROUCH_TEST: amount={self.crouch_amount:.2f}")
-        fbik.crouch(self.crouch_amount)
-        result = fbik.solve(use_engine=False)
-
-        # Force update
-        context.view_layer.update()
-
-        # Export log
-        export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
-        clear_log()
-
-        hips_drop = self.crouch_amount * 0.4
-        if result.success:
-            self.report({'INFO'}, f"Crouch: hips dropped {hips_drop:.2f}m, legs adjusted")
-        else:
-            self.report({'WARNING'}, f"Crouch failed")
-
-        return {'FINISHED'}
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-
-
-class ANIM2_OT_ResetPose(Operator):
-    """Reset armature to rest pose and clear IK"""
-    bl_idname = "anim2.reset_pose"
-    bl_label = "Reset Pose"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        armature = getattr(context.scene, 'target_armature', None)
-        return armature and armature.type == 'ARMATURE'
-
-    def execute(self, context):
-        from .full_body_ik import clear_full_body_ik
-
-        scene = context.scene
-        armature = scene.target_armature
-
-        # Clear FullBodyIK
-        clear_full_body_ik()
-
-        # Reset all pose bones to identity
-        for pose_bone in armature.pose.bones:
-            pose_bone.rotation_mode = 'QUATERNION'
-            pose_bone.rotation_quaternion = (1, 0, 0, 0)
-            pose_bone.location = (0, 0, 0)
-            pose_bone.scale = (1, 1, 1)
-
-        context.view_layer.update()
-
-        self.report({'INFO'}, "Pose reset to rest")
-        return {'FINISHED'}
-
-
-# =============================================================================
-# PLAY/STOP OPERATORS
+# PLAY/STOP
 # =============================================================================
 
 class ANIM2_OT_TestPlay(Operator):
@@ -1114,9 +385,8 @@ class ANIM2_OT_TestPlay(Operator):
         return ctrl.cache.count > 0
 
     def execute(self, context):
-        scene = context.scene
-        props = scene.anim2_test
-        armature = scene.target_armature
+        props = context.scene.anim2_test
+        armature = context.scene.target_armature
         anim_name = props.selected_animation
 
         if not anim_name:
@@ -1124,30 +394,15 @@ class ANIM2_OT_TestPlay(Operator):
             return {'CANCELLED'}
 
         ctrl = get_test_controller()
-        if not ctrl.has_animation(anim_name):
-            self.report({'WARNING'}, f"Animation '{anim_name}' not in cache")
-            return {'CANCELLED'}
-
-        # Play animation
-        success = ctrl.play(
-            armature.name,
-            anim_name,
-            weight=1.0,
-            speed=props.play_speed,
-            looping=props.loop_playback,
-            fade_in=0.2,
-            replace=True
+        ctrl.play(
+            armature.name, anim_name,
+            weight=1.0, speed=props.play_speed,
+            looping=props.loop_playback, fade_in=0.2, replace=True
         )
 
-        if not success:
-            self.report({'WARNING'}, f"Failed to play '{anim_name}'")
-            return {'CANCELLED'}
-
-        # Start modal
         if not is_test_modal_running():
             bpy.ops.anim2.test_modal('INVOKE_DEFAULT')
 
-        self.report({'INFO'}, f"Playing '{anim_name}'")
         return {'FINISHED'}
 
 
@@ -1162,416 +417,190 @@ class ANIM2_OT_TestStop(Operator):
         ctrl = get_test_controller()
         if ctrl:
             ctrl.clear_all()
-        self.report({'INFO'}, "Stopped")
+        return {'FINISHED'}
+
+
+class ANIM2_OT_ClearCache(Operator):
+    """Clear animation cache"""
+    bl_idname = "anim2.clear_cache"
+    bl_label = "Clear Cache"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        ctrl = get_test_controller()
+        if ctrl:
+            ctrl.cache.clear()
         return {'FINISHED'}
 
 
 # =============================================================================
-# IK TEST SESSION v2 (structured, auto-evaluated)
+# NEURAL IK OPERATORS
 # =============================================================================
 
-_test_plan: list[IKTestCase] = []
-_test_index: int = 0
-_current_test: IKTestCase = None
-_session_recorder: SessionRecorder = None
-_last_solver_diagnostics: dict = {}  # Captured from last IK solve
+# Module-level storage for neural data (persists during session)
+_neural_data = {
+    'dataset': None,  # Full dataset dict from get_train_test_split()
+    'samples_extracted': 0,
+    'last_report': None,
+}
 
 
-def get_last_solver_diagnostics() -> dict:
-    """Get solver diagnostics from the last IK solve (for test capture)."""
-    return _last_solver_diagnostics.copy()
+def get_neural_status() -> dict:
+    """Get current neural network status for UI display."""
+    from .neural_network import get_network
+    import os
+    from .neural_network.config import BEST_WEIGHTS_PATH
 
+    net = get_network()
+    stats = net.get_stats()
 
-def _clear_test_markers():
-    """Clear test marker empties and GPU visualization."""
-    to_remove = [obj for obj in bpy.data.objects if obj.name.startswith("_IK_TARGET_")]
-    for obj in to_remove:
-        bpy.data.objects.remove(obj, do_unlink=True)
-    # Also clear GPU visualization
-    disable_test_target_visualizer()
-
-
-def _spawn_target_marker(name: str, position: tuple):
-    empty = bpy.data.objects.new(f"_IK_TARGET_{name}", None)
-    bpy.context.scene.collection.objects.link(empty)
-    empty.empty_display_type = 'SPHERE'
-    empty.empty_display_size = 0.08
-    empty.location = position
-    empty.show_in_front = True
-    return empty
-
-
-def _apply_current_test(context, rig_heights=None):
-    """Reset pose, place markers, run IK solve for current test."""
-    global _current_test
-    if not _current_test:
-        return
-
-    scene = context.scene
-    armature = scene.target_armature
-
-    _clear_test_markers()
-
-    for pose_bone in armature.pose.bones:
-        pose_bone.rotation_mode = 'QUATERNION'
-        pose_bone.rotation_quaternion = (1, 0, 0, 0)
-        pose_bone.location = (0, 0, 0)
-        pose_bone.scale = (1, 1, 1)
-
-    # Get armature world origin - this is what targets are relative to
-    # The test targets use world-space Z values (Z=0 is ground, Z=1.5 is shoulder height)
-    # They are offsets from the armature's world origin, NOT from the Root bone head
-    arm_origin = armature.matrix_world.translation
-    root_world = (float(arm_origin.x), float(arm_origin.y), float(arm_origin.z))
-
-    # Build GPU visualization data for all targets
-    gpu_targets = []
-
-    def place(tag, target):
-        if not target:
-            return None
-        # Convert root-relative target to world position
-        world_pos = (
-            root_world[0] + float(target[0]),
-            root_world[1] + float(target[1]),
-            root_world[2] + float(target[2])
-        )
-        _spawn_target_marker(tag, world_pos)
-        # Add to GPU vis data
-        gpu_targets.append({
-            'tag': tag,
-            'pos': world_pos,
-            'origin': root_world,
-        })
-        return world_pos
-
-    place("L_FOOT", _current_test.left_foot_target)
-    place("R_FOOT", _current_test.right_foot_target)
-    place("L_HAND", _current_test.left_hand_target)
-    place("R_HAND", _current_test.right_hand_target)
-    place("LOOK_AT", _current_test.look_at_target)
-    place("LEAN", _current_test.lean_target)
-
-    # Enable GPU visualization of targets
-    set_test_target_data(gpu_targets)
-
-    from .full_body_ik import FullBodyIK
-
-    ik = FullBodyIK(armature)
-    if _current_test.hip_drop > 0:
-        ik.set_hips_drop(_current_test.hip_drop)
-    if _current_test.left_foot_target or _current_test.right_foot_target:
-        ik.set_foot_targets(left_pos=_current_test.left_foot_target, right_pos=_current_test.right_foot_target)
-    if _current_test.left_hand_target or _current_test.right_hand_target:
-        ik.set_hand_targets(left_pos=_current_test.left_hand_target, right_pos=_current_test.right_hand_target)
-    if _current_test.look_at_target:
-        ik.set_look_at(_current_test.look_at_target)
-    if _current_test.lean_target:
-        ik.set_spine_lean(_current_test.lean_target)
-
-    ik.solve(use_engine=False)
-    context.view_layer.update()
-
-    # Store solver diagnostics for test session
-    global _last_solver_diagnostics
-    _last_solver_diagnostics = ik.get_solver_diagnostics()
-
-    scene.ik_test_current_description = _current_test.description
-    scene.ik_test_goal_text = _build_detailed_goal_text(_current_test, rig_heights)
-    scene.ik_test_success_criteria = _build_detailed_judge_text(_current_test)
-
-
-def _build_detailed_judge_text(test: IKTestCase) -> str:
-    """
-    Build detailed judge criteria based on which targets are active.
-    Lists specific checks for each active target.
-    """
-    checks = []
-
-    if test.left_hand_target:
-        checks.append("L.Hand at BLUE target? Elbow back/down?")
-    if test.right_hand_target:
-        checks.append("R.Hand at ORANGE target? Elbow back/down?")
-    if test.left_foot_target:
-        checks.append("L.Foot at GREEN target? Knee forward?")
-    if test.right_foot_target:
-        checks.append("R.Foot at YELLOW target? Knee forward?")
-    if test.look_at_target:
-        checks.append("Head facing MAGENTA target?")
-    if test.lean_target:
-        checks.append("Spine leaning toward PURPLE target?")
-    if test.hip_drop > 0:
-        checks.append(f"Hips dropped {test.hip_drop*100:.0f}cm?")
-
-    if not checks:
-        return human_judge_text(test)
-
-    return " | ".join(checks)
-
-
-def _build_detailed_goal_text(test: IKTestCase, rig_heights: dict = None) -> str:
-    """
-    Build detailed goal text with specific target positions.
-    Shows exactly which targets are active and where they are.
-    """
-    parts = []
-
-    def pos_str(p):
-        """Format position as readable string."""
-        if not p:
-            return None
-        x, y, z = p
-        # Describe position relative to character
-        lr = "left" if x < -0.1 else "right" if x > 0.1 else "center"
-        fb = "forward" if y > 0.15 else "back" if y < -0.15 else ""
-        height = f"Z={z:.2f}m"
-        return f"{lr} {fb} {height}".strip().replace("  ", " ")
-
-    # List all active targets with positions
-    if test.left_hand_target:
-        parts.append(f"L.Hand -> {pos_str(test.left_hand_target)}")
-    if test.right_hand_target:
-        parts.append(f"R.Hand -> {pos_str(test.right_hand_target)}")
-    if test.left_foot_target:
-        parts.append(f"L.Foot -> {pos_str(test.left_foot_target)}")
-    if test.right_foot_target:
-        parts.append(f"R.Foot -> {pos_str(test.right_foot_target)}")
-    if test.look_at_target:
-        parts.append(f"Look -> {pos_str(test.look_at_target)}")
-    if test.lean_target:
-        parts.append(f"Lean -> {pos_str(test.lean_target)}")
-    if test.hip_drop > 0:
-        parts.append(f"Hip drop: {test.hip_drop*100:.0f}cm")
-
-    if not parts:
-        return test.description
-
-    return " | ".join(parts)
-
-
-def _advance_test(context, rig_heights=None):
-    """Move to next test in plan and apply it."""
-    global _test_index, _current_test, _session_recorder
-    if not _test_plan:
-        return
-
-    # Check if we've completed all tests
-    if _test_index >= len(_test_plan):
-        # Auto-save and end session
-        saved = None
-        if _session_recorder:
-            saved = _session_recorder.save()
-            _session_recorder = None
-
-        _clear_test_markers()
-        _current_test = None
-        context.scene.ik_test_session_active = False
-        context.scene.ik_test_current_description = "SESSION COMPLETE"
-        context.scene.ik_test_goal_text = f"All {len(_test_plan)} tests rated!"
-        context.scene.ik_test_success_criteria = f"Saved to: {saved}" if saved else "No data saved"
-        return
-
-    _current_test = _test_plan[_test_index]
-    _test_index += 1
-    _apply_current_test(context, rig_heights)
-
-
-def _compute_rig_heights(armature) -> dict:
-    """Derive rig-relative heights from rest pose (world space)."""
-    if not armature:
-        return {}
-    arm_mat = armature.matrix_world
-
-    # World-space bounding box for top/ground reference
-    try:
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        eval_obj = armature.evaluated_get(depsgraph)
-        bbox_world = [eval_obj.matrix_world @ Vector(corner) for corner in eval_obj.bound_box]
-        min_z = min(v.z for v in bbox_world)
-        max_z = max(v.z for v in bbox_world)
-    except Exception:
-        min_z = armature.location.z if armature.location else 0.0
-        max_z = min_z + 2.0
-
-    head_bone = armature.pose.bones.get("Head")
-    spine2_bone = armature.pose.bones.get("Spine2") or armature.pose.bones.get("Spine1") or armature.pose.bones.get("Spine")
-    hips_bone = armature.pose.bones.get("Hips")
-    knee_bone = armature.pose.bones.get("LeftShin") or armature.pose.bones.get("RightShin")
-    l_shoulder = armature.pose.bones.get("LeftArm")
-    r_shoulder = armature.pose.bones.get("RightArm")
-
-    def z_of(b):
-        return (arm_mat @ b.head).z if b else None
-
-    head_z = max_z if max_z is not None else z_of(head_bone)
-    if head_bone:
-        head_z = z_of(head_bone)
-    spine2_z = z_of(spine2_bone)
-    hips_z = z_of(hips_bone)
-    knee_z = z_of(knee_bone)
-
-    shoulder_z = None
-    if l_shoulder and r_shoulder:
-        shoulder_z = ((arm_mat @ l_shoulder.head).z + (arm_mat @ r_shoulder.head).z) / 2
-    elif l_shoulder:
-        shoulder_z = (arm_mat @ l_shoulder.head).z
-    elif r_shoulder:
-        shoulder_z = (arm_mat @ r_shoulder.head).z
-
-    ground = min_z
+    dataset = _neural_data['dataset']
+    train_samples = len(dataset['train_inputs']) if dataset and 'train_inputs' in dataset else 0
+    test_samples = len(dataset['test_inputs']) if dataset and 'test_inputs' in dataset else 0
 
     return {
-        "ground": ground,
-        "head": head_z if head_z is not None else ground + 1.8,
-        "shoulder": shoulder_z if shoulder_z is not None else (head_z - 0.25 if head_z else ground + 1.5),
-        "chest": spine2_z if spine2_z is not None else ground + 1.2,
-        "hip": hips_z if hips_z is not None else ground + 1.0,
-        "knee": knee_z if knee_z is not None else ground + 0.5,
+        'samples': _neural_data['samples_extracted'],
+        'train_samples': train_samples,
+        'test_samples': test_samples,
+        'weights_exist': os.path.exists(BEST_WEIGHTS_PATH),
+        'total_updates': stats['total_updates'],
+        'best_loss': stats['best_loss'] if stats['best_loss'] < float('inf') else None,
     }
 
 
-class ANIM2_OT_StartTestSession(Operator):
-    """Start structured IK test session"""
-    bl_idname = "anim2.start_test_session"
-    bl_label = "Start Testing"
+class NEURAL_OT_ExtractData(Operator):
+    """Extract training data from all animations"""
+    bl_idname = "neural.extract_data"
+    bl_label = "Extract Data"
     bl_options = {'REGISTER'}
 
-    @classmethod
-    def poll(cls, context):
-        armature = getattr(context.scene, 'target_armature', None)
-        return armature and armature.type == 'ARMATURE'
-
     def execute(self, context):
-        global _test_plan, _test_index, _session_recorder
+        scene = context.scene
+        armature = scene.target_armature
 
-        armature = context.scene.target_armature
-        rig_heights = _compute_rig_heights(armature)
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
 
-        _test_plan = build_default_plan(rig_heights)
-        _test_index = 0
-        _session_recorder = SessionRecorder(OUTPUT_DIR)
+        from .neural_network import AnimationDataExtractor
 
-        context.scene.ik_test_session_active = True
-        context.scene.ik_test_good_count = 0
-        context.scene.ik_test_bad_count = 0
-        _advance_test(context, rig_heights)
+        try:
+            extractor = AnimationDataExtractor(armature)
+            total = extractor.extract_from_all_actions()
 
-        self.report({'INFO'}, f"Test session started ({len(_test_plan)} tests). Rate each pose.")
-        return {'FINISHED'}
+            if total == 0:
+                self.report({'WARNING'}, "No animation data extracted")
+                return {'CANCELLED'}
 
+            # Get full dataset with train/test split and augmentation
+            dataset = extractor.get_train_test_split(augment=True, augment_factor=2)
 
-def _record_and_next(context, verdict: str, category: str):
-    global _session_recorder, _current_test
-    if not _session_recorder or not _current_test:
-        return
+            # Store globally
+            _neural_data['dataset'] = dataset
+            _neural_data['samples_extracted'] = total
 
-    armature = context.scene.target_armature
-    evaluation = evaluate_pose(armature, _current_test)
+            train_count = len(dataset['train_inputs'])
+            test_count = len(dataset['test_inputs'])
 
-    # Get the note from the UI property
-    note = getattr(context.scene, 'ik_test_note', "") or ""
-    _session_recorder.record(_current_test, evaluation, verdict, category, note=note)
+            self.report({'INFO'}, f"Extracted {total} samples ({train_count} train w/aug, {test_count} test)")
+            return {'FINISHED'}
 
-    # Clear the note for the next test
-    context.scene.ik_test_note = ""
-
-    # Stats
-    if verdict == "good":
-        context.scene.ik_test_good_count += 1
-    else:
-        context.scene.ik_test_bad_count += 1
-
-    rig_heights = _compute_rig_heights(armature)
-    _advance_test(context, rig_heights)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Extraction failed: {e}")
+            return {'CANCELLED'}
 
 
-class ANIM2_OT_RateGood(Operator):
-    bl_idname = "anim2.rate_good"
-    bl_label = "GOOD"
+class NEURAL_OT_Train(Operator):
+    """Train neural network on extracted data"""
+    bl_idname = "neural.train"
+    bl_label = "Train Network"
     bl_options = {'REGISTER'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.scene.ik_test_session_active and _current_test is not None
+    epochs: bpy.props.IntProperty(
+        name="Epochs",
+        default=100,
+        min=10,
+        max=1000,
+    )
 
     def execute(self, context):
-        _record_and_next(context, "good", "good")
-        return {'FINISHED'}
+        if _neural_data['dataset'] is None:
+            self.report({'ERROR'}, "Extract data first")
+            return {'CANCELLED'}
+
+        from .neural_network import train_network
+
+        try:
+            report = train_network(
+                _neural_data['dataset'],
+                epochs=self.epochs,
+                reset=False,
+            )
+
+            _neural_data['last_report'] = report
+
+            self.report({'INFO'},
+                f"Training complete. FK loss: {report.final_fk_loss:.4f} (best: {report.best_fk_loss:.4f})")
+            return {'FINISHED'}
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Training failed: {e}")
+            return {'CANCELLED'}
 
 
-class ANIM2_OT_RateBadRotation(Operator):
-    bl_idname = "anim2.rate_bad_rotation"
-    bl_label = "BAD ROTATION"
+class NEURAL_OT_Test(Operator):
+    """Run test suite to verify learning"""
+    bl_idname = "neural.test"
+    bl_label = "Run Tests"
     bl_options = {'REGISTER'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.scene.ik_test_session_active and _current_test is not None
-
     def execute(self, context):
-        _record_and_next(context, "bad", "rotation")
-        return {'FINISHED'}
+        dataset = _neural_data['dataset']
+        if dataset is None:
+            self.report({'ERROR'}, "Extract data first")
+            return {'CANCELLED'}
+
+        from .neural_network import run_test_suite
+
+        try:
+            report = run_test_suite(
+                dataset['train_inputs'],
+                dataset['train_outputs'],
+                dataset['test_inputs'],
+                dataset['test_outputs'],
+            )
+
+            if report.failed == 0:
+                self.report({'INFO'}, f"All {report.total} tests passed!")
+            else:
+                self.report({'WARNING'}, f"{report.passed}/{report.total} tests passed")
+
+            return {'FINISHED'}
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Tests failed: {e}")
+            return {'CANCELLED'}
 
 
-class ANIM2_OT_RateBadPosition(Operator):
-    bl_idname = "anim2.rate_bad_position"
-    bl_label = "BAD POSITION"
+class NEURAL_OT_Reset(Operator):
+    """Reset network to random weights"""
+    bl_idname = "neural.reset"
+    bl_label = "Reset Network"
     bl_options = {'REGISTER'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.scene.ik_test_session_active and _current_test is not None
-
     def execute(self, context):
-        _record_and_next(context, "bad", "position")
-        return {'FINISHED'}
+        from .neural_network import reset_network
 
+        reset_network()
+        _neural_data['last_report'] = None
 
-class ANIM2_OT_RateBadBoth(Operator):
-    bl_idname = "anim2.rate_bad_both"
-    bl_label = "BAD BOTH"
-    bl_options = {'REGISTER'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.scene.ik_test_session_active and _current_test is not None
-
-    def execute(self, context):
-        _record_and_next(context, "bad", "both")
-        return {'FINISHED'}
-
-
-class ANIM2_OT_StopTestSession(Operator):
-    """Stop test session and save results"""
-    bl_idname = "anim2.stop_test_session"
-    bl_label = "Stop & Save"
-    bl_options = {'REGISTER'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.scene.ik_test_session_active
-
-    def execute(self, context):
-        global _session_recorder, _current_test
-
-        saved = None
-        if _session_recorder:
-            saved = _session_recorder.save()
-
-        _clear_test_markers()
-        _session_recorder = None
-        _current_test = None
-        context.scene.ik_test_session_active = False
-        context.scene.ik_test_good_count = 0
-        context.scene.ik_test_bad_count = 0
-        context.scene.ik_test_current_description = ""
-        context.scene.ik_test_goal_text = ""
-        context.scene.ik_test_success_criteria = ""
-
-        if saved:
-            self.report({'INFO'}, f"Saved session to {saved}")
-        else:
-            self.report({'WARNING'}, "No session to save")
+        self.report({'INFO'}, "Network reset to random weights")
         return {'FINISHED'}
 
 
@@ -1581,139 +610,31 @@ class ANIM2_OT_StopTestSession(Operator):
 
 def register():
     bpy.utils.register_class(ANIM2_OT_BakeAll)
-    bpy.utils.register_class(ANIM2_OT_StopAll)
-    bpy.utils.register_class(ANIM2_OT_ClearCache)
+    bpy.utils.register_class(ANIM2_OT_ResetPose)
     bpy.utils.register_class(ANIM2_OT_TestModal)
     bpy.utils.register_class(ANIM2_TestProperties)
     bpy.utils.register_class(ANIM2_OT_TestPlay)
     bpy.utils.register_class(ANIM2_OT_TestStop)
-    bpy.utils.register_class(ANIM2_OT_TestIKState)
-    bpy.utils.register_class(ANIM2_OT_ApplyIK)
-    bpy.utils.register_class(ANIM2_OT_TestFullBodyIK)
-    bpy.utils.register_class(ANIM2_OT_CrouchTest)
-    bpy.utils.register_class(ANIM2_OT_ResetPose)
-
-    # IK Test Session operators
-    bpy.utils.register_class(ANIM2_OT_StartTestSession)
-    bpy.utils.register_class(ANIM2_OT_RateGood)
-    bpy.utils.register_class(ANIM2_OT_RateBadRotation)
-    bpy.utils.register_class(ANIM2_OT_RateBadPosition)
-    bpy.utils.register_class(ANIM2_OT_RateBadBoth)
-    bpy.utils.register_class(ANIM2_OT_StopTestSession)
-
+    bpy.utils.register_class(ANIM2_OT_ClearCache)
+    # Neural IK operators
+    bpy.utils.register_class(NEURAL_OT_ExtractData)
+    bpy.utils.register_class(NEURAL_OT_Train)
+    bpy.utils.register_class(NEURAL_OT_Test)
+    bpy.utils.register_class(NEURAL_OT_Reset)
     bpy.types.Scene.anim2_test = bpy.props.PointerProperty(type=ANIM2_TestProperties)
-
-    # IK Test Session properties
-    bpy.types.Scene.ik_test_session_active = bpy.props.BoolProperty(
-        name="Test Session Active",
-        default=False
-    )
-    bpy.types.Scene.ik_test_good_count = bpy.props.IntProperty(
-        name="Good Count",
-        default=0
-    )
-    bpy.types.Scene.ik_test_bad_count = bpy.props.IntProperty(
-        name="Bad Count",
-        default=0
-    )
-    bpy.types.Scene.ik_test_current_description = bpy.props.StringProperty(
-        name="Current Test",
-        default=""
-    )
-    bpy.types.Scene.ik_test_goal_text = bpy.props.StringProperty(
-        name="Goal Text",
-        default=""
-    )
-    bpy.types.Scene.ik_test_success_criteria = bpy.props.StringProperty(
-        name="Success Criteria",
-        default=""
-    )
-    bpy.types.Scene.ik_test_note = bpy.props.StringProperty(
-        name="Note",
-        description="Add a note to this test result (optional)",
-        default=""
-    )
-
-    # ─── Unified IK System ───────────────────────────────────────────────
-    # Region selector - what parts of the body to control
-    bpy.types.Scene.ik_region = bpy.props.EnumProperty(
-        name="IK Region",
-        description="Which body region(s) to solve IK for",
-        items=get_ik_region_items,
-        default=0
-    )
-
-    # Hips control
-    bpy.types.Scene.ik_hips_drop = bpy.props.FloatProperty(
-        name="Hips Drop",
-        description="Drop hips (meters) - affected limbs bend via IK",
-        default=0.0,
-        min=0.0,
-        max=0.5,
-        unit='LENGTH'
-    )
-
-    # IK Targets - unified for all modes
-    bpy.types.Scene.ik_target_left_foot = bpy.props.PointerProperty(
-        name="Left Foot",
-        description="Target object for left foot",
-        type=bpy.types.Object
-    )
-    bpy.types.Scene.ik_target_right_foot = bpy.props.PointerProperty(
-        name="Right Foot",
-        description="Target object for right foot",
-        type=bpy.types.Object
-    )
-    bpy.types.Scene.ik_target_left_hand = bpy.props.PointerProperty(
-        name="Left Hand",
-        description="Target object for left hand",
-        type=bpy.types.Object
-    )
-    bpy.types.Scene.ik_target_right_hand = bpy.props.PointerProperty(
-        name="Right Hand",
-        description="Target object for right hand",
-        type=bpy.types.Object
-    )
-    bpy.types.Scene.ik_target_look_at = bpy.props.PointerProperty(
-        name="Look At",
-        description="Target object for head look-at",
-        type=bpy.types.Object
-    )
 
 
 def unregister():
-    # IK Test Session properties
-    for prop in ['ik_test_session_active', 'ik_test_good_count', 'ik_test_bad_count',
-                 'ik_test_current_description', 'ik_test_goal_text', 'ik_test_success_criteria',
-                 'ik_test_note']:
-        if hasattr(bpy.types.Scene, prop):
-            delattr(bpy.types.Scene, prop)
-
-    # IK properties
-    for prop in ['ik_region', 'ik_hips_drop', 'ik_target_look_at', 'ik_target_right_hand',
-                 'ik_target_left_hand', 'ik_target_right_foot', 'ik_target_left_foot']:
-        if hasattr(bpy.types.Scene, prop):
-            delattr(bpy.types.Scene, prop)
-
     del bpy.types.Scene.anim2_test
-
-    # IK Test Session operators
-    bpy.utils.unregister_class(ANIM2_OT_StopTestSession)
-    bpy.utils.unregister_class(ANIM2_OT_RateBadBoth)
-    bpy.utils.unregister_class(ANIM2_OT_RateBadPosition)
-    bpy.utils.unregister_class(ANIM2_OT_RateBadRotation)
-    bpy.utils.unregister_class(ANIM2_OT_RateGood)
-    bpy.utils.unregister_class(ANIM2_OT_StartTestSession)
-
-    bpy.utils.unregister_class(ANIM2_OT_ResetPose)
-    bpy.utils.unregister_class(ANIM2_OT_CrouchTest)
-    bpy.utils.unregister_class(ANIM2_OT_TestFullBodyIK)
-    bpy.utils.unregister_class(ANIM2_OT_ApplyIK)
-    bpy.utils.unregister_class(ANIM2_OT_TestIKState)
+    # Neural IK operators
+    bpy.utils.unregister_class(NEURAL_OT_Reset)
+    bpy.utils.unregister_class(NEURAL_OT_Test)
+    bpy.utils.unregister_class(NEURAL_OT_Train)
+    bpy.utils.unregister_class(NEURAL_OT_ExtractData)
+    bpy.utils.unregister_class(ANIM2_OT_ClearCache)
     bpy.utils.unregister_class(ANIM2_OT_TestStop)
     bpy.utils.unregister_class(ANIM2_OT_TestPlay)
     bpy.utils.unregister_class(ANIM2_TestProperties)
     bpy.utils.unregister_class(ANIM2_OT_TestModal)
-    bpy.utils.unregister_class(ANIM2_OT_ClearCache)
-    bpy.utils.unregister_class(ANIM2_OT_StopAll)
+    bpy.utils.unregister_class(ANIM2_OT_ResetPose)
     bpy.utils.unregister_class(ANIM2_OT_BakeAll)

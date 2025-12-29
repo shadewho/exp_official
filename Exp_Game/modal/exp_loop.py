@@ -65,6 +65,7 @@ from ..animations.blend_system import (
     shutdown_blend_system,
     get_blend_system,
 )
+from ..animations.layer_manager import get_layer_manager, update_all_managers, AnimChannel
 
 
 class GameLoop:
@@ -340,22 +341,26 @@ class GameLoop:
         if blend_system:
             blend_system.update(agg_dt)
 
+        # 1c. Update ALL layer managers (fading for all objects)
+        update_all_managers(agg_dt)
+
         # 2. Submit jobs to engine
         submit_animation_jobs(op)
 
         # 3. Same-frame sync: poll for results immediately
         # Worker compute is fast (~100µs), so we wait up to 2ms
         # This applies the base locomotion animation to the armature
-        # SKIP if ragdoll is active - ragdoll controls the armature
-        ragdoll_active = blend_system and blend_system.is_ragdoll_active()
-        if not ragdoll_active:
+        # SKIP if physics (ragdoll) is active - physics controls the armature
+        layer_manager = get_layer_manager()  # Get character's layer manager
+        physics_active = layer_manager and layer_manager.is_channel_active(AnimChannel.PHYSICS)
+        if not physics_active:
             poll_animation_results_with_timeout(op, timeout=0.002)
 
         # 4. Apply blend system OVERLAY on top of locomotion
         # This must happen AFTER worker results are applied so overlays work correctly
-        # SKIP if ragdoll is active
+        # SKIP if physics is active
         armature = bpy.context.scene.target_armature
-        if blend_system and armature and not ragdoll_active:
+        if blend_system and armature and not physics_active:
             blend_system.apply_to_armature(armature)
 
     def _poll_and_apply_engine_results(self):

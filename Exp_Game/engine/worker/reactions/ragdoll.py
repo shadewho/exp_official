@@ -1,50 +1,114 @@
 # Exp_Game/engine/worker/reactions/ragdoll.py
 """
-SIMPLE Ragdoll Physics - Worker Side (NO bpy)
+Articulated-Rod Ragdoll Physics - Rig Agnostic
 
-Each bone is a point mass that:
-1. Falls with gravity
-2. Has velocity damping
-3. Stays connected to parent (distance constraint)
-4. Bounces off floor
+Real physics-based bone rotation that works on ANY armature.
+- Gravity torque projected into bone local space (strong influence)
+- Parent-alignment torque prevents curling into a ball
+- Per-bone stiffness/damping/limits based on role
+- Angular velocity clamping prevents runaway
 
-Output: New world positions for each bone head.
-Main thread converts to pose transforms.
+NO HARDCODED BONE NAMES OR DIRECTIONS.
 """
 
 import time
 import math
+import random
 
 
-def _vec_sub(a, b):
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+# =============================================================================
+# PHYSICS CONSTANTS (ALL TUNABLES HERE)
+# =============================================================================
+
+WORLD_GRAVITY = (0.0, 0.0, -9.8)  # World-space gravity vector
+
+# Gravity torque multipliers (higher = more gravity influence)
+GRAVITY_TORQUE_PRIMARY = 0.6    # X/Z axes - main bend
+GRAVITY_TORQUE_TWIST = 0.05     # Y axis - twist (keep tiny)
+
+# Role-based parameters
+# STIFFNESS: How strongly bone returns to rest (LOW = floppy)
+# DAMPING: How quickly motion dies out
+# INERTIA: Resistance to rotation
+ROLE_PARAMS = {
+    # role: (stiffness, damping, inertia)
+    "core":  (0.8, 0.90, 1.2),   # Spine, hips - soft so they can slump
+    "limb":  (0.3, 0.88, 1.0),   # Arms, legs - floppy
+    "head":  (0.4, 0.90, 0.7),   # Head, neck - slightly damped
+    "hand":  (0.15, 0.85, 0.5),  # Hands, feet, fingers - very loose
+}
+
+# Twist axis gets reduced stiffness (0.25x)
+TWIST_STIFFNESS_MULT = 0.25
+
+# Default joint limits (radians) if not provided
+DEFAULT_LIMIT = 1.4           # ~80 degrees
+DEFAULT_SECONDARY_LIMIT = 0.7  # ~40 degrees
+
+# Angular velocity clamp (prevents runaway curl)
+MAX_ANGULAR_VELOCITY = 6.0  # rad/s
+
+# Parent alignment (prevents folding into ball)
+PARENT_ALIGN_STRENGTH = 0.4  # How strongly child aligns with parent direction
+
+# Ground contact
+GROUND_PUSH_STRENGTH = 5.0
+GROUND_DAMPING = 0.6
+
+# Initial impulse variance
+INITIAL_IMPULSE_RANGE = 1.0
 
 
-def _vec_add(a, b):
-    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+# =============================================================================
+# MATH HELPERS
+# =============================================================================
+
+def mat3_from_flat(m):
+    """Convert flat 9-element list to 3x3 matrix (row-major)."""
+    return [
+        [m[0], m[1], m[2]],
+        [m[3], m[4], m[5]],
+        [m[6], m[7], m[8]],
+    ]
 
 
-def _vec_scale(v, s):
-    return (v[0] * s, v[1] * s, v[2] * s)
+def mat3_transpose(m):
+    """Transpose 3x3 matrix."""
+    return [
+        [m[0][0], m[1][0], m[2][0]],
+        [m[0][1], m[1][1], m[2][1]],
+        [m[0][2], m[1][2], m[2][2]],
+    ]
 
 
-def _vec_length(v):
-    return math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
+def mat3_mul_vec(m, v):
+    """Multiply 3x3 matrix by 3-vector."""
+    return (
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    )
 
 
-def _vec_normalize(v):
-    length = _vec_length(v)
-    if length < 1e-9:
-        return (0.0, 0.0, 0.0)
-    return (v[0]/length, v[1]/length, v[2]/length)
+def clamp(val, min_val, max_val):
+    return max(min_val, min(max_val, val))
 
+
+# =============================================================================
+# MAIN HANDLER
+# =============================================================================
 
 def handle_ragdoll_update_batch(job_data: dict, cached_grid, cached_dynamic_meshes, cached_dynamic_transforms) -> dict:
     """
-    SIMPLE ragdoll - compute rotation offsets for loose body effect.
+    Articulated-rod ragdoll physics.
 
-    Instead of world positions, output rotation deltas for each bone.
-    Root gets position offset, other bones get rotation sway.
+    For each bone:
+    1. Project world gravity into bone local space
+    2. Apply gravity torque on PRIMARY bend axes (X/Z), tiny on twist (Y)
+    3. Add parent-alignment torque to prevent curling
+    4. Add weak spring-to-rest
+    5. Integrate with damping and velocity clamping
+    6. Clamp to joint limits
     """
     calc_start = time.perf_counter()
     logs = []
@@ -52,131 +116,176 @@ def handle_ragdoll_update_batch(job_data: dict, cached_grid, cached_dynamic_mesh
     dt = job_data.get("dt", 1/30)
     ragdolls = job_data.get("ragdolls", [])
 
-    logs.append(("RAGDOLL", f"WORKER: {len(ragdolls)} ragdolls"))
-
     updated_ragdolls = []
 
     for ragdoll in ragdolls:
         ragdoll_id = ragdoll.get("id", 0)
         time_remaining = ragdoll.get("time_remaining", 0.0)
-        bone_order = ragdoll.get("bone_order", [])
-        bone_states = ragdoll.get("bone_states", {})
-        gravity = ragdoll.get("gravity", (0.0, 0.0, -20.0))
+        bone_data = ragdoll.get("bone_data", {})
+        bone_physics = ragdoll.get("bone_physics", {})
+        armature_matrix = ragdoll.get("armature_matrix", None)
+        ground_z = ragdoll.get("ground_z", 0.0)
+        initialized = ragdoll.get("initialized", False)
 
-        impulse = ragdoll.get("impulse")
-        impulse_bone = ragdoll.get("impulse_bone")
+        new_bone_physics = {}
 
-        logs.append(("RAGDOLL", f"  Ragdoll {ragdoll_id}: {len(bone_order)} bones, t={time_remaining:.1f}s"))
+        # Get armature rotation matrix (3x3 upper-left of 4x4)
+        if armature_matrix and len(armature_matrix) >= 12:
+            arm_rot = mat3_from_flat([
+                armature_matrix[0], armature_matrix[1], armature_matrix[2],
+                armature_matrix[4], armature_matrix[5], armature_matrix[6],
+                armature_matrix[8], armature_matrix[9], armature_matrix[10],
+            ])
+            arm_rot_inv = mat3_transpose(arm_rot)
+        else:
+            arm_rot_inv = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
-        # Apply impulse to root velocity on first frame
-        if impulse and impulse_bone and impulse_bone in bone_states:
-            state = bone_states[impulse_bone]
-            old_vel = state.get("vel", (0, 0, 0))
-            state["vel"] = _vec_add(old_vel, impulse)
-            logs.append(("RAGDOLL", f"    Impulse applied to {impulse_bone}"))
+        # Transform world gravity into armature space
+        armature_gravity = mat3_mul_vec(arm_rot_inv, WORLD_GRAVITY)
 
-        new_bone_states = {}
-        bone_rotations = {}  # bone_name -> (rx, ry, rz) rotation offset in radians
+        for bone_name, bdata in bone_data.items():
+            # Get static bone data
+            rest_matrix = bdata.get("rest_matrix")
+            role = bdata.get("role", "limb")
+            limits = bdata.get("limits", {})
+            is_ground_bone = bdata.get("is_ground_bone", False)
+            bone_tip_local = bdata.get("bone_tip_local", (0, 0, 0))
 
-        for i, bone_name in enumerate(bone_order):
-            if bone_name not in bone_states:
-                continue
+            # Get dynamic state
+            bp = bone_physics.get(bone_name, {"rot": (0.0, 0.0, 0.0), "ang_vel": (0.0, 0.0, 0.0)})
+            rot = list(bp.get("rot", (0.0, 0.0, 0.0)))
+            ang_vel = list(bp.get("ang_vel", (0.0, 0.0, 0.0)))
 
-            state = bone_states[bone_name]
-            rot = tuple(state.get("rot", (0.0, 0.0, 0.0)))  # rotation offset
-            rot_vel = tuple(state.get("rot_vel", (0.0, 0.0, 0.0)))  # angular velocity
+            # Get role-based parameters
+            stiffness, damping, inertia = ROLE_PARAMS.get(role, ROLE_PARAMS["limb"])
 
-            is_root = (i == 0)
+            # Get joint limits
+            lim_x = limits.get("x", [-DEFAULT_LIMIT, DEFAULT_LIMIT])
+            lim_y = limits.get("y", [-DEFAULT_SECONDARY_LIMIT, DEFAULT_SECONDARY_LIMIT])
+            lim_z = limits.get("z", [-DEFAULT_LIMIT, DEFAULT_LIMIT])
 
-            if is_root:
-                # Root: apply gravity to position
-                pos = tuple(state.get("pos", (0, 0, 0)))
-                vel = tuple(state.get("vel", (0, 0, 0)))
+            # Initialize with random impulse on first frame
+            if not initialized:
+                ang_vel[0] += random.uniform(-INITIAL_IMPULSE_RANGE, INITIAL_IMPULSE_RANGE)
+                ang_vel[1] += random.uniform(-INITIAL_IMPULSE_RANGE * 0.3, INITIAL_IMPULSE_RANGE * 0.3)
+                ang_vel[2] += random.uniform(-INITIAL_IMPULSE_RANGE, INITIAL_IMPULSE_RANGE)
 
-                # Gentle gravity (30% of scene gravity)
-                grav_scale = 0.3
-                new_vel = (
-                    vel[0] + gravity[0] * grav_scale * dt,
-                    vel[1] + gravity[1] * grav_scale * dt,
-                    vel[2] + gravity[2] * grav_scale * dt,
-                )
-                new_vel = _vec_scale(new_vel, 0.95)  # damping
-
-                new_pos = (
-                    pos[0] + new_vel[0] * dt,
-                    pos[1] + new_vel[1] * dt,
-                    pos[2] + new_vel[2] * dt,
-                )
-
-                # Floor constraint at Z=0
-                if new_pos[2] < 0:
-                    new_pos = (new_pos[0], new_pos[1], 0.0)
-                    if new_vel[2] < 0:
-                        new_vel = (new_vel[0] * 0.5, new_vel[1] * 0.5, -new_vel[2] * 0.2)
-
-                new_bone_states[bone_name] = {
-                    "pos": new_pos,
-                    "vel": new_vel,
-                    "rot": (0, 0, 0),
-                    "rot_vel": (0, 0, 0),
-                }
-                bone_rotations[bone_name] = new_pos  # For root, store position offset
-
-                if i < 2:
-                    logs.append(("RAGDOLL", f"    {bone_name}: Z {pos[2]:.2f} -> {new_pos[2]:.2f}"))
+            # Transform gravity into bone local space
+            if rest_matrix and len(rest_matrix) >= 9:
+                bone_rest = mat3_from_flat(rest_matrix)
+                bone_rest_inv = mat3_transpose(bone_rest)
+                local_gravity = mat3_mul_vec(bone_rest_inv, armature_gravity)
             else:
-                # Non-root: wobble rotation
-                # Apply angular "gravity" - bones tend to droop
-                droop = -0.5  # radians/sec^2 tendency to rotate forward/down
-                new_rot_vel = (
-                    rot_vel[0] + droop * dt,
-                    rot_vel[1],
-                    rot_vel[2],
-                )
-                # Strong damping on rotation
-                new_rot_vel = _vec_scale(new_rot_vel, 0.92)
+                local_gravity = armature_gravity
 
-                # Update rotation
-                new_rot = (
-                    rot[0] + new_rot_vel[0] * dt,
-                    rot[1] + new_rot_vel[1] * dt,
-                    rot[2] + new_rot_vel[2] * dt,
-                )
+            # Compute gravity torque
+            # Gravity in local Z creates torque around X, gravity in X creates torque around Z
+            # Scale by cos(angle) for pendulum behavior (max at horizontal, zero at vertical)
+            grav_mag = math.sqrt(local_gravity[0]**2 + local_gravity[1]**2 + local_gravity[2]**2)
 
-                # Clamp rotation to reasonable range (-45 to +45 degrees)
-                max_rot = 0.8  # ~45 degrees
-                new_rot = (
-                    max(-max_rot, min(max_rot, new_rot[0])),
-                    max(-max_rot, min(max_rot, new_rot[1])),
-                    max(-max_rot, min(max_rot, new_rot[2])),
-                )
+            if grav_mag > 0.01:
+                # Torque from gravity - PRIMARY axes get strong influence
+                # torque_x from gravity_z (forward/back tilt)
+                torque_x = -local_gravity[2] * GRAVITY_TORQUE_PRIMARY * math.cos(rot[0])
+                # torque_z from gravity_x (side tilt)
+                torque_z = local_gravity[0] * GRAVITY_TORQUE_PRIMARY * math.cos(rot[2])
+                # torque_y (twist) - keep very small to prevent winding up
+                torque_y = local_gravity[1] * GRAVITY_TORQUE_TWIST * math.cos(rot[1])
+            else:
+                torque_x, torque_y, torque_z = 0.0, 0.0, 0.0
 
-                new_bone_states[bone_name] = {
-                    "pos": (0, 0, 0),
-                    "vel": (0, 0, 0),
-                    "rot": new_rot,
-                    "rot_vel": new_rot_vel,
-                }
-                bone_rotations[bone_name] = new_rot
+            # Parent alignment torque - prevents curling into a ball
+            # Pushes bone back toward its rest direction relative to parent
+            # This is approximated by a torque proportional to current rotation
+            # but weaker than spring-to-rest
+            align_torque_x = -PARENT_ALIGN_STRENGTH * math.sin(rot[0])
+            align_torque_z = -PARENT_ALIGN_STRENGTH * math.sin(rot[2])
+            torque_x += align_torque_x
+            torque_z += align_torque_z
 
-                if i < 3:
-                    logs.append(("RAGDOLL", f"    {bone_name}: rot {rot[0]:.2f} -> {new_rot[0]:.2f}"))
+            # Spring-to-rest torque (weak - just prevents extreme poses)
+            torque_x -= stiffness * rot[0]
+            torque_y -= stiffness * TWIST_STIFFNESS_MULT * rot[1]  # Reduced twist stiffness
+            torque_z -= stiffness * rot[2]
+
+            # Integrate angular velocity
+            ang_vel[0] += (torque_x / inertia) * dt
+            ang_vel[1] += (torque_y / inertia) * dt
+            ang_vel[2] += (torque_z / inertia) * dt
+
+            # Apply damping
+            ang_vel[0] *= damping
+            ang_vel[1] *= damping
+            ang_vel[2] *= damping
+
+            # Clamp angular velocity to prevent runaway
+            ang_vel[0] = clamp(ang_vel[0], -MAX_ANGULAR_VELOCITY, MAX_ANGULAR_VELOCITY)
+            ang_vel[1] = clamp(ang_vel[1], -MAX_ANGULAR_VELOCITY, MAX_ANGULAR_VELOCITY)
+            ang_vel[2] = clamp(ang_vel[2], -MAX_ANGULAR_VELOCITY, MAX_ANGULAR_VELOCITY)
+
+            # Integrate rotation
+            rot[0] += ang_vel[0] * dt
+            rot[1] += ang_vel[1] * dt
+            rot[2] += ang_vel[2] * dt
+
+            # Clamp to joint limits and zero velocity on clamped axes
+            if rot[0] < lim_x[0]:
+                rot[0] = lim_x[0]
+                ang_vel[0] = max(0, ang_vel[0])
+            elif rot[0] > lim_x[1]:
+                rot[0] = lim_x[1]
+                ang_vel[0] = min(0, ang_vel[0])
+
+            if rot[1] < lim_y[0]:
+                rot[1] = lim_y[0]
+                ang_vel[1] = max(0, ang_vel[1])
+            elif rot[1] > lim_y[1]:
+                rot[1] = lim_y[1]
+                ang_vel[1] = min(0, ang_vel[1])
+
+            if rot[2] < lim_z[0]:
+                rot[2] = lim_z[0]
+                ang_vel[2] = max(0, ang_vel[2])
+            elif rot[2] > lim_z[1]:
+                rot[2] = lim_z[1]
+                ang_vel[2] = min(0, ang_vel[2])
+
+            # Ground contact for ground bones
+            if is_ground_bone and armature_matrix:
+                arm_z = armature_matrix[14] if len(armature_matrix) > 14 else 0
+                tip_z = arm_z + bone_tip_local[2]
+
+                if tip_z < ground_z:
+                    penetration = ground_z - tip_z
+                    # Soft spring toward ground + damp all axes
+                    push = min(GROUND_PUSH_STRENGTH * penetration * dt, 0.5)
+                    rot[0] -= push
+                    ang_vel[0] *= GROUND_DAMPING
+                    ang_vel[1] *= GROUND_DAMPING
+                    ang_vel[2] *= GROUND_DAMPING
+
+            new_bone_physics[bone_name] = {
+                "rot": tuple(rot),
+                "ang_vel": tuple(ang_vel),
+            }
 
         new_time = time_remaining - dt
         finished = new_time <= 0
 
-        logs.append(("RAGDOLL", f"    {len(bone_rotations)} bones"))
+        if finished:
+            logs.append(("RAGDOLL", f"WORKER: Ragdoll {ragdoll_id} FINISHED"))
 
         updated_ragdolls.append({
             "id": ragdoll_id,
-            "bone_rotations": bone_rotations,  # root=position, others=rotation
-            "bone_states": new_bone_states,
+            "bone_physics": new_bone_physics,
             "time_remaining": max(0, new_time),
             "finished": finished,
+            "initialized": True,
         })
 
     calc_time = (time.perf_counter() - calc_start) * 1_000_000
-    logs.append(("RAGDOLL", f"WORKER: Done in {calc_time:.0f}μs"))
+    if ragdolls:
+        logs.append(("RAGDOLL", f"WORKER: {len(ragdolls)} ragdolls, {len(bone_data)} bones, {calc_time:.0f}us"))
 
     return {
         "success": True,

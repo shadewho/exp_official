@@ -242,14 +242,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                 if scene.dev_rig_vis_bone_groups:
                     col.prop(scene, "dev_rig_vis_selected_group", text="")
                 col.separator(factor=0.5)
-                col.label(text="IK Display:", icon='CON_KINEMATIC')
-                sub = col.column(align=True)
-                sub.prop(scene, "dev_rig_vis_ik_chains", text="Chains")
-                sub.prop(scene, "dev_rig_vis_ik_targets", text="Targets")
-                sub.prop(scene, "dev_rig_vis_ik_poles", text="Poles")
-                sub.prop(scene, "dev_rig_vis_ik_reach", text="Reach Spheres")
-                col.separator(factor=0.5)
-                col.label(text="Advanced:", icon='PREFERENCES')
+                col.label(text="Display:", icon='PREFERENCES')
                 sub = col.column(align=True)
                 sub.prop(scene, "dev_rig_vis_bone_axes", text="Bone Axes (X/Y/Z)")
                 sub.prop(scene, "dev_rig_vis_active_mask", text="Active Blend Mask")
@@ -265,218 +258,91 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                 col.prop(scene, "dev_rig_vis_line_width", text="Line Width")
                 if scene.dev_rig_vis_bone_axes:
                     col.prop(scene, "dev_rig_vis_axis_length", text="Axis Length")
-                from .rig_visualizer import get_visualizer_state
-                vis_state = get_visualizer_state()
-                if vis_state["ik_chains"]:
-                    col.separator(factor=0.5)
-                    col.label(text=f"Active IK: {', '.join(vis_state['ik_chains'])}", icon='CHECKMARK')
-                if vis_state["layers"]["additive"] or vis_state["layers"]["override"]:
-                    layers_info = []
-                    if vis_state["layers"]["additive"]:
-                        layers_info.append(f"{len(vis_state['layers']['additive'])} add")
-                    if vis_state["layers"]["override"]:
-                        layers_info.append(f"{len(vis_state['layers']['override'])} ovr")
-                    col.label(text=f"Layers: {', '.join(layers_info)}", icon='RENDERLAYERS')
 
-            # ─── Debug Toggles ─────────────────────────────────────────────
+            # ─── Debug Toggles (cleaned up) ────────────────────────────────
             col = box.column(align=True)
             col.prop(scene, "dev_debug_animations", text="Animation Logs")
             col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
-            col.prop(scene, "dev_debug_anim_worker", text="Worker Logs")
-            col.prop(scene, "dev_debug_ik", text="IK Logs")
-            col.prop(scene, "dev_debug_ik_solve", text="IK Solve Details")
-            col.prop(scene, "dev_debug_rig_state", text="Rig State (verbose)")
             col.prop(scene, "dev_debug_pose_blend", text="Pose Blend Logs")
 
             props = scene.anim2_test
             ctrl = get_test_controller()
-            obj = context.active_object
 
-            # ─── Cache Status ───────────────────────────────────────────────
-            row = box.row()
+            # ═══════════════════════════════════════════════════════════════
+            # NEURAL IK SECTION
+            # ═══════════════════════════════════════════════════════════════
+            neural_box = box.box()
+            neural_box.label(text="Neural IK", icon='RNA')
+
+            armature = scene.target_armature
+            if not armature:
+                neural_box.label(text="Set target armature first", icon='ERROR')
+            else:
+                # Status display
+                from ..animations.test_panel import get_neural_status
+                status = get_neural_status()
+
+                # Data status
+                if status['samples'] > 0:
+                    row = neural_box.row()
+                    row.label(text=f"Data: {status['train_samples']} train, {status['test_samples']} test", icon='OUTLINER_DATA_MESH')
+                else:
+                    neural_box.label(text="No data extracted", icon='INFO')
+
+                # Weights status
+                if status['weights_exist']:
+                    if status['best_loss'] is not None:
+                        neural_box.label(text=f"Best loss: {status['best_loss']:.6f}", icon='CHECKMARK')
+                    else:
+                        neural_box.label(text="Weights: saved", icon='FILE_TICK')
+                else:
+                    neural_box.label(text="No trained weights", icon='BLANK1')
+
+                # Action buttons
+                col = neural_box.column(align=True)
+                col.operator("neural.extract_data", text=f"Extract Data ({len(bpy.data.actions)} actions)", icon='IMPORT')
+
+                row = col.row(align=True)
+                row.operator("neural.train", text="Train", icon='PLAY')
+                row.operator("neural.test", text="Test", icon='VIEWZOOM')
+
+                row = col.row(align=True)
+                row.operator("neural.reset", text="Reset Network", icon='FILE_REFRESH')
+
+            # ═══════════════════════════════════════════════════════════════
+            # ANIMATION PLAYBACK
+            # ═══════════════════════════════════════════════════════════════
+            sub_box = box.box()
+            sub_box.label(text="Animation Playback", icon='PLAY')
+
+            # Cache status
+            row = sub_box.row()
             row.label(text=f"Cache: {ctrl.cache.count} animations", icon='FILE_CACHE')
             row.operator("anim2.clear_cache", text="", icon='X')
 
-            # ─── Bake ───────────────────────────────────────────────────────
-            sub_box = box.box()
-            sub_box.label(text="Bake", icon='IMPORT')
+            # Bake button
             armature = scene.target_armature
             if armature:
                 sub_box.operator("anim2.bake_all", text=f"Bake All ({len(bpy.data.actions)} actions)", icon='ACTION')
-            else:
-                sub_box.label(text="Set target armature first", icon='ERROR')
-
-            # ═══════════════════════════════════════════════════════════════
-            # UNIFIED TEST SUITE
-            # ═══════════════════════════════════════════════════════════════
-            sub_box = box.box()
-            sub_box.label(text="Animation Test", icon='EXPERIMENTAL')
-
-            # Armature (from Character panel)
-            armature = scene.target_armature
-            if armature:
-                row = sub_box.row()
-                row.label(text=f"Armature: {armature.name}", icon='ARMATURE_DATA')
-            else:
-                sub_box.label(text="Set target armature in Character panel", icon='ERROR')
-
-            # Rig Probe buttons
-            row = sub_box.row(align=True)
-            row.operator("anim2.probe_rig", text="Probe Rig", icon='BONE_DATA')
-            row.operator("anim2.dump_orientations", text="Dump Axes", icon='ORIENTATION_LOCAL')
-
-            # ─── IK System ──────────────────────────────────────────────────────
-            ik_box = sub_box.box()
-            ik_box.label(text="IK System", icon='CON_KINEMATIC')
-
-            col = ik_box.column(align=True)
-            col.prop(scene, "ik_region", text="Region")
-
-            ik_region = getattr(scene, 'ik_region', 'FULL_BODY')
-
-            # Show hips drop for regions that include hips
-            if ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS'):
-                col.prop(scene, "ik_hips_drop", text="Hips Drop")
-
-            col.separator(factor=0.5)
-
-            # Show relevant targets based on region
-            targets_box = col.box()
-            targets_box.label(text="Targets:", icon='EMPTY_AXIS')
-            tcol = targets_box.column(align=True)
-
-            # Determine which targets to show
-            show_left_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'LEFT_LEG')
-            show_right_foot = ik_region in ('FULL_BODY', 'LOWER_BODY', 'LEGS', 'RIGHT_LEG')
-            show_left_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'LEFT_ARM')
-            show_right_hand = ik_region in ('FULL_BODY', 'UPPER_BODY', 'ARMS', 'RIGHT_ARM')
-            show_look_at = ik_region in ('FULL_BODY', 'UPPER_BODY', 'HEAD')
-
-            if show_left_foot:
-                tcol.prop(scene, "ik_target_left_foot", text="L Foot")
-            if show_right_foot:
-                tcol.prop(scene, "ik_target_right_foot", text="R Foot")
-            if show_left_hand:
-                tcol.prop(scene, "ik_target_left_hand", text="L Hand")
-            if show_right_hand:
-                tcol.prop(scene, "ik_target_right_hand", text="R Hand")
-            if show_look_at:
-                tcol.prop(scene, "ik_target_look_at", text="Look At")
-
-            col.separator(factor=0.5)
-
-            # Action buttons
-            row = col.row(align=True)
-            row.scale_y = 1.2
-            row.operator("anim2.test_full_body_ik", text="Solve IK", icon='CON_KINEMATIC')
-            row.operator("anim2.crouch_test", text="Crouch", icon='TRIA_DOWN')
-
-            row = col.row(align=True)
-            row.operator("anim2.reset_pose", text="Reset Pose", icon='LOOP_BACK')
-
-            col.separator(factor=0.5)
-            col.prop(scene, "dev_debug_ik_visual", text="GPU Visualization")
-
-            # ─── IK Test Session (Data Collection) ─────────────────────────────
-            test_box = sub_box.box()
-            test_box.label(text="IK Test Session", icon='EXPERIMENTAL')
-
-            if scene.ik_test_session_active:
-                # Session is active - show rating UI
-                col = test_box.column(align=True)
-
-                # Current test - BIG and clear
-                if scene.ik_test_current_description:
-                    row = col.row()
-                    row.alert = True
-                    row.label(text=scene.ik_test_current_description, icon='POSE_HLT')
-
-                # Goal text - what should happen
-                if scene.ik_test_goal_text:
-                    box2 = col.box()
-                    box2.label(text="GOAL:", icon='FORWARD')
-                    # Word wrap the goal text
-                    for line in scene.ik_test_goal_text.split('. '):
-                        if line.strip():
-                            box2.label(text=line.strip() + ('.' if not line.endswith('.') else ''))
-
-                # Success criteria - how to judge
-                if scene.ik_test_success_criteria:
-                    box2 = col.box()
-                    box2.label(text="JUDGE BY:", icon='VIEWZOOM')
-                    # Split GOOD/BAD criteria
-                    criteria = scene.ik_test_success_criteria
-                    if "GOOD:" in criteria and "BAD:" in criteria:
-                        parts = criteria.split("BAD:")
-                        good_part = parts[0].replace("GOOD:", "").strip()
-                        bad_part = parts[1].strip() if len(parts) > 1 else ""
-                        row = box2.row()
-                        row.label(text=f"GOOD: {good_part}", icon='CHECKMARK')
-                        row = box2.row()
-                        row.alert = True
-                        row.label(text=f"BAD: {bad_part}", icon='X')
-                    else:
-                        box2.label(text=criteria)
-
-                col.separator(factor=0.5)
-
-                # Stats
-                row = col.row()
-                row.label(text=f"Good: {scene.ik_test_good_count}", icon='CHECKMARK')
-                row.label(text=f"Bad: {scene.ik_test_bad_count}", icon='X')
-
-                col.separator(factor=0.5)
-
-                # Rating buttons - 4 options
-                # Row 1: GOOD
-                row = col.row(align=True)
-                row.scale_y = 1.8
-                row.operator("anim2.rate_good", text="GOOD", icon='CHECKMARK')
-
-                # Row 2: BAD options
-                col.label(text="If BAD, what's wrong?")
-                row = col.row(align=True)
-                row.scale_y = 1.5
-                row.alert = True
-                row.operator("anim2.rate_bad_rotation", text="Rotation")
-                row.operator("anim2.rate_bad_position", text="Position")
-                row.operator("anim2.rate_bad_both", text="Both")
-
-                col.separator(factor=0.5)
-
-                # Note input - for adding context to failures
-                col.label(text="Add Note (optional):", icon='TEXT')
-                col.prop(scene, "ik_test_note", text="")
-
-                col.separator(factor=0.5)
-
-                # Stop button
-                col.operator("anim2.stop_test_session", text="Stop & Save Session", icon='FILE_TICK')
-            else:
-                # Session not active - show start button
-                col = test_box.column()
-                col.label(text="Collect IK pose data for analysis", icon='INFO')
-                col.operator("anim2.start_test_session", text="Start Test Session", icon='PLAY')
 
             # Animation options
-            options_box = sub_box.box()
-
             if ctrl.cache.count > 0:
+                options_box = sub_box.box()
                 options_box.prop(props, "selected_animation", text="")
                 row = options_box.row(align=True)
                 row.prop(props, "play_speed")
                 row = options_box.row(align=True)
                 row.prop(props, "loop_playback")
                 row.prop(props, "playback_timeout")
-            else:
-                options_box.label(text="Bake animations first", icon='INFO')
 
-            # Play/Stop buttons
-            row = sub_box.row(align=True)
-            row.scale_y = 1.4
-            row.operator("anim2.test_play", text="Play", icon='PLAY')
-            row.operator("anim2.test_stop", text="Stop", icon='SNAP_FACE')
-            row.operator("anim2.clear_cache", text="Clear", icon='LOOP_BACK')
+                # Play/Stop buttons
+                row = sub_box.row(align=True)
+                row.scale_y = 1.3
+                row.operator("anim2.test_play", text="Play", icon='PLAY')
+                row.operator("anim2.test_stop", text="Stop", icon='SNAP_FACE')
+
+                # Reset pose
+                sub_box.operator("anim2.reset_pose", text="Reset Pose", icon='LOOP_BACK')
 
             # Status
             if armature and armature.name in ctrl._states:

@@ -280,175 +280,33 @@ def _compute_bone_group_colors() -> Dict[str, Tuple]:
 # =============================================================================
 
 def _draw_ik_chains(armature, all_verts, all_colors, scene):
-    """Draw IK chains (upper and lower bones)."""
-    from ..animations.runtime_ik import get_ik_state, is_ik_active
-    from ..engine.animations.ik_chains import LEG_IK, ARM_IK
-
-    state = get_ik_state()
-    chains_data = state.get("chains", {})
-
-    if not chains_data and not is_ik_active():
-        # No runtime IK - draw default chain visualization
-        _draw_default_ik_chains(armature, all_verts, all_colors)
-        return
-
-    # Draw active IK chains
-    for chain_name, chain_state in chains_data.items():
-        root_pos = chain_state.get("root_pos")
-        mid_pos = chain_state.get("last_mid_pos")
-        target = chain_state.get("last_target")
-
-        if root_pos is None or mid_pos is None or target is None:
-            continue
-
-        root = tuple(root_pos)
-        mid = tuple(mid_pos)
-        tip = tuple(target)
-
-        # Upper bone (root to mid) - cyan
-        upper_color = IK_COLORS["chain_upper"]
-        all_verts.extend([root, mid])
-        all_colors.extend([upper_color, upper_color])
-
-        # Lower bone (mid to tip) - magenta
-        lower_color = IK_COLORS["chain_lower"]
-        all_verts.extend([mid, tip])
-        all_colors.extend([lower_color, lower_color])
+    """Draw IK chains - STUBBED: Old IK system removed, using neural network approach."""
+    # NOTE: IK visualization disabled - neural IK system in development
+    pass
 
 
 def _draw_default_ik_chains(armature, all_verts, all_colors):
-    """Draw IK chain bones when no IK is active (show structure)."""
-    from ..engine.animations.ik_chains import LEG_IK, ARM_IK
-
-    pose_bones = armature.pose.bones
-    arm_matrix = armature.matrix_world
-
-    # Draw all defined IK chains
-    all_chains = {**LEG_IK, **ARM_IK}
-
-    for chain_name, chain_def in all_chains.items():
-        root_bone = pose_bones.get(chain_def["root"])
-        mid_bone = pose_bones.get(chain_def["mid"])
-        tip_bone = pose_bones.get(chain_def["tip"])
-
-        if not all([root_bone, mid_bone, tip_bone]):
-            continue
-
-        # World positions
-        root = tuple((arm_matrix @ root_bone.head)[:])
-        mid = tuple((arm_matrix @ mid_bone.head)[:])
-        tip = tuple((arm_matrix @ tip_bone.head)[:])
-
-        # Dimmer colors for inactive chains
-        upper_color = (0.0, 0.5, 0.5, 0.5)  # Dim cyan
-        lower_color = (0.5, 0.0, 0.5, 0.5)  # Dim magenta
-
-        all_verts.extend([root, mid])
-        all_colors.extend([upper_color, upper_color])
-        all_verts.extend([mid, tip])
-        all_colors.extend([lower_color, lower_color])
+    """Draw IK chain bones - STUBBED: Old IK system removed."""
+    # NOTE: IK visualization disabled - neural IK system in development
+    pass
 
 
 def _draw_ik_targets(armature, all_verts, all_colors, scene):
-    """Draw IK target spheres."""
-    from ..animations.runtime_ik import get_ik_state
-
-    state = get_ik_state()
-    chains_data = state.get("chains", {})
-
-    for chain_name, chain_state in chains_data.items():
-        target = chain_state.get("last_target")
-        reachable = chain_state.get("reachable", True)
-
-        if target is None:
-            continue
-
-        pos = tuple(target)
-
-        # Color based on reachability
-        if reachable:
-            color = IK_COLORS["reachable"]
-        else:
-            color = IK_COLORS["out_of_reach"]
-
-        # Wireframe sphere
-        extend_batch_data(
-            all_verts, all_colors,
-            sphere_wire_verts(pos, 0.05, CIRCLE_8),
-            color
-        )
+    """Draw IK target spheres - STUBBED: Old IK system removed."""
+    # NOTE: IK visualization disabled - neural IK system in development
+    pass
 
 
 def _draw_ik_poles(armature, all_verts, all_colors, scene):
-    """Draw IK pole vectors as arrows."""
-    from ..animations.runtime_ik import get_ik_state
-
-    state = get_ik_state()
-    chains_data = state.get("chains", {})
-
-    pole_color = IK_COLORS["pole"]
-
-    for chain_name, chain_state in chains_data.items():
-        mid_pos = chain_state.get("last_mid_pos")
-        pole_pos = chain_state.get("pole_pos")
-
-        if mid_pos is None or pole_pos is None:
-            continue
-
-        origin = tuple(mid_pos)
-        target = tuple(pole_pos)
-
-        # Main line
-        all_verts.extend([origin, target])
-        all_colors.extend([pole_color, pole_color])
-
-        # Arrow head
-        dx = target[0] - origin[0]
-        dy = target[1] - origin[1]
-        dz = target[2] - origin[2]
-        length = math.sqrt(dx*dx + dy*dy + dz*dz)
-
-        if length > 0.01:
-            direction = (dx/length, dy/length, dz/length)
-            arrow_size = min(0.08, length * 0.3)
-            extend_batch_data(
-                all_verts, all_colors,
-                arrow_head_verts(target, direction, arrow_size),
-                pole_color
-            )
+    """Draw IK pole vectors - STUBBED: Old IK system removed."""
+    # NOTE: IK visualization disabled - neural IK system in development
+    pass
 
 
 def _draw_ik_reach(armature, all_verts, all_colors, scene):
-    """Draw IK reach spheres from root joints."""
-    from ..animations.runtime_ik import get_ik_state
-    from ..engine.animations.ik_chains import LEG_IK, ARM_IK
-
-    state = get_ik_state()
-    chains_data = state.get("chains", {})
-
-    reach_color = (1.0, 0.8, 0.0, 0.2)  # Transparent yellow
-
-    for chain_name, chain_state in chains_data.items():
-        root_pos = chain_state.get("root_pos")
-        if root_pos is None:
-            continue
-
-        # Get max reach from chain definition
-        if chain_name.startswith("leg"):
-            chain_def = LEG_IK.get(chain_name, {})
-        else:
-            chain_def = ARM_IK.get(chain_name, {})
-
-        max_reach = chain_def.get("reach", 0.5)
-
-        center = tuple(root_pos)
-
-        # Layered sphere (3 layers)
-        extend_batch_data(
-            all_verts, all_colors,
-            layered_sphere_verts(center, max_reach, (-0.5, 0.0, 0.5), CIRCLE_8),
-            reach_color
-        )
+    """Draw IK reach spheres - STUBBED: Old IK system removed."""
+    # NOTE: IK visualization disabled - neural IK system in development
+    pass
 
 
 # =============================================================================
@@ -554,183 +412,13 @@ def _draw_active_mask(armature, all_verts, all_colors, scene):
 
 
 # =============================================================================
-# FULL-BODY IK VISUALIZATION
+# FULL-BODY IK VISUALIZATION - STUBBED (neural IK in development)
 # =============================================================================
 
 def _draw_full_body_ik(armature, all_verts, all_colors, scene):
-    """
-    Draw full-body IK constraints and state.
-
-    Shows:
-    - Hips position and drop indicator
-    - Foot grounding targets
-    - Hand reach targets
-    - Spine lean direction
-    - Look-at target
-    """
-    from ..animations.full_body_ik import get_fbik_state
-
-    fbik_state = get_fbik_state()
-    if not fbik_state.get("active", False):
-        return
-
-    pose_bones = armature.pose.bones
-    arm_matrix = armature.matrix_world
-
-    constraints = fbik_state.get("constraints", {})
-    last_result = fbik_state.get("last_result")
-
-    # Get Root and Hips positions
-    root_bone = pose_bones.get("Root")
-    hips_bone = pose_bones.get("Hips")
-
-    if not root_bone or not hips_bone:
-        return
-
-    root_world = tuple((arm_matrix @ root_bone.head)[:])
-    hips_world = tuple((arm_matrix @ hips_bone.head)[:])
-
-    # =========================================================================
-    # HIPS DROP INDICATOR
-    # =========================================================================
-    hips_drop = constraints.get("hips_drop", 0.0)
-    if abs(hips_drop) > 0.001:
-        # Draw vertical line showing drop amount
-        hips_color = FBIK_COLORS["hips_drop"]
-
-        # Original hips position (before drop)
-        orig_hips = (hips_world[0], hips_world[1], hips_world[2] + hips_drop)
-
-        # Line from original to current
-        all_verts.extend([orig_hips, hips_world])
-        all_colors.extend([hips_color, hips_color])
-
-        # Crosshair at original position
-        extend_batch_data(all_verts, all_colors, crosshair_verts(orig_hips, 0.03), hips_color)
-
-        # Box at current hips position
-        extend_batch_data(all_verts, all_colors, crosshair_verts(hips_world, 0.04), FBIK_COLORS["hips"])
-
-    # =========================================================================
-    # FOOT TARGETS
-    # =========================================================================
-    for foot_key in ["left_foot", "right_foot"]:
-        foot_data = constraints.get(foot_key)
-        if not foot_data or not foot_data.get("enabled", True):
-            continue
-
-        foot_pos = foot_data.get("position")
-        if not foot_pos:
-            continue
-
-        # Convert Root-relative to world
-        target_world = (
-            root_world[0] + foot_pos[0],
-            root_world[1] + foot_pos[1],
-            root_world[2] + foot_pos[2],
-        )
-
-        # Get error from last result
-        error_cm = 0.0
-        if last_result:
-            error_key = f"{foot_key}_error_cm".replace("_foot", "_foot")
-            error_cm = last_result.get(error_key, 0.0)
-
-        # Color based on error
-        if error_cm < 1.0:
-            color = FBIK_COLORS["foot_target"]  # Green - good
-        elif error_cm < 5.0:
-            color = IK_COLORS["at_limit"]  # Yellow - warning
-        else:
-            color = IK_COLORS["out_of_reach"]  # Red - bad
-
-        # Wireframe sphere at target
-        extend_batch_data(
-            all_verts, all_colors,
-            sphere_wire_verts(target_world, 0.04, CIRCLE_8),
-            color
-        )
-
-        # Line from foot target to ground (Z=0 relative to root)
-        ground_pos = (target_world[0], target_world[1], root_world[2])
-        all_verts.extend([target_world, ground_pos])
-        all_colors.extend([color, (color[0], color[1], color[2], 0.3)])
-
-    # =========================================================================
-    # HAND TARGETS
-    # =========================================================================
-    for hand_key in ["left_hand", "right_hand"]:
-        hand_data = constraints.get(hand_key)
-        if not hand_data or not hand_data.get("enabled", True):
-            continue
-
-        hand_pos = hand_data.get("position")
-        if not hand_pos:
-            continue
-
-        # Convert Root-relative to world
-        target_world = (
-            root_world[0] + hand_pos[0],
-            root_world[1] + hand_pos[1],
-            root_world[2] + hand_pos[2],
-        )
-
-        # Get error from last result
-        error_cm = 0.0
-        if last_result:
-            side = "left" if "left" in hand_key else "right"
-            error_key = f"{side}_hand_error_cm"
-            error_cm = last_result.get(error_key, 0.0)
-
-        # Color based on error
-        if error_cm < 3.0:
-            color = FBIK_COLORS["hand_target"]  # Cyan - good
-        elif error_cm < 10.0:
-            color = FBIK_COLORS["hand_limit"]  # Orange - at limit
-        else:
-            color = IK_COLORS["out_of_reach"]  # Red - out of reach
-
-        # Wireframe sphere at target
-        extend_batch_data(
-            all_verts, all_colors,
-            sphere_wire_verts(target_world, 0.05, CIRCLE_8),
-            color
-        )
-
-        # Line from shoulder area to target (visual aid)
-        # Estimate shoulder position
-        shoulder_offset = 0.15 if "left" in hand_key else -0.15
-        shoulder_z = hips_world[2] + 0.5
-        shoulder_world = (hips_world[0] + shoulder_offset, hips_world[1], shoulder_z)
-
-        all_verts.extend([shoulder_world, target_world])
-        all_colors.extend([(color[0], color[1], color[2], 0.4), color])
-
-    # =========================================================================
-    # LOOK-AT TARGET
-    # =========================================================================
-    look_at_data = constraints.get("look_at")
-    if look_at_data and look_at_data.get("enabled", True):
-        look_pos = look_at_data.get("position")
-        if look_pos:
-            # Convert Root-relative to world
-            target_world = (
-                root_world[0] + look_pos[0],
-                root_world[1] + look_pos[1],
-                root_world[2] + look_pos[2],
-            )
-
-            color = FBIK_COLORS["look_at"]
-
-            # Crosshair at look-at target
-            extend_batch_data(all_verts, all_colors, crosshair_verts(target_world, 0.06), color)
-
-            # Line from head to target
-            head_bone = pose_bones.get("Head")
-            if head_bone:
-                head_world = tuple((arm_matrix @ head_bone.head)[:])
-                all_verts.extend([head_world, target_world])
-                all_colors.extend([(color[0], color[1], color[2], 0.5), color])
+    """Draw full-body IK state - STUBBED: Old IK system removed."""
+    # NOTE: IK visualization disabled - neural IK system in development
+    pass
 
 
 # =============================================================================
@@ -830,8 +518,7 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
     PERFORMANCE: Minimal work - just reads cached state.
     """
     from ..animations.blend_system import get_blend_system
-    from ..animations.runtime_ik import get_ik_state, is_ik_active
-    from ..animations.full_body_ik import get_fbik_state
+    # NOTE: IK imports removed - neural IK system in development
 
     lines = []
 
@@ -843,44 +530,7 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
     magenta = (1.0, 0.4, 1.0, 1.0)
     gray = (0.6, 0.6, 0.6, 1.0)
 
-    # Full-Body IK Status
-    fbik_state = get_fbik_state()
-    if fbik_state.get("active", False):
-        constraints = fbik_state.get("constraints", {})
-        last_result = fbik_state.get("last_result")
-
-        # Build constraint summary
-        parts = []
-        if constraints.get("hips_drop", 0) != 0:
-            parts.append(f"hips:{constraints['hips_drop']:.2f}m")
-        if constraints.get("left_foot") and constraints["left_foot"].get("enabled"):
-            parts.append("L_foot")
-        if constraints.get("right_foot") and constraints["right_foot"].get("enabled"):
-            parts.append("R_foot")
-        if constraints.get("left_hand") and constraints["left_hand"].get("enabled"):
-            parts.append("L_hand")
-        if constraints.get("right_hand") and constraints["right_hand"].get("enabled"):
-            parts.append("R_hand")
-        if constraints.get("look_at") and constraints["look_at"].get("enabled"):
-            parts.append("look")
-
-        if parts:
-            lines.append((f"FBIK: {' '.join(parts)}", magenta))
-
-        # Show result status
-        if last_result:
-            satisfied = last_result.get("constraints_satisfied", 0)
-            total = last_result.get("constraints_total", 0)
-            if total > 0:
-                status_color = green if satisfied == total else yellow
-                lines.append((f"  {satisfied}/{total} satisfied", status_color))
-
-    # IK Status (limb-only)
-    elif is_ik_active():
-        ik_state = get_ik_state()
-        chains = list(ik_state.get("chains", {}).keys())
-        if chains:
-            lines.append((f"IK: {' '.join(chains)}", cyan))
+    # NOTE: Full-Body IK status removed - neural IK system in development
 
     # Blend System State
     blend_sys = get_blend_system()
@@ -1048,19 +698,16 @@ def _tag_redraw():
 def get_visualizer_state() -> Dict:
     """Get current visualizer state for UI display."""
     from ..animations.blend_system import get_blend_system
-    from ..animations.runtime_ik import get_ik_state, is_ik_active
+    # NOTE: IK imports removed - neural IK system in development
 
     state = {
         "active": is_visualizer_active(),
-        "ik_active": is_ik_active(),
+        "ik_active": False,  # IK disabled - neural system in development
         "ik_chains": [],
         "layers": {"base": None, "additive": [], "override": []},
     }
 
-    # IK chains
-    ik_state = get_ik_state()
-    for chain_name in ik_state.get("chains", {}).keys():
-        state["ik_chains"].append(chain_name)
+    # NOTE: IK chains removed - neural IK system in development
 
     # Blend layers
     blend_sys = get_blend_system()

@@ -1,138 +1,189 @@
-# Ragdoll System Documentation
+# Ragdoll System (Rig Agnostic)
+
+**Status:** 6/10 - Functional but needs improvements
 
 ## Overview
 
-The ragdoll system is a REACTION type that makes armature bones go limp/loose for a duration.
-It runs through the engine worker system to offload physics computation from the main thread.
+Articulated-rod ragdoll physics that works on **ANY armature**.
+- Gravity torque projected into bone local space
+- Parent-alignment torque prevents curling into a ball
+- Position drop physics (character falls to ground)
+- Per-bone stiffness/damping/limits based on role detection
+- KCC handles normal character position - ragdoll drops armature independently
+
+---
+
+## Current Implementation
+
+### What Works
+1. **Bone rotation physics** - Bones respond to gravity with per-bone parameters
+2. **Position drop** - Character falls to ground during ragdoll (0.5s drop phase)
+3. **Role detection** - Automatically detects core/limb/head/hand from bone names
+4. **Layer Manager integration** - PHYSICS channel blocks blend_system
+5. **Ragdoll finish** - Returns to locomotion after duration ends
+
+### Known Issues / Improvements Needed
+1. **Bones still tend to curl** - Parent-alignment helps but not enough
+2. **Drop feels disconnected** - Armature drops but bones don't respond naturally to the fall
+3. **No collision with environment** - Only simple floor plane check
+4. **KCC may fight ragdoll** - Need to fully disable KCC during ragdoll
+5. **Ground contact is primitive** - Just a Z-plane check, no actual collision
 
 ---
 
 ## Architecture
 
+### Two-Part Physics System
+
+**Main Thread (exp_ragdoll.py):**
+- Position drop physics (gravity + floor collision)
+- Simple and cheap - runs every frame
+- Moves armature.location.z down with gravity
+
+**Worker (ragdoll.py):**
+- Bone rotation physics (articulated-rod model)
+- Per-bone gravity torque projection
+- Parent-alignment torque
+- Angular velocity clamping
+
+### Data Flow
+
 ```
-Node Editor (Design Time)         Main Thread                    Worker Process
-┌─────────────────────┐          ┌─────────────────────┐        ┌─────────────────────┐
-│ ReactionRagdollNode │          │ exp_ragdoll.py      │        │ worker/reactions/   │
-│ - Duration          │ ──────►  │ - execute_ragdoll   │ ─JOB─► │   ragdoll.py        │
-│ - Gravity Mult      │          │ - submit_update     │        │ - physics calc      │
-│ - Impulse Strength  │          │ - process_results   │ ◄RESULT│ - rotation offsets  │
-│ - Impulse Direction │          │ - apply to armature │        │ - position offsets  │
-└─────────────────────┘          └─────────────────────┘        └─────────────────────┘
+Main Thread                              Worker
+-----------                              ------
+1. Capture bone data (once at start)
+2. Each frame:
+   - Update position drop (gravity)
+   - Submit bone data to worker    -->   3. Compute bone physics
+   - Poll results                  <--   4. Return bone rotations
+   - Apply bone rotations
 ```
 
 ---
 
-## File Connections
+## Physics Model
 
-### Node System (Design Time)
-- `Exp_Nodes/reaction_nodes.py` - `ReactionRagdollNode` class
-- `Exp_Nodes/utility_nodes.py` - `ExpFloatSocket`, `ExpVectorSocket` for inputs
-- Properties stored in `ReactionDefinition.ragdoll_*` fields
-
-### Main Thread (Runtime)
-- `Exp_Game/reactions/exp_ragdoll.py` - Executor and state management
-- `Exp_Game/reactions/exp_interactions.py` - Dispatcher calls `execute_ragdoll_reaction()`
-- `Exp_Game/reactions/exp_reaction_definition.py` - RAGDOLL enum and properties
-- `Exp_Game/modal/exp_loop.py` - Submits jobs, processes results, has animation skip logic
-- `Exp_Game/animations/blend_system.py` - `start_ragdoll_lock()`, `is_ragdoll_active()`
-
-### Engine Worker (Computation)
-- `Exp_Game/engine/worker/reactions/ragdoll.py` - `handle_ragdoll_update_batch()`
-- `Exp_Game/engine/worker/reactions/__init__.py` - Exports handler
-- `Exp_Game/engine/worker/entry.py` - Job dispatch for RAGDOLL_UPDATE_BATCH
-
----
-
-## Data Flow
-
-### Reaction Trigger
-1. Interaction fires RAGDOLL reaction
-2. `exp_interactions.py` dispatches to `execute_ragdoll_reaction()`
-3. Creates `RagdollInstance` with bone order, parents, lengths, states
-4. Calls `blend_system.start_ragdoll_lock()` to block animations
-
-### Per-Frame Update
-1. `exp_loop.py` checks `has_active_ragdolls()`
-2. Calls `submit_ragdoll_update(engine, dt)`
-3. Worker computes physics:
-   - Root bone: position offset (gravity + floor collision)
-   - Other bones: rotation offset (droop with angular velocity)
-4. Results processed via `process_ragdoll_results()`
-5. `_apply_ragdoll()` sets `pb.location` and `pb.rotation_quaternion`
-
-### Animation Blocking (Attempted)
-- `exp_loop.py` checks `blend_system.is_ragdoll_active()`
-- Skips `poll_animation_results_with_timeout()` if ragdoll active
-- Skips `blend_system.apply_to_armature()` if ragdoll active
-
----
-
-## Current Physics Model
-
-### Root Bone
-- Tracks position OFFSET from rest pose (starts at 0,0,0)
-- Applies 30% of scene gravity
-- Damping: 0.95
-- Floor constraint at Z=0
-
-### Non-Root Bones
-- Tracks rotation OFFSET in euler angles
-- Droop rate: -0.5 rad/s^2 (bones tend to fall forward)
-- Damping: 0.92
-- Clamped to +/- 0.8 radians (~45 degrees)
-
----
-
-## Current Problems
-
-### Problem 1: Blender Action System Override
-
-The ragdoll sets pose bone transforms via Python:
+### Position Drop (Main Thread)
 ```python
-pb.location = Vector(pos_offset)
-pb.rotation_quaternion = euler.to_quaternion()
+DROP_GRAVITY = -12.0        # m/s^2 (softer for game feel)
+DROP_DAMPING = 0.95         # Bounce damping
+DROP_DURATION = 0.5         # Drop phase length
+
+# Each frame:
+velocity += gravity * dt
+position += velocity * dt
+if position < floor:
+    position = floor
+    velocity *= -damping  # Bounce
 ```
 
-But Blender has an active action on `armature.animation_data.action`. Blender's
-internal animation evaluator runs every frame and overwrites pose bone transforms
-from the action - completely bypassing Python code.
+### Bone Rotation (Worker)
+```python
+# Per-bone state: rot (euler), ang_vel (rad/s)
 
-Result: Visual flickering as ragdoll and locomotion action fight for control.
+# 1. Project gravity into bone local space
+local_gravity = bone_rest_inv @ armature_rot_inv @ world_gravity
 
-The blocking code only stops our custom animation systems. It does NOT stop
-Blender's internal action evaluation which happens at the C level.
+# 2. Gravity torque on primary axes
+torque_x = -local_gravity.z * 0.6 * cos(rot.x)  # Forward/back
+torque_z = local_gravity.x * 0.6 * cos(rot.z)   # Side tilt
+torque_y = local_gravity.y * 0.05 * cos(rot.y)  # Twist (tiny)
 
-### Problem 2: Weak Visual Effect
+# 3. Parent alignment (prevents curl)
+torque_x += -0.4 * sin(rot.x)
+torque_z += -0.4 * sin(rot.z)
 
-Current physics produces minimal visible change:
-- Root moves up (from impulse) but gravity is weak (30%)
-- Bone rotations are tiny: 0.00 to -0.03 radians over several seconds
-- Droop rate with damping converges too slowly
-- No real "jelly" or "loose body" feel
+# 4. Spring-to-rest (weak)
+torque -= stiffness * rot
 
-### Problem 3: No Collision
-
-Bones only have floor constraint at Z=0. No collision with:
-- Static geometry (spatial grid)
-- Dynamic meshes
-- Self-collision between bones
+# 5. Integrate with clamping
+ang_vel += (torque / inertia) * dt
+ang_vel *= damping
+ang_vel = clamp(ang_vel, -6.0, 6.0)  # Prevent runaway
+rot += ang_vel * dt
+rot = clamp(rot, limits)
+```
 
 ---
 
-## Properties
+## Role-Based Parameters
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `ragdoll_target_use_character` | Bool | True | Use scene character armature |
-| `ragdoll_target_armature` | Pointer | None | Custom armature if not character |
-| `ragdoll_duration` | Float | 2.0 | How long ragdoll lasts (seconds) |
-| `ragdoll_gravity_multiplier` | Float | 1.0 | Scale gravity effect |
-| `ragdoll_impulse_strength` | Float | 5.0 | Initial velocity magnitude |
-| `ragdoll_impulse_direction` | Vector | (0,0,1) | Initial velocity direction |
+| Role | Keywords | Stiffness | Damping | Inertia |
+|------|----------|-----------|---------|---------|
+| core | spine, hip, pelvis, torso, chest, root | 0.8 | 0.90 | 1.2 |
+| limb | arm, leg, thigh, shin, forearm, shoulder | 0.3 | 0.88 | 1.0 |
+| head | head, neck, skull | 0.4 | 0.90 | 0.7 |
+| hand | hand, finger, thumb, foot, toe, ankle | 0.15 | 0.85 | 0.5 |
+
+Fallback: bones deeper than 5 levels = "hand", otherwise "limb"
+
+---
+
+## Physics Constants (Worker)
+
+```python
+WORLD_GRAVITY = (0.0, 0.0, -9.8)
+
+# Gravity torque multipliers
+GRAVITY_TORQUE_PRIMARY = 0.6   # X/Z axes
+GRAVITY_TORQUE_TWIST = 0.05    # Y axis (keep tiny)
+
+# Limits
+DEFAULT_LIMIT = 1.4            # ~80 degrees
+DEFAULT_SECONDARY_LIMIT = 0.7  # ~40 degrees
+
+# Velocity
+MAX_ANGULAR_VELOCITY = 6.0     # rad/s
+
+# Parent alignment
+PARENT_ALIGN_STRENGTH = 0.4
+```
+
+---
+
+## Lessons Learned
+
+### Why Character Was Curling (Not Falling)
+1. **KCC holds character up** - KCC physics keeps character standing
+2. **Spring-to-rest was too strong** - Bones snapped back instead of flopping
+3. **No position drop** - Only rotating bones in place = curl, not fall
+4. **Gravity wasn't projected correctly** - Torque wasn't based on actual bone orientation
+
+### Solutions Applied
+1. Added position drop physics (main thread moves armature down)
+2. Reduced stiffness dramatically (5.0 -> 0.3)
+3. Added parent-alignment torque to prevent curling
+4. Increased gravity torque multiplier (0.3 -> 0.6)
+5. Added angular velocity clamping (prevents runaway)
+6. Reduced twist influence (Y axis -> 0.05)
+
+### Future Improvements Needed
+1. **Disable KCC during ragdoll** - KCC may still be fighting the drop
+2. **Better parent coupling** - Use actual parent direction, not just sin(angle)
+3. **Environment collision** - Ray/sphere casts for walls, not just floor
+4. **Impact direction** - Initial impulse based on damage direction
+5. **Settling animation** - Procedural "get up" transition back to locomotion
+
+---
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `reactions/exp_ragdoll.py` | Main thread - position drop, submit jobs, apply rotations |
+| `engine/worker/reactions/ragdoll.py` | Worker - bone rotation physics |
+| `animations/layer_manager.py` | PHYSICS channel blocks animations |
+| `animations/blend_system.py` | Checks PHYSICS channel before apply |
 
 ---
 
 ## Debug
 
-Enable logging: Developer Tools > Game Systems > Ragdoll checkbox
-Logs output to `diagnostics_latest.txt` with `[RAGDOLL ...]` prefix
+Enable: Developer Tools > Game Systems > Ragdoll checkbox
+Logs: `diagnostics_latest.txt` with `[RAGDOLL ...]` prefix
+
+Key log messages:
+- `Starting ragdoll on X, duration=Xs` - Ragdoll triggered
+- `PHYSICS channel activated` - Layer manager blocking animations
+- `WORKER: N ragdolls, M bones, Xus` - Worker processing
+- `Ragdoll X finished - restoring locomotion` - Ragdoll ended
