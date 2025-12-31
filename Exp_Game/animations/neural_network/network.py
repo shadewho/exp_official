@@ -340,8 +340,7 @@ class FullBodyIKNetwork:
             self.total_updates = weights.get('total_updates', 0)
             self.best_loss = weights.get('best_loss', float('inf'))
             return True
-        except Exception as e:
-            print(f"[NeuralIK] Failed to load weights: {e}")
+        except Exception:
             return False
 
     def get_stats(self) -> Dict:

@@ -89,6 +89,9 @@ _CATEGORY_MAP = {
     # Tracker System
     'TRACKERS': 'trackers',
 
+    # Ragdoll System
+    'RAGDOLL': 'ragdoll',
+
     # World State Optimization (Phase 1.1)
     'WORLD-STATE': 'world_state',
 

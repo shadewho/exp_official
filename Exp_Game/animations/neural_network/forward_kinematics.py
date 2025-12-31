@@ -6,21 +6,33 @@ Computes bone world positions from local rotations.
 Used for FK loss during training - measures if predicted rotations
 actually reach the target positions.
 
-NO BPY IMPORTS - runs in engine workers.
+NO BPY IMPORTS - runs in engine workers and standalone trainer.
 """
 
 import numpy as np
 from typing import Tuple, Optional
 
-from .config import (
-    NUM_BONES,
-    PARENT_INDICES,
-    LENGTHS_ARRAY,
-    REST_POSITIONS_ARRAY,
-    BONE_TO_INDEX,
-    END_EFFECTORS,
-    CONTROLLED_BONES,
-)
+# Support both package import (Blender) and direct import (standalone)
+try:
+    from .config import (
+        NUM_BONES,
+        PARENT_INDICES,
+        LENGTHS_ARRAY,
+        REST_POSITIONS_ARRAY,
+        BONE_TO_INDEX,
+        END_EFFECTORS,
+        CONTROLLED_BONES,
+    )
+except ImportError:
+    from config import (
+        NUM_BONES,
+        PARENT_INDICES,
+        LENGTHS_ARRAY,
+        REST_POSITIONS_ARRAY,
+        BONE_TO_INDEX,
+        END_EFFECTORS,
+        CONTROLLED_BONES,
+    )
 
 
 def axis_angle_to_matrix(axis_angles: np.ndarray) -> np.ndarray:
@@ -453,3 +465,149 @@ def compute_fk_loss_gradient(
         gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)
 
     return gradient
+
+
+def compute_contact_loss_simple(
+    predicted_rotations: np.ndarray,
+    contact_flags: np.ndarray,
+    root_positions: np.ndarray = None,
+    ground_height: float = 0.0,
+) -> Tuple[float, np.ndarray]:
+    """
+    Simplified contact loss: feet should be at ground height when grounded.
+
+    Uses flat ground assumption (Z=0 relative to armature).
+
+    Args:
+        predicted_rotations: Shape (batch, 69) - flattened bone rotations
+        contact_flags: Shape (batch, 2) - 1 if foot should be grounded [left, right]
+        root_positions: Shape (batch, 3) - root world positions
+        ground_height: Z coordinate of ground (default 0)
+
+    Returns:
+        loss: Scalar contact violation
+        foot_heights: Shape (batch, 2) - actual foot Z positions
+    """
+    batch_size = predicted_rotations.shape[0]
+
+    # Reshape rotations
+    rotations = predicted_rotations.reshape(batch_size, NUM_BONES, 3)
+
+    # Run FK
+    positions, _ = forward_kinematics_batch(rotations, root_positions)
+
+    # Get foot positions
+    left_foot_idx = BONE_TO_INDEX["LeftFoot"]
+    right_foot_idx = BONE_TO_INDEX["RightFoot"]
+
+    foot_heights = np.stack([
+        positions[:, left_foot_idx, 2],   # Z coordinate
+        positions[:, right_foot_idx, 2],
+    ], axis=1)  # (batch, 2)
+
+    # Height error: feet should be at ground_height when grounded
+    height_error = (foot_heights - ground_height) * contact_flags
+    loss = float(np.mean(height_error ** 2))
+
+    return loss, foot_heights
+
+
+def compute_contact_loss_gradient(
+    predicted_rotations: np.ndarray,
+    contact_flags: np.ndarray,
+    root_positions: np.ndarray = None,
+    ground_height: float = 0.0,
+    epsilon: float = 1e-4,
+) -> np.ndarray:
+    """
+    Compute gradient of contact loss with respect to rotations.
+    Uses numerical differentiation (finite differences).
+
+    Only computes gradient for leg bones (optimization - other bones don't affect feet).
+
+    Args:
+        predicted_rotations: Shape (batch, 69) - flattened bone rotations
+        contact_flags: Shape (batch, 2) - grounded flags [left, right]
+        root_positions: Shape (batch, 3)
+        ground_height: Z coordinate of ground
+        epsilon: Step size for finite differences
+
+    Returns:
+        gradient: Shape (batch, 69) - gradient of loss w.r.t. rotations
+    """
+    batch_size = predicted_rotations.shape[0]
+    n_params = predicted_rotations.shape[1]
+
+    gradient = np.zeros_like(predicted_rotations)
+
+    # Only compute gradient for bones that affect foot positions
+    # Left leg: LeftThigh (15), LeftShin (16), LeftFoot (17), LeftToeBase (18)
+    # Right leg: RightThigh (19), RightShin (20), RightFoot (21), RightToeBase (22)
+    # Also Hips (0) affects everything
+    leg_bone_indices = [0, 15, 16, 17, 18, 19, 20, 21, 22]
+
+    # Convert bone indices to rotation parameter indices (3 params per bone)
+    leg_param_indices = []
+    for bone_idx in leg_bone_indices:
+        leg_param_indices.extend([bone_idx * 3, bone_idx * 3 + 1, bone_idx * 3 + 2])
+
+    # Numerical gradient via central differences (only for leg params)
+    for i in leg_param_indices:
+        # Forward step
+        rotations_plus = predicted_rotations.copy()
+        rotations_plus[:, i] += epsilon
+        loss_plus, _ = compute_contact_loss_simple(
+            rotations_plus, contact_flags, root_positions, ground_height
+        )
+
+        # Backward step
+        rotations_minus = predicted_rotations.copy()
+        rotations_minus[:, i] -= epsilon
+        loss_minus, _ = compute_contact_loss_simple(
+            rotations_minus, contact_flags, root_positions, ground_height
+        )
+
+        # Central difference
+        gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)
+
+    return gradient
+
+
+def infer_contact_flags(
+    target_effector_positions: np.ndarray,
+    ground_height: float = 0.0,
+    threshold: float = 0.1,
+) -> np.ndarray:
+    """
+    Infer contact flags from training data.
+
+    If a foot's target Z position is close to ground, it's grounded.
+
+    Args:
+        target_effector_positions: Shape (batch, 5, 3) - target positions
+            Effector order: LeftHand, RightHand, LeftFoot, RightFoot, Head
+        ground_height: Z coordinate of ground
+        threshold: Max height above ground to count as grounded
+
+    Returns:
+        contact_flags: Shape (batch, 2) - [left_grounded, right_grounded]
+    """
+    # Ensure correct shape
+    if target_effector_positions.ndim == 2:
+        # (batch, 15) -> (batch, 5, 3)
+        target_effector_positions = target_effector_positions.reshape(-1, 5, 3)
+
+    # LeftFoot is index 2, RightFoot is index 3
+    left_foot_z = target_effector_positions[:, 2, 2]   # Z of LeftFoot
+    right_foot_z = target_effector_positions[:, 3, 2]  # Z of RightFoot
+
+    # Grounded if Z is close to ground
+    left_grounded = (left_foot_z - ground_height) < threshold
+    right_grounded = (right_foot_z - ground_height) < threshold
+
+    contact_flags = np.stack([
+        left_grounded.astype(np.float32),
+        right_grounded.astype(np.float32),
+    ], axis=1)  # (batch, 2)
+
+    return contact_flags

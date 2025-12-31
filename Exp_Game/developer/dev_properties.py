@@ -57,6 +57,12 @@ def register_properties():
     bpy.types.Scene.dev_section_anim = bpy.props.BoolProperty(
         name="Animation 2.0", default=False)
 
+    # Neural IK UI toggles
+    bpy.types.Scene.dev_neural_show_advanced = bpy.props.BoolProperty(
+        name="Show Advanced", default=False)
+    bpy.types.Scene.dev_neural_show_create = bpy.props.BoolProperty(
+        name="Create New Data", default=False)
+
     # ══════════════════════════════════════════════════════════════════════════
     # ENGINE HEALTH
     # ══════════════════════════════════════════════════════════════════════════
@@ -1013,6 +1019,8 @@ def unregister_properties():
         'dev_section_kcc_visual',
         'dev_section_game',
         'dev_section_anim',
+        'dev_neural_show_advanced',
+        'dev_neural_show_create',
 
         # Engine
         'dev_debug_engine',

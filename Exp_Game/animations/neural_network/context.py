@@ -7,24 +7,49 @@ Gathers environment information from Blender scene:
 - Ground/contact information
 - Motion state
 
-This module uses bpy - for data extraction only, not runtime.
+BPY-dependent functions only work in Blender.
+Pure NumPy functions (normalize_input, etc.) work standalone.
 """
+from __future__ import annotations  # Defer type hint evaluation
 
-import bpy
 import numpy as np
-from mathutils import Vector, Matrix, Euler
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
-from .config import (
-    END_EFFECTORS,
-    CONTACT_EFFECTORS,
-    INPUT_SIZE,
-    INPUT_SLICES,
-    TASK_TYPES,
-    POSITION_SCALE,
-    ROTATION_SCALE,
-    HEIGHT_SCALE,
-)
+# BPY is optional - only needed for Blender data extraction
+try:
+    import bpy
+    from mathutils import Vector, Matrix, Euler
+    HAS_BPY = True
+except ImportError:
+    HAS_BPY = False
+    # Dummy types for when bpy not available
+    Vector = None
+    Matrix = None
+    Euler = None
+
+# Support both package import (Blender) and direct import (standalone)
+try:
+    from .config import (
+        END_EFFECTORS,
+        CONTACT_EFFECTORS,
+        INPUT_SIZE,
+        INPUT_SLICES,
+        TASK_TYPES,
+        POSITION_SCALE,
+        ROTATION_SCALE,
+        HEIGHT_SCALE,
+    )
+except ImportError:
+    from config import (
+        END_EFFECTORS,
+        CONTACT_EFFECTORS,
+        INPUT_SIZE,
+        INPUT_SLICES,
+        TASK_TYPES,
+        POSITION_SCALE,
+        ROTATION_SCALE,
+        HEIGHT_SCALE,
+    )
 
 
 class ContextExtractor:

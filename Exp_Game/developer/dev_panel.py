@@ -282,32 +282,86 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                 from ..animations.test_panel import get_neural_status
                 status = get_neural_status()
 
-                # Data status
-                if status['samples'] > 0:
-                    row = neural_box.row()
-                    row.label(text=f"Data: {status['train_samples']} train, {status['test_samples']} test", icon='OUTLINER_DATA_MESH')
-                else:
-                    neural_box.label(text="No data extracted", icon='INFO')
-
-                # Weights status
+                # Current state summary
+                state_box = neural_box.box()
                 if status['weights_exist']:
                     if status['best_loss'] is not None:
-                        neural_box.label(text=f"Best loss: {status['best_loss']:.6f}", icon='CHECKMARK')
+                        loss_val = status['best_loss']
+                        if loss_val < 0.10:
+                            state_box.label(text=f"Weights: GOOD (loss {loss_val:.4f})", icon='CHECKMARK')
+                        else:
+                            state_box.label(text=f"Weights: NEEDS WORK (loss {loss_val:.4f})", icon='ERROR')
                     else:
-                        neural_box.label(text="Weights: saved", icon='FILE_TICK')
+                        state_box.label(text="Weights: Loaded", icon='FILE_TICK')
                 else:
-                    neural_box.label(text="No trained weights", icon='BLANK1')
+                    state_box.label(text="Weights: Not trained yet", icon='BLANK1')
 
-                # Action buttons
-                col = neural_box.column(align=True)
-                col.operator("neural.extract_data", text=f"Extract Data ({len(bpy.data.actions)} actions)", icon='IMPORT')
+                if status['samples'] > 0:
+                    state_box.label(text=f"Data: {status['samples']} samples loaded", icon='OUTLINER_DATA_MESH')
+                else:
+                    state_box.label(text="Data: None (extract or load first)", icon='BLANK1')
 
-                row = col.row(align=True)
-                row.operator("neural.train", text="Train", icon='PLAY')
-                row.operator("neural.test", text="Test", icon='VIEWZOOM')
+                neural_box.separator()
 
-                row = col.row(align=True)
-                row.operator("neural.reset", text="Reset Network", icon='FILE_REFRESH')
+                # ─────────────────────────────────────────────────────────────
+                # QUICK START: USE EXISTING DATA (most common)
+                # ─────────────────────────────────────────────────────────────
+                quick_box = neural_box.box()
+                row = quick_box.row()
+                row.label(text="USE EXISTING DATA", icon='CHECKMARK')
+                row.label(text="(already trained)")
+                col = quick_box.column(align=True)
+                col.scale_y = 1.2
+                col.operator("neural.load_data", text="1. Load Saved Data", icon='FILE_FOLDER')
+                col.operator("neural.reload_weights", text="2. Load Weights", icon='FILE_REFRESH')
+                col.operator("neural.test", text="3. Run Tests", icon='VIEWZOOM')
+                col.scale_y = 0.7
+                col.label(text="Use this if you already ran training before")
+                col.scale_y = 1.0
+
+                neural_box.separator()
+
+                # ─────────────────────────────────────────────────────────────
+                # CREATE NEW DATA (only when animations change)
+                # ─────────────────────────────────────────────────────────────
+                new_box = neural_box.box()
+                row = new_box.row()
+                row.prop(scene, "dev_neural_show_create",
+                         icon='TRIA_DOWN' if getattr(scene, 'dev_neural_show_create', False) else 'TRIA_RIGHT',
+                         icon_only=True, emboss=False)
+                row.label(text="CREATE NEW DATA", icon='ADD')
+                row.label(text="(re-extract)")
+
+                if getattr(scene, 'dev_neural_show_create', False):
+                    col = new_box.column(align=True)
+                    col.scale_y = 0.7
+                    col.label(text="Only needed if animations changed:")
+                    col.scale_y = 1.0
+                    col.separator()
+                    col.operator("neural.extract_data", text=f"1. Extract ({len(bpy.data.actions)} actions)", icon='ACTION')
+                    col.operator("neural.save_data", text="2. Save to Disk", icon='FILE_TICK')
+                    col.separator()
+                    col.scale_y = 0.7
+                    col.label(text="Then run in PowerShell:")
+                    col.label(text="  cd .../neural_network")
+                    col.label(text="  python standalone_trainer.py")
+                    col.scale_y = 1.0
+                    col.separator()
+                    col.operator("neural.train", text="Show Full Path", icon='INFO')
+
+                # ─────────────────────────────────────────────────────────────
+                # Advanced (collapsed)
+                # ─────────────────────────────────────────────────────────────
+                adv = neural_box.box()
+                row = adv.row()
+                row.prop(scene, "dev_neural_show_advanced",
+                         icon='TRIA_DOWN' if getattr(scene, 'dev_neural_show_advanced', False) else 'TRIA_RIGHT',
+                         icon_only=True, emboss=False)
+                row.label(text="Advanced", icon='PREFERENCES')
+
+                if getattr(scene, 'dev_neural_show_advanced', False):
+                    col = adv.column(align=True)
+                    col.operator("neural.reset", text="Reset Weights (Start Over)", icon='TRASH')
 
             # ═══════════════════════════════════════════════════════════════
             # ANIMATION PLAYBACK

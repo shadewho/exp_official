@@ -513,43 +513,35 @@ class NEURAL_OT_ExtractData(Operator):
 
 
 class NEURAL_OT_Train(Operator):
-    """Train neural network on extracted data"""
+    """Show instructions for standalone training"""
     bl_idname = "neural.train"
-    bl_label = "Train Network"
+    bl_label = "Train (Standalone)"
     bl_options = {'REGISTER'}
 
-    epochs: bpy.props.IntProperty(
-        name="Epochs",
-        default=100,
-        min=10,
-        max=1000,
-    )
-
     def execute(self, context):
-        if _neural_data['dataset'] is None:
-            self.report({'ERROR'}, "Extract data first")
-            return {'CANCELLED'}
+        # Print clear instructions to console
+        print("\n" + "="*70)
+        print(" NEURAL IK TRAINING - RUN OUTSIDE BLENDER")
+        print("="*70)
+        print("")
+        print(" Training runs in a separate Python process for speed.")
+        print(" Blender stays responsive while training runs.")
+        print("")
+        print(" STEPS:")
+        print(" 1. Open Command Prompt or Terminal")
+        print(" 2. Run these commands:")
+        print("")
+        print("    cd C:\\Users\\spenc\\Desktop\\Exploratory\\addons\\Exploratory\\Exp_Game\\animations\\neural_network")
+        print("    python standalone_trainer.py")
+        print("")
+        print(" 3. Wait for training to complete")
+        print(" 4. Weights auto-save to weights/best.npy")
+        print(" 5. Click 'Reload Weights' in Blender to use them")
+        print("")
+        print("="*70 + "\n")
 
-        from .neural_network import train_network
-
-        try:
-            report = train_network(
-                _neural_data['dataset'],
-                epochs=self.epochs,
-                reset=False,
-            )
-
-            _neural_data['last_report'] = report
-
-            self.report({'INFO'},
-                f"Training complete. FK loss: {report.final_fk_loss:.4f} (best: {report.best_fk_loss:.4f})")
-            return {'FINISHED'}
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.report({'ERROR'}, f"Training failed: {e}")
-            return {'CANCELLED'}
+        self.report({'INFO'}, "See System Console for training instructions (Window > Toggle System Console)")
+        return {'FINISHED'}
 
 
 class NEURAL_OT_Test(Operator):
@@ -561,17 +553,32 @@ class NEURAL_OT_Test(Operator):
     def execute(self, context):
         dataset = _neural_data['dataset']
         if dataset is None:
-            self.report({'ERROR'}, "Extract data first")
+            self.report({'ERROR'}, "Load data first (click 'Load Saved Data')")
             return {'CANCELLED'}
 
         from .neural_network import run_test_suite
+        from .neural_network.context import normalize_input
 
         try:
+            # Normalize inputs same as training!
+            train_inputs_norm = normalize_input(dataset['train_inputs'])
+            test_inputs_norm = normalize_input(dataset['test_inputs'])
+
+            # Get FK data for proper loss calculation
+            train_targets = dataset.get('train_effector_targets')
+            train_roots = dataset.get('train_root_positions')
+            test_targets = dataset.get('test_effector_targets')
+            test_roots = dataset.get('test_root_positions')
+
             report = run_test_suite(
-                dataset['train_inputs'],
+                train_inputs_norm,
                 dataset['train_outputs'],
-                dataset['test_inputs'],
+                test_inputs_norm,
                 dataset['test_outputs'],
+                train_targets,
+                train_roots,
+                test_targets,
+                test_roots,
             )
 
             if report.failed == 0:
@@ -585,6 +592,30 @@ class NEURAL_OT_Test(Operator):
             import traceback
             traceback.print_exc()
             self.report({'ERROR'}, f"Tests failed: {e}")
+            return {'CANCELLED'}
+
+
+class NEURAL_OT_ReloadWeights(Operator):
+    """Reload trained weights from disk (after standalone training)"""
+    bl_idname = "neural.reload_weights"
+    bl_label = "Reload Weights"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        from .neural_network import get_network
+        from .neural_network.config import BEST_WEIGHTS_PATH
+        import os
+
+        if not os.path.exists(BEST_WEIGHTS_PATH):
+            self.report({'ERROR'}, "No weights file found. Train first.")
+            return {'CANCELLED'}
+
+        net = get_network()
+        if net.load():
+            self.report({'INFO'}, f"Weights reloaded (best loss: {net.best_loss:.6f})")
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, "Failed to load weights")
             return {'CANCELLED'}
 
 
@@ -604,6 +635,134 @@ class NEURAL_OT_Reset(Operator):
         return {'FINISHED'}
 
 
+class NEURAL_OT_SaveData(Operator):
+    """Save training data to disk (persists across sessions)"""
+    bl_idname = "neural.save_data"
+    bl_label = "Save Training Data"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        if _neural_data['dataset'] is None:
+            self.report({'ERROR'}, "No data to save. Extract first.")
+            return {'CANCELLED'}
+
+        from .neural_network.config import DATA_DIR
+        import os
+        import numpy as np
+
+        os.makedirs(DATA_DIR, exist_ok=True)
+        path = os.path.join(DATA_DIR, "training_data.npz")
+
+        dataset = _neural_data['dataset']
+        np.savez_compressed(path, **dataset)
+
+        total = len(dataset.get('train_inputs', [])) + len(dataset.get('test_inputs', []))
+        self.report({'INFO'}, f"Saved {total} samples to {path}")
+        return {'FINISHED'}
+
+
+class NEURAL_OT_LoadData(Operator):
+    """Load training data from disk"""
+    bl_idname = "neural.load_data"
+    bl_label = "Load Training Data"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        from .neural_network.config import DATA_DIR
+        import os
+        import numpy as np
+
+        path = os.path.join(DATA_DIR, "training_data.npz")
+
+        if not os.path.exists(path):
+            self.report({'ERROR'}, f"No saved data at {path}")
+            return {'CANCELLED'}
+
+        try:
+            data = np.load(path, allow_pickle=True)
+            dataset = {key: data[key] for key in data.files}
+
+            _neural_data['dataset'] = dataset
+            train_count = len(dataset.get('train_inputs', []))
+            test_count = len(dataset.get('test_inputs', []))
+            _neural_data['samples_extracted'] = train_count + test_count
+
+            self.report({'INFO'}, f"Loaded {train_count} train + {test_count} test samples")
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Load failed: {e}")
+            return {'CANCELLED'}
+
+
+class NEURAL_OT_AppendData(Operator):
+    """Extract new animations and ADD to existing saved data"""
+    bl_idname = "neural.append_data"
+    bl_label = "Append New Data"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        scene = context.scene
+        armature = scene.target_armature
+
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
+
+        from .neural_network import AnimationDataExtractor
+        from .neural_network.config import DATA_DIR
+        import os
+        import numpy as np
+
+        # Load existing data if present
+        path = os.path.join(DATA_DIR, "training_data.npz")
+        existing_dataset = None
+        if os.path.exists(path):
+            try:
+                data = np.load(path, allow_pickle=True)
+                existing_dataset = {key: data[key] for key in data.files}
+            except:
+                pass
+
+        # Extract new data
+        try:
+            extractor = AnimationDataExtractor(armature)
+            new_count = extractor.extract_from_all_actions()
+
+            if new_count == 0:
+                self.report({'WARNING'}, "No new animation data extracted")
+                return {'CANCELLED'}
+
+            new_dataset = extractor.get_train_test_split(augment=True, augment_factor=2)
+
+            # Merge if existing
+            if existing_dataset is not None:
+                for key in new_dataset:
+                    if key in existing_dataset and len(existing_dataset[key]) > 0:
+                        new_dataset[key] = np.concatenate([
+                            existing_dataset[key],
+                            new_dataset[key]
+                        ], axis=0)
+
+            # Save merged
+            os.makedirs(DATA_DIR, exist_ok=True)
+            np.savez_compressed(path, **new_dataset)
+
+            # Update in-memory
+            _neural_data['dataset'] = new_dataset
+            total = len(new_dataset['train_inputs']) + len(new_dataset['test_inputs'])
+            _neural_data['samples_extracted'] = total
+
+            self.report({'INFO'}, f"Appended! Total: {total} samples")
+            return {'FINISHED'}
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Append failed: {e}")
+            return {'CANCELLED'}
+
+
 # =============================================================================
 # REGISTRATION
 # =============================================================================
@@ -620,14 +779,22 @@ def register():
     bpy.utils.register_class(NEURAL_OT_ExtractData)
     bpy.utils.register_class(NEURAL_OT_Train)
     bpy.utils.register_class(NEURAL_OT_Test)
+    bpy.utils.register_class(NEURAL_OT_ReloadWeights)
     bpy.utils.register_class(NEURAL_OT_Reset)
+    bpy.utils.register_class(NEURAL_OT_SaveData)
+    bpy.utils.register_class(NEURAL_OT_LoadData)
+    bpy.utils.register_class(NEURAL_OT_AppendData)
     bpy.types.Scene.anim2_test = bpy.props.PointerProperty(type=ANIM2_TestProperties)
 
 
 def unregister():
     del bpy.types.Scene.anim2_test
     # Neural IK operators
+    bpy.utils.unregister_class(NEURAL_OT_AppendData)
+    bpy.utils.unregister_class(NEURAL_OT_LoadData)
+    bpy.utils.unregister_class(NEURAL_OT_SaveData)
     bpy.utils.unregister_class(NEURAL_OT_Reset)
+    bpy.utils.unregister_class(NEURAL_OT_ReloadWeights)
     bpy.utils.unregister_class(NEURAL_OT_Test)
     bpy.utils.unregister_class(NEURAL_OT_Train)
     bpy.utils.unregister_class(NEURAL_OT_ExtractData)

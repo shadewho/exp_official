@@ -147,35 +147,35 @@ CONTACT_EFFECTORS = ["LeftFoot", "RightFoot"]  # Effectors that can be grounded
 # Used for soft penalty during training AND hard clamp after prediction.
 
 JOINT_LIMITS_DEG = {
-    # Core
-    "Hips":         (-20, 20, -30, 30, -15, 15),
-    "Spine":        (-30, 45, -20, 20, -20, 20),
-    "Spine1":       (-30, 45, -15, 15, -15, 15),
-    "Spine2":       (-20, 30, -15, 15, -15, 15),
+    # Core (Hips intentionally unclamped)
+    "Hips":         (-1e6, 1e6, -1e6, 1e6, -1e6, 1e6),
+    "Spine":        (-45, 45, -45, 45, -45, 45),
+    "Spine1":       (-30, 30, -30, 30, -30, 30),
+    "Spine2":       (-30, 30, -30, 30, -30, 30),
     # Neck/Head
-    "NeckLower":    (-30, 40, -45, 45, -30, 30),
-    "NeckUpper":    (-30, 40, -45, 45, -30, 30),
-    "Head":         (-40, 60, -70, 70, -30, 30),
+    "NeckLower":    (-45, 45, -45, 45, -30, 30),
+    "NeckUpper":    (-30, 30, -30, 30, -30, 30),
+    "Head":         (-45, 45, -60, 60, -30, 30),
     # Left Arm
-    "LeftShoulder": (-15, 15, -10, 30, -20, 20),
-    "LeftArm":      (-180, 60, -90, 90, -90, 90),
-    "LeftForeArm":  (0, 145, -5, 5, -90, 90),
-    "LeftHand":     (-70, 70, -20, 20, -40, 40),
+    "LeftShoulder": (-30, 30, -30, 30, -30, 30),
+    "LeftArm":      (-90, 90, -120, 120, -80, 140),
+    "LeftForeArm":  (0, 0, -170, 60, 0, 90),
+    "LeftHand":     (-90, 90, 0, 0, -60, 60),
     # Right Arm (mirrored)
-    "RightShoulder": (-15, 15, -30, 10, -20, 20),
-    "RightArm":      (-180, 60, -90, 90, -90, 90),
-    "RightForeArm":  (0, 145, -5, 5, -90, 90),
-    "RightHand":     (-70, 70, -20, 20, -40, 40),
+    "RightShoulder": (-30, 30, -30, 30, -30, 30),
+    "RightArm":      (-90, 90, -120, 120, -140, 80),
+    "RightForeArm":  (0, 0, -60, 170, -90, 0),
+    "RightHand":     (-90, 90, 0, 0, -60, 60),
     # Left Leg
-    "LeftThigh":    (-30, 120, -45, 45, -60, 60),
-    "LeftShin":     (0, 150, -5, 5, -5, 5),
-    "LeftFoot":     (-45, 45, -30, 30, -25, 25),
-    "LeftToeBase":  (-30, 60, -5, 5, -5, 5),
+    "LeftThigh":    (-90, 120, -40, 40, -20, 80),
+    "LeftShin":     (-150, 10, -20, 20, -15, 15),
+    "LeftFoot":     (-80, 45, -30, 30, -40, 40),
+    "LeftToeBase":  (-40, 40, 0, 0, 0, 0),
     # Right Leg (mirrored)
-    "RightThigh":   (-30, 120, -45, 45, -60, 60),
-    "RightShin":    (0, 150, -5, 5, -5, 5),
-    "RightFoot":    (-45, 45, -30, 30, -25, 25),
-    "RightToeBase": (-30, 60, -5, 5, -5, 5),
+    "RightThigh":   (-90, 120, -40, 40, -80, 20),
+    "RightShin":    (-150, 10, -20, 20, -15, 15),
+    "RightFoot":    (-80, 45, -30, 30, -40, 40),
+    "RightToeBase": (-40, 40, 0, 0, 0, 0),
 }
 
 # Convert to radians for network use
@@ -195,50 +195,66 @@ LIMITS_MIN = LIMITS_ARRAY[:, [0, 2, 4]]  # x_min, y_min, z_min
 LIMITS_MAX = LIMITS_ARRAY[:, [1, 3, 5]]  # x_max, y_max, z_max
 
 # =============================================================================
-# REST POSE DATA (from rig.md)
+# REST POSE DATA (from actual rig export)
 # =============================================================================
-# Bone positions and lengths in rest pose (T-pose)
+# Bone HEAD positions in rest pose (T-pose)
+# Updated from rig JSON export 2024-12
 
 REST_POSITIONS = {
-    "Hips":       (0.0, 0.056, 1.001),
-    "Spine":      (0.0, 0.056, 1.088),
-    "Spine1":     (0.0, 0.035, 1.194),
-    "Spine2":     (0.0, 0.021, 1.310),
-    "NeckLower":  (0.0, 0.025, 1.456),
-    "NeckUpper":  (0.0, 0.035, 1.536),
-    "Head":       (0.0, 0.047, 1.701),
-    "LeftShoulder":  (-0.069, 0.020, 1.431),
-    "LeftArm":       (-0.185, 0.020, 1.431),
-    "LeftForeArm":   (-0.450, 0.042, 1.432),
-    "LeftHand":      (-0.700, 0.044, 1.557),
-    "RightShoulder": (0.069, 0.021, 1.431),
-    "RightArm":      (0.185, 0.021, 1.431),
-    "RightForeArm":  (0.450, 0.043, 1.432),
-    "RightHand":     (0.700, 0.045, 1.557),
-    "LeftThigh":     (-0.110, 0.000, 0.945),
-    "LeftShin":      (-0.110, -0.008, 0.527),
-    "LeftFoot":      (-0.110, -0.016, 0.098),
-    "LeftToeBase":   (-0.110, 0.093, 0.016),
-    "RightThigh":    (0.110, 0.003, 0.945),
-    "RightShin":     (0.110, -0.003, 0.527),
-    "RightFoot":     (0.110, -0.010, 0.098),
-    "RightToeBase":  (0.110, 0.099, 0.016),
+    "Hips":          (-0.0, 0.046052, 1.014617),
+    "Spine":         (-0.0, 0.055555, 1.158783),
+    "Spine1":        (-0.0, 0.077256, 1.306403),
+    "Spine2":        (-0.0, 0.072666, 1.474343),
+    "NeckLower":     (-0.0, 0.047334, 1.62263),
+    "NeckUpper":     (-0.0, 0.054687, 1.660835),
+    "Head":          (-0.0, 0.060049, 1.702313),
+    "LeftShoulder":  (-0.044947, 0.047168, 1.605088),
+    "LeftArm":       (-0.13598, 0.046837, 1.570376),
+    "LeftForeArm":   (-0.41385, 0.043713, 1.557294),
+    "LeftHand":      (-0.700165, 0.044187, 1.556918),
+    "RightShoulder": (0.044947, 0.047499, 1.605089),
+    "RightArm":      (0.13598, 0.04783, 1.570375),
+    "RightForeArm":  (0.41385, 0.043693, 1.557292),
+    "RightHand":     (0.700165, 0.044595, 1.556919),
+    "LeftThigh":     (-0.096973, 0.046025, 1.018454),
+    "LeftShin":      (-0.105687, 0.053738, 0.571063),
+    "LeftFoot":      (-0.110153, -0.025574, 0.080267),
+    "LeftToeBase":   (-0.111254, 0.125178, 0.020779),
+    "RightThigh":    (0.096973, 0.046025, 1.018454),
+    "RightShin":     (0.105687, 0.053738, 0.571063),
+    "RightFoot":     (0.110153, -0.025574, 0.080267),
+    "RightToeBase":  (0.111254, 0.125178, 0.020779),
 }
 
-# Bone lengths (approximate, for FK)
-BONE_LENGTHS = {}
-for bone in CONTROLLED_BONES:
-    parent_name = None
-    for name, idx in BONE_PARENTS.items():
-        if name == bone and idx >= 0:
-            parent_name = INDEX_TO_BONE[idx]
-            break
-    if parent_name and parent_name in REST_POSITIONS and bone in REST_POSITIONS:
-        p1 = np.array(REST_POSITIONS[parent_name])
-        p2 = np.array(REST_POSITIONS[bone])
-        BONE_LENGTHS[bone] = float(np.linalg.norm(p2 - p1))
-    else:
-        BONE_LENGTHS[bone] = 0.1  # Default for root
+# Bone lengths from rig export
+BONE_LENGTHS_FROM_RIG = {
+    "Hips":          0.144478,
+    "Spine":         0.149207,
+    "Spine1":        0.168002,
+    "Spine2":        0.150445,
+    "NeckLower":     0.038906,
+    "NeckUpper":     0.041823,
+    "Head":          0.270918,
+    "LeftShoulder":  0.097427,
+    "LeftArm":       0.278195,
+    "LeftForeArm":   0.286315,
+    "LeftHand":      0.071973,
+    "RightShoulder": 0.097427,
+    "RightArm":      0.278209,
+    "RightForeArm":  0.286317,
+    "RightHand":     0.071865,
+    "LeftThigh":     0.447542,
+    "LeftShin":      0.497182,
+    "LeftFoot":      0.162069,
+    "LeftToeBase":   0.071482,
+    "RightThigh":    0.447542,
+    "RightShin":     0.497182,
+    "RightFoot":     0.162069,
+    "RightToeBase":  0.071482,
+}
+
+# Use accurate bone lengths from rig export
+BONE_LENGTHS = BONE_LENGTHS_FROM_RIG.copy()
 
 # As array
 LENGTHS_ARRAY = np.array([BONE_LENGTHS[b] for b in CONTROLLED_BONES], dtype=np.float32)
@@ -319,8 +335,8 @@ MAX_AXIS_ANGLE = 2.0  # Maximum rotation magnitude (radians) - ~115 degrees
 LEARNING_RATE = 0.001
 HIDDEN_SIZE_1 = 128
 HIDDEN_SIZE_2 = 96
-BATCH_SIZE = 32
-EPOCHS_DEFAULT = 100
+BATCH_SIZE = 16  # Smaller batch = faster FK gradient computation
+EPOCHS_DEFAULT = 300  # With early stopping, can set higher
 DROPOUT_RATE = 0.1  # Regularization
 
 # Training/test split
@@ -335,11 +351,14 @@ SMOOTHNESS_WEIGHT = 0.05    # Temporal consistency (if training sequences)
 SLIP_PENALTY_WEIGHT = 0.2   # Lateral foot slip penalty
 
 # =============================================================================
-# PATHS
+# PATHS - HARDCODED to Desktop (AppData version gets reinstalled)
 # =============================================================================
 
 import os
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-WEIGHTS_DIR = os.path.join(_THIS_DIR, "weights")
+
+# HARDCODED - always write to Desktop version, never AppData
+DATA_DIR = r"C:\Users\spenc\Desktop\Exploratory\addons\Exploratory\Exp_Game\animations\neural_network\training_data"
+
+# Weights (the learned knowledge)
+WEIGHTS_DIR = os.path.join(DATA_DIR, "weights")
 BEST_WEIGHTS_PATH = os.path.join(WEIGHTS_DIR, "best.npy")
-DATA_DIR = os.path.join(_THIS_DIR, "data")

@@ -686,6 +686,11 @@ class KinematicCharacterController:
         5. APPLY result immediately
         6. Write position to Blender
         """
+        # Skip KCC during ragdoll - let ragdoll system control the armature
+        from ..reactions.exp_ragdoll import has_active_ragdolls
+        if has_active_ragdolls():
+            return
+
         import time
         rot = self.obj.rotation_euler.copy()
 

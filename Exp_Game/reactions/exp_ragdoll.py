@@ -27,17 +27,18 @@ def _log(msg: str):
 # POSITION DROP CONSTANTS
 # =============================================================================
 
-DROP_GRAVITY = -12.0         # m/s^2 (softer than real gravity for game feel)
-DROP_DAMPING = 0.95          # Velocity damping on ground hit
-FLOOR_OFFSET = 0.1           # Keep character slightly above floor
-DROP_DURATION = 0.5          # How long the drop phase lasts (seconds)
+DROP_GRAVITY = -20.0         # m/s^2 (faster drop for collapse feel)
+DROP_DAMPING = 0.3           # Low bounce - collapse doesn't bounce much
+FLOOR_OFFSET = 0.05          # Minimal offset
+DROP_DURATION = 1.5          # Let it run longer for full collapse
 
 
 # =============================================================================
 # ROLE DETECTION (RIG AGNOSTIC)
 # =============================================================================
 
-CORE_KEYWORDS = ["spine", "hip", "pelvis", "torso", "chest", "root"]
+# Role detection keywords - NO special control bones, everything gets physics
+CORE_KEYWORDS = ["spine", "pelvis", "torso", "chest", "root", "hips"]
 HEAD_KEYWORDS = ["head", "neck", "skull"]
 HAND_KEYWORDS = ["hand", "finger", "thumb", "index", "middle", "ring", "pinky",
                  "foot", "toe", "ankle"]
@@ -192,6 +193,7 @@ def execute_ragdoll_reaction(r):
 
     for bone in armature.pose.bones:
         bone_name = bone.name
+
         depth = _get_bone_depth(bone)
         role = _detect_bone_role(bone_name, depth)
         is_ground = _is_ground_bone(bone_name)
@@ -297,6 +299,7 @@ def _update_position_drop(instance: RagdollInstance, dt: float):
     elapsed = get_game_time() - instance.start_time
     if elapsed > DROP_DURATION:
         instance.drop_active = False
+        _log(f"DROP ended (timeout) z={armature.location.z:.3f}")
         return
 
     try:
@@ -314,11 +317,13 @@ def _update_position_drop(instance: RagdollInstance, dt: float):
     if new_z <= instance.ground_z:
         new_z = instance.ground_z
         instance.drop_velocity *= -DROP_DAMPING  # Bounce with damping
+        _log(f"DROP hit_ground z={new_z:.3f} vel={instance.drop_velocity:.2f}")
 
         # Stop bouncing if velocity is small
         if abs(instance.drop_velocity) < 0.5:
             instance.drop_velocity = 0.0
             instance.drop_active = False
+            _log(f"DROP stopped (settled)")
 
     # Apply to armature
     armature.location.z = new_z

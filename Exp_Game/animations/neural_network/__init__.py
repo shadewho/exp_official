@@ -1,28 +1,32 @@
 # Exp_Game/animations/neural_network/__init__.py
 """
-Neural Network IK System - Environment-Aware Version
+Neural Network IK System
 
 A learning-based full-body IK solver that:
-- Trains on your animations with task-aligned losses
+- Trains on your animations (OUTSIDE Blender for speed)
 - Uses FK loss to actually reach target positions
 - Respects environment context (ground, contacts)
 - Generalizes to novel poses
 
-Structure:
-    config.py       - Rig configuration, bone lists, joint limits
-    context.py      - Environment context extraction
-    forward_kinematics.py - FK computation for loss calculation
-    network.py      - Neural network architecture
-    data.py         - Extract training data from animations
-    trainer.py      - Training loop with FK/pose/contact losses
-    tests.py        - Test suite proving generalization
-    runtime.py      - Runtime integration with IK refinement
+ARCHITECTURE SEPARATION:
 
-Usage:
-    1. Extract data from animations (data.py)
-    2. Train network with FK loss (trainer.py)
-    3. Run test suite (tests.py) - proves learning
-    4. Use in gameplay via runtime.py
+    BLENDER (requires bpy):
+        - data.py         Extract training data from animations
+        - runtime.py      Apply poses during gameplay
+
+    STANDALONE (pure NumPy, runs outside Blender):
+        - standalone_trainer.py   Training loop (run from terminal)
+        - forward_kinematics.py   FK math for loss computation
+        - network.py              Network architecture
+
+    SHARED:
+        - config.py       Rig data, hyperparameters, paths
+        - context.py      Input normalization
+
+WORKFLOW:
+    1. In Blender: Extract data → Save to disk
+    2. In Terminal: python standalone_trainer.py
+    3. In Blender: Reload weights → Use in gameplay
 """
 
 # Config
@@ -38,25 +42,24 @@ from .config import (
     TASK_TYPES,
 )
 
-# Network
+# Network (used by both training and runtime)
 from .network import (
     FullBodyIKNetwork,
     get_network,
     reset_network,
 )
 
-# Data extraction
+# Data extraction (requires bpy - Blender only)
 from .data import (
     AnimationDataExtractor,
     get_extractor,
     extract_all,
 )
 
-# Training
+# Training data structures (actual training in standalone_trainer.py)
 from .trainer import (
-    Trainer,
     TrainingReport,
-    train_network,
+    TrainingMetrics,
 )
 
 # Tests
@@ -66,7 +69,7 @@ from .tests import (
     run_test_suite,
 )
 
-# Forward kinematics
+# Forward kinematics (pure NumPy)
 from .forward_kinematics import (
     forward_kinematics,
     forward_kinematics_batch,
@@ -74,7 +77,7 @@ from .forward_kinematics import (
     compute_contact_loss,
 )
 
-# Context
+# Context (pure NumPy)
 from .context import (
     ContextExtractor,
     build_input_from_targets,
@@ -83,7 +86,7 @@ from .context import (
     denormalize_input,
 )
 
-# Runtime
+# Runtime (requires bpy - Blender only)
 from .runtime import (
     NeuralIKSolver,
     IKResult,
