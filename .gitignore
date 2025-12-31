@@ -3,3 +3,4 @@ combine.py
 __pycache__/
 *.pyc
 .vscode
+Exp_Game/animations/neural_network/training_data/*
