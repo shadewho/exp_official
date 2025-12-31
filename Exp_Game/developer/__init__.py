@@ -8,6 +8,7 @@ for addon developers and advanced users.
 
 from .dev_properties import register_properties, unregister_properties
 from .dev_panel import DEV_PT_DeveloperTools
+from . import ragdoll_test
 
 __all__ = [
     'register_properties',
@@ -18,9 +19,9 @@ __all__ = [
 
 def register():
     """Register developer module components."""
-    pass
+    ragdoll_test.register()
 
 
 def unregister():
     """Unregister developer module components."""
-    pass
+    ragdoll_test.unregister()

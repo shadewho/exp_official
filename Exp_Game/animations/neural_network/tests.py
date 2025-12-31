@@ -12,7 +12,9 @@ from dataclasses import dataclass
 
 from .network import FullBodyIKNetwork, get_network
 from .config import INPUT_SIZE, OUTPUT_SIZE, NUM_BONES, LIMITS_MIN, LIMITS_MAX
-from .forward_kinematics import compute_fk_loss, clamp_rotations
+from .forward_kinematics import (
+    compute_fk_loss, clamp_rotations, compute_fk_loss_with_orientation,
+)
 
 
 @dataclass
@@ -86,6 +88,12 @@ class NeuralIKTestSuite:
         train_root_positions: np.ndarray = None,
         test_effector_targets: np.ndarray = None,
         test_root_positions: np.ndarray = None,
+        train_effector_rotations: np.ndarray = None,
+        test_effector_rotations: np.ndarray = None,
+        train_root_forwards: np.ndarray = None,
+        train_root_ups: np.ndarray = None,
+        test_root_forwards: np.ndarray = None,
+        test_root_ups: np.ndarray = None,
     ) -> TestSuiteReport:
         """
         Run all tests.
@@ -99,26 +107,38 @@ class NeuralIKTestSuite:
             train_root_positions: Shape (n, 3) - root positions
             test_effector_targets: Shape (n, 5, 3) - effector target positions
             test_root_positions: Shape (n, 3) - root positions
+            train_effector_rotations: Shape (n, 5, 3) - effector target rotations (Euler)
+            test_effector_rotations: Shape (n, 5, 3) - effector target rotations (Euler)
+            train_root_forwards/ups: Shape (n, 3) - root orientation vectors
+            test_root_forwards/ups: Shape (n, 3) - root orientation vectors
 
         Returns:
             TestSuiteReport with all results
         """
         results = []
 
-        # Test 1: Holdout (FK loss)
+        # Test 1: Holdout Position (FK loss)
         results.append(self.test_holdout_fk(
-            test_inputs, test_effector_targets, test_root_positions
+            test_inputs, test_effector_targets, test_root_positions,
+            test_root_forwards, test_root_ups
         ))
 
-        # Test 2: Interpolation (FK loss)
+        # Test 2: Holdout Orientation (geodesic loss)
+        results.append(self.test_holdout_orientation(
+            test_inputs, test_effector_targets, test_effector_rotations,
+            test_root_positions, test_root_forwards, test_root_ups
+        ))
+
+        # Test 3: Interpolation (FK loss)
         results.append(self.test_interpolation_fk(
-            train_inputs, train_effector_targets, train_root_positions
+            train_inputs, train_effector_targets, train_root_positions,
+            train_root_forwards, train_root_ups
         ))
 
-        # Test 3: Consistency
+        # Test 4: Consistency
         results.append(self.test_consistency(test_inputs))
 
-        # Test 4: Noise robustness
+        # Test 5: Noise robustness
         results.append(self.test_noise_robustness(test_inputs))
 
         passed = sum(1 for r in results if r.passed)
@@ -136,19 +156,21 @@ class NeuralIKTestSuite:
         test_inputs: np.ndarray,
         test_effector_targets: np.ndarray,
         test_root_positions: np.ndarray,
-        threshold: float = 0.25,
+        test_root_forwards: np.ndarray = None,
+        test_root_ups: np.ndarray = None,
+        threshold: float = 0.15,
     ) -> TestResult:
         """
-        Holdout Test (FK): Can the network reach targets it never saw?
+        Holdout Test (FK Position): Can the network reach targets it never saw?
 
         Uses FK loss (actual end effector position error in meters).
         This is the same metric used during training.
 
-        Threshold: 0.25m average error is reasonable for animation.
+        Threshold: 0.15m average error (15cm) is reasonable for animation.
         """
         if test_inputs is None or len(test_inputs) == 0:
             return TestResult(
-                name="Holdout Test (FK)",
+                name="Holdout Position Test",
                 passed=False,
                 score=0.0,
                 threshold=threshold,
@@ -157,12 +179,28 @@ class NeuralIKTestSuite:
 
         if test_effector_targets is None or test_root_positions is None:
             return TestResult(
-                name="Holdout Test (FK)",
+                name="Holdout Position Test",
                 passed=False,
                 score=0.0,
                 threshold=threshold,
                 message="Missing effector targets or root positions",
             )
+
+        # Build root rotation matrices if available
+        root_rotations = None
+        if test_root_forwards is not None and test_root_ups is not None:
+            from .forward_kinematics import euler_to_quaternion  # For building rotation
+            # Build rotation matrix from forward/up
+            batch_size = len(test_root_forwards)
+            forwards = test_root_forwards / (np.linalg.norm(test_root_forwards, axis=1, keepdims=True) + 1e-8)
+            ups = test_root_ups / (np.linalg.norm(test_root_ups, axis=1, keepdims=True) + 1e-8)
+            rights = np.cross(forwards, ups)
+            rights = rights / (np.linalg.norm(rights, axis=1, keepdims=True) + 1e-8)
+            ups = np.cross(rights, forwards)
+            root_rotations = np.zeros((batch_size, 3, 3), dtype=np.float32)
+            root_rotations[:, :, 0] = rights
+            root_rotations[:, :, 1] = forwards
+            root_rotations[:, :, 2] = ups
 
         # Forward pass
         predicted = self.network.forward(test_inputs)
@@ -172,18 +210,93 @@ class NeuralIKTestSuite:
         pred_c, _ = clamp_rotations(pred_r, LIMITS_MIN, LIMITS_MAX)
         pred_cf = pred_c.reshape(-1, OUTPUT_SIZE)
 
-        # Compute FK loss (same as training)
+        # Compute FK loss with root rotation
         targets = test_effector_targets.reshape(-1, 5, 3)
-        fk_loss, _ = compute_fk_loss(pred_cf, targets, test_root_positions)
+        fk_loss, _ = compute_fk_loss(pred_cf, targets, test_root_positions, root_rotations)
 
         passed = fk_loss < threshold
+        rmse_cm = np.sqrt(fk_loss) * 100
 
         return TestResult(
-            name="Holdout Test (FK)",
+            name="Holdout Position Test",
             passed=passed,
             score=fk_loss,
             threshold=threshold,
-            message=f"FK loss on unseen data: {fk_loss:.4f}m avg error",
+            message=f"Position RMSE: {rmse_cm:.1f}cm (threshold: {np.sqrt(threshold)*100:.0f}cm)",
+        )
+
+    def test_holdout_orientation(
+        self,
+        test_inputs: np.ndarray,
+        test_effector_targets: np.ndarray,
+        test_effector_rotations: np.ndarray,
+        test_root_positions: np.ndarray,
+        test_root_forwards: np.ndarray = None,
+        test_root_ups: np.ndarray = None,
+        threshold: float = 0.5,
+    ) -> TestResult:
+        """
+        Holdout Test (Orientation): Are effectors facing the right direction?
+
+        Uses geodesic distance on SO(3) - proper rotation distance.
+        Threshold: 0.5 rad² (~40° RMSE) is reasonable initial target.
+        """
+        if test_inputs is None or len(test_inputs) == 0:
+            return TestResult(
+                name="Holdout Orientation Test",
+                passed=False,
+                score=0.0,
+                threshold=threshold,
+                message="No test data available",
+            )
+
+        if test_effector_rotations is None:
+            return TestResult(
+                name="Holdout Orientation Test",
+                passed=False,
+                score=0.0,
+                threshold=threshold,
+                message="Missing effector rotation targets (re-extract data)",
+            )
+
+        # Build root rotation matrices if available
+        root_rotations = None
+        if test_root_forwards is not None and test_root_ups is not None:
+            batch_size = len(test_root_forwards)
+            forwards = test_root_forwards / (np.linalg.norm(test_root_forwards, axis=1, keepdims=True) + 1e-8)
+            ups = test_root_ups / (np.linalg.norm(test_root_ups, axis=1, keepdims=True) + 1e-8)
+            rights = np.cross(forwards, ups)
+            rights = rights / (np.linalg.norm(rights, axis=1, keepdims=True) + 1e-8)
+            ups = np.cross(rights, forwards)
+            root_rotations = np.zeros((batch_size, 3, 3), dtype=np.float32)
+            root_rotations[:, :, 0] = rights
+            root_rotations[:, :, 1] = forwards
+            root_rotations[:, :, 2] = ups
+
+        # Forward pass
+        predicted = self.network.forward(test_inputs)
+
+        # Clamp to joint limits
+        pred_r = predicted.reshape(-1, NUM_BONES, 3)
+        pred_c, _ = clamp_rotations(pred_r, LIMITS_MIN, LIMITS_MAX)
+        pred_cf = pred_c.reshape(-1, OUTPUT_SIZE)
+
+        # Compute orientation loss
+        targets = test_effector_targets.reshape(-1, 5, 3)
+        target_rots = test_effector_rotations.reshape(-1, 5, 3)
+        _, orient_loss, _, orient_errors = compute_fk_loss_with_orientation(
+            pred_cf, targets, target_rots, test_root_positions, root_rotations
+        )
+
+        passed = orient_loss < threshold
+        rmse_deg = np.sqrt(orient_loss) * 180 / np.pi
+
+        return TestResult(
+            name="Holdout Orientation Test",
+            passed=passed,
+            score=orient_loss,
+            threshold=threshold,
+            message=f"Orientation RMSE: {rmse_deg:.1f}° (threshold: {np.sqrt(threshold)*180/np.pi:.0f}°)",
         )
 
     def test_interpolation_fk(
@@ -191,7 +304,9 @@ class NeuralIKTestSuite:
         inputs: np.ndarray,
         effector_targets: np.ndarray,
         root_positions: np.ndarray,
-        threshold: float = 0.30,
+        root_forwards: np.ndarray = None,
+        root_ups: np.ndarray = None,
+        threshold: float = 0.20,
     ) -> TestResult:
         """
         Interpolation Test (FK): Can it handle poses BETWEEN training examples?
@@ -201,7 +316,7 @@ class NeuralIKTestSuite:
         """
         if inputs is None or len(inputs) < 10:
             return TestResult(
-                name="Interpolation Test (FK)",
+                name="Interpolation Test",
                 passed=False,
                 score=0.0,
                 threshold=threshold,
@@ -210,7 +325,7 @@ class NeuralIKTestSuite:
 
         if effector_targets is None or root_positions is None:
             return TestResult(
-                name="Interpolation Test (FK)",
+                name="Interpolation Test",
                 passed=False,
                 score=0.0,
                 threshold=threshold,
@@ -230,6 +345,21 @@ class NeuralIKTestSuite:
             interp_targets = effector_targets[idx1] * (1 - alpha) + effector_targets[idx2] * alpha
             interp_root = root_positions[idx1] * (1 - alpha) + root_positions[idx2] * alpha
 
+            # Interpolate root rotation if available
+            root_rot = None
+            if root_forwards is not None and root_ups is not None:
+                interp_fwd = root_forwards[idx1] * (1 - alpha) + root_forwards[idx2] * alpha
+                interp_up = root_ups[idx1] * (1 - alpha) + root_ups[idx2] * alpha
+                interp_fwd = interp_fwd / (np.linalg.norm(interp_fwd) + 1e-8)
+                interp_up = interp_up / (np.linalg.norm(interp_up) + 1e-8)
+                interp_right = np.cross(interp_fwd, interp_up)
+                interp_right = interp_right / (np.linalg.norm(interp_right) + 1e-8)
+                interp_up = np.cross(interp_right, interp_fwd)
+                root_rot = np.zeros((1, 3, 3), dtype=np.float32)
+                root_rot[0, :, 0] = interp_right
+                root_rot[0, :, 1] = interp_fwd
+                root_rot[0, :, 2] = interp_up
+
             # Predict
             predicted = self.network.forward(interp_input.reshape(1, -1))
 
@@ -239,18 +369,19 @@ class NeuralIKTestSuite:
             pred_cf = pred_c.reshape(-1, OUTPUT_SIZE)
 
             # FK error
-            fk_loss, _ = compute_fk_loss(pred_cf, interp_targets.reshape(1, 5, 3), interp_root.reshape(1, 3))
+            fk_loss, _ = compute_fk_loss(pred_cf, interp_targets.reshape(1, 5, 3), interp_root.reshape(1, 3), root_rot)
             errors.append(fk_loss)
 
         avg_error = float(np.mean(errors))
         passed = avg_error < threshold
+        rmse_cm = np.sqrt(avg_error) * 100
 
         return TestResult(
-            name="Interpolation Test (FK)",
+            name="Interpolation Test",
             passed=passed,
             score=avg_error,
             threshold=threshold,
-            message=f"Avg interpolation FK error: {avg_error:.4f}m",
+            message=f"Interpolation RMSE: {rmse_cm:.1f}cm (threshold: {np.sqrt(threshold)*100:.0f}cm)",
         )
 
     def test_holdout(
@@ -433,6 +564,12 @@ def run_test_suite(
     train_root_positions: np.ndarray = None,
     test_effector_targets: np.ndarray = None,
     test_root_positions: np.ndarray = None,
+    train_effector_rotations: np.ndarray = None,
+    test_effector_rotations: np.ndarray = None,
+    train_root_forwards: np.ndarray = None,
+    train_root_ups: np.ndarray = None,
+    test_root_forwards: np.ndarray = None,
+    test_root_ups: np.ndarray = None,
 ) -> TestSuiteReport:
     """
     Run the full test suite on the global network.
@@ -446,6 +583,8 @@ def run_test_suite(
         train_root_positions: Shape (n, 3) - root positions for FK test
         test_effector_targets: Shape (n, 5, 3) - target positions for FK test
         test_root_positions: Shape (n, 3) - root positions for FK test
+        train/test_effector_rotations: Shape (n, 5, 3) - target Euler rotations
+        train/test_root_forwards/ups: Shape (n, 3) - root orientation vectors
 
     Returns:
         TestSuiteReport
@@ -456,6 +595,9 @@ def run_test_suite(
         test_inputs, test_outputs,
         train_effector_targets, train_root_positions,
         test_effector_targets, test_root_positions,
+        train_effector_rotations, test_effector_rotations,
+        train_root_forwards, train_root_ups,
+        test_root_forwards, test_root_ups,
     )
     print(report.summary())
     return report

@@ -74,6 +74,7 @@ def copy_addon_files():
         '.vscode',
         '.idea',
         '.DS_Store',  # macOS
+        '.venv312',   # Python 3.12 venv for PyTorch training
     }
 
     # File extensions to ignore

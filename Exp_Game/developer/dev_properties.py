@@ -646,6 +646,33 @@ def register_properties():
     )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # RAGDOLL STANDALONE TEST
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_section_ragdoll_test = bpy.props.BoolProperty(
+        name="Ragdoll Test",
+        default=False
+    )
+
+    bpy.types.Scene.dev_ragdoll_test_duration = bpy.props.FloatProperty(
+        name="Duration",
+        description="How long to run the ragdoll test (seconds)",
+        default=3.0,
+        min=0.5,
+        max=30.0,
+        unit='TIME'
+    )
+
+    bpy.types.Scene.dev_ragdoll_test_include_drop = bpy.props.BoolProperty(
+        name="Include Position Drop",
+        description=(
+            "Apply gravity to armature position (makes it fall to ground).\n"
+            "Disable to test bone physics only without position change."
+        ),
+        default=True
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
     # POSE LIBRARY SYSTEM
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -1084,6 +1111,11 @@ def unregister_properties():
         'dev_debug_transforms',
         'dev_debug_tracking',
         'dev_debug_ragdoll',
+
+        # Ragdoll standalone test
+        'dev_section_ragdoll_test',
+        'dev_ragdoll_test_duration',
+        'dev_ragdoll_test_include_drop',
 
         # Pose Library
         'dev_debug_poses',

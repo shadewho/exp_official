@@ -73,7 +73,7 @@ In Blender:
 In Terminal:
   cd C:\Users\spenc\Desktop\Exploratory\addons\Exploratory\
      Exp_Game\animations\neural_network
-  python standalone_trainer.py
+  python torch_trainer.py
 
 Back in Blender:
   3. Click "Load Saved Data"
@@ -92,12 +92,11 @@ Back in Blender:
 
     BLENDER (requires bpy):
     ├── data.py              Extract training data from animations
-    ├── runtime.py           Apply poses during gameplay
     └── test_panel.py        UI operators
 
-    STANDALONE (pure NumPy, runs in terminal):
-    ├── standalone_trainer.py    Training loop with Adam optimizer
-    ├── forward_kinematics.py    FK math for loss computation
+    STANDALONE (PyTorch GPU, runs in terminal):
+    ├── torch_trainer.py         GPU training with autograd
+    ├── forward_kinematics.py    FK math (NumPy fallback)
     └── network.py               Network architecture (shared)
 
     SHARED (no bpy):
@@ -107,9 +106,9 @@ Back in Blender:
 ```
 
 **WHY SEPARATE?**
-- Training is computationally expensive (FK gradient = slow)
+- Training benefits from GPU acceleration (PyTorch + CUDA)
 - Running in Blender freezes the UI
-- Standalone Python can use optimized NumPy/BLAS
+- Autograd eliminates slow finite-difference gradients
 - You can use Blender while training runs in terminal
 
 ---
@@ -120,11 +119,11 @@ Back in Blender:
 Desktop (permanent - survives addon reinstalls):
   C:\Users\spenc\Desktop\Exploratory\addons\Exploratory\
   └── Exp_Game/animations/neural_network/
-      ├── standalone_trainer.py    ← Run this in terminal
+      ├── torch_trainer.py         ← Run this in terminal (GPU)
       ├── training_data/
-      │   ├── training_data.npz    ← Your animation samples (552 total)
+      │   ├── training_data.npz    ← Your animation samples
       │   └── weights/
-      │       └── best.npy         ← Trained network (loss: 0.2149)
+      │       └── best.npy         ← Trained network
       └── *.py                     ← Code files
 
 AppData (temporary - gets replaced on reinstall):
@@ -148,25 +147,28 @@ AppData (temporary - gets replaced on reinstall):
 
 ---
 
-## STANDALONE TRAINER
+## PYTORCH GPU TRAINER
 
-Located at: `neural_network/standalone_trainer.py`
+Located at: `neural_network/torch_trainer.py`
 
 **Run from terminal:**
 ```
 cd C:\Users\spenc\Desktop\Exploratory\addons\Exploratory\Exp_Game\animations\neural_network
-python standalone_trainer.py
+python torch_trainer.py
 ```
 
+**Prerequisites:**
+- PyTorch with CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
+- Verify: `python -c "import torch; print(torch.cuda.is_available())"`
+
 **Features:**
-- Adam optimizer (lr=0.001, β1=0.9, β2=0.999)
-- Batch size 128 for speed
-- FK gradient every 16 batches
-- Contact gradient every 8 batches
-- FK gradient disabled once loss < 0.02
-- Contact flags inferred from foot Z positions (< 0.1m = grounded)
-- Early stopping (40 epochs without improvement)
-- CPU monitoring with psutil (optional)
+- GPU-accelerated training (autograd - no finite differences)
+- Adam optimizer (lr=0.001)
+- Batch size 512 (GPU saturation)
+- Mixed precision (AMP) for speed
+- Rodrigues axis-angle → rotation matrix
+- Quaternion geodesic orientation loss
+- Early stopping (50 epochs without improvement)
 
 **Last Training Output:**
 ```

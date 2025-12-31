@@ -12,21 +12,15 @@ import time
 import math
 
 # =============================================================================
-# PHYSICS CONSTANTS
+# PHYSICS CONSTANTS - UNIFORM FOR ALL BONES
 # =============================================================================
 
 WORLD_GRAVITY = (0.0, 0.0, -9.8)
-GRAVITY_STRENGTH = 8.0
+GRAVITY_STRENGTH = 12.0    # How strongly bones respond to gravity
 
-# Per-role physics: (damping, limit_radians)
-# damping: velocity decay per frame (lower = faster settle)
-# limit: max rotation from rest pose
-ROLE_PHYSICS = {
-    "core": (0.90, 0.8),    # Spine/chest/hips - fairly stable
-    "limb": (0.92, 2.0),    # Arms/legs - loose
-    "head": (0.90, 1.0),    # Head/neck
-    "hand": (0.94, 2.2),    # Hands/feet/fingers - very loose
-}
+# Same physics for ALL bones - no role detection
+BONE_DAMPING = 0.85        # Velocity decay (lower = faster movement)
+BONE_LIMIT = 2.5           # Max rotation in radians (~143 degrees)
 
 
 # =============================================================================
@@ -106,10 +100,6 @@ def handle_ragdoll_update_batch(job_data: dict, cached_grid, cached_dynamic_mesh
         bone_count = 0
         for bone_name, bdata in bone_data.items():
             rest_matrix = bdata.get("rest_matrix")
-            role = bdata.get("role", "limb")
-
-            # Get per-role physics
-            damping, limit = ROLE_PHYSICS.get(role, ROLE_PHYSICS["limb"])
 
             # Get current physics state
             bp = bone_physics.get(bone_name, {"rot": (0.0, 0.0, 0.0), "ang_vel": (0.0, 0.0, 0.0)})
@@ -144,13 +134,13 @@ def handle_ragdoll_update_batch(job_data: dict, cached_grid, cached_dynamic_mesh
             ang_vel[0] += torque_x * dt
             ang_vel[2] += torque_z * dt
 
-            # Damping
-            ang_vel[0] *= damping
-            ang_vel[1] *= damping
-            ang_vel[2] *= damping
+            # Damping - same for ALL bones
+            ang_vel[0] *= BONE_DAMPING
+            ang_vel[1] *= BONE_DAMPING
+            ang_vel[2] *= BONE_DAMPING
 
             # Clamp velocity
-            max_vel = 10.0
+            max_vel = 15.0
             ang_vel[0] = clamp(ang_vel[0], -max_vel, max_vel)
             ang_vel[1] = clamp(ang_vel[1], -max_vel, max_vel)
             ang_vel[2] = clamp(ang_vel[2], -max_vel, max_vel)
@@ -160,10 +150,10 @@ def handle_ragdoll_update_batch(job_data: dict, cached_grid, cached_dynamic_mesh
             rot[1] += ang_vel[1] * dt
             rot[2] += ang_vel[2] * dt
 
-            # Clamp to limits
-            rot[0] = clamp(rot[0], -limit, limit)
-            rot[1] = clamp(rot[1], -limit * 0.4, limit * 0.4)  # Twist limited
-            rot[2] = clamp(rot[2], -limit, limit)
+            # Clamp to limits - same for ALL bones
+            rot[0] = clamp(rot[0], -BONE_LIMIT, BONE_LIMIT)
+            rot[1] = clamp(rot[1], -BONE_LIMIT, BONE_LIMIT)
+            rot[2] = clamp(rot[2], -BONE_LIMIT, BONE_LIMIT)
 
             new_bone_physics[bone_name] = {
                 "rot": tuple(rot),
@@ -171,7 +161,7 @@ def handle_ragdoll_update_batch(job_data: dict, cached_grid, cached_dynamic_mesh
             }
 
             if bone_count < 4:
-                logs.append(("RAGDOLL", f"BONE{bone_count}:{bone_name} role={role} T=({torque_x:.1f},{torque_z:.1f}) R=({rot[0]:.2f},{rot[1]:.2f},{rot[2]:.2f})"))
+                logs.append(("RAGDOLL", f"BONE{bone_count}:{bone_name} T=({torque_x:.1f},{torque_z:.1f}) R=({rot[0]:.2f},{rot[1]:.2f},{rot[2]:.2f})"))
                 bone_count += 1
 
         new_time = time_remaining - dt

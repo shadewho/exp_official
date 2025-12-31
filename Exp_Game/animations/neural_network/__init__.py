@@ -12,21 +12,22 @@ ARCHITECTURE SEPARATION:
 
     BLENDER (requires bpy):
         - data.py         Extract training data from animations
-        - runtime.py      Apply poses during gameplay
+        - test_panel.py   UI for testing/training
 
-    STANDALONE (pure NumPy, runs outside Blender):
-        - standalone_trainer.py   Training loop (run from terminal)
-        - forward_kinematics.py   FK math for loss computation
+    STANDALONE (PyTorch GPU, runs outside Blender):
+        - torch_trainer.py        GPU training with autograd (run from terminal)
+        - forward_kinematics.py   FK math (NumPy fallback)
         - network.py              Network architecture
 
     SHARED:
         - config.py       Rig data, hyperparameters, paths
         - context.py      Input normalization
+        - tests.py        Test suite
 
 WORKFLOW:
     1. In Blender: Extract data → Save to disk
-    2. In Terminal: python standalone_trainer.py
-    3. In Blender: Reload weights → Use in gameplay
+    2. In Terminal: python torch_trainer.py
+    3. In Blender: Reload weights → Run tests
 """
 
 # Config
@@ -56,12 +57,6 @@ from .data import (
     extract_all,
 )
 
-# Training data structures (actual training in standalone_trainer.py)
-from .trainer import (
-    TrainingReport,
-    TrainingMetrics,
-)
-
 # Tests
 from .tests import (
     NeuralIKTestSuite,
@@ -84,14 +79,4 @@ from .context import (
     augment_input,
     normalize_input,
     denormalize_input,
-)
-
-# Runtime (requires bpy - Blender only)
-from .runtime import (
-    NeuralIKSolver,
-    IKResult,
-    get_solver,
-    solve_ik,
-    solve_from_full_body_target,
-    rotations_to_bone_dict,
 )

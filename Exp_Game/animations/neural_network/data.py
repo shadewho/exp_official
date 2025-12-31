@@ -217,16 +217,25 @@ class AnimationDataExtractor:
             return None
 
         # =====================================================================
-        # EFFECTOR TARGETS: World positions for FK loss (15 dims)
+        # EFFECTOR TARGETS: World positions AND rotations for FK loss
+        # Positions: 15 dims (5 effectors × 3)
+        # Rotations: 15 dims (5 effectors × 3 Euler XYZ)
         # =====================================================================
         effector_targets = []
+        effector_rotations = []
         for effector_name in END_EFFECTORS:
             bone = pose_bones.get(effector_name)
             if bone is None:
                 effector_targets.extend([0.0, 0.0, 0.0])
+                effector_rotations.extend([0.0, 0.0, 0.0])
             else:
+                # World position
                 world_pos = arm_matrix @ bone.head
                 effector_targets.extend([world_pos.x, world_pos.y, world_pos.z])
+                # World rotation (Euler XYZ)
+                bone_world_matrix = arm_matrix @ bone.matrix
+                world_rot = bone_world_matrix.to_euler('XYZ')
+                effector_rotations.extend([world_rot.x, world_rot.y, world_rot.z])
 
         # =====================================================================
         # ROOT INFO: For FK computation
@@ -261,6 +270,7 @@ class AnimationDataExtractor:
             'input': np.array(input_data, dtype=np.float32),
             'output': np.array(output_data, dtype=np.float32),
             'effector_targets': np.array(effector_targets, dtype=np.float32),
+            'effector_rotations': np.array(effector_rotations, dtype=np.float32),
             'root_position': np.array([root_world_pos.x, root_world_pos.y, root_world_pos.z], dtype=np.float32),
             'root_forward': np.array([root_forward.x, root_forward.y, root_forward.z], dtype=np.float32),
             'root_up': np.array([root_up.x, root_up.y, root_up.z], dtype=np.float32),
@@ -279,7 +289,10 @@ class AnimationDataExtractor:
                 'inputs': (N, 50) - network inputs
                 'outputs': (N, 69) - bone rotations
                 'effector_targets': (N, 15) - effector world positions
+                'effector_rotations': (N, 15) - effector world rotations (Euler XYZ)
                 'root_positions': (N, 3) - root world positions
+                'root_forwards': (N, 3) - root forward direction (for FK)
+                'root_ups': (N, 3) - root up direction (for FK)
                 'ground_heights': (N, 2) - ground height per foot
                 'contact_flags': (N, 2) - contact state per foot
         """
@@ -288,7 +301,10 @@ class AnimationDataExtractor:
                 'inputs': np.array([]),
                 'outputs': np.array([]),
                 'effector_targets': np.array([]),
+                'effector_rotations': np.array([]),
                 'root_positions': np.array([]),
+                'root_forwards': np.array([]),
+                'root_ups': np.array([]),
                 'ground_heights': np.array([]),
                 'contact_flags': np.array([]),
             }
@@ -297,7 +313,10 @@ class AnimationDataExtractor:
             'inputs': np.stack([s['input'] for s in self.samples]),
             'outputs': np.stack([s['output'] for s in self.samples]),
             'effector_targets': np.stack([s['effector_targets'] for s in self.samples]),
+            'effector_rotations': np.stack([s['effector_rotations'] for s in self.samples]),
             'root_positions': np.stack([s['root_position'] for s in self.samples]),
+            'root_forwards': np.stack([s['root_forward'] for s in self.samples]),
+            'root_ups': np.stack([s['root_up'] for s in self.samples]),
             'ground_heights': np.stack([s['ground_heights'] for s in self.samples]),
             'contact_flags': np.stack([s['contact_flags'] for s in self.samples]),
         }
@@ -326,13 +345,19 @@ class AnimationDataExtractor:
                 'train_inputs': np.array([]),
                 'train_outputs': np.array([]),
                 'train_effector_targets': np.array([]),
+                'train_effector_rotations': np.array([]),
                 'train_root_positions': np.array([]),
+                'train_root_forwards': np.array([]),
+                'train_root_ups': np.array([]),
                 'train_ground_heights': np.array([]),
                 'train_contact_flags': np.array([]),
                 'test_inputs': np.array([]),
                 'test_outputs': np.array([]),
                 'test_effector_targets': np.array([]),
+                'test_effector_rotations': np.array([]),
                 'test_root_positions': np.array([]),
+                'test_root_forwards': np.array([]),
+                'test_root_ups': np.array([]),
                 'test_ground_heights': np.array([]),
                 'test_contact_flags': np.array([]),
             }
@@ -373,7 +398,8 @@ class AnimationDataExtractor:
             result['train_outputs'] = np.concatenate(augmented_outputs, axis=0)
 
             # Replicate other arrays to match
-            for key in ['train_effector_targets', 'train_root_positions',
+            for key in ['train_effector_targets', 'train_effector_rotations',
+                       'train_root_positions', 'train_root_forwards', 'train_root_ups',
                        'train_ground_heights', 'train_contact_flags']:
                 result[key] = np.tile(result[key], (augment_factor, 1))
 

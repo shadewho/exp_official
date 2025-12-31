@@ -34,62 +34,6 @@ DROP_DURATION = 1.5          # Let it run longer for full collapse
 
 
 # =============================================================================
-# ROLE DETECTION (RIG AGNOSTIC)
-# =============================================================================
-
-# Role detection keywords - NO special control bones, everything gets physics
-CORE_KEYWORDS = ["spine", "pelvis", "torso", "chest", "root", "hips"]
-HEAD_KEYWORDS = ["head", "neck", "skull"]
-HAND_KEYWORDS = ["hand", "finger", "thumb", "index", "middle", "ring", "pinky",
-                 "foot", "toe", "ankle"]
-LIMB_KEYWORDS = ["arm", "leg", "thigh", "shin", "calf", "forearm", "shoulder",
-                 "elbow", "knee", "wrist"]
-
-
-def _detect_bone_role(bone_name: str, depth: int) -> str:
-    """Detect bone role from name patterns and hierarchy depth."""
-    name_lower = bone_name.lower()
-
-    for kw in CORE_KEYWORDS:
-        if kw in name_lower:
-            return "core"
-
-    for kw in HEAD_KEYWORDS:
-        if kw in name_lower:
-            return "head"
-
-    for kw in HAND_KEYWORDS:
-        if kw in name_lower:
-            return "hand"
-
-    for kw in LIMB_KEYWORDS:
-        if kw in name_lower:
-            return "limb"
-
-    if depth > 5:
-        return "hand"
-
-    return "limb"
-
-
-def _is_ground_bone(bone_name: str) -> bool:
-    """Check if bone should have ground contact."""
-    name_lower = bone_name.lower()
-    ground_keywords = ["foot", "toe", "hip", "pelvis", "heel"]
-    return any(kw in name_lower for kw in ground_keywords)
-
-
-def _get_bone_depth(bone) -> int:
-    """Get depth in hierarchy (0 = root)."""
-    depth = 0
-    parent = bone.parent
-    while parent:
-        depth += 1
-        parent = parent.parent
-    return depth
-
-
-# =============================================================================
 # STATE
 # =============================================================================
 
@@ -186,17 +130,13 @@ def execute_ragdoll_reaction(r):
     elif hasattr(scene, 'floor_z'):
         ground_z = scene.floor_z
 
-    # Capture per-bone static data
+    # Capture per-bone static data - NO ROLE DETECTION, all bones equal
     bone_data = {}
     bone_physics = {}
     initial_rotations = {}
 
     for bone in armature.pose.bones:
         bone_name = bone.name
-
-        depth = _get_bone_depth(bone)
-        role = _detect_bone_role(bone_name, depth)
-        is_ground = _is_ground_bone(bone_name)
 
         rest_mat = bone.bone.matrix_local.to_3x3()
         rest_matrix_flat = [
@@ -205,30 +145,8 @@ def execute_ragdoll_reaction(r):
             rest_mat[2][0], rest_mat[2][1], rest_mat[2][2],
         ]
 
-        bone_tip_local = tuple(bone.bone.tail_local)
-
-        default_limit = 1.22
-        secondary_limit = 0.52
-
-        limits = {
-            "x": [-default_limit, default_limit],
-            "y": [-secondary_limit, secondary_limit],
-            "z": [-default_limit, default_limit],
-        }
-
-        if role == "core":
-            limits = {"x": [-0.8, 0.8], "y": [-0.8, 0.8], "z": [-0.8, 0.8]}
-        elif role == "head":
-            limits = {"x": [-1.0, 1.0], "y": [-1.2, 1.2], "z": [-0.6, 0.6]}
-        elif role == "hand":
-            limits = {"x": [-1.5, 1.5], "y": [-0.5, 0.5], "z": [-1.5, 1.5]}
-
         bone_data[bone_name] = {
             "rest_matrix": rest_matrix_flat,
-            "role": role,
-            "limits": limits,
-            "is_ground_bone": is_ground,
-            "bone_tip_local": bone_tip_local,
         }
 
         bone_physics[bone_name] = {
@@ -509,10 +427,3 @@ def _unlock_animations(armature_name: str):
     _log(f"Unlocked animations for {armature_name}")
 
 
-# =============================================================================
-# CLEANUP
-# =============================================================================
-
-def clear():
-    global _active_ragdolls
-    _active_ragdolls.clear()

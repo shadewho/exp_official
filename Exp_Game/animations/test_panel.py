@@ -532,7 +532,7 @@ class NEURAL_OT_Train(Operator):
         print(" 2. Run these commands:")
         print("")
         print("    cd C:\\Users\\spenc\\Desktop\\Exploratory\\addons\\Exploratory\\Exp_Game\\animations\\neural_network")
-        print("    python standalone_trainer.py")
+        print("    python torch_trainer.py")
         print("")
         print(" 3. Wait for training to complete")
         print(" 4. Weights auto-save to weights/best.npy")
@@ -570,6 +570,14 @@ class NEURAL_OT_Test(Operator):
             test_targets = dataset.get('test_effector_targets')
             test_roots = dataset.get('test_root_positions')
 
+            # Get rotation data for orientation tests
+            train_effector_rots = dataset.get('train_effector_rotations')
+            test_effector_rots = dataset.get('test_effector_rotations')
+            train_root_fwd = dataset.get('train_root_forwards')
+            train_root_up = dataset.get('train_root_ups')
+            test_root_fwd = dataset.get('test_root_forwards')
+            test_root_up = dataset.get('test_root_ups')
+
             report = run_test_suite(
                 train_inputs_norm,
                 dataset['train_outputs'],
@@ -579,6 +587,12 @@ class NEURAL_OT_Test(Operator):
                 train_roots,
                 test_targets,
                 test_roots,
+                train_effector_rots,
+                test_effector_rots,
+                train_root_fwd,
+                train_root_up,
+                test_root_fwd,
+                test_root_up,
             )
 
             if report.failed == 0:

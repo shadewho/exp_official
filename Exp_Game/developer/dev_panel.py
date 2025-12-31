@@ -16,6 +16,7 @@ from ..animations.test_panel import (
     reset_test_controller,
     is_test_modal_active,
 )
+from ..animations import rig_test_suite
 
 
 def _is_create_panel_enabled(scene, key: str) -> bool:
@@ -219,6 +220,57 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_ragdoll", text="Ragdoll")
 
         # ═══════════════════════════════════════════════════════════════
+        # Ragdoll Standalone Test (Collapsible)
+        # ═══════════════════════════════════════════════════════════════
+        box = layout.box()
+        row = box.row()
+        row.prop(scene, "dev_section_ragdoll_test",
+                 icon='TRIA_DOWN' if scene.dev_section_ragdoll_test else 'TRIA_RIGHT',
+                 icon_only=True, emboss=False)
+        row.label(text="Ragdoll Test (Standalone)", icon='PHYSICS')
+
+        if scene.dev_section_ragdoll_test:
+            # Import status check
+            from .ragdoll_test import is_ragdoll_test_active, get_ragdoll_test_time_remaining
+
+            col = box.column(align=True)
+
+            # Check for target armature
+            armature = getattr(scene, 'target_armature', None)
+            if not armature:
+                col.label(text="Set target armature first", icon='ERROR')
+            else:
+                col.label(text=f"Target: {armature.name}", icon='ARMATURE_DATA')
+
+                # Settings
+                col.separator()
+                col.prop(scene, "dev_ragdoll_test_duration", text="Duration")
+                col.prop(scene, "dev_ragdoll_test_include_drop", text="Position Drop")
+
+                col.separator()
+
+                # Start/Stop buttons
+                is_active = is_ragdoll_test_active()
+
+                if is_active:
+                    time_left = get_ragdoll_test_time_remaining()
+                    row = col.row(align=True)
+                    row.scale_y = 1.3
+                    row.operator("exp.ragdoll_test_stop", text=f"Stop ({time_left:.1f}s left)", icon='SNAP_FACE')
+                else:
+                    row = col.row(align=True)
+                    row.scale_y = 1.3
+                    row.operator("exp.ragdoll_test_start", text="Start Ragdoll Test", icon='PLAY')
+
+                # Info
+                col.separator()
+                info_box = col.box()
+                info_box.scale_y = 0.7
+                info_box.label(text="Standalone test - NO animations,", icon='INFO')
+                info_box.label(text="NO game systems. Pure physics only.")
+                info_box.label(text="Logs: diagnostics_latest.txt")
+
+        # ═══════════════════════════════════════════════════════════════
         # Animation 2.0 (Collapsible)
         # ═══════════════════════════════════════════════════════════════
         box = layout.box()
@@ -344,7 +396,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     col.scale_y = 0.7
                     col.label(text="Then run in PowerShell:")
                     col.label(text="  cd .../neural_network")
-                    col.label(text="  python standalone_trainer.py")
+                    col.label(text="  python torch_trainer.py")
                     col.scale_y = 1.0
                     col.separator()
                     col.operator("neural.train", text="Show Full Path", icon='INFO')
@@ -362,6 +414,8 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                 if getattr(scene, 'dev_neural_show_advanced', False):
                     col = adv.column(align=True)
                     col.operator("neural.reset", text="Reset Weights (Start Over)", icon='TRASH')
+
+                rig_test_suite.draw_rig_test_ui(neural_box, scene)
 
             # ═══════════════════════════════════════════════════════════════
             # ANIMATION PLAYBACK

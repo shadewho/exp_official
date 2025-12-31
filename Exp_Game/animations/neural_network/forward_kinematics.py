@@ -259,6 +259,145 @@ def get_effector_positions(
         return all_positions[:, effector_indices]
 
 
+def get_effector_rotations(
+    all_rotations: np.ndarray,
+) -> np.ndarray:
+    """
+    Extract end-effector rotation matrices from full bone rotations.
+
+    Args:
+        all_rotations: Shape (23, 3, 3) or (batch, 23, 3, 3)
+
+    Returns:
+        Shape (5, 3, 3) or (batch, 5, 3, 3) - rotation matrices of end effectors
+    """
+    effector_indices = [BONE_TO_INDEX[e] for e in END_EFFECTORS]
+
+    if all_rotations.ndim == 3:
+        return all_rotations[effector_indices]
+    else:
+        return all_rotations[:, effector_indices]
+
+
+def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
+    """
+    Convert rotation matrices to quaternions (w, x, y, z).
+
+    Uses Shepperd's method for numerical stability.
+
+    Args:
+        R: Shape (3, 3) or (batch, 3, 3) or (batch, N, 3, 3)
+
+    Returns:
+        Quaternions with same leading dimensions, final dim = 4 (w, x, y, z)
+    """
+    original_shape = R.shape[:-2]
+    R = R.reshape(-1, 3, 3)
+    n = R.shape[0]
+
+    # Shepperd's method - choose largest diagonal to avoid numerical issues
+    trace = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+
+    q = np.zeros((n, 4), dtype=np.float32)
+
+    # Case 1: trace > 0
+    mask1 = trace > 0
+    if np.any(mask1):
+        s = np.sqrt(trace[mask1] + 1.0) * 2  # s = 4 * w
+        q[mask1, 0] = 0.25 * s  # w
+        q[mask1, 1] = (R[mask1, 2, 1] - R[mask1, 1, 2]) / s  # x
+        q[mask1, 2] = (R[mask1, 0, 2] - R[mask1, 2, 0]) / s  # y
+        q[mask1, 3] = (R[mask1, 1, 0] - R[mask1, 0, 1]) / s  # z
+
+    # Case 2: R[0,0] is largest diagonal
+    mask2 = ~mask1 & (R[:, 0, 0] > R[:, 1, 1]) & (R[:, 0, 0] > R[:, 2, 2])
+    if np.any(mask2):
+        s = np.sqrt(1.0 + R[mask2, 0, 0] - R[mask2, 1, 1] - R[mask2, 2, 2]) * 2
+        q[mask2, 0] = (R[mask2, 2, 1] - R[mask2, 1, 2]) / s
+        q[mask2, 1] = 0.25 * s
+        q[mask2, 2] = (R[mask2, 0, 1] + R[mask2, 1, 0]) / s
+        q[mask2, 3] = (R[mask2, 0, 2] + R[mask2, 2, 0]) / s
+
+    # Case 3: R[1,1] is largest diagonal
+    mask3 = ~mask1 & ~mask2 & (R[:, 1, 1] > R[:, 2, 2])
+    if np.any(mask3):
+        s = np.sqrt(1.0 + R[mask3, 1, 1] - R[mask3, 0, 0] - R[mask3, 2, 2]) * 2
+        q[mask3, 0] = (R[mask3, 0, 2] - R[mask3, 2, 0]) / s
+        q[mask3, 1] = (R[mask3, 0, 1] + R[mask3, 1, 0]) / s
+        q[mask3, 2] = 0.25 * s
+        q[mask3, 3] = (R[mask3, 1, 2] + R[mask3, 2, 1]) / s
+
+    # Case 4: R[2,2] is largest diagonal
+    mask4 = ~mask1 & ~mask2 & ~mask3
+    if np.any(mask4):
+        s = np.sqrt(1.0 + R[mask4, 2, 2] - R[mask4, 0, 0] - R[mask4, 1, 1]) * 2
+        q[mask4, 0] = (R[mask4, 1, 0] - R[mask4, 0, 1]) / s
+        q[mask4, 1] = (R[mask4, 0, 2] + R[mask4, 2, 0]) / s
+        q[mask4, 2] = (R[mask4, 1, 2] + R[mask4, 2, 1]) / s
+        q[mask4, 3] = 0.25 * s
+
+    # Normalize
+    q = q / (np.linalg.norm(q, axis=-1, keepdims=True) + 1e-8)
+
+    return q.reshape(original_shape + (4,))
+
+
+def quaternion_geodesic_distance(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """
+    Compute geodesic distance between quaternions on SO(3).
+
+    This is the proper rotation distance - the angle of the shortest rotation
+    between two orientations. Ranges from 0 to pi.
+
+    Args:
+        q1, q2: Shape (..., 4) quaternions (w, x, y, z)
+
+    Returns:
+        Shape (...) geodesic angles in radians
+    """
+    # Dot product gives cos(angle/2) for unit quaternions
+    dot = np.sum(q1 * q2, axis=-1)
+
+    # Handle double-cover: q and -q represent the same rotation
+    dot = np.abs(dot)
+
+    # Clamp for numerical stability
+    dot = np.clip(dot, -1.0, 1.0)
+
+    # Geodesic distance = 2 * arccos(|dot|)
+    return 2.0 * np.arccos(dot)
+
+
+def euler_to_quaternion(euler: np.ndarray) -> np.ndarray:
+    """
+    Convert Euler angles (XYZ order) to quaternions.
+
+    Args:
+        euler: Shape (..., 3) Euler angles in radians
+
+    Returns:
+        Shape (..., 4) quaternions (w, x, y, z)
+    """
+    original_shape = euler.shape[:-1]
+    euler = euler.reshape(-1, 3)
+
+    cx = np.cos(euler[:, 0] / 2)
+    sx = np.sin(euler[:, 0] / 2)
+    cy = np.cos(euler[:, 1] / 2)
+    sy = np.sin(euler[:, 1] / 2)
+    cz = np.cos(euler[:, 2] / 2)
+    sz = np.sin(euler[:, 2] / 2)
+
+    # XYZ order: q = qz * qy * qx
+    w = cx * cy * cz + sx * sy * sz
+    x = sx * cy * cz - cx * sy * sz
+    y = cx * sy * cz + sx * cy * sz
+    z = cx * cy * sz - sx * sy * cz
+
+    q = np.stack([w, x, y, z], axis=-1)
+    return q.reshape(original_shape + (4,))
+
+
 def compute_fk_loss(
     predicted_rotations: np.ndarray,
     target_effector_positions: np.ndarray,
@@ -304,6 +443,123 @@ def compute_fk_loss(
     loss = float(np.mean(effector_errors ** 2))
 
     return loss, effector_errors
+
+
+def compute_fk_loss_with_orientation(
+    predicted_rotations: np.ndarray,
+    target_effector_positions: np.ndarray,
+    target_effector_rotations: np.ndarray,
+    root_positions: np.ndarray = None,
+    root_rotations: np.ndarray = None,
+) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    """
+    Compute FK loss with both position AND orientation matching.
+
+    Uses quaternion geodesic distance for orientation - proper SO(3) metric
+    that avoids gimbal lock issues with Euler angles.
+
+    Args:
+        predicted_rotations: Shape (batch, 69) - flattened bone rotations
+        target_effector_positions: Shape (batch, 5, 3) or (batch, 15) - target positions
+        target_effector_rotations: Shape (batch, 5, 3) or (batch, 15) - target Euler rotations
+        root_positions: Shape (batch, 3) - root world positions
+        root_rotations: Shape (batch, 3, 3) - root world rotations
+
+    Returns:
+        position_loss: Scalar mean squared position error (meters²)
+        orientation_loss: Scalar mean squared geodesic error (radians²)
+        position_errors: Shape (batch, 5) - per-effector position distances
+        orientation_errors: Shape (batch, 5) - per-effector geodesic angles
+    """
+    batch_size = predicted_rotations.shape[0]
+
+    # Reshape rotations to (batch, 23, 3)
+    rotations = predicted_rotations.reshape(batch_size, NUM_BONES, 3)
+
+    # Reshape targets if needed
+    if target_effector_positions.ndim == 2 and target_effector_positions.shape[1] == 15:
+        target_effector_positions = target_effector_positions.reshape(batch_size, 5, 3)
+    if target_effector_rotations.ndim == 2 and target_effector_rotations.shape[1] == 15:
+        target_effector_rotations = target_effector_rotations.reshape(batch_size, 5, 3)
+
+    # Run FK
+    positions, world_rots = forward_kinematics_batch(rotations, root_positions, root_rotations)
+
+    # Extract effector positions and rotations
+    effector_pos = get_effector_positions(positions)  # (batch, 5, 3)
+    effector_rots = get_effector_rotations(world_rots)  # (batch, 5, 3, 3)
+
+    # Position error (MSE)
+    pos_diff = effector_pos - target_effector_positions
+    position_errors = np.linalg.norm(pos_diff, axis=-1)  # (batch, 5)
+    position_loss = float(np.mean(position_errors ** 2))
+
+    # Orientation error - quaternion geodesic distance (proper SO(3) metric)
+    # Convert predicted rotation matrices to quaternions
+    predicted_quats = rotation_matrix_to_quaternion(effector_rots)  # (batch, 5, 4)
+
+    # Convert target Euler to quaternions
+    target_quats = euler_to_quaternion(target_effector_rotations)  # (batch, 5, 4)
+
+    # Geodesic distance on SO(3)
+    orientation_errors = quaternion_geodesic_distance(predicted_quats, target_quats)  # (batch, 5)
+    orientation_loss = float(np.mean(orientation_errors ** 2))
+
+    return position_loss, orientation_loss, position_errors, orientation_errors
+
+
+def compute_orientation_loss_gradient(
+    predicted_rotations: np.ndarray,
+    target_effector_rotations: np.ndarray,
+    root_positions: np.ndarray = None,
+    root_rotations: np.ndarray = None,
+    epsilon: float = 1e-4,
+) -> np.ndarray:
+    """
+    Compute gradient of orientation loss with respect to rotations.
+    Uses numerical differentiation (finite differences).
+
+    Only computes gradient for bones in the kinematic chains leading to effectors.
+
+    Args:
+        predicted_rotations: Shape (batch, 69) - flattened bone rotations
+        target_effector_rotations: Shape (batch, 15) - flattened target Euler rotations
+        root_positions: Shape (batch, 3)
+        root_rotations: Shape (batch, 3, 3)
+        epsilon: Step size for finite differences
+
+    Returns:
+        gradient: Shape (batch, 69) - gradient of orientation loss w.r.t. rotations
+    """
+    batch_size = predicted_rotations.shape[0]
+    n_params = predicted_rotations.shape[1]
+
+    gradient = np.zeros_like(predicted_rotations)
+
+    # Compute base loss
+    def orientation_loss(rots):
+        _, orient_loss, _, _ = compute_fk_loss_with_orientation(
+            rots,
+            np.zeros((batch_size, 5, 3)),  # Dummy positions (not used for orient loss)
+            target_effector_rotations,
+            root_positions,
+            root_rotations,
+        )
+        return orient_loss
+
+    # Numerical gradient via central differences
+    for i in range(n_params):
+        rotations_plus = predicted_rotations.copy()
+        rotations_plus[:, i] += epsilon
+        loss_plus = orientation_loss(rotations_plus)
+
+        rotations_minus = predicted_rotations.copy()
+        rotations_minus[:, i] -= epsilon
+        loss_minus = orientation_loss(rotations_minus)
+
+        gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)
+
+    return gradient
 
 
 def compute_contact_loss(
@@ -429,6 +685,7 @@ def compute_fk_loss_gradient(
     predicted_rotations: np.ndarray,
     target_effector_positions: np.ndarray,
     root_positions: np.ndarray = None,
+    root_rotations: np.ndarray = None,
     epsilon: float = 1e-4,
 ) -> np.ndarray:
     """
@@ -439,6 +696,7 @@ def compute_fk_loss_gradient(
         predicted_rotations: Shape (batch, 69) - flattened bone rotations
         target_effector_positions: Shape (batch, 15) - flattened target positions
         root_positions: Shape (batch, 3)
+        root_rotations: Shape (batch, 3, 3) - root rotation matrices
         epsilon: Step size for finite differences
 
     Returns:
@@ -454,12 +712,12 @@ def compute_fk_loss_gradient(
         # Forward step
         rotations_plus = predicted_rotations.copy()
         rotations_plus[:, i] += epsilon
-        loss_plus, _ = compute_fk_loss(rotations_plus, target_effector_positions, root_positions)
+        loss_plus, _ = compute_fk_loss(rotations_plus, target_effector_positions, root_positions, root_rotations)
 
         # Backward step
         rotations_minus = predicted_rotations.copy()
         rotations_minus[:, i] -= epsilon
-        loss_minus, _ = compute_fk_loss(rotations_minus, target_effector_positions, root_positions)
+        loss_minus, _ = compute_fk_loss(rotations_minus, target_effector_positions, root_positions, root_rotations)
 
         # Central difference
         gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)

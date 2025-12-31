@@ -91,6 +91,7 @@ _CATEGORY_MAP = {
 
     # Ragdoll System
     'RAGDOLL': 'ragdoll',
+    'RAGDOLL_TEST': 'ragdoll',  # Standalone ragdoll test uses same toggle
 
     # World State Optimization (Phase 1.1)
     'WORLD-STATE': 'world_state',
