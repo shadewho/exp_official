@@ -686,9 +686,10 @@ class KinematicCharacterController:
         5. APPLY result immediately
         6. Write position to Blender
         """
-        # Skip KCC during ragdoll - let ragdoll system control the armature
-        from ..reactions.exp_ragdoll import has_active_ragdolls
-        if has_active_ragdolls():
+        # Skip KCC only when THIS armature is ragdolling
+        # (Other armatures can ragdoll without affecting this KCC)
+        from ..reactions.exp_ragdoll import is_armature_ragdolling
+        if is_armature_ragdolling(self.obj):
             return
 
         import time

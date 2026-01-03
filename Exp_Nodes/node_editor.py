@@ -127,6 +127,7 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Track To",           "ReactionTrackingNodeType")
         add("Ragdoll",            "ReactionRagdollNodeType")
         add("Enable Health",      "ReactionEnableHealthNodeType")
+        add("Display Health UI",  "ReactionDisplayHealthUINodeType")
 
 
 class NODE_MT_exploratory_add_counter_timer(Menu):

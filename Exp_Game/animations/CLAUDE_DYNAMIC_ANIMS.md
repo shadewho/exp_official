@@ -414,31 +414,97 @@ Total:            ~325µs = ~1% of budget ✓
 
 ## CURRENT PROGRESS
 
-**Status:** Building worker/ik.py - Core functions verified
+**Status:** Engine integration working, blend system integration NOT applying poses
+
+**Last Updated:** Jan 2025
+
+### Architecture (Updated)
+
+Network: 50 → 256 → 256 → 128 → 69 (120,645 params)
 
 ### Completed & Verified
 
-| Function | File | Status | Notes |
-|----------|------|--------|-------|
-| `network_forward()` | `worker/ik.py` | ✅ VERIFIED | Matches network.py exactly, 26µs/sample |
-| `normalize_input()` | `worker/ik.py` | ✅ VERIFIED | Matches context.py exactly |
-| `axis_angle_to_quat()` | `worker/ik.py` | ✅ VERIFIED | Matches Blender mathutils |
+| Component | File | Status | Notes |
+|-----------|------|--------|-------|
+| `network_forward()` | `worker/ik.py` | ✅ VERIFIED | Matches network.py, ~400-850µs inference |
+| `normalize_input()` | `worker/ik.py` | ✅ VERIFIED | Matches context.py |
+| `axis_angle_to_quat()` | `worker/ik.py` | ✅ VERIFIED | Batch conversion, unit quaternions |
+| `build_input()` | `worker/ik.py` | ✅ VERIFIED | Builds 50-dim input from effector targets |
+| `CACHE_NEURAL_IK` job | `engine_worker_entry.py` | ✅ WORKING | All 4 workers cache weights at game start |
+| `NEURAL_IK_SOLVE` job | `engine_worker_entry.py` | ✅ WORKING | Full pipeline: build→normalize→forward→quaternions |
+| Weight loading | `exp_modal.py` | ✅ WORKING | 120,645 params loaded in ~1ms |
+| K key test | `exp_modal.py` | ✅ WORKING | Uses pose library targets, comprehensive logging |
+| `neural_ik_layer.py` | `animations/` | ✅ CREATED | Bridges worker output to blend system |
+
+### Current Issue: Blend System Not Applying Poses
+
+The network runs and produces reasonable output:
+- Input range: [-0.9, 1.0] ✓
+- Output axis-angles: [-1.3, 1.0] radians ✓
+- Rotation magnitudes: 1-88° avg ~20-27° ✓
+- Inference: ~400-850µs ✓
+
+**BUT the character doesn't move.** Test logs show:
+```
+CURRENT_EFFECTORS (before IK): LeftHand dist=0.388m
+RESULT_EFFECTORS (after IK):   LeftHand err=0.388m  ← SAME!
+```
+
+The `neural_ik_layer.py` creates an OVERRIDE layer with a `pose_provider` callback that returns the cached IK pose. The layer IS created (`LAYER_CREATED weight=1.0 mask_bones=23`), but:
+- Either the blend system isn't calling the pose_provider
+- Or `apply_to_armature()` doesn't run after the K test updates the cache
+- Or the layer isn't being processed in the frame's blend evaluation
+
+### Files Created/Modified
+
+```
+engine/worker/ik.py           - Neural IK inference (pure numpy)
+animations/neural_ik_layer.py - Blend system integration layer
+modal/exp_modal.py            - K key test, weight caching at startup
+engine/engine_worker_entry.py - CACHE_NEURAL_IK, NEURAL_IK_SOLVE handlers
+```
+
+### K Test Flow (Working)
+
+1. Get target pose from pose library (selected in UI)
+2. Extract root position from CURRENT pose
+3. Temporarily apply target pose to read effector world positions
+4. Restore original pose
+5. Submit NEURAL_IK_SOLVE job with target effector positions
+6. Worker: build_input → normalize → forward → quaternions
+7. Apply result to neural_ik_layer cached pose
+8. Measure error (currently shows no movement)
+
+### Diagnostic Logging (Comprehensive)
+
+The K test now logs:
+- TARGET_EFFECTORS (world coords from pose library)
+- CURRENT_EFFECTORS (before IK, with dist_to_target)
+- JOB_INPUT (root position, forward, up)
+- INPUT_STATS (raw range, normalized range, means)
+- OUTPUT_STATS (axis-angle range, rotation magnitudes in degrees)
+- EFFECTOR_REL (root-relative positions network sees)
+- RESULT_EFFECTORS (after IK, with error and movement)
+- ACCURACY (total/avg error, REACHED/MISSED status)
 
 ### Next Steps
 
-| Function | Purpose | Status |
-|----------|---------|--------|
-| `clamp_to_limits()` | Enforce joint constraints | ⬜ Next |
-| `CACHE_NEURAL_IK` job | Load weights at game start | ⬜ Pending |
-| `NEURAL_IK_SOLVE` job | Full inference pipeline | ⬜ Pending |
-| Main thread wrapper | Submit/poll/apply bones | ⬜ Pending |
+| Task | Purpose | Status |
+|------|---------|--------|
+| Fix blend system integration | Make IK poses actually apply to armature | ⬜ BLOCKING |
+| Verify pose_provider called | Debug if blend system queries the layer | ⬜ Next |
+| Force blend system update | May need to trigger re-evaluation after K | ⬜ Next |
+| Joint limit clamping | Enforce constraints on output | ⬜ Later |
+| Animated transitions | Smooth blend to IK pose over time | ⬜ Later |
 
-### Verification Process
 
-Each function is:
-1. Implemented in `worker/ik.py` (pure NumPy, no bpy)
-2. Tested standalone via `python ik.py`
-3. Verified against original implementation in Blender console
-4. Only then move to next function
 
-This ensures the core is correct before building on top of it.
+### main goal:
+the end goal is to prep and have the neural training able to guide or easily provide actions such as grab object etc. but right now we
+ need to confirm that we can get it working in the worker engine with practical computation loads. thats the goal. but i hate when we try to jump straight
+into it without ensuring that it can work. we always have to integrate IK overrides for full body or partial body into my layer system
+so that the IK essentially gets permission to override the locomotion so we dont have any fighting. but its so important that we work on
+ the fundamentals. i have the trained data working and i have results for accurate ground truth vs prediction. next are small steps to
+getting real results from the trained data during game.
+its critical we log results: Exp_Game\developer\CLAUDE_LOGGER.md and avoid guesswork as we develop
+its critical we use the worker engine as much as possible and monitor its load and efficiency. optimized solutions are critical in the engine: Exp_Game\engine\CLAUDE_ENGINE_CONTEXT.md

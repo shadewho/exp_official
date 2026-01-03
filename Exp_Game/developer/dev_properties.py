@@ -662,6 +662,18 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_neural_ik = bpy.props.BoolProperty(
+        name="Neural IK",
+        description=(
+            "Neural IK / Dynamic Actions diagnostics:\n"
+            "• Weight caching at game start\n"
+            "• IK solve jobs (targets, inference time)\n"
+            "• Bone rotation results\n"
+            "• Layer integration status"
+        ),
+        default=False
+    )
+
     bpy.types.Scene.dev_debug_health = bpy.props.BoolProperty(
         name="Health",
         description=(
@@ -669,6 +681,7 @@ def register_properties():
             "• Object health enabled/disabled\n"
             "• Health value changes (current, delta)\n"
             "• Per-object health status\n"
+            "• Health UI overlay enable/position\n"
             "• Reset/clear events"
         ),
         default=False
@@ -1116,6 +1129,7 @@ def unregister_properties():
         'dev_debug_transforms',
         'dev_debug_tracking',
         'dev_debug_ragdoll',
+        'dev_debug_neural_ik',
         'dev_debug_health',
 
         # Pose Library

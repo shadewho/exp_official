@@ -237,6 +237,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
             ("RAGDOLL",           "Ragdoll",              "Simulate bone physics with collision"),
             ("ENABLE_HEALTH",     "Enable Health",        "Attach health component to an object"),
+            ("DISPLAY_HEALTH_UI", "Display Health UI",    "Show health bar on screen"),
         ],
         default="CUSTOM_ACTION"
     )
@@ -1040,6 +1041,47 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         default=100.0,
         min=0.0,
         description="Maximum health value"
+    )
+    # Health UI options (used by DISPLAY_HEALTH_UI)
+    health_ui_position: bpy.props.EnumProperty(
+        name="Position",
+        items=[
+            ("BOTTOM", "Bottom", "Horizontal bar at bottom of screen"),
+            ("TOP", "Top", "Horizontal bar at top of screen"),
+            ("LEFT", "Left", "Vertical bar on left side"),
+            ("RIGHT", "Right", "Vertical bar on right side"),
+        ],
+        default="BOTTOM"
+    )
+    health_ui_scale: bpy.props.IntProperty(
+        name="Scale",
+        default=10,
+        min=1,
+        max=20,
+        description="Size of health bar (1=smallest, 20=largest)"
+    )
+    health_ui_offset_x: bpy.props.IntProperty(
+        name="Offset X",
+        default=0,
+        min=-20,
+        max=20,
+        description="Horizontal offset in grid units (negative=left, positive=right)"
+    )
+    health_ui_offset_y: bpy.props.IntProperty(
+        name="Offset Y",
+        default=1,
+        min=-20,
+        max=20,
+        description="Vertical offset in grid units (negative=down, positive=up)"
+    )
+
+    # --------------------------------------------------
+    # DISPLAY_HEALTH_UI REACTION FIELDS
+    # --------------------------------------------------
+    health_ui_target_object: bpy.props.PointerProperty(
+        name="Target Object",
+        type=bpy.types.Object,
+        description="Object whose health to display"
     )
 
 

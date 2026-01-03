@@ -865,6 +865,114 @@ def cache_poses_in_workers(modal, context) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# NEURAL IK WEIGHT CACHING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cache_neural_ik_in_workers(modal, context) -> bool:
+    """
+    Cache neural IK network weights in ALL workers.
+
+    MUST be called AFTER init_engine() since it needs workers to be running.
+    Weights are broadcast to all workers since any worker might handle IK jobs.
+
+    Args:
+        modal: ExpModal operator instance
+        context: Blender context
+
+    Returns:
+        True if caching succeeded or no weights to cache
+    """
+    import os
+    import numpy as np
+    from ..developer.dev_logger import log_game
+
+    startup_logs = context.scene.dev_startup_logs
+    debug = getattr(context.scene, "dev_debug_neural_ik", False)
+
+    # Find weights file
+    addon_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    weights_path = os.path.join(
+        addon_dir,
+        "Exp_Game", "animations", "neural_network",
+        "training_data", "weights", "best.npy"
+    )
+
+    if not os.path.exists(weights_path):
+        if startup_logs or debug:
+            log_game("NEURAL_IK", f"SKIP weights not found: {weights_path}")
+        return True  # Not an error - neural IK is optional
+
+    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
+        log_game("NEURAL_IK", "SKIP engine not available")
+        return False
+
+    # Load weights
+    load_start = time.perf_counter()
+    try:
+        weights = np.load(weights_path, allow_pickle=True).item()
+    except Exception as e:
+        log_game("NEURAL_IK", f"LOAD_FAIL {e}")
+        return False
+
+    load_elapsed = (time.perf_counter() - load_start) * 1000
+
+    # Validate weights
+    required_keys = ['W1', 'b1', 'W2', 'b2', 'W3', 'b3', 'W4', 'b4']
+    missing = [k for k in required_keys if k not in weights]
+    if missing:
+        log_game("NEURAL_IK", f"INVALID missing keys: {missing}")
+        return False
+
+    # Count parameters
+    param_count = sum(weights[k].size for k in required_keys)
+
+    log_game("NEURAL_IK", f"LOADED {param_count} params in {load_elapsed:.0f}ms")
+
+    if startup_logs:
+        print(f"[NEURAL_IK] Loaded weights: {param_count} parameters")
+
+    # Broadcast to ALL workers (any worker might handle IK jobs)
+    transfer_start = time.perf_counter()
+    num_sent = modal.engine.broadcast_job("CACHE_NEURAL_IK", {"weights": weights})
+
+    if num_sent == 0:
+        log_game("NEURAL_IK", "CACHE_FAIL no jobs sent")
+        return False
+
+    # Wait for cache confirmation from all workers
+    start_time = time.perf_counter()
+    timeout = 5.0
+    confirmed_workers = set()
+    target_workers = set(range(modal.engine._worker_count))
+
+    while confirmed_workers != target_workers:
+        if time.perf_counter() - start_time > timeout:
+            log_game("NEURAL_IK", f"TIMEOUT only {len(confirmed_workers)}/{len(target_workers)} confirmed")
+            break
+
+        results = list(modal.engine.poll_results(max_results=50))
+        for result in results:
+            if result.job_type == "CACHE_NEURAL_IK" and result.success:
+                confirmed_workers.add(result.worker_id)
+                log_game("NEURAL_IK", f"CACHE_OK worker={result.worker_id}")
+
+        if confirmed_workers == target_workers:
+            break
+        time.sleep(0.002)
+
+    transfer_elapsed = (time.perf_counter() - transfer_start) * 1000
+
+    if confirmed_workers == target_workers:
+        log_game("NEURAL_IK", f"READY all {len(target_workers)} workers cached ({transfer_elapsed:.0f}ms)")
+        if startup_logs:
+            print(f"[NEURAL_IK] ✓ Weights cached in all {len(target_workers)} workers")
+        return True
+    else:
+        log_game("NEURAL_IK", f"PARTIAL {len(confirmed_workers)}/{len(target_workers)} workers cached")
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # LAYER MANAGER LIFECYCLE
 # ═══════════════════════════════════════════════════════════════════════════════
 

@@ -240,7 +240,7 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         reset_property_reactions(context.scene)
 
         # ─── 2.7) Reset health values ─────────────────────────────────────
-        from ..systems.exp_health import reset_all_health
+        from ..reactions.exp_health import reset_all_health
         reset_all_health()
 
         # ─── 2.5) Reset worker-side tracker state ─────────────────────────

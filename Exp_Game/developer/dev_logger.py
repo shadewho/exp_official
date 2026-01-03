@@ -93,6 +93,9 @@ _CATEGORY_MAP = {
     'RAGDOLL': 'ragdoll',
     'RAGDOLL_TEST': 'ragdoll',  # Standalone ragdoll test uses same toggle
 
+    # Neural IK / Dynamic Actions
+    'NEURAL_IK': 'neural_ik',
+
     # Animation Layer System
     'LAYERS': 'layers',
     'LAYER_MGR': 'layers',  # Legacy category name

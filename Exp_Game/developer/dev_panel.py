@@ -264,8 +264,10 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col = box.column(align=True)
             col.prop(scene, "dev_debug_animations", text="Animation Logs")
             col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
+            col.prop(scene, "dev_debug_anim_worker", text="Anim Worker Logs")
             col.prop(scene, "dev_debug_pose_blend", text="Pose Blend Logs")
             col.prop(scene, "dev_debug_layers", text="Layer Logs")
+            col.prop(scene, "dev_debug_neural_ik", text="Neural IK Logs")
 
             props = scene.anim2_test
             ctrl = get_test_controller()

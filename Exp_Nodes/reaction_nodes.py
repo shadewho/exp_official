@@ -1181,3 +1181,47 @@ class ReactionEnableHealthNode(_ReactionNodeKind):
         # Info box
         info = layout.box()
         info.label(text="Attach health to any object.", icon='FUND')
+
+
+class ReactionDisplayHealthUINode(_ReactionNodeKind):
+    bl_idname = "ReactionDisplayHealthUINodeType"
+    bl_label  = "Display Health UI"
+    KIND = "DISPLAY_HEALTH_UI"
+
+    def init(self, context):
+        super().init(context)
+
+        # Object socket - which object's health to display
+        s_obj = self.inputs.new("ExpObjectSocketType", "Target Object")
+        s_obj.reaction_prop = "health_ui_target_object"
+        s_obj.use_prop_search = True
+
+        # Integer sockets for scale and offsets (inline with properties)
+        s_scale = self.inputs.new("ExpIntSocketType", "Scale")
+        s_scale.reaction_prop = "health_ui_scale"
+
+        s_offset_x = self.inputs.new("ExpIntSocketType", "Offset X")
+        s_offset_x.reaction_prop = "health_ui_offset_x"
+
+        s_offset_y = self.inputs.new("ExpIntSocketType", "Offset Y")
+        s_offset_y.reaction_prop = "health_ui_offset_y"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        # Position (enum - no socket needed)
+        layout.prop(r, "health_ui_position")
+
+        # Scale and Offset are drawn by their sockets inline (not here)
+
+        # Info box
+        info = layout.box()
+        info.label(text="Show health bar overlay.", icon='HEART')

@@ -534,6 +534,8 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
 
     # Blend System State
     blend_sys = get_blend_system()
+    armature = _get_target_armature(bpy.context.scene) if bpy.context and bpy.context.scene else None
+
     if blend_sys:
         # Base locomotion
         if blend_sys._base_layer and not blend_sys._base_layer.finished:
@@ -567,8 +569,8 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
             else:
                 lines.append((f"Ovr: {len(active_ovr)} layers", orange))
 
-        # Locomotion lock
-        if blend_sys.is_locomotion_locked():
+        # Locomotion lock (per current target armature)
+        if armature and blend_sys.is_locomotion_locked(armature.name):
             lines.append(("LOCKED", orange))
 
     # If nothing active, show idle

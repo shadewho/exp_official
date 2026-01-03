@@ -60,8 +60,8 @@ from animations.blend import (
     slerp_vectorized,
 )
 
-# IK imports removed - using neural network approach instead
-# Joint limit imports removed - not needed for rigid animations
+# Neural IK inference (replaces old IK system)
+from worker.ik import cache_weights as ik_cache_weights, solve as ik_solve
 
 # Import rig cache for worker-based forward kinematics + IK
 from animations.rig_cache import (
@@ -860,6 +860,32 @@ def process_job(job) -> dict:
                     "success": False,
                     "error": "Missing rig_data or armature_name"
                 }
+
+        elif job.job_type == "CACHE_NEURAL_IK":
+            # Cache neural IK network weights in worker memory.
+            # Sent ONCE at game start via broadcast_job.
+            # Weights stay cached for entire game session.
+            weights = job.data.get("weights", {})
+
+            if weights:
+                result_data = ik_cache_weights(weights)
+            else:
+                result_data = {
+                    "success": False,
+                    "error": "No weights provided"
+                }
+
+        elif job.job_type == "NEURAL_IK_SOLVE":
+            # Neural IK inference: raw target data → bone quaternions.
+            # Main thread sends minimal data (positions), worker builds input and computes.
+            # Returns (23, 4) quaternions for all controlled bones.
+            #
+            # Expected job.data keys:
+            #   effector_positions: {name: (x,y,z)}
+            #   root_position, root_forward, root_up
+            #   ground_height, contact_left, contact_right
+            #   motion_phase, task_type
+            result_data = ik_solve(job.data)
 
         elif job.job_type == "ANIMATION_COMPUTE_BATCH":
             # OPTIMIZED: Compute blended poses for ALL objects in ONE job

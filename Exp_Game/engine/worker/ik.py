@@ -27,8 +27,56 @@ def _log(msg: str):
 
 
 # =============================================================================
-# NORMALIZATION CONSTANTS (hardcoded to avoid config.py import)
+# WEIGHT CACHING (called via CACHE_NEURAL_IK job)
 # =============================================================================
+
+def cache_weights(weights_dict: Dict) -> Dict:
+    """
+    Cache network weights in worker memory.
+
+    Called once at game start via CACHE_NEURAL_IK broadcast job.
+    Weights stay in memory for entire game session.
+
+    Args:
+        weights_dict: Dict with keys 'W1', 'b1', 'W2', 'b2', 'W3', 'b3', 'W4', 'b4'
+
+    Returns:
+        Result dict with success status and param count
+    """
+    global _ik_weights
+
+    # Validate required keys
+    required_keys = ['W1', 'b1', 'W2', 'b2', 'W3', 'b3', 'W4', 'b4']
+    missing = [k for k in required_keys if k not in weights_dict]
+
+    if missing:
+        return {
+            "success": False,
+            "error": f"Missing weight keys: {missing}"
+        }
+
+    # Store weights
+    _ik_weights = weights_dict
+
+    # Count parameters
+    param_count = sum(weights_dict[k].size for k in required_keys)
+
+    _log(f"Cached {param_count} parameters")
+
+    return {
+        "success": True,
+        "param_count": param_count,
+        "message": "Neural IK weights cached"
+    }
+
+
+# =============================================================================
+# CONSTANTS (hardcoded to avoid config.py import)
+# =============================================================================
+
+# Effector names in order - must match training data
+_EFFECTORS = ["LeftHand", "RightHand", "LeftFoot", "RightFoot", "Head"]
+_CONTACT_EFFECTORS = ["LeftFoot", "RightFoot"]
 
 # Input structure: 50 dimensions total
 # [0:30]  - 5 effectors × 6 (pos xyz + rot xyz)
@@ -40,6 +88,100 @@ _POSITION_SCALE = 1.0      # Positions already in meters
 _ROTATION_SCALE = 3.141592653589793  # np.pi - divide to get ~[-1, 1]
 _HEIGHT_SCALE = 2.0        # Character height ~2m
 _GROUND_START = 36         # Index where ground context starts
+
+
+# =============================================================================
+# INPUT BUILDING (worker builds input from raw data)
+# =============================================================================
+
+def build_input(data: Dict) -> np.ndarray:
+    """
+    Build 50-dim input vector from raw target data.
+
+    Main thread sends minimal data, worker builds the full input.
+
+    Args:
+        data: Dict with:
+            - effector_positions: {name: (x,y,z)} for each effector
+            - effector_rotations: {name: (x,y,z)} euler angles (optional)
+            - root_position: (x,y,z)
+            - root_forward: (x,y,z) unit vector
+            - root_up: (x,y,z) unit vector
+            - ground_height: float
+            - ground_normal: (x,y,z) unit vector (optional, default up)
+            - contact_left: bool
+            - contact_right: bool
+            - motion_phase: float 0-1
+            - task_type: int
+
+    Returns:
+        Shape (50,) input vector
+    """
+    input_vec = np.zeros(50, dtype=np.float32)
+
+    # Get data with defaults
+    effector_positions = data.get("effector_positions", {})
+    effector_rotations = data.get("effector_rotations", {})
+    root_pos = np.array(data.get("root_position", (0, 0, 0)), dtype=np.float32)
+    root_fwd = np.array(data.get("root_forward", (0, 1, 0)), dtype=np.float32)
+    root_up = np.array(data.get("root_up", (0, 0, 1)), dtype=np.float32)
+    ground_height = data.get("ground_height", 0.0)
+    ground_normal = np.array(data.get("ground_normal", (0, 0, 1)), dtype=np.float32)
+    contact_left = 1.0 if data.get("contact_left", True) else 0.0
+    contact_right = 1.0 if data.get("contact_right", True) else 0.0
+    motion_phase = data.get("motion_phase", 0.0)
+    task_type = data.get("task_type", 0)
+
+    # Build rotation matrix for world-to-root transform
+    root_right = np.cross(root_fwd, root_up)
+    root_right /= (np.linalg.norm(root_right) + 1e-8)
+    rot_matrix = np.array([root_right, root_fwd, root_up])  # 3x3
+
+    # 1. Effector data (30 values)
+    for i, effector_name in enumerate(_EFFECTORS):
+        base = i * 6
+
+        # Position (root-relative)
+        if effector_name in effector_positions:
+            world_pos = np.array(effector_positions[effector_name], dtype=np.float32)
+            relative_pos = rot_matrix @ (world_pos - root_pos)
+            input_vec[base:base+3] = relative_pos
+        # else: zeros (default)
+
+        # Rotation (world euler)
+        if effector_name in effector_rotations:
+            rot = effector_rotations[effector_name]
+            input_vec[base+3:base+6] = rot
+        # else: zeros (default)
+
+    # 2. Root orientation (6 values)
+    input_vec[30:33] = root_fwd
+    input_vec[33:36] = root_up
+
+    # 3. Ground context (12 values = 2 feet × 6)
+    for foot_idx, foot_name in enumerate(_CONTACT_EFFECTORS):
+        foot_base = _GROUND_START + foot_idx * 6
+
+        # Height offset
+        if foot_name in effector_positions:
+            foot_pos = np.array(effector_positions[foot_name], dtype=np.float32)
+            height_offset = foot_pos[2] - ground_height
+        else:
+            height_offset = 0.0
+
+        input_vec[foot_base] = height_offset
+        input_vec[foot_base+1:foot_base+4] = ground_normal
+
+        # Contact flags
+        is_grounded = contact_left if foot_idx == 0 else contact_right
+        input_vec[foot_base+4] = is_grounded
+        input_vec[foot_base+5] = 1.0  # desired_contact always 1
+
+    # 4. Motion state (2 values)
+    input_vec[48] = motion_phase
+    input_vec[49] = float(task_type)
+
+    return input_vec
 
 
 # =============================================================================
@@ -231,6 +373,106 @@ def network_forward_timed(
     output = network_forward(weights, x)
     elapsed_us = (time.perf_counter() - t0) * 1e6
     return output, elapsed_us
+
+
+# =============================================================================
+# FULL INFERENCE PIPELINE (called via NEURAL_IK_SOLVE job)
+# =============================================================================
+
+def solve(data: Dict) -> Dict:
+    """
+    Full neural IK inference pipeline.
+
+    Worker builds input from raw data, runs inference, returns quaternions.
+    Main thread only sends target positions - all computation is here.
+
+    Args:
+        data: Raw target data dict (see build_input() for structure)
+
+    Returns:
+        Dict with:
+            - success: bool
+            - bone_rotations: (23, 4) quaternions if successful
+            - inference_us: float, inference time in microseconds
+            - error: str if failed
+    """
+    global _ik_weights
+
+    # Check weights cached
+    if _ik_weights is None:
+        return {
+            "success": False,
+            "error": "Weights not cached - call CACHE_NEURAL_IK first"
+        }
+
+    try:
+        t0 = time.perf_counter()
+
+        # 1. Build input from raw data (worker does this, not main thread)
+        input_vector = build_input(data)
+
+        # 2. Normalize input
+        normalized = normalize_input(input_vector)
+
+        # 3. Network forward pass (50 → 69 axis-angles)
+        axis_angles = network_forward(_ik_weights, normalized)
+
+        # 4. Convert to quaternions (69 → 23×4)
+        quaternions = axis_angle_to_quaternion_batch(axis_angles)
+
+        elapsed_us = (time.perf_counter() - t0) * 1e6
+
+        # Comprehensive diagnostic stats
+        input_min = float(input_vector.min())
+        input_max = float(input_vector.max())
+        input_mean = float(input_vector.mean())
+        norm_min = float(normalized.min())
+        norm_max = float(normalized.max())
+        norm_mean = float(normalized.mean())
+        output_min = float(axis_angles.min())
+        output_max = float(axis_angles.max())
+        output_mean = float(axis_angles.mean())
+
+        # Per-effector relative positions (first 30 values = 5 effectors × 6)
+        effector_rel_pos = {}
+        for i, name in enumerate(_EFFECTORS):
+            base = i * 6
+            pos = input_vector[base:base+3]
+            effector_rel_pos[name] = (float(pos[0]), float(pos[1]), float(pos[2]))
+
+        # Axis-angle stats per bone (23 bones × 3)
+        aa_reshaped = axis_angles.reshape(23, 3)
+        angle_magnitudes = np.linalg.norm(aa_reshaped, axis=1)  # Rotation magnitude per bone
+        angle_min_deg = float(np.rad2deg(angle_magnitudes.min()))
+        angle_max_deg = float(np.rad2deg(angle_magnitudes.max()))
+        angle_mean_deg = float(np.rad2deg(angle_magnitudes.mean()))
+
+        _log(f"Solve: {elapsed_us:.1f}µs in=[{input_min:.2f},{input_max:.2f}] out=[{output_min:.2f},{output_max:.2f}]")
+
+        return {
+            "success": True,
+            "bone_rotations": quaternions,  # Shape (23, 4)
+            "inference_us": elapsed_us,
+            # Input stats
+            "input_raw": input_vector.tolist(),  # Full 50-dim input for debugging
+            "input_range": (input_min, input_max),
+            "input_mean": input_mean,
+            "normalized_range": (norm_min, norm_max),
+            "normalized_mean": norm_mean,
+            # Output stats
+            "output_range": (output_min, output_max),
+            "output_mean": output_mean,
+            "axis_angles": axis_angles.tolist(),  # Full 69-dim output
+            "angle_magnitudes_deg": (angle_min_deg, angle_max_deg, angle_mean_deg),
+            # Effector relative positions (what network sees)
+            "effector_rel_pos": effector_rel_pos,
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Inference failed: {str(e)}"
+        }
 
 
 # =============================================================================

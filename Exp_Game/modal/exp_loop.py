@@ -37,6 +37,7 @@ from ..reactions.exp_ragdoll import (
     init_ragdoll_system,
     shutdown_ragdoll_system,
     has_active_ragdolls,
+    is_armature_ragdolling,
     submit_ragdoll_update,
     process_ragdoll_results,
 )
@@ -163,6 +164,11 @@ class GameLoop:
                 # NOTE: update_hitscan_tasks() moved to A3 (runs every frame)
                 update_tracking_tasks(dt_sim)
 
+                # Submit ragdoll update per 30 Hz step so catch-up frames stay in sync
+                engine = getattr(op, "engine", None)
+                if engine and engine.is_alive() and has_active_ragdolls():
+                    submit_ragdoll_update(engine, dt_sim)
+
             # B1a) Submit transform batch to worker (after t values updated)
             engine = getattr(op, "engine", None)
             transform_job_id = None
@@ -196,10 +202,6 @@ class GameLoop:
                 submit_hitscan_batch(engine)
                 submit_projectile_update(engine, dt_sim)
 
-                # B1d) Submit ragdoll physics update (if any active)
-                if has_active_ragdolls():
-                    submit_ragdoll_update(engine, dt_sim)
-
             # B3) Distance-based culling (has its own throttling): once
             update_performance_culling(op, context)
 
@@ -217,7 +219,11 @@ class GameLoop:
             op.keys_pressed.remove(op.pref_run_key)
 
         # D) Physics integration (execute exactly 'steps' iterations at 30 Hz)
-        op.update_movement_and_gravity(context, steps)
+        # SKIP KCC physics only when CHARACTER's armature is ragdolling
+        # (Other armatures can ragdoll without affecting player movement)
+        character_armature = context.scene.target_armature
+        if not is_armature_ragdolling(character_armature):
+            op.update_movement_and_gravity(context, steps)
 
         # D2) Poll engine results (apply non-camera results)
         self._poll_and_apply_engine_results()
@@ -287,7 +293,7 @@ class GameLoop:
 
         # Check if locomotion is locked by BlendSystem (forced animation playing)
         blend_system = get_blend_system()
-        locomotion_locked = blend_system and blend_system.is_locomotion_locked()
+        locomotion_locked = blend_system and blend_system.is_locomotion_locked(armature.name)
 
         # Only update state machine if not locked
         if not locomotion_locked:
@@ -418,6 +424,10 @@ class GameLoop:
             engine.output_debug_stats()  # Gets context from bpy.context internally
 
         for result in results:
+            # Log RAGDOLL results at top level for debugging
+            if result.job_type == "RAGDOLL_UPDATE_BATCH":
+                from ..developer.dev_logger import log_game
+                log_game("RAGDOLL", f"POLL job={result.job_id} success={result.success}")
 
             # Process result and track latency metrics
             if hasattr(op, 'process_engine_result'):
@@ -553,46 +563,25 @@ class GameLoop:
                             log_worker_messages(worker_logs)
 
                 elif result.job_type == "ANIMATION_COMPUTE_BATCH":
-                    # Apply computed bone transforms from batched worker job
-                    # Note: Animation jobs are NOT submitted when physics is active,
-                    # so these results should only arrive when physics is inactive.
-                    # Check anyway as a safety measure.
-                    char_layer_mgr = get_layer_manager()
-                    char_physics_active = char_layer_mgr and char_layer_mgr.is_channel_active(AnimChannel.PHYSICS)
-
-                    if char_physics_active:
-                        # Orphaned result from before physics activated - discard it
-                        from ..developer.dev_logger import log_game
-                        try:
-                            if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_layers", False):
-                                log_game("LAYERS", f"DISCARD orphaned ANIMATION result job={result.job_id} (PHYSICS active)")
-                        except:
-                            pass
-                        if hasattr(op, '_pending_anim_batch_job'):
-                            op._pending_anim_batch_job = None
-                        continue
-
+                    # IMPORTANT: Animation results are handled by poll_animation_results_with_timeout()
+                    # in _update_character_animation(), which runs BEFORE _poll_and_apply_engine_results().
+                    #
+                    # If animation results arrive here (late), we MUST NOT process them because:
+                    # 1. blend_system.apply_to_armature() has already run (applies IK overlays)
+                    # 2. Processing late locomotion would overwrite IK poses → flickering
+                    #
+                    # Late results are simply discarded - animation uses previous frame's pose.
+                    # This is consistent with how we handle other time-sensitive results.
+                    from ..developer.dev_logger import log_game
                     try:
-                        objects_applied = process_animation_result(op, result)
-
-                        # Process worker logs and log result
-                        if result.result:
-                            result_data = result.result
-                            worker_logs = result_data.get("logs", [])
-                            total_objects = result_data.get("total_objects", 0)
-                            total_bones = result_data.get("total_bones", 0)
-                            total_anims = result_data.get("total_anims", 0)
-                            calc_time = result_data.get("calc_time_us", 0.0)
-
-                            from ..developer.dev_logger import log_game
-                            log_game("ANIMATIONS", f"BATCH_RESULT job={result.job_id} objs={total_objects} bones={total_bones} anims={total_anims} time={calc_time:.0f}µs")
-
-                            if worker_logs:
-                                from ..developer.dev_logger import log_worker_messages
-                                log_worker_messages(worker_logs)
-
-                    except Exception as e:
-                        print(f"[GameLoop] Error applying animation batch result: {e}")
+                        if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_anim_worker", False):
+                            log_game("ANIM-WORKER", f"DISCARD_LATE job={result.job_id} (arrived after blend system)")
+                    except:
+                        pass
+                    # Clear pending job to prevent stale tracking
+                    if hasattr(op, '_pending_anim_batch_job'):
+                        op._pending_anim_batch_job = None
+                    continue
 
                 elif result.job_type == "EVALUATE_TRACKERS":
                     # Apply tracker evaluation results from worker
@@ -650,19 +639,33 @@ class GameLoop:
 
                 elif result.job_type == "RAGDOLL_UPDATE_BATCH":
                     # Apply ragdoll physics results from worker
+                    from ..developer.dev_logger import log_game
+                    log_game("RAGDOLL", f"RESULT job={result.job_id} success={result.success}")
                     try:
-                        updated_ragdolls = result.result.get("updated_ragdolls", [])
+                        if not result.success:
+                            log_game("RAGDOLL", f"RESULT_ERROR: {result.error}")
+                        updated_ragdolls = result.result.get("updated_ragdolls", []) if result.result else []
+                        log_game("RAGDOLL", f"RESULT updated_ragdolls={len(updated_ragdolls)}")
                         process_ragdoll_results(updated_ragdolls)
                         # Process worker logs
-                        worker_logs = result.result.get("logs", [])
+                        worker_logs = result.result.get("logs", []) if result.result else []
                         if worker_logs:
                             from ..developer.dev_logger import log_worker_messages
                             log_worker_messages(worker_logs)
                     except Exception as e:
-                        print(f"[GameLoop] Error applying ragdoll results: {e}")
+                        log_game("RAGDOLL", f"RESULT_EXCEPTION: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             else:
                 # Job failed - already logged in process_engine_result
+                # Log failed RAGDOLL jobs for debugging
+                if result.job_type == "RAGDOLL_UPDATE_BATCH":
+                    from ..developer.dev_logger import log_game
+                    log_game("RAGDOLL", f"FAILED job={result.job_id} error={result.error}")
+                    from ..reactions.exp_ragdoll import handle_ragdoll_job_failure
+                    handle_ragdoll_job_failure(error=str(result.error))
+
                 # CRITICAL: Clear pending_job_id for camera jobs to prevent permanent stuck state
                 if result.job_type == "CAMERA_OCCLUSION_FULL":
                     from ..physics.exp_view import _view_state_for

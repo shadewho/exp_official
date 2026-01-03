@@ -186,25 +186,34 @@ class BlendSystem:
         # Callbacks for when layers finish
         self._on_layer_finished: List[Callable[[str], None]] = []
 
-        # Locomotion lock - prevents state machine from changing animations
-        self._locomotion_lock_time: float = 0.0  # Remaining lock time (0 = unlocked)
+        # Locomotion lock per armature - prevents state machine from changing animations
+        self._locomotion_locks: Dict[str, float] = {}  # armature_name -> remaining lock time
 
         # Layer counter for unique naming (faster than perf_counter)
         self._layer_counter: int = 0
 
-    def lock_locomotion(self, duration: float) -> None:
-        """Lock locomotion for specified duration (seconds)."""
-        self._locomotion_lock_time = max(self._locomotion_lock_time, duration)
-        log_game("ANIMATIONS", f"LOCOMOTION_LOCK duration={duration:.2f}s")
+    def lock_locomotion(self, duration: float, armature_name: str) -> None:
+        """Lock locomotion for a specific armature for specified duration (seconds)."""
+        if not armature_name:
+            return
+        cur = self._locomotion_locks.get(armature_name, 0.0)
+        self._locomotion_locks[armature_name] = max(cur, duration)
+        log_game("ANIMATIONS", f"LOCOMOTION_LOCK armature={armature_name} duration={duration:.2f}s")
 
-    def unlock_locomotion(self) -> None:
-        """Immediately unlock locomotion."""
-        self._locomotion_lock_time = 0.0
-        log_game("ANIMATIONS", "LOCOMOTION_UNLOCK")
+    def unlock_locomotion(self, armature_name: str = None) -> None:
+        """Immediately unlock locomotion (all or specific armature)."""
+        if armature_name:
+            self._locomotion_locks.pop(armature_name, None)
+            log_game("ANIMATIONS", f"LOCOMOTION_UNLOCK armature={armature_name}")
+        else:
+            self._locomotion_locks.clear()
+            log_game("ANIMATIONS", "LOCOMOTION_UNLOCK_ALL")
 
-    def is_locomotion_locked(self) -> bool:
-        """Check if locomotion is currently locked."""
-        return self._locomotion_lock_time > 0.0
+    def is_locomotion_locked(self, armature_name: str = None) -> bool:
+        """Check if locomotion is currently locked (specific or any)."""
+        if armature_name:
+            return self._locomotion_locks.get(armature_name, 0.0) > 0.0
+        return any(t > 0.0 for t in self._locomotion_locks.values())
 
     # =========================================================================
     # RAGDOLL LOCK (Blocks ALL animations during ragdoll)
@@ -220,7 +229,8 @@ class BlendSystem:
 
         import time
         self._ragdoll_active[armature_name] = time.time() + duration
-        self.lock_locomotion(duration + 0.5)  # Extra buffer for recovery
+        # Lock only this armature's locomotion, not global
+        self.lock_locomotion(duration + 0.5, armature_name)
         log_game("ANIMATIONS", f"RAGDOLL_LOCK armature={armature_name} duration={duration:.2f}s")
 
     def end_ragdoll_lock(self, armature_name: str) -> None:
@@ -488,12 +498,18 @@ class BlendSystem:
         """
         current_time = time.perf_counter()
 
-        # Update locomotion lock timer
-        if self._locomotion_lock_time > 0:
-            self._locomotion_lock_time -= delta_time
-            if self._locomotion_lock_time <= 0:
-                self._locomotion_lock_time = 0
-                log_game("ANIMATIONS", "LOCOMOTION_LOCK_EXPIRED")
+        # Update locomotion locks per armature
+        expired = []
+        for arm_name, t in self._locomotion_locks.items():
+            if t > 0:
+                t -= delta_time
+                if t <= 0:
+                    expired.append(arm_name)
+                else:
+                    self._locomotion_locks[arm_name] = t
+        for arm_name in expired:
+            self._locomotion_locks.pop(arm_name, None)
+            log_game("ANIMATIONS", f"LOCOMOTION_LOCK_EXPIRED armature={arm_name}")
 
         # Update base layer
         if self._base_layer:

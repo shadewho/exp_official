@@ -321,7 +321,7 @@ def execute_char_action_reaction(r):
     if bone_group == "ALL":
         # Lock locomotion only for full body + force (freezes state machine)
         if force and blend_sys:
-            blend_sys.lock_locomotion(lock_duration)
+            blend_sys.lock_locomotion(lock_duration, armature.name)
 
         ctrl.play(
             armature.name,
@@ -629,28 +629,3 @@ def execute_timer_control_reaction(r):
 
     elif r.timer_op == "STOP":
         timer.stop()
-
-
-# ─────────────────────────────────────────────────────
-# ENABLE_HEALTH Reaction
-# ─────────────────────────────────────────────────────
-def execute_enable_health_reaction(r):
-    """
-    Execute ENABLE_HEALTH reaction.
-    Attaches health tracking to the target object.
-    """
-    from ..systems.exp_health import enable_health
-    from .exp_bindings import resolve_object, resolve_float
-
-    # Resolve object from binding (node connection) or fallback to direct property
-    obj = resolve_object(r, "health_target_object", r.health_target_object)
-    if not obj:
-        log_game("HEALTH", "ENABLE_SKIP no target object specified")
-        return
-
-    # Resolve float values from bindings or use direct properties
-    start_val = resolve_float(r, "health_start_value", r.health_start_value)
-    min_val = resolve_float(r, "health_min_value", r.health_min_value)
-    max_val = resolve_float(r, "health_max_value", r.health_max_value)
-
-    enable_health(obj.name, start_val, min_val, max_val)
