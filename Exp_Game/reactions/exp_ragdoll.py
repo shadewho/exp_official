@@ -1,17 +1,17 @@
 # Exp_Game/reactions/exp_ragdoll.py
 """
-Ragdoll System - Main Thread (Rig Agnostic)
+Verlet Particle Ragdoll - Main Thread
 
-Captures per-bone static data at start, sends to worker each frame.
-Worker handles bone physics, main thread applies results + handles position drop.
+Converts armature bones to particles, sends to worker for physics,
+applies results back as bone rotations.
 
-Works on ANY armature - no hardcoded bone names or assumptions.
+Works on ANY armature - no hardcoded bone names.
 """
 import bpy
 import math
-from mathutils import Vector, Euler, Matrix
+from mathutils import Vector, Matrix, Quaternion, Euler
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 from ..props_and_utils.exp_time import get_game_time
 from ..developer.dev_logger import log_game
@@ -19,18 +19,29 @@ from ..animations.layer_manager import get_layer_manager_for, AnimChannel
 
 
 def _log(msg: str):
-    """Log ragdoll messages."""
+    """Log ragdoll messages if debug enabled."""
+    try:
+        scene = bpy.context.scene
+        if scene and getattr(scene, "dev_debug_ragdoll", False):
+            log_game("RAGDOLL", msg)
+    except:
+        pass
+
+
+def _log_always(msg: str):
+    """Always log (for important events)."""
     log_game("RAGDOLL", msg)
 
 
 # =============================================================================
-# POSITION DROP CONSTANTS
+# CONSTANTS
 # =============================================================================
 
-DROP_GRAVITY = -20.0         # m/s^2 (faster drop for collapse feel)
-DROP_DAMPING = 0.3           # Low bounce - collapse doesn't bounce much
-FLOOR_OFFSET = 0.05          # Minimal offset
-DROP_DURATION = 1.5          # Let it run longer for full collapse
+# How long the ragdoll continues after it settles
+SETTLE_TIME = 0.5
+
+# Root particle behavior
+FIX_ROOT = False  # If True, root stays in place. If False, whole body falls.
 
 
 # =============================================================================
@@ -38,35 +49,36 @@ DROP_DURATION = 1.5          # Let it run longer for full collapse
 # =============================================================================
 
 @dataclass
-class RagdollInstance:
-    """Active ragdoll state."""
+class VerletRagdoll:
+    """Active ragdoll state using Verlet particles."""
     ragdoll_id: int
     armature: Any
     armature_name: str
     start_time: float
     duration: float
 
-    # Per-bone static data (captured once at start)
-    bone_data: Dict[str, dict] = field(default_factory=dict)
+    # Particle system
+    particles: List[Tuple[float, float, float]] = field(default_factory=list)
+    prev_particles: List[Tuple[float, float, float]] = field(default_factory=list)
+    constraints: List[Tuple[int, int, float]] = field(default_factory=list)  # (p1_idx, p2_idx, rest_length)
+    fixed_mask: List[bool] = field(default_factory=list)
 
-    # Per-bone dynamic state (updated each frame)
-    bone_physics: Dict[str, dict] = field(default_factory=dict)
+    # Maps bone_name -> (head_particle_idx, tail_particle_idx)
+    bone_map: Dict[str, Tuple[int, int]] = field(default_factory=dict)
 
-    # Initial rotations for blending back
-    initial_rotations: Dict[str, tuple] = field(default_factory=dict)
+    # Initial state for restoration
+    initial_bone_rotations: Dict[str, Tuple[float, float, float, float]] = field(default_factory=dict)
+    initial_location: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
-    # Track initialization
-    initialized: bool = False
+    # Floor level
+    floor_z: float = 0.0
 
-    # Position drop physics (main thread handles this)
-    initial_position: tuple = (0.0, 0.0, 0.0)
-    drop_velocity: float = 0.0      # Z velocity for drop
-    ground_z: float = 0.0           # Floor level
-    drop_active: bool = True        # Is the drop phase active
+    # Armature's initial world matrix (for restoration)
+    initial_matrix: List[float] = field(default_factory=list)
 
 
 # Module state
-_active_ragdolls: Dict[int, RagdollInstance] = {}
+_active_ragdolls: Dict[int, VerletRagdoll] = {}
 _next_id: int = 0
 
 
@@ -82,13 +94,114 @@ def init_ragdoll_system():
     global _active_ragdolls, _next_id
     _active_ragdolls.clear()
     _next_id = 0
-    _log("System initialized")
+    _log_always("Verlet ragdoll system initialized")
 
 
 def shutdown_ragdoll_system():
     global _active_ragdolls
     _active_ragdolls.clear()
-    _log("System shutdown")
+    _log_always("Ragdoll system shutdown")
+
+
+# =============================================================================
+# PARTICLE BUILDING
+# =============================================================================
+
+def _build_particles_from_armature(armature) -> Tuple[List, List, Dict, List]:
+    """
+    Build particle system from armature bones.
+
+    Returns:
+        particles: list of (x, y, z) world positions
+        constraints: list of (p1_idx, p2_idx, rest_length)
+        bone_map: dict of bone_name -> (head_idx, tail_idx)
+        fixed_mask: list of bool (True = particle is fixed)
+    """
+    particles = []
+    constraints = []
+    bone_map = {}
+    fixed_mask = []
+
+    # Map position tuple -> particle index (for deduplication)
+    pos_to_idx = {}
+
+    world_matrix = armature.matrix_world
+
+    def get_or_create_particle(pos_world: Vector, is_root: bool = False) -> int:
+        """Get existing particle index or create new one."""
+        # Round position to avoid floating point issues
+        key = (round(pos_world.x, 4), round(pos_world.y, 4), round(pos_world.z, 4))
+
+        if key in pos_to_idx:
+            return pos_to_idx[key]
+
+        idx = len(particles)
+        particles.append(key)
+        fixed_mask.append(FIX_ROOT and is_root)
+        pos_to_idx[key] = idx
+        return idx
+
+    # Find root bones (no parent)
+    root_bones = [b for b in armature.pose.bones if b.parent is None]
+
+    # Process bones breadth-first
+    bones_to_process = list(root_bones)
+    processed = set()
+
+    while bones_to_process:
+        pb = bones_to_process.pop(0)
+        if pb.name in processed:
+            continue
+        processed.add(pb.name)
+
+        # Get world positions of bone head and tail
+        head_world = world_matrix @ pb.head
+        tail_world = world_matrix @ pb.tail
+
+        # Determine if this is a root bone
+        is_root = pb.parent is None
+
+        # Get or create particles
+        head_idx = get_or_create_particle(head_world, is_root=is_root)
+        tail_idx = get_or_create_particle(tail_world, is_root=False)
+
+        # Store bone mapping
+        bone_map[pb.name] = (head_idx, tail_idx)
+
+        # Create constraint (bone length)
+        bone_length = (tail_world - head_world).length
+        if bone_length > 0.001:  # Ignore zero-length bones
+            constraints.append((head_idx, tail_idx, bone_length))
+
+        # Queue children
+        for child in pb.children:
+            bones_to_process.append(child)
+
+    return particles, constraints, bone_map, fixed_mask
+
+
+def _capture_initial_state(armature, instance: VerletRagdoll):
+    """Capture bone rotations for later restoration."""
+    for pb in armature.pose.bones:
+        if pb.rotation_mode == 'QUATERNION':
+            q = pb.rotation_quaternion
+            instance.initial_bone_rotations[pb.name] = (q.w, q.x, q.y, q.z)
+        else:
+            e = pb.rotation_euler
+            # Store as quaternion for consistency
+            q = e.to_quaternion()
+            instance.initial_bone_rotations[pb.name] = (q.w, q.x, q.y, q.z)
+
+    instance.initial_location = tuple(armature.location)
+
+    # Store world matrix
+    m = armature.matrix_world
+    instance.initial_matrix = [
+        m[0][0], m[0][1], m[0][2], m[0][3],
+        m[1][0], m[1][1], m[1][2], m[1][3],
+        m[2][0], m[2][1], m[2][2], m[2][3],
+        m[3][0], m[3][1], m[3][2], m[3][3],
+    ]
 
 
 # =============================================================================
@@ -96,7 +209,7 @@ def shutdown_ragdoll_system():
 # =============================================================================
 
 def execute_ragdoll_reaction(r):
-    """Start ragdoll on armature - captures all bone data."""
+    """Start Verlet ragdoll on armature."""
     global _next_id
 
     scene = bpy.context.scene
@@ -108,7 +221,7 @@ def execute_ragdoll_reaction(r):
         armature = getattr(r, "ragdoll_target_armature", None)
 
     if not armature or armature.type != 'ARMATURE':
-        _log("ERROR: No valid armature")
+        _log_always("ERROR: No valid armature for ragdoll")
         return
 
     armature_id = id(armature)
@@ -117,74 +230,46 @@ def execute_ragdoll_reaction(r):
         _log(f"Already ragdolling {armature.name}")
         return
 
-    duration = getattr(r, "ragdoll_duration", 2.0)
-    _log(f"Starting ragdoll on {armature.name}, duration={duration}s")
+    duration = getattr(r, "ragdoll_duration", 3.0)
+    _log_always(f"START Verlet ragdoll on {armature.name}, duration={duration}s")
 
-    # Capture initial position for drop
-    initial_pos = tuple(armature.location)
-
-    # Get ground Z - try KCC first, then scene floor
-    ground_z = 0.0
+    # Get floor Z
+    floor_z = 0.0
     if hasattr(scene, 'kcc_grounded_z'):
-        ground_z = scene.kcc_grounded_z
+        floor_z = scene.kcc_grounded_z
     elif hasattr(scene, 'floor_z'):
-        ground_z = scene.floor_z
+        floor_z = scene.floor_z
 
-    # Capture per-bone static data - NO ROLE DETECTION, all bones equal
-    bone_data = {}
-    bone_physics = {}
-    initial_rotations = {}
+    # Build particle system
+    particles, constraints, bone_map, fixed_mask = _build_particles_from_armature(armature)
 
-    for bone in armature.pose.bones:
-        bone_name = bone.name
+    _log(f"Built {len(particles)} particles, {len(constraints)} constraints from {len(bone_map)} bones")
 
-        rest_mat = bone.bone.matrix_local.to_3x3()
-        rest_matrix_flat = [
-            rest_mat[0][0], rest_mat[0][1], rest_mat[0][2],
-            rest_mat[1][0], rest_mat[1][1], rest_mat[1][2],
-            rest_mat[2][0], rest_mat[2][1], rest_mat[2][2],
-        ]
-
-        bone_data[bone_name] = {
-            "rest_matrix": rest_matrix_flat,
-        }
-
-        bone_physics[bone_name] = {
-            "rot": (0.0, 0.0, 0.0),
-            "ang_vel": (0.0, 0.0, 0.0),
-        }
-
-        pb = armature.pose.bones.get(bone_name)
-        if pb:
-            if pb.rotation_mode == 'QUATERNION':
-                rot = pb.rotation_quaternion.to_euler('XYZ')
-            else:
-                rot = pb.rotation_euler
-            initial_rotations[bone_name] = (rot.x, rot.y, rot.z)
-
-    _log(f"  Captured {len(bone_data)} bones, ground_z={ground_z:.2f}")
-
-    instance = RagdollInstance(
+    # Create instance
+    instance = VerletRagdoll(
         ragdoll_id=_next_id,
         armature=armature,
         armature_name=armature.name,
         start_time=get_game_time(),
         duration=duration,
-        bone_data=bone_data,
-        bone_physics=bone_physics,
-        initial_rotations=initial_rotations,
-        initialized=False,
-        initial_position=initial_pos,
-        drop_velocity=0.0,
-        ground_z=ground_z + FLOOR_OFFSET,
-        drop_active=True,
+        particles=list(particles),
+        prev_particles=list(particles),  # Start with no velocity
+        constraints=constraints,
+        fixed_mask=fixed_mask,
+        bone_map=bone_map,
+        floor_z=floor_z,
     )
+
+    # Capture initial state
+    _capture_initial_state(armature, instance)
 
     _active_ragdolls[armature_id] = instance
     _next_id += 1
 
+    # Lock animations
     _lock_animations(armature.name, duration)
 
+    # Activate PHYSICS channel
     layer_manager = get_layer_manager_for(armature)
     if layer_manager:
         layer_manager.activate_channel(
@@ -194,57 +279,7 @@ def execute_ragdoll_reaction(r):
         )
         _log("PHYSICS channel activated")
 
-    _log(f"Ragdoll {instance.ragdoll_id} started")
-
-
-# =============================================================================
-# POSITION DROP (Main Thread - cheap physics)
-# =============================================================================
-
-def _update_position_drop(instance: RagdollInstance, dt: float):
-    """
-    Apply simple gravity drop to armature position.
-    Main thread handles this - just gravity + floor collision.
-    """
-    if not instance.drop_active:
-        return
-
-    armature = instance.armature
-    if not armature:
-        return
-
-    # Check if drop phase should end (time-based)
-    elapsed = get_game_time() - instance.start_time
-    if elapsed > DROP_DURATION:
-        instance.drop_active = False
-        _log(f"DROP ended (timeout) z={armature.location.z:.3f}")
-        return
-
-    try:
-        current_z = armature.location.z
-    except ReferenceError:
-        return
-
-    # Apply gravity
-    instance.drop_velocity += DROP_GRAVITY * dt
-
-    # Integrate position
-    new_z = current_z + instance.drop_velocity * dt
-
-    # Ground collision
-    if new_z <= instance.ground_z:
-        new_z = instance.ground_z
-        instance.drop_velocity *= -DROP_DAMPING  # Bounce with damping
-        _log(f"DROP hit_ground z={new_z:.3f} vel={instance.drop_velocity:.2f}")
-
-        # Stop bouncing if velocity is small
-        if abs(instance.drop_velocity) < 0.5:
-            instance.drop_velocity = 0.0
-            instance.drop_active = False
-            _log(f"DROP stopped (settled)")
-
-    # Apply to armature
-    armature.location.z = new_z
+    _log_always(f"Ragdoll {instance.ragdoll_id} started with {len(particles)} particles")
 
 
 # =============================================================================
@@ -252,17 +287,14 @@ def _update_position_drop(instance: RagdollInstance, dt: float):
 # =============================================================================
 
 def submit_ragdoll_update(engine, dt: float):
-    """Submit ragdoll job to worker with full bone data."""
+    """Submit ragdoll jobs to worker."""
     if not _active_ragdolls:
         return
-
-    # First, update position drop for all ragdolls (main thread physics)
-    for armature_id, inst in list(_active_ragdolls.items()):
-        _update_position_drop(inst, dt)
 
     ragdolls_data = []
 
     for armature_id, inst in list(_active_ragdolls.items()):
+        # Verify armature still exists
         try:
             _ = inst.armature.name
         except (ReferenceError, AttributeError):
@@ -273,22 +305,15 @@ def submit_ragdoll_update(engine, dt: float):
         elapsed = get_game_time() - inst.start_time
         time_left = max(0, inst.duration - elapsed)
 
-        world_mat = inst.armature.matrix_world
-        armature_matrix = [
-            world_mat[0][0], world_mat[0][1], world_mat[0][2], world_mat[0][3],
-            world_mat[1][0], world_mat[1][1], world_mat[1][2], world_mat[1][3],
-            world_mat[2][0], world_mat[2][1], world_mat[2][2], world_mat[2][3],
-            world_mat[3][0], world_mat[3][1], world_mat[3][2], world_mat[3][3],
-        ]
-
         ragdolls_data.append({
             "id": inst.ragdoll_id,
             "time_remaining": time_left,
-            "bone_data": inst.bone_data,
-            "bone_physics": inst.bone_physics,
-            "armature_matrix": armature_matrix,
-            "ground_z": inst.ground_z,
-            "initialized": inst.initialized,
+            "particles": inst.particles,
+            "prev_particles": inst.prev_particles,
+            "constraints": inst.constraints,
+            "fixed_mask": inst.fixed_mask,
+            "bone_map": inst.bone_map,
+            "floor_z": inst.floor_z,
         })
 
     if not ragdolls_data:
@@ -301,7 +326,7 @@ def submit_ragdoll_update(engine, dt: float):
 
     job_id = engine.submit_job("RAGDOLL_UPDATE_BATCH", job_data)
     if job_id is not None and job_id >= 0:
-        _log(f"Submitted job {job_id}: {len(ragdolls_data)} ragdolls")
+        _log(f"Submitted job {job_id}: {len(ragdolls_data)} ragdolls, {sum(len(r['particles']) for r in ragdolls_data)} particles")
 
 
 # =============================================================================
@@ -310,15 +335,18 @@ def submit_ragdoll_update(engine, dt: float):
 
 def process_ragdoll_results(results: List[dict]):
     """Apply worker results to armatures."""
+    _log_always(f"RESULTS received: {len(results)} ragdolls")
+
     if not results:
         return
 
     for result in results:
         ragdoll_id = result.get("id")
-        bone_physics = result.get("bone_physics", {})
+        new_particles = result.get("particles", [])
+        new_prev_particles = result.get("prev_particles", [])
         finished = result.get("finished", False)
-        initialized = result.get("initialized", False)
 
+        # Find instance
         instance = None
         armature_id = None
         for aid, inst in _active_ragdolls.items():
@@ -330,14 +358,16 @@ def process_ragdoll_results(results: List[dict]):
         if not instance:
             continue
 
-        instance.bone_physics = bone_physics
-        instance.initialized = initialized
+        # Update particle state
+        instance.particles = [tuple(p) for p in new_particles]
+        instance.prev_particles = [tuple(p) for p in new_prev_particles]
 
-        _apply_ragdoll(instance)
+        # Apply to armature
+        _apply_particles_to_armature(instance)
 
         if finished:
-            _log(f"Ragdoll {ragdoll_id} finished - restoring locomotion")
-            _reset_pose(instance)
+            _log_always(f"Ragdoll {ragdoll_id} finished - restoring pose")
+            _restore_pose(instance)
             _unlock_animations(instance.armature_name)
 
             layer_manager = get_layer_manager_for(instance.armature)
@@ -351,8 +381,18 @@ def process_ragdoll_results(results: List[dict]):
             del _active_ragdolls[armature_id]
 
 
-def _apply_ragdoll(instance: RagdollInstance):
-    """Apply bone rotations - combines initial pose with physics offset."""
+# =============================================================================
+# APPLY PARTICLES TO ARMATURE
+# =============================================================================
+
+def _apply_particles_to_armature(instance: VerletRagdoll):
+    """
+    Convert particle positions back to bone rotations.
+
+    Strategy:
+    1. Find the "root" particle (usually hips) and move armature to match
+    2. For each bone, calculate rotation to align it with its particles
+    """
     armature = instance.armature
     if not armature:
         return
@@ -362,26 +402,90 @@ def _apply_ragdoll(instance: RagdollInstance):
     except ReferenceError:
         return
 
-    for bone_name, physics in instance.bone_physics.items():
-        pb = pose_bones.get(bone_name)
-        if not pb:
-            continue
+    particles = instance.particles
+    bone_map = instance.bone_map
 
-        physics_rot = physics.get("rot", (0.0, 0.0, 0.0))
-        initial_rot = instance.initial_rotations.get(bone_name, (0.0, 0.0, 0.0))
+    if not particles or not bone_map:
+        return
 
-        final_rot = (
-            initial_rot[0] + physics_rot[0],
-            initial_rot[1] + physics_rot[1],
-            initial_rot[2] + physics_rot[2],
-        )
+    # Find the center of mass of all particles to position armature
+    if particles:
+        avg_x = sum(p[0] for p in particles) / len(particles)
+        avg_y = sum(p[1] for p in particles) / len(particles)
+        min_z = min(p[2] for p in particles)
 
-        pb.rotation_mode = 'XYZ'
-        pb.rotation_euler = Euler(final_rot, 'XYZ')
+        # Move armature so its origin follows the ragdoll
+        # Use the lowest point as the ground reference
+        armature.location.x = avg_x
+        armature.location.y = avg_y
+        armature.location.z = min_z
+
+    # Get current armature world matrix for transformations
+    armature.matrix_world = armature.matrix_world  # Force update
+    world_inv = armature.matrix_world.inverted()
+
+    # Process bones in hierarchy order (parents first)
+    processed = set()
+
+    def process_bone(pb):
+        if pb.name in processed:
+            return
+        if pb.parent and pb.parent.name not in processed:
+            process_bone(pb.parent)
+
+        processed.add(pb.name)
+
+        if pb.name not in bone_map:
+            return
+
+        head_idx, tail_idx = bone_map[pb.name]
+        if head_idx >= len(particles) or tail_idx >= len(particles):
+            return
+
+        # Get particle positions in world space
+        head_world = Vector(particles[head_idx])
+        tail_world = Vector(particles[tail_idx])
+
+        # Target direction in world space
+        target_dir_world = (tail_world - head_world).normalized()
+        if target_dir_world.length < 0.001:
+            return
+
+        # Get bone's rest direction in armature space
+        # bone.vector is the bone's direction in armature local space
+        rest_dir_local = pb.bone.vector.normalized()
+
+        # Transform rest direction to world space using armature's current matrix
+        rest_dir_world = (armature.matrix_world.to_3x3() @ rest_dir_local).normalized()
+
+        # Calculate rotation from rest to target
+        rotation = rest_dir_world.rotation_difference(target_dir_world)
+
+        # Convert world rotation to bone local rotation
+        # Need to account for parent's accumulated rotation
+        if pb.parent:
+            # Get parent's world rotation
+            parent_world_rot = (armature.matrix_world @ pb.parent.matrix).to_quaternion()
+            # Convert our world rotation to be relative to parent
+            local_rot = parent_world_rot.inverted() @ rotation @ parent_world_rot
+        else:
+            # Root bone - rotation is relative to armature
+            arm_rot = armature.matrix_world.to_quaternion()
+            local_rot = arm_rot.inverted() @ rotation @ arm_rot
+
+        # Apply to pose bone
+        pb.rotation_mode = 'QUATERNION'
+        pb.rotation_quaternion = local_rot
+
+    # Process all bones
+    for pb in pose_bones:
+        process_bone(pb)
+
+    _log(f"Applied particles to {len(processed)} bones")
 
 
-def _reset_pose(instance: RagdollInstance):
-    """Reset armature pose to initial state."""
+def _restore_pose(instance: VerletRagdoll):
+    """Restore armature to initial pose."""
     armature = instance.armature
     if not armature:
         return
@@ -391,11 +495,17 @@ def _reset_pose(instance: RagdollInstance):
     except ReferenceError:
         return
 
-    for bone_name, initial_rot in instance.initial_rotations.items():
+    # Restore bone rotations
+    for bone_name, quat in instance.initial_bone_rotations.items():
         pb = pose_bones.get(bone_name)
         if pb:
-            pb.rotation_mode = 'XYZ'
-            pb.rotation_euler = Euler(initial_rot, 'XYZ')
+            pb.rotation_mode = 'QUATERNION'
+            pb.rotation_quaternion = Quaternion((quat[0], quat[1], quat[2], quat[3]))
+
+    # Restore location
+    armature.location = Vector(instance.initial_location)
+
+    _log(f"Restored pose for {armature.name}")
 
 
 # =============================================================================
@@ -425,5 +535,3 @@ def _unlock_animations(armature_name: str):
     except ImportError:
         pass
     _log(f"Unlocked animations for {armature_name}")
-
-

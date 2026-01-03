@@ -13,6 +13,16 @@ Key changes from v1:
 """
 
 import numpy as np
+import os
+
+# =============================================================================
+# PATHS - HARDCODED to Desktop (AppData version gets reinstalled)
+# =============================================================================
+# NOTE: Defined early because _load_or_compute_rest_data() needs DATA_DIR
+
+DATA_DIR = r"C:\Users\spenc\Desktop\Exploratory\addons\Exploratory\Exp_Game\animations\neural_network\training_data"
+WEIGHTS_DIR = os.path.join(DATA_DIR, "weights")
+BEST_WEIGHTS_PATH = os.path.join(WEIGHTS_DIR, "best.npy")
 
 # =============================================================================
 # CONTROLLED BONES (23 total)
@@ -263,6 +273,124 @@ LENGTHS_ARRAY = np.array([BONE_LENGTHS[b] for b in CONTROLLED_BONES], dtype=np.f
 REST_POSITIONS_ARRAY = np.array([REST_POSITIONS[b] for b in CONTROLLED_BONES], dtype=np.float32)
 
 # =============================================================================
+# REST ORIENTATIONS & LOCAL OFFSETS
+# =============================================================================
+# Extracted from Blender armature bone matrices (bone.bone.matrix_local).
+# Each 3x3 matrix = [X_axis, Y_axis, Z_axis] as columns. Y points along bone.
+
+REST_ORIENTATIONS = np.array([
+    # Hips
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, +0.065772, +0.997835],
+     [+0.000000, +0.997835, -0.065772]],
+    # Spine
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, +0.145444, +0.989366],
+     [+0.000000, +0.989366, -0.145444]],
+    # Spine1
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, -0.027317, +0.999627],
+     [-0.000000, +0.999627, +0.027317]],
+    # Spine2
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, -0.172248, +0.985054],
+     [-0.000000, +0.985054, +0.172248]],
+    # NeckLower
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, +0.189003, +0.981977],
+     [+0.000000, +0.981977, -0.189003]],
+    # NeckUpper
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, +0.128213, +0.991747],
+     [+0.000000, +0.991747, -0.128213]],
+    # Head
+    [[-1.000000, +0.000000, -0.000000],
+     [-0.000000, -0.060457, +0.998171],
+     [-0.000000, +0.998171, +0.060457]],
+    # LeftShoulder
+    [[+0.011245, -0.934369, +0.356130],
+     [-0.999737, -0.003396, +0.022657],
+     [-0.019961, -0.356292, -0.934162]],
+    # LeftArm
+    [[+0.012166, -0.998830, +0.046793],
+     [-0.999734, -0.011233, +0.020158],
+     [-0.019609, -0.047026, -0.998701]],
+    # LeftForeArm
+    [[-0.001631, -0.999998, +0.001343],
+     [-0.999793, +0.001657, +0.020255],
+     [-0.020257, -0.001310, -0.999794]],
+    # LeftHand
+    [[+0.003149, -0.999645, -0.026438],
+     [-0.992720, -0.006308, +0.120282],
+     [-0.120406, +0.025866, -0.992388]],
+    # RightShoulder
+    [[+0.003965, +0.934367, -0.356289],
+     [+0.999793, +0.003396, +0.020033],
+     [+0.019928, -0.356295, -0.934161]],
+    # RightArm
+    [[+0.015614, +0.998783, -0.046783],
+     [+0.999758, -0.014871, +0.016200],
+     [+0.015484, -0.047025, -0.998774]],
+    # RightForeArm
+    [[-0.003132, +0.999994, -0.001357],
+     [+0.999861, +0.003153, +0.016360],
+     [+0.016364, -0.001305, -0.999865]],
+    # RightHand
+    [[+0.003467, +0.999772, +0.021056],
+     [+0.990924, -0.006264, +0.134274],
+     [+0.134376, +0.020400, -0.990720]],
+    # LeftThigh
+    [[+0.999811, -0.019470, +0.000739],
+     [-0.000398, +0.017234, +0.999864],
+     [-0.019480, -0.999662, +0.017224]],
+    # LeftShin
+    [[+0.999880, -0.008982, -0.012668],
+     [+0.011079, -0.159523, +0.987144],
+     [-0.010887, -0.987154, -0.159401]],
+    # LeftFoot
+    [[+0.999413, -0.006793, +0.033615],
+     [-0.006018, +0.930184, +0.367078],
+     [-0.033761, -0.367059, +0.929585]],
+    # LeftToeBase
+    [[+0.997450, -0.039139, -0.059690],
+     [+0.042547, +0.997489, +0.056827],
+     [+0.057315, -0.059220, +0.996598]],
+    # RightThigh
+    [[+0.999811, +0.019470, -0.000739],
+     [+0.000398, +0.017234, +0.999864],
+     [+0.019480, -0.999662, +0.017224]],
+    # RightShin
+    [[+0.999880, +0.008982, +0.012668],
+     [-0.011079, -0.159523, +0.987145],
+     [+0.010887, -0.987154, -0.159401]],
+    # RightFoot
+    [[+0.999413, +0.006793, -0.033615],
+     [+0.006018, +0.930184, +0.367078],
+     [+0.033761, -0.367059, +0.929585]],
+    # RightToeBase
+    [[+0.997450, +0.039139, +0.059690],
+     [-0.042547, +0.997489, +0.056827],
+     [-0.057315, -0.059220, +0.996598]],
+], dtype=np.float32)
+
+
+def _compute_local_offsets():
+    """Compute local offsets in parent's coordinate frame."""
+    local_offsets = np.zeros((NUM_BONES, 3), dtype=np.float32)
+    for i in range(NUM_BONES):
+        parent_idx = PARENT_INDICES[i]
+        if parent_idx < 0:
+            local_offsets[i] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        else:
+            world_offset = REST_POSITIONS_ARRAY[i] - REST_POSITIONS_ARRAY[parent_idx]
+            parent_rest_rot = REST_ORIENTATIONS[parent_idx]
+            local_offsets[i] = parent_rest_rot.T @ world_offset
+    return local_offsets
+
+
+LOCAL_OFFSETS = _compute_local_offsets()  # (23, 3)
+
+# =============================================================================
 # IK CHAINS (for FK computation and loss calculation)
 # =============================================================================
 
@@ -333,8 +461,9 @@ MAX_AXIS_ANGLE = 2.0  # Maximum rotation magnitude (radians) - ~115 degrees
 # =============================================================================
 
 LEARNING_RATE = 0.001
-HIDDEN_SIZE_1 = 128
-HIDDEN_SIZE_2 = 96
+HIDDEN_SIZE_1 = 256
+HIDDEN_SIZE_2 = 256
+HIDDEN_SIZE_3 = 128
 BATCH_SIZE = 16  # Smaller batch = faster FK gradient computation
 EPOCHS_DEFAULT = 300  # With early stopping, can set higher
 DROPOUT_RATE = 0.1  # Regularization
@@ -349,16 +478,3 @@ CONTACT_LOSS_WEIGHT = 0.5   # Feet stay planted when grounded
 LIMIT_PENALTY_WEIGHT = 0.1  # Soft joint limit penalty
 SMOOTHNESS_WEIGHT = 0.05    # Temporal consistency (if training sequences)
 SLIP_PENALTY_WEIGHT = 0.2   # Lateral foot slip penalty
-
-# =============================================================================
-# PATHS - HARDCODED to Desktop (AppData version gets reinstalled)
-# =============================================================================
-
-import os
-
-# HARDCODED - always write to Desktop version, never AppData
-DATA_DIR = r"C:\Users\spenc\Desktop\Exploratory\addons\Exploratory\Exp_Game\animations\neural_network\training_data"
-
-# Weights (the learned knowledge)
-WEIGHTS_DIR = os.path.join(DATA_DIR, "weights")
-BEST_WEIGHTS_PATH = os.path.join(WEIGHTS_DIR, "best.npy")

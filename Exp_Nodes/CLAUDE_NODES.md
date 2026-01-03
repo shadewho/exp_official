@@ -341,13 +341,36 @@ def execute_my_reaction(reaction):
 
 ---
 
-## 📋 Today's Fixes (Session Summary)
+## 🔗 Parenting System
 
-1. **Tracker Priming** - Added `_tracker_primed` set to prevent false trigger on first evaluation
-2. **Generation Counter** - Added `_tracker_generation` to discard stale results after reset
-3. **External Signal Reset** - Fixed `inter.external_signal` not being cleared on reset
-4. **Reaction Bindings** - Implemented full binding system for Transform reactions
-5. **Universal Sockets** - Unified all socket types so same-type nodes can connect
+**Simple atomic parenting - child snaps to parent's origin with optional local offset.**
+
+### Node: Parent / Unparent
+
+| Property | Description |
+|----------|-------------|
+| `parenting_op` | `PARENT_TO` or `UNPARENT` |
+| `parenting_target_use_character` | Use character as child |
+| `parenting_target_object` | Object to parent/unparent |
+| `parenting_parent_use_armature` | Parent to character armature |
+| `parenting_parent_object` | Parent object (if not using armature) |
+| `parenting_bone_name` | Bone name (if parenting to armature) |
+| `parenting_local_offset` | Local offset from parent origin |
+
+### How It Works
+
+```
+Child snaps to Parent origin → Child.location = local_offset
+```
+
+- **Atomic operation** - no race condition with moving parents
+- **Works with animated bones** - no Transform node needed
+- **Unparent restores original** - returns to game-start parent state
+
+### Key Files
+
+- `Exp_Game/reactions/exp_parenting.py` - Core parenting logic
+- `Exp_Nodes/reaction_nodes.py` - Node UI (ReactionParentingNode)
 
 ---
 

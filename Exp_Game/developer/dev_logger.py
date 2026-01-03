@@ -93,11 +93,18 @@ _CATEGORY_MAP = {
     'RAGDOLL': 'ragdoll',
     'RAGDOLL_TEST': 'ragdoll',  # Standalone ragdoll test uses same toggle
 
+    # Animation Layer System
+    'LAYERS': 'layers',
+    'LAYER_MGR': 'layers',  # Legacy category name
+
     # World State Optimization (Phase 1.1)
     'WORLD-STATE': 'world_state',
 
     # AABB Cache Optimization (Phase 1.2)
     'AABB-CACHE': 'aabb_cache',
+
+    # Health System
+    'HEALTH': 'health',
 }
 
 

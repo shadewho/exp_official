@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
 # Import worker-safe modules from engine
-from ..engine.animations.data import BakedAnimation, Transform
+from ..engine.animations.data import BakedAnimation
 from ..engine.animations.cache import AnimationCache
 
 

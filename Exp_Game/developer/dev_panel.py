@@ -16,7 +16,6 @@ from ..animations.test_panel import (
     reset_test_controller,
     is_test_modal_active,
 )
-from ..animations import rig_test_suite
 
 
 def _is_create_panel_enabled(scene, key: str) -> bool:
@@ -218,57 +217,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_transforms", text="Transforms")
             col.prop(scene, "dev_debug_tracking", text="Tracking (Track To)")
             col.prop(scene, "dev_debug_ragdoll", text="Ragdoll")
-
-        # ═══════════════════════════════════════════════════════════════
-        # Ragdoll Standalone Test (Collapsible)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        row = box.row()
-        row.prop(scene, "dev_section_ragdoll_test",
-                 icon='TRIA_DOWN' if scene.dev_section_ragdoll_test else 'TRIA_RIGHT',
-                 icon_only=True, emboss=False)
-        row.label(text="Ragdoll Test (Standalone)", icon='PHYSICS')
-
-        if scene.dev_section_ragdoll_test:
-            # Import status check
-            from .ragdoll_test import is_ragdoll_test_active, get_ragdoll_test_time_remaining
-
-            col = box.column(align=True)
-
-            # Check for target armature
-            armature = getattr(scene, 'target_armature', None)
-            if not armature:
-                col.label(text="Set target armature first", icon='ERROR')
-            else:
-                col.label(text=f"Target: {armature.name}", icon='ARMATURE_DATA')
-
-                # Settings
-                col.separator()
-                col.prop(scene, "dev_ragdoll_test_duration", text="Duration")
-                col.prop(scene, "dev_ragdoll_test_include_drop", text="Position Drop")
-
-                col.separator()
-
-                # Start/Stop buttons
-                is_active = is_ragdoll_test_active()
-
-                if is_active:
-                    time_left = get_ragdoll_test_time_remaining()
-                    row = col.row(align=True)
-                    row.scale_y = 1.3
-                    row.operator("exp.ragdoll_test_stop", text=f"Stop ({time_left:.1f}s left)", icon='SNAP_FACE')
-                else:
-                    row = col.row(align=True)
-                    row.scale_y = 1.3
-                    row.operator("exp.ragdoll_test_start", text="Start Ragdoll Test", icon='PLAY')
-
-                # Info
-                col.separator()
-                info_box = col.box()
-                info_box.scale_y = 0.7
-                info_box.label(text="Standalone test - NO animations,", icon='INFO')
-                info_box.label(text="NO game systems. Pure physics only.")
-                info_box.label(text="Logs: diagnostics_latest.txt")
+            col.prop(scene, "dev_debug_health", text="Health")
 
         # ═══════════════════════════════════════════════════════════════
         # Animation 2.0 (Collapsible)
@@ -316,6 +265,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_animations", text="Animation Logs")
             col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
             col.prop(scene, "dev_debug_pose_blend", text="Pose Blend Logs")
+            col.prop(scene, "dev_debug_layers", text="Layer Logs")
 
             props = scene.anim2_test
             ctrl = get_test_controller()
@@ -415,7 +365,105 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                     col = adv.column(align=True)
                     col.operator("neural.reset", text="Reset Weights (Start Over)", icon='TRASH')
 
-                rig_test_suite.draw_rig_test_ui(neural_box, scene)
+                # ─────────────────────────────────────────────────────────────
+                # Diagnostics (collapsed)
+                # ─────────────────────────────────────────────────────────────
+                diag = neural_box.box()
+                row = diag.row()
+                row.prop(scene, "dev_neural_show_diagnostics",
+                         icon='TRIA_DOWN' if getattr(scene, 'dev_neural_show_diagnostics', False) else 'TRIA_RIGHT',
+                         icon_only=True, emboss=False)
+                row.label(text="Diagnostics", icon='VIEWZOOM')
+
+                if getattr(scene, 'dev_neural_show_diagnostics', False):
+                    col = diag.column(align=True)
+                    col.scale_y = 0.7
+                    col.label(text="Verify pipeline is working correctly:")
+                    col.scale_y = 1.0
+                    col.separator()
+                    col.operator("neural.run_diagnostics", text="Run All Diagnostics", icon='CHECKMARK')
+
+                    # Show last results if available
+                    from ..animations.test_panel import get_diagnostic_results
+                    results = get_diagnostic_results()
+                    if results['last_run']:
+                        col.separator()
+                        col.scale_y = 0.7
+                        col.label(text=f"Last run: {results['last_run']}")
+                        col.scale_y = 1.0
+
+                        results_box = diag.box()
+                        results_box.scale_y = 0.8
+
+                        def status_icon(ok):
+                            return 'CHECKMARK' if ok else 'ERROR'
+
+                        results_box.label(text=f"Rest Positions", icon=status_icon(results['rest_pos_ok']))
+                        results_box.label(text=f"Bone Lengths", icon=status_icon(results['bone_len_ok']))
+                        results_box.label(text=f"FK Computation", icon=status_icon(results['fk_ok']))
+                        results_box.label(text=f"Root Rotation", icon=status_icon(results['root_rot_ok']))
+                        results_box.label(text=f"Data Extraction", icon=status_icon(results['extraction_ok']))
+
+                # ─────────────────────────────────────────────────────────────
+                # Verification (collapsed) - Test trained model accuracy
+                # ─────────────────────────────────────────────────────────────
+                verify = neural_box.box()
+                row = verify.row()
+                row.prop(scene, "dev_neural_show_verification",
+                         icon='TRIA_DOWN' if getattr(scene, 'dev_neural_show_verification', False) else 'TRIA_RIGHT',
+                         icon_only=True, emboss=False)
+                row.label(text="Verification", icon='OUTLINER_OB_ARMATURE')
+
+                if getattr(scene, 'dev_neural_show_verification', False):
+                    col = verify.column(align=True)
+
+                    # Pipeline validation (FIRST - do this before anything else)
+                    col.scale_y = 0.7
+                    col.label(text="1. Validate FK pipeline (do first!):")
+                    col.scale_y = 1.0
+                    col.operator("neural.validate_pipeline", text="Validate FK Pipeline", icon='VIEWZOOM')
+                    col.separator()
+
+                    # Model verification
+                    col.scale_y = 0.7
+                    col.label(text="2. Test trained model accuracy:")
+                    col.scale_y = 1.0
+                    col.operator("neural.verify_model", text="Verify Trained Model", icon='CHECKMARK')
+                    col.separator()
+
+                    # Visual inspection
+                    col.scale_y = 0.7
+                    col.label(text="3. Visual inspection:")
+                    col.scale_y = 1.0
+                    row = col.row(align=True)
+                    row.operator("neural.apply_test_pose", text="Prediction", icon='POSE_HLT')
+                    row.operator("neural.apply_ground_truth", text="Ground Truth", icon='ARMATURE_DATA')
+                    col.operator("neural.compare_visual", text="Toggle Compare", icon='FILE_REFRESH')
+
+                    # Show verification results if available
+                    from ..animations.test_panel import get_verification_results
+                    vresults = get_verification_results()
+                    if vresults.get('last_run'):
+                        col.separator()
+                        col.scale_y = 0.7
+                        col.label(text=f"Last: {vresults['last_run']}")
+                        col.scale_y = 1.0
+
+                        summary = vresults.get('summary', {})
+                        if summary:
+                            vbox = verify.box()
+                            vbox.scale_y = 0.8
+                            grade = summary.get('grade', '?')
+                            rmse = summary.get('position_rmse_cm', 0)
+                            rot = summary.get('rotation_error_deg', 0)
+                            passed = summary.get('passed', 0)
+                            total = summary.get('total', 0)
+
+                            grade_icon = 'CHECKMARK' if grade in ['EXCELLENT', 'GOOD'] else 'ERROR'
+                            vbox.label(text=f"Grade: {grade}", icon=grade_icon)
+                            vbox.label(text=f"Position: {rmse:.1f}cm RMSE")
+                            vbox.label(text=f"Rotation: {rot:.1f}°")
+                            vbox.label(text=f"Tests: {passed}/{total} passed")
 
             # ═══════════════════════════════════════════════════════════════
             # ANIMATION PLAYBACK

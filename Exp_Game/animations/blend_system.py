@@ -74,11 +74,6 @@ class LayerType(Enum):
     OVERRIDE = "override"   # Replaces bones completely
 
 
-class BlendMode(Enum):
-    LERP = "lerp"           # Linear interpolation
-    ADDITIVE = "additive"   # Add transforms
-
-
 # =============================================================================
 # ANIMATION LAYER
 # =============================================================================
@@ -233,29 +228,6 @@ class BlendSystem:
         if hasattr(self, '_ragdoll_active'):
             self._ragdoll_active.pop(armature_name, None)
         log_game("ANIMATIONS", f"RAGDOLL_UNLOCK armature={armature_name}")
-
-    def is_ragdoll_active(self, armature_name: str = None) -> bool:
-        """
-        Check if ragdoll is blocking animations.
-
-        Args:
-            armature_name: Specific armature to check, or None for any ragdoll
-        """
-        if not hasattr(self, '_ragdoll_active'):
-            return False
-
-        import time
-        now = time.time()
-
-        if armature_name:
-            end_time = self._ragdoll_active.get(armature_name, 0)
-            return now < end_time
-        else:
-            # Check if ANY ragdoll is active
-            for end_time in self._ragdoll_active.values():
-                if now < end_time:
-                    return True
-            return False
 
     # =========================================================================
     # LAYER MANAGEMENT
@@ -845,6 +817,13 @@ class BlendSystem:
         from .layer_manager import get_layer_manager_for, AnimChannel
         layer_mgr = get_layer_manager_for(armature)
         if layer_mgr and layer_mgr.is_channel_active(AnimChannel.PHYSICS):
+            # Log when physics blocks animations (uses layer debug toggle)
+            try:
+                import bpy
+                if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_layers", False):
+                    log_game("LAYERS", f"BLOCKED apply_to_armature: {armature.name} (PHYSICS active)")
+            except:
+                pass
             return 0  # Physics system controls the armature
 
         # Sample current armature pose to use as base (preserves locomotion)

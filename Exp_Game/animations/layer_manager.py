@@ -119,7 +119,8 @@ class LayerManager:
             state.influence = influence
             state.fading = False
 
-        _log(f"{self.obj_name}: {channel.name} activated, influence={influence}, fade={fade_in}")
+        _log(f"ACTIVATE {self.obj_name}: {channel.name} influence={influence:.2f} fade_in={fade_in:.2f}s")
+        _log_status(self.obj_name, self)
 
     def deactivate_channel(
         self,
@@ -145,7 +146,8 @@ class LayerManager:
             state.target_influence = 0.0
             state.fading = False
 
-        _log(f"{self.obj_name}: {channel.name} deactivating, fade={fade_out}")
+        _log(f"DEACTIVATE {self.obj_name}: {channel.name} fade_out={fade_out:.2f}s")
+        _log_status(self.obj_name, self)
 
     def is_channel_active(self, channel: AnimChannel) -> bool:
         """Check if channel is active."""
@@ -278,18 +280,6 @@ def get_layer_manager(obj_name: str = None) -> Optional[LayerManager]:
     return _managers.get(obj_name)
 
 
-def get_all_managers() -> Dict[str, LayerManager]:
-    """Get all registered layer managers."""
-    return _managers.copy()
-
-
-def remove_layer_manager(obj_name: str) -> None:
-    """Remove a layer manager from registry."""
-    if obj_name in _managers:
-        del _managers[obj_name]
-        _log(f"Removed manager for {obj_name}")
-
-
 # =============================================================================
 # LIFECYCLE
 # =============================================================================
@@ -305,6 +295,7 @@ def init_layer_managers() -> int:
 
     count = 0
     scene = bpy.context.scene
+    obj_names = []
 
     # Character armature
     armature = getattr(scene, "target_armature", None)
@@ -313,6 +304,7 @@ def init_layer_managers() -> int:
         if mgr:
             mgr.disable_native_action(armature)
             count += 1
+            obj_names.append(f"{armature.name}(CHAR)")
 
     # All objects with animation_data
     for obj in bpy.data.objects:
@@ -323,8 +315,9 @@ def init_layer_managers() -> int:
             if mgr:
                 mgr.disable_native_action(obj)
                 count += 1
+                obj_names.append(obj.name)
 
-    _log(f"Initialized {count} layer managers")
+    _log(f"INIT {count} layer managers: [{', '.join(obj_names[:5])}{'...' if len(obj_names) > 5 else ''}]")
     return count
 
 
@@ -349,31 +342,37 @@ def update_all_managers(dt: float) -> None:
         mgr.update(dt)
 
 
-# Legacy compatibility
-def init_layer_manager() -> LayerManager:
-    """Legacy: Initialize character's layer manager."""
-    import bpy
-    armature = getattr(bpy.context.scene, "target_armature", None)
-    if armature:
-        return get_layer_manager_for(armature)
-    return None
-
-
-def shutdown_layer_manager() -> None:
-    """Legacy: Shutdown character's layer manager."""
-    shutdown_layer_managers()
-
-
 # =============================================================================
 # LOGGING
 # =============================================================================
 
 def _log(msg: str) -> None:
-    """Log if debug enabled."""
+    """Log if layer debug enabled."""
     try:
         import bpy
         scene = bpy.context.scene
-        if scene and getattr(scene, "dev_debug_animations", False):
-            log_game("LAYER_MGR", msg)
+        if scene and getattr(scene, "dev_debug_layers", False):
+            log_game("LAYERS", msg)
+    except:
+        pass
+
+
+def _log_status(obj_name: str, mgr: 'LayerManager') -> None:
+    """Log detailed status of a layer manager."""
+    try:
+        import bpy
+        scene = bpy.context.scene
+        if not scene or not getattr(scene, "dev_debug_layers", False):
+            return
+
+        active_ch = mgr.get_active_channel()
+        channels_info = []
+        for ch in AnimChannel:
+            state = mgr._channels[ch]
+            if state.active:
+                fade_status = f"fading={state.influence:.2f}->{state.target_influence:.2f}" if state.fading else f"inf={state.influence:.2f}"
+                channels_info.append(f"{ch.name}({fade_status})")
+
+        log_game("LAYERS", f"{obj_name}: active={active_ch.name} [{', '.join(channels_info)}]")
     except:
         pass

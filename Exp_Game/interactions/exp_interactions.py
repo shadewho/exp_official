@@ -9,6 +9,7 @@ from ..reactions.exp_reactions import ( execute_property_reaction,
                              execute_counter_update_reaction,
                              execute_timer_control_reaction, execute_sound_reaction,
                              execute_custom_action_reaction,
+                             execute_enable_health_reaction,
 )
 from ..reactions.exp_transforms import execute_transform_reaction
 from ..reactions.exp_projectiles import execute_projectile_reaction, execute_hitscan_reaction
@@ -310,6 +311,8 @@ def _execute_reaction_now(r):
         execute_tracking_reaction(r)
     elif t == "RAGDOLL":
         execute_ragdoll_reaction(r)
+    elif t == "ENABLE_HEALTH":
+        execute_enable_health_reaction(r)
 
 
 def _execute_reaction_list_now(reactions):

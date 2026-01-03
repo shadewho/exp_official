@@ -62,6 +62,10 @@ def register_properties():
         name="Show Advanced", default=False)
     bpy.types.Scene.dev_neural_show_create = bpy.props.BoolProperty(
         name="Create New Data", default=False)
+    bpy.types.Scene.dev_neural_show_diagnostics = bpy.props.BoolProperty(
+        name="Show Diagnostics", default=False)
+    bpy.types.Scene.dev_neural_show_verification = bpy.props.BoolProperty(
+        name="Show Verification", default=False)
 
     # ══════════════════════════════════════════════════════════════════════════
     # ENGINE HEALTH
@@ -585,6 +589,19 @@ def register_properties():
         default=False
     )
 
+    bpy.types.Scene.dev_debug_layers = bpy.props.BoolProperty(
+        name="Animation Layers",
+        description=(
+            "Animation layer system diagnostics:\n"
+            "• Layer managers created per object\n"
+            "• Channel activations (BASE/OVERRIDE/PHYSICS)\n"
+            "• Channel deactivations and fades\n"
+            "• Active channel per object\n"
+            "• Physics blocking animation apply"
+        ),
+        default=False
+    )
+
     bpy.types.Scene.dev_debug_projectiles = bpy.props.BoolProperty(
         name="Projectiles",
         description=(
@@ -645,31 +662,16 @@ def register_properties():
         default=False
     )
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # RAGDOLL STANDALONE TEST
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_section_ragdoll_test = bpy.props.BoolProperty(
-        name="Ragdoll Test",
-        default=False
-    )
-
-    bpy.types.Scene.dev_ragdoll_test_duration = bpy.props.FloatProperty(
-        name="Duration",
-        description="How long to run the ragdoll test (seconds)",
-        default=3.0,
-        min=0.5,
-        max=30.0,
-        unit='TIME'
-    )
-
-    bpy.types.Scene.dev_ragdoll_test_include_drop = bpy.props.BoolProperty(
-        name="Include Position Drop",
+    bpy.types.Scene.dev_debug_health = bpy.props.BoolProperty(
+        name="Health",
         description=(
-            "Apply gravity to armature position (makes it fall to ground).\n"
-            "Disable to test bone physics only without position change."
+            "Health system diagnostics:\n"
+            "• Object health enabled/disabled\n"
+            "• Health value changes (current, delta)\n"
+            "• Per-object health status\n"
+            "• Reset/clear events"
         ),
-        default=True
+        default=False
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1048,6 +1050,8 @@ def unregister_properties():
         'dev_section_anim',
         'dev_neural_show_advanced',
         'dev_neural_show_create',
+        'dev_neural_show_diagnostics',
+        'dev_neural_show_verification',
 
         # Engine
         'dev_debug_engine',
@@ -1106,16 +1110,13 @@ def unregister_properties():
         'dev_debug_animations',
         'dev_debug_anim_cache',
         'dev_debug_anim_worker',
+        'dev_debug_layers',
         'dev_debug_projectiles',
         'dev_debug_hitscans',
         'dev_debug_transforms',
         'dev_debug_tracking',
         'dev_debug_ragdoll',
-
-        # Ragdoll standalone test
-        'dev_section_ragdoll_test',
-        'dev_ragdoll_test_duration',
-        'dev_ragdoll_test_include_drop',
+        'dev_debug_health',
 
         # Pose Library
         'dev_debug_poses',
@@ -1199,6 +1200,10 @@ def unregister_properties():
         'pose_blend_ik_leg_L_target',
         'pose_blend_ik_leg_R',
         'pose_blend_ik_leg_R_target',
+        # Ragdoll standalone test (removed)
+        'dev_section_ragdoll_test',
+        'dev_ragdoll_test_duration',
+        'dev_ragdoll_test_include_drop',
     ]
 
     for prop in old_props:

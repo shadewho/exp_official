@@ -293,11 +293,18 @@ class ExpVectorSocket(bpy.types.NodeSocket):
             if self.reaction_prop:
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
-                    layout.prop(r, self.reaction_prop, text=text or "")
+                    # Draw with X, Y, Z labels in a column
+                    col = layout.column(align=True)
+                    col.prop(r, self.reaction_prop, index=0, text="X")
+                    col.prop(r, self.reaction_prop, index=1, text="Y")
+                    col.prop(r, self.reaction_prop, index=2, text="Z")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
+                # Draw with X, Y, Z labels in a column
                 col = layout.column(align=True)
-                col.prop(node, self.prop_name, text="")
+                col.prop(node, self.prop_name, index=0, text="X")
+                col.prop(node, self.prop_name, index=1, text="Y")
+                col.prop(node, self.prop_name, index=2, text="Z")
                 return
         layout.label(text=text or ("Vector" if self.is_output else "Input"))
 

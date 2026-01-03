@@ -18,7 +18,7 @@ from bpy.props import FloatProperty, BoolProperty, EnumProperty
 from ..engine.animations.baker import bake_action
 from ..engine import EngineCore
 from .controller import AnimationController
-from ..developer.dev_logger import start_session, log_game, log_worker_messages, export_game_log, clear_log
+from ..developer.dev_logger import start_session, log_game, export_game_log, clear_log
 import gpu
 from gpu_extras.batch import batch_for_shader
 
@@ -616,7 +616,7 @@ class NEURAL_OT_ReloadWeights(Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        from .neural_network import get_network
+        from .neural_network import reset_network
         from .neural_network.config import BEST_WEIGHTS_PATH
         import os
 
@@ -624,7 +624,7 @@ class NEURAL_OT_ReloadWeights(Operator):
             self.report({'ERROR'}, "No weights file found. Train first.")
             return {'CANCELLED'}
 
-        net = get_network()
+        net = reset_network()
         if net.load():
             self.report({'INFO'}, f"Weights reloaded (best loss: {net.best_loss:.6f})")
             return {'FINISHED'}
@@ -778,6 +778,1257 @@ class NEURAL_OT_AppendData(Operator):
 
 
 # =============================================================================
+# NEURAL IK DIAGNOSTICS
+# =============================================================================
+
+# Store diagnostic results for UI display
+_diagnostic_results = {
+    'last_run': None,
+    'rest_pos_ok': None,
+    'bone_len_ok': None,
+    'fk_ok': None,
+    'root_rot_ok': None,
+    'extraction_ok': None,
+    'log': [],
+}
+
+
+def get_diagnostic_results() -> dict:
+    """Get last diagnostic results for UI display."""
+    return _diagnostic_results.copy()
+
+
+def _diag_log(category: str, message: str, level: str = "INFO"):
+    """Add to diagnostic log."""
+    entry = f"[{level}] [{category}] {message}"
+    _diagnostic_results['log'].append(entry)
+    print(entry)
+
+
+def _verify_rest_positions(armature) -> bool:
+    """Compare config REST_POSITIONS with actual Blender rest positions."""
+    from .neural_network.config import CONTROLLED_BONES, REST_POSITIONS
+    import numpy as np
+
+    _diag_log("REST_POS", "=" * 50)
+    _diag_log("REST_POS", "VERIFYING REST POSITIONS")
+
+    arm_data = armature.data
+    arm_matrix = armature.matrix_world
+    max_error = 0.0
+
+    for bone_name in CONTROLLED_BONES:
+        bone = arm_data.bones.get(bone_name)
+        if bone is None:
+            _diag_log("REST_POS", f"  {bone_name}: MISSING", "ERROR")
+            continue
+
+        blender_world = arm_matrix @ bone.head_local
+        config_pos = np.array(REST_POSITIONS[bone_name])
+        blender_arr = np.array([blender_world.x, blender_world.y, blender_world.z])
+        error = np.linalg.norm(blender_arr - config_pos)
+        max_error = max(max_error, error)
+
+        if error > 0.001:
+            _diag_log("REST_POS", f"  {bone_name}: Error={error:.4f}m", "WARN")
+
+    passed = max_error < 0.01
+    _diag_log("REST_POS", f"Max error: {max_error:.4f}m - {'PASS' if passed else 'FAIL'}")
+    return passed
+
+
+def _verify_bone_lengths(armature) -> bool:
+    """Compare config BONE_LENGTHS with actual Blender bone lengths."""
+    from .neural_network.config import CONTROLLED_BONES, BONE_LENGTHS
+
+    _diag_log("BONE_LEN", "=" * 50)
+    _diag_log("BONE_LEN", "VERIFYING BONE LENGTHS")
+
+    arm_data = armature.data
+    max_error_pct = 0.0
+
+    for bone_name in CONTROLLED_BONES:
+        bone = arm_data.bones.get(bone_name)
+        if bone is None:
+            continue
+
+        blender_len = bone.length
+        config_len = BONE_LENGTHS[bone_name]
+        error_pct = abs(blender_len - config_len) / config_len * 100
+        max_error_pct = max(max_error_pct, error_pct)
+
+        if error_pct > 1:
+            _diag_log("BONE_LEN", f"  {bone_name}: {error_pct:.1f}% diff", "WARN")
+
+    passed = max_error_pct < 5
+    _diag_log("BONE_LEN", f"Max error: {max_error_pct:.1f}% - {'PASS' if passed else 'FAIL'}")
+    return passed
+
+
+def _verify_fk_against_blender(armature) -> bool:
+    """Compare our FK computation with Blender's actual bone positions."""
+    from mathutils import Vector, Matrix
+    from .neural_network.config import CONTROLLED_BONES, END_EFFECTORS, NUM_BONES, BONE_TO_INDEX
+    from .neural_network.forward_kinematics import forward_kinematics, get_effector_positions
+    import numpy as np
+
+    _diag_log("FK_VERIFY", "=" * 50)
+    _diag_log("FK_VERIFY", "VERIFYING FK COMPUTATION")
+
+    pose_bones = armature.pose.bones
+    arm_matrix = armature.matrix_world
+
+    hips = pose_bones.get("Hips")
+    if hips is None:
+        _diag_log("FK_VERIFY", "No Hips bone!", "ERROR")
+        return False
+
+    # Get root info - armature world rotation (not hips bone matrix!)
+    hips_world_pos = arm_matrix @ hips.head
+    root_pos = np.array([hips_world_pos.x, hips_world_pos.y, hips_world_pos.z])
+
+    # root_rot = armature world rotation
+    arm_rot_3x3 = arm_matrix.to_3x3()
+    root_rot = np.array([
+        [arm_rot_3x3[0][0], arm_rot_3x3[0][1], arm_rot_3x3[0][2]],
+        [arm_rot_3x3[1][0], arm_rot_3x3[1][1], arm_rot_3x3[1][2]],
+        [arm_rot_3x3[2][0], arm_rot_3x3[2][1], arm_rot_3x3[2][2]],
+    ], dtype=np.float32)
+
+    # Extract current rotations
+    rotations = np.zeros((NUM_BONES, 3), dtype=np.float32)
+    for i, bone_name in enumerate(CONTROLLED_BONES):
+        bone = pose_bones.get(bone_name)
+        if bone:
+            if bone.rotation_mode == 'QUATERNION':
+                quat = bone.rotation_quaternion
+            else:
+                quat = bone.rotation_euler.to_quaternion()
+            axis, angle = quat.to_axis_angle()
+            rotations[i] = [axis.x * angle, axis.y * angle, axis.z * angle]
+
+    # Run our FK
+    fk_positions, _ = forward_kinematics(rotations, root_pos, root_rot)
+
+    # Compare effectors
+    _diag_log("FK_VERIFY", "Effector comparison:")
+    errors = []
+    for name in END_EFFECTORS:
+        bone = pose_bones.get(name)
+        blender_pos = arm_matrix @ bone.head
+        blender_arr = np.array([blender_pos.x, blender_pos.y, blender_pos.z])
+        fk_pos = fk_positions[BONE_TO_INDEX[name]]
+        error = np.linalg.norm(blender_arr - fk_pos)
+        errors.append(error)
+        status = "OK" if error < 0.02 else "ERROR"
+        _diag_log("FK_VERIFY", f"  {name}: {error*100:.1f}cm [{status}]")
+
+    mean_error = np.mean(errors)
+    passed = mean_error < 0.05
+    _diag_log("FK_VERIFY", f"Mean effector error: {mean_error*100:.1f}cm - {'PASS' if passed else 'FAIL'}")
+    return passed
+
+
+def _verify_root_rotation_handling(armature) -> bool:
+    """Test if Hips rotation is being double-applied."""
+    from mathutils import Quaternion
+    from .neural_network.config import NUM_BONES, BONE_TO_INDEX
+    from .neural_network.forward_kinematics import forward_kinematics
+    import numpy as np
+
+    _diag_log("ROOT_ROT", "=" * 50)
+    _diag_log("ROOT_ROT", "TESTING ROOT ROTATION HANDLING")
+
+    pose_bones = armature.pose.bones
+    arm_matrix = armature.matrix_world
+    hips = pose_bones.get("Hips")
+
+    if hips is None:
+        _diag_log("ROOT_ROT", "No Hips bone!", "ERROR")
+        return False
+
+    # Store original
+    original_mode = hips.rotation_mode
+    if original_mode != 'QUATERNION':
+        hips.rotation_mode = 'QUATERNION'
+    original_quat = hips.rotation_quaternion.copy()
+
+    # Apply test rotation: 45° around Y
+    test_angle = np.pi / 4
+    test_quat = Quaternion((0, 1, 0), test_angle)
+    hips.rotation_quaternion = test_quat
+    bpy.context.view_layer.update()
+
+    _diag_log("ROOT_ROT", "Applied 45° Y rotation to Hips")
+
+    # Get root info - armature world rotation (not hips bone matrix!)
+    hips_world_pos = arm_matrix @ hips.head
+    root_pos = np.array([hips_world_pos.x, hips_world_pos.y, hips_world_pos.z])
+
+    # root_rot = armature world rotation (FK applies REST_ORIENTATIONS internally)
+    arm_rot_3x3 = arm_matrix.to_3x3()
+    root_rot = np.array([
+        [arm_rot_3x3[0][0], arm_rot_3x3[0][1], arm_rot_3x3[0][2]],
+        [arm_rot_3x3[1][0], arm_rot_3x3[1][1], arm_rot_3x3[1][2]],
+        [arm_rot_3x3[2][0], arm_rot_3x3[2][1], arm_rot_3x3[2][2]],
+    ], dtype=np.float32)
+
+    # Extract Hips local rotation
+    axis, angle = test_quat.to_axis_angle()
+    hips_local_rot = np.array([axis.x * angle, axis.y * angle, axis.z * angle])
+
+    # Build rotation array
+    rotations = np.zeros((NUM_BONES, 3), dtype=np.float32)
+    rotations[0] = hips_local_rot
+
+    # Run FK
+    fk_positions, _ = forward_kinematics(rotations, root_pos, root_rot)
+
+    # Compare Spine position
+    spine = pose_bones.get("Spine")
+    double_applied = False
+    if spine:
+        blender_spine = arm_matrix @ spine.head
+        blender_arr = np.array([blender_spine.x, blender_spine.y, blender_spine.z])
+        fk_spine = fk_positions[BONE_TO_INDEX["Spine"]]
+        error = np.linalg.norm(blender_arr - fk_spine)
+
+        _diag_log("ROOT_ROT", f"Spine position error: {error*100:.1f}cm")
+
+        if error > 0.05:  # 5cm threshold (in meters)
+            _diag_log("ROOT_ROT", "ROOT ROTATION IS DOUBLE-APPLIED!", "ERROR")
+            _diag_log("ROOT_ROT", "Fix: FK should not apply Hips local_rot when root_rot already includes it", "ERROR")
+            double_applied = True
+        else:
+            _diag_log("ROOT_ROT", "Root rotation handling OK")
+
+    # Restore
+    hips.rotation_quaternion = original_quat
+    hips.rotation_mode = original_mode
+    bpy.context.view_layer.update()
+
+    return not double_applied
+
+
+def _verify_data_extraction(armature) -> bool:
+    """Verify round-trip: extract → FK → compare."""
+    from .neural_network.config import CONTROLLED_BONES, END_EFFECTORS, NUM_BONES, BONE_TO_INDEX
+    from .neural_network.forward_kinematics import forward_kinematics, get_effector_positions
+    import numpy as np
+
+    _diag_log("EXTRACT", "=" * 50)
+    _diag_log("EXTRACT", "VERIFYING DATA EXTRACTION ROUND-TRIP")
+
+    pose_bones = armature.pose.bones
+    arm_matrix = armature.matrix_world
+
+    hips = pose_bones.get("Hips")
+    hips_world_pos = arm_matrix @ hips.head
+    root_pos = np.array([hips_world_pos.x, hips_world_pos.y, hips_world_pos.z])
+
+    # root_rot = armature world rotation (FK applies REST_ORIENTATIONS internally)
+    arm_rot_3x3 = arm_matrix.to_3x3()
+    root_rot = np.array([
+        [arm_rot_3x3[0][0], arm_rot_3x3[0][1], arm_rot_3x3[0][2]],
+        [arm_rot_3x3[1][0], arm_rot_3x3[1][1], arm_rot_3x3[1][2]],
+        [arm_rot_3x3[2][0], arm_rot_3x3[2][1], arm_rot_3x3[2][2]],
+    ], dtype=np.float32)
+
+    # Extract bone rotations
+    rotations = np.zeros((NUM_BONES, 3), dtype=np.float32)
+    for i, bone_name in enumerate(CONTROLLED_BONES):
+        bone = pose_bones.get(bone_name)
+        if bone:
+            if bone.rotation_mode == 'QUATERNION':
+                quat = bone.rotation_quaternion
+            else:
+                quat = bone.rotation_euler.to_quaternion()
+            axis, angle = quat.to_axis_angle()
+            rotations[i] = [axis.x * angle, axis.y * angle, axis.z * angle]
+
+    # Extract effector targets
+    effector_targets = []
+    for name in END_EFFECTORS:
+        bone = pose_bones.get(name)
+        world_pos = arm_matrix @ bone.head
+        effector_targets.append([world_pos.x, world_pos.y, world_pos.z])
+    effector_targets = np.array(effector_targets)
+
+    # Run FK
+    fk_positions, _ = forward_kinematics(rotations, root_pos, root_rot)
+    fk_effectors = get_effector_positions(fk_positions)
+
+    # Compare
+    errors = []
+    for i, name in enumerate(END_EFFECTORS):
+        error = np.linalg.norm(effector_targets[i] - fk_effectors[i])
+        errors.append(error)
+        status = "OK" if error < 0.02 else "ERROR"
+        _diag_log("EXTRACT", f"  {name}: {error*100:.1f}cm [{status}]")
+
+    mean_error = np.mean(errors)
+    passed = mean_error < 0.03
+    _diag_log("EXTRACT", f"Mean error: {mean_error*100:.1f}cm - {'PASS' if passed else 'FAIL'}")
+    return passed
+
+
+class NEURAL_OT_RunDiagnostics(Operator):
+    """Run diagnostic tests to verify Neural IK pipeline"""
+    bl_idname = "neural.run_diagnostics"
+    bl_label = "Run Diagnostics"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        import time
+
+        armature = context.scene.target_armature
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
+
+        # Clear previous results
+        _diagnostic_results['log'] = []
+        _diagnostic_results['last_run'] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        _diag_log("MAIN", "=" * 60)
+        _diag_log("MAIN", "NEURAL IK DIAGNOSTIC SUITE")
+        _diag_log("MAIN", "=" * 60)
+
+        # Run all tests
+        _diagnostic_results['rest_pos_ok'] = _verify_rest_positions(armature)
+        _diagnostic_results['bone_len_ok'] = _verify_bone_lengths(armature)
+        _diagnostic_results['fk_ok'] = _verify_fk_against_blender(armature)
+        _diagnostic_results['root_rot_ok'] = _verify_root_rotation_handling(armature)
+        _diagnostic_results['extraction_ok'] = _verify_data_extraction(armature)
+
+        # Summary
+        _diag_log("MAIN", "=" * 60)
+        _diag_log("MAIN", "SUMMARY")
+        _diag_log("MAIN", f"  Rest Positions: {'PASS' if _diagnostic_results['rest_pos_ok'] else 'FAIL'}")
+        _diag_log("MAIN", f"  Bone Lengths:   {'PASS' if _diagnostic_results['bone_len_ok'] else 'FAIL'}")
+        _diag_log("MAIN", f"  FK Computation: {'PASS' if _diagnostic_results['fk_ok'] else 'FAIL'}")
+        _diag_log("MAIN", f"  Root Rotation:  {'PASS' if _diagnostic_results['root_rot_ok'] else 'FAIL'}")
+        _diag_log("MAIN", f"  Data Extraction:{'PASS' if _diagnostic_results['extraction_ok'] else 'FAIL'}")
+        _diag_log("MAIN", "=" * 60)
+
+        # Report
+        all_passed = all([
+            _diagnostic_results['rest_pos_ok'],
+            _diagnostic_results['bone_len_ok'],
+            _diagnostic_results['fk_ok'],
+            _diagnostic_results['root_rot_ok'],
+            _diagnostic_results['extraction_ok'],
+        ])
+
+        if all_passed:
+            self.report({'INFO'}, "All diagnostics passed!")
+        else:
+            self.report({'WARNING'}, "Some diagnostics failed - check console")
+
+        return {'FINISHED'}
+
+
+# =============================================================================
+# TRAINED MODEL VERIFICATION
+# =============================================================================
+
+_verification_results = {
+    'last_run': None,
+    'tests': [],
+    'summary': None,
+}
+
+
+def get_verification_results() -> dict:
+    """Get verification results for UI display."""
+    return _verification_results.copy()
+
+
+class NEURAL_OT_VerifyModel(Operator):
+    """Verify trained model accuracy using test data - Human readable results"""
+    bl_idname = "neural.verify_model"
+    bl_label = "Verify Trained Model"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        import time
+        import numpy as np
+        from .neural_network import get_network
+        from .neural_network.config import (
+            BEST_WEIGHTS_PATH, DATA_DIR, END_EFFECTORS,
+            CONTROLLED_BONES, BONE_TO_INDEX, NUM_BONES
+        )
+        from .neural_network.context import normalize_input
+        from .neural_network.forward_kinematics import (
+            forward_kinematics,
+            get_effector_positions,
+            compute_fk_loss_with_orientation,
+        )
+        import os
+
+        armature = context.scene.target_armature
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
+
+        # Check weights exist
+        if not os.path.exists(BEST_WEIGHTS_PATH):
+            self.report({'ERROR'}, "No trained weights found. Train first!")
+            return {'CANCELLED'}
+
+        # Load test data
+        data_path = os.path.join(DATA_DIR, "training_data.npz")
+        if not os.path.exists(data_path):
+            self.report({'ERROR'}, "No training data found. Extract data first!")
+            return {'CANCELLED'}
+
+        data = np.load(data_path, allow_pickle=True)
+
+        # Check for test data
+        if 'test_inputs' not in data:
+            self.report({'ERROR'}, "Training data missing test split. Re-extract data.")
+            return {'CANCELLED'}
+
+        test_inputs = data['test_inputs']
+        test_outputs = data['test_outputs']
+        test_targets = data['test_effector_targets']
+        test_target_rots = data.get('test_effector_rotations')
+        test_root_pos = data['test_root_positions']
+        test_root_fwd = data.get('test_root_forwards')
+        test_root_up = data.get('test_root_ups')
+
+        n_samples = len(test_inputs)
+        if n_samples == 0:
+            self.report({'ERROR'}, "No test samples in data")
+            return {'CANCELLED'}
+
+        # Clear previous results
+        _verification_results['tests'] = []
+        _verification_results['last_run'] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Get network
+        net = get_network()
+        if not net.load():
+            self.report({'ERROR'}, "Failed to load weights")
+            return {'CANCELLED'}
+
+        print("\n" + "=" * 70)
+        print(" TRAINED MODEL VERIFICATION")
+        print(" Testing neural network predictions against ground truth")
+        print("=" * 70)
+
+        # =====================================================================
+        # DIAGNOSTIC: Verify FK produces correct positions from ground truth
+        # =====================================================================
+        print("\n" + "-" * 70)
+        print(" FK SANITY CHECK (ground truth rotations → FK → positions)")
+        print("-" * 70)
+
+        gt_fk_errors = []
+        diagnostic_samples = min(50, n_samples)
+        diagnostic_indices = np.random.choice(n_samples, diagnostic_samples, replace=False)
+
+        for idx in diagnostic_indices:
+            gt_output = test_outputs[idx]
+            target_pos = test_targets[idx].reshape(5, 3)
+            root_pos = test_root_pos[idx]
+
+            # Build root rotation matrix
+            if test_root_fwd is not None and test_root_up is not None:
+                root_fwd = test_root_fwd[idx]
+                root_up_vec = test_root_up[idx]
+                root_fwd = root_fwd / (np.linalg.norm(root_fwd) + 1e-8)
+                root_up_vec = root_up_vec / (np.linalg.norm(root_up_vec) + 1e-8)
+                root_right = np.cross(root_fwd, root_up_vec)
+                root_right = root_right / (np.linalg.norm(root_right) + 1e-8)
+                root_up_vec = np.cross(root_right, root_fwd)
+                root_rot = np.array([
+                    [root_right[0], root_fwd[0], root_up_vec[0]],
+                    [root_right[1], root_fwd[1], root_up_vec[1]],
+                    [root_right[2], root_fwd[2], root_up_vec[2]],
+                ], dtype=np.float32)
+            else:
+                root_rot = np.eye(3, dtype=np.float32)
+
+            # Run FK on GROUND TRUTH rotations
+            gt_rots = gt_output.reshape(NUM_BONES, 3)
+            fk_pos, _ = forward_kinematics(gt_rots, root_pos, root_rot)
+            fk_effector_pos = get_effector_positions(fk_pos)
+
+            # Error between FK output and target positions
+            for i in range(5):
+                err = np.linalg.norm(fk_effector_pos[i] - target_pos[i])
+                gt_fk_errors.append(err)
+
+        gt_fk_mean = np.mean(gt_fk_errors) * 100  # to cm
+        gt_fk_max = np.max(gt_fk_errors) * 100
+
+        if gt_fk_mean > 5.0:
+            print(f"  ⚠️  FK MISMATCH: Ground truth rotations produce positions {gt_fk_mean:.1f}cm off target!")
+            print(f"      This means FK computation doesn't match how Blender computes bone positions.")
+            print(f"      Max error: {gt_fk_max:.1f}cm")
+            print("")
+            print("  The FK function needs to be fixed before network accuracy can be evaluated.")
+        else:
+            print(f"  ✓ FK VALID: Ground truth rotations produce positions within {gt_fk_mean:.1f}cm of target")
+            print(f"      (Max error: {gt_fk_max:.1f}cm)")
+
+        print("-" * 70)
+
+        # Normalize inputs
+        test_inputs_norm = normalize_input(test_inputs)
+
+        # Run predictions on sampled test cases
+        all_pos_errors = {name: [] for name in END_EFFECTORS}
+        all_rot_errors = []
+
+        sample_size = min(100, n_samples)
+        sample_indices = np.random.choice(n_samples, sample_size, replace=False)
+
+        for idx in sample_indices:
+            inp = test_inputs_norm[idx]
+            gt_output = test_outputs[idx]
+            target_pos = test_targets[idx].reshape(5, 3)
+            target_rots = test_target_rots[idx].reshape(5, 3) if test_target_rots is not None else None
+            root_pos = test_root_pos[idx]
+
+            # Build root rotation matrix
+            if test_root_fwd is not None and test_root_up is not None:
+                root_fwd = test_root_fwd[idx]
+                root_up = test_root_up[idx]
+                root_fwd = root_fwd / (np.linalg.norm(root_fwd) + 1e-8)
+                root_up = root_up / (np.linalg.norm(root_up) + 1e-8)
+                root_right = np.cross(root_fwd, root_up)
+                root_right = root_right / (np.linalg.norm(root_right) + 1e-8)
+                root_up = np.cross(root_right, root_fwd)
+                root_rot = np.array([
+                    [root_right[0], root_fwd[0], root_up[0]],
+                    [root_right[1], root_fwd[1], root_up[1]],
+                    [root_right[2], root_fwd[2], root_up[2]],
+                ], dtype=np.float32)
+            else:
+                root_rot = np.eye(3, dtype=np.float32)
+
+            # Predict (clamped to limits)
+            pred_output, _ = net.predict_clamped(inp)
+            pred_output = pred_output.reshape(1, -1)
+
+            # Compute FK-based errors with orientation if targets available
+            pos_loss, ori_loss, pos_errs, ori_errs = compute_fk_loss_with_orientation(
+                pred_output,
+                target_pos.reshape(1, 5, 3),
+                target_rots.reshape(1, 5, 3) if target_rots is not None else np.zeros((1, 5, 3), dtype=np.float32),
+                root_pos.reshape(1, 3),
+                root_rot.reshape(1, 3, 3),
+            )
+
+            # Position errors per effector (meters)
+            for i, name in enumerate(END_EFFECTORS):
+                all_pos_errors[name].append(pos_errs[0][i])
+
+            # Rotation error per effector (radians)
+            all_rot_errors.extend(ori_errs.flatten().tolist())
+
+        # Compute statistics
+        print("\n" + "-" * 70)
+        print(" POSITION ACCURACY (Lower is better)")
+        print("-" * 70)
+
+        total_passed = 0
+        total_tests = 0
+        test_results = []
+
+        for name in END_EFFECTORS:
+            errors = np.array(all_pos_errors[name])
+            mean_err = np.mean(errors) * 100
+            std_err = np.std(errors) * 100
+            max_err = np.max(errors) * 100
+
+            passed = mean_err < 15.0
+            total_tests += 1
+            if passed:
+                total_passed += 1
+
+            status = "PASS" if passed else "FAIL"
+            print(f"  {name:12s}: Mean={mean_err:6.2f}cm  Std={std_err:5.2f}cm  Max={max_err:5.1f}cm  [{status}]")
+
+            test_results.append({
+                'name': f"{name} Position",
+                'mean_error_cm': round(mean_err, 2),
+                'std_cm': round(std_err, 2),
+                'max_cm': round(max_err, 2),
+                'passed': passed,
+            })
+
+        # Overall position
+        all_errors = []
+        for errs in all_pos_errors.values():
+            all_errors.extend(errs)
+        overall_mean = np.mean(all_errors) * 100
+        overall_rmse = np.sqrt(np.mean(np.array(all_errors) ** 2)) * 100
+
+        print("-" * 70)
+        print(f"  OVERALL:      Mean={overall_mean:6.2f}cm  RMSE={overall_rmse:5.2f}cm")
+
+        # Rotation accuracy
+        print("\n" + "-" * 70)
+        print(" ROTATION ACCURACY")
+        print("-" * 70)
+
+        mean_rot_err = np.mean(all_rot_errors)
+        rot_err_deg = np.degrees(mean_rot_err)
+        rot_passed = rot_err_deg < 30.0
+        total_tests += 1
+        if rot_passed:
+            total_passed += 1
+
+        status = "PASS" if rot_passed else "FAIL"
+        print(f"  Mean Rotation Error: {rot_err_deg:.2f}°  [{status}]")
+
+        test_results.append({
+            'name': "Rotation Accuracy",
+            'mean_error_deg': round(rot_err_deg, 2),
+            'passed': rot_passed,
+        })
+
+        # Summary
+        print("\n" + "=" * 70)
+        print(f" SUMMARY: {total_passed}/{total_tests} tests passed")
+        print("=" * 70)
+
+        accuracy_pct = (total_passed / total_tests) * 100 if total_tests > 0 else 0
+
+        if accuracy_pct == 100 and overall_rmse < 5.0:
+            grade = "EXCELLENT"
+        elif accuracy_pct >= 80:
+            grade = "GOOD"
+        elif accuracy_pct >= 50:
+            grade = "FAIR"
+        else:
+            grade = "POOR"
+
+        print(f"\n Position RMSE: {overall_rmse:.2f}cm")
+        print(f" Rotation Error: {rot_err_deg:.2f}°")
+        print(f" Grade: {grade}")
+        print("=" * 70 + "\n")
+
+        # Store results
+        _verification_results['tests'] = test_results
+        _verification_results['summary'] = {
+            'passed': total_passed,
+            'total': total_tests,
+            'accuracy_pct': accuracy_pct,
+            'position_rmse_cm': round(overall_rmse, 2),
+            'rotation_error_deg': round(rot_err_deg, 2),
+            'grade': grade,
+            'samples_tested': len(sample_indices),
+        }
+
+        if accuracy_pct >= 80:
+            self.report({'INFO'}, f"Verification: {grade} - {overall_rmse:.1f}cm RMSE")
+        else:
+            self.report({'WARNING'}, f"Verification: {grade} - {overall_rmse:.1f}cm RMSE")
+
+        return {'FINISHED'}
+
+
+class NEURAL_OT_ApplyTestPose(Operator):
+    """Apply network prediction to armature for visual inspection"""
+    bl_idname = "neural.apply_test_pose"
+    bl_label = "Apply Prediction"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    sample_index: bpy.props.IntProperty(name="Sample", default=0, min=0)
+
+    def execute(self, context):
+        import numpy as np
+        from mathutils import Quaternion
+        from .neural_network import reset_network
+        from .neural_network.config import DATA_DIR, CONTROLLED_BONES, NUM_BONES, BEST_WEIGHTS_PATH
+        from .neural_network.context import normalize_input
+        import os
+
+        armature = context.scene.target_armature
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
+
+        if not os.path.exists(BEST_WEIGHTS_PATH):
+            self.report({'ERROR'}, "No trained weights")
+            return {'CANCELLED'}
+
+        data_path = os.path.join(DATA_DIR, "training_data.npz")
+        if not os.path.exists(data_path):
+            self.report({'ERROR'}, "No test data")
+            return {'CANCELLED'}
+
+        data = np.load(data_path, allow_pickle=True)
+        test_inputs = data['test_inputs']
+        test_outputs = data['test_outputs']  # Load GT for comparison
+
+        if len(test_inputs) == 0:
+            self.report({'ERROR'}, "No test samples")
+            return {'CANCELLED'}
+
+        idx = self.sample_index % len(test_inputs)
+
+        net = reset_network()
+        net.load()
+
+        # Normalize input
+        inp = normalize_input(test_inputs[idx:idx+1])[0]
+        # Predict with clamping to limits
+        pred = net.predict_clamped(inp)[0]
+        pred_rots = pred.reshape(NUM_BONES, 3)
+
+        # Get ground truth for comparison
+        gt_rots = test_outputs[idx].reshape(NUM_BONES, 3)
+
+        pose_bones = armature.pose.bones
+
+        # Key bones to debug (limbs that show criss-crossing)
+        debug_bones = ["LeftArm", "LeftForeArm", "RightArm", "RightForeArm",
+                       "LeftThigh", "LeftShin", "RightThigh", "RightShin"]
+
+        print("\n" + "="*70)
+        print(f"PREDICTION DEBUG - Sample {idx}")
+        print("="*70)
+        print(f"\nArmature: {armature.name}")
+        print(f"World Location: {armature.location}")
+        print(f"World Rotation: {armature.rotation_euler}")
+        print(f"World Scale: {armature.scale}")
+
+        print("\n" + "-"*70)
+        print("KEY LIMB BONES - PREDICTION vs GROUND TRUTH")
+        print("-"*70)
+        print(f"{'Bone':<15} {'Pred Axis-Angle':<30} {'GT Axis-Angle':<30} {'Diff':<10}")
+        print("-"*70)
+
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            bone = pose_bones.get(bone_name)
+            if bone is None:
+                continue
+
+            axis_angle = pred_rots[i]
+            gt_aa = gt_rots[i]
+            angle = np.linalg.norm(axis_angle)
+
+            if angle > 1e-6:
+                axis = axis_angle / angle
+                quat = Quaternion((axis[0], axis[1], axis[2]), angle)
+            else:
+                quat = Quaternion((1, 0, 0, 0))
+
+            bone.rotation_mode = 'QUATERNION'
+            bone.rotation_quaternion = quat.normalized()
+
+            # Debug output for key bones
+            if bone_name in debug_bones:
+                diff = np.linalg.norm(axis_angle - gt_aa)
+                pred_str = f"[{axis_angle[0]:+.3f}, {axis_angle[1]:+.3f}, {axis_angle[2]:+.3f}]"
+                gt_str = f"[{gt_aa[0]:+.3f}, {gt_aa[1]:+.3f}, {gt_aa[2]:+.3f}]"
+                print(f"{bone_name:<15} {pred_str:<30} {gt_str:<30} {diff:.3f}")
+
+        print("\n" + "-"*70)
+        print("DETAILED QUATERNION CONVERSION (Key Bones)")
+        print("-"*70)
+
+        for bone_name in debug_bones:
+            i = CONTROLLED_BONES.index(bone_name)
+            axis_angle = pred_rots[i]
+            angle = np.linalg.norm(axis_angle)
+
+            print(f"\n{bone_name}:")
+            print(f"  Raw axis-angle: [{axis_angle[0]:+.4f}, {axis_angle[1]:+.4f}, {axis_angle[2]:+.4f}]")
+            print(f"  Angle (radians): {angle:.4f} ({np.degrees(angle):.1f} deg)")
+
+            if angle > 1e-6:
+                axis = axis_angle / angle
+                print(f"  Normalized axis: [{axis[0]:+.4f}, {axis[1]:+.4f}, {axis[2]:+.4f}]")
+                quat = Quaternion((axis[0], axis[1], axis[2]), angle)
+                print(f"  Blender Quaternion(axis, angle): w={quat.w:.4f}, x={quat.x:.4f}, y={quat.y:.4f}, z={quat.z:.4f}")
+            else:
+                print(f"  (Near-zero rotation - using identity)")
+
+            # Show what's actually on the bone now
+            bone = pose_bones.get(bone_name)
+            if bone:
+                print(f"  Applied quaternion: w={bone.rotation_quaternion.w:.4f}, x={bone.rotation_quaternion.x:.4f}, y={bone.rotation_quaternion.y:.4f}, z={bone.rotation_quaternion.z:.4f}")
+
+        print("\n" + "="*70)
+        print("END PREDICTION DEBUG")
+        print("="*70 + "\n")
+
+        context.view_layer.update()
+        self.report({'INFO'}, f"Applied PREDICTION for sample {idx}")
+        return {'FINISHED'}
+
+
+class NEURAL_OT_ApplyGroundTruth(Operator):
+    """Apply ground truth pose from test data for comparison"""
+    bl_idname = "neural.apply_ground_truth"
+    bl_label = "Apply Ground Truth"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    sample_index: bpy.props.IntProperty(name="Sample", default=0, min=0)
+
+    def execute(self, context):
+        import numpy as np
+        from mathutils import Quaternion
+        from .neural_network.config import DATA_DIR, CONTROLLED_BONES, NUM_BONES
+        import os
+
+        armature = context.scene.target_armature
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
+
+        data_path = os.path.join(DATA_DIR, "training_data.npz")
+        if not os.path.exists(data_path):
+            self.report({'ERROR'}, "No test data")
+            return {'CANCELLED'}
+
+        data = np.load(data_path, allow_pickle=True)
+        test_outputs = data['test_outputs']
+
+        if len(test_outputs) == 0:
+            self.report({'ERROR'}, "No test samples")
+            return {'CANCELLED'}
+
+        idx = self.sample_index % len(test_outputs)
+        gt_rots = test_outputs[idx].reshape(NUM_BONES, 3)
+
+        pose_bones = armature.pose.bones
+
+        # Key bones to debug
+        debug_bones = ["LeftArm", "LeftForeArm", "RightArm", "RightForeArm",
+                       "LeftThigh", "LeftShin", "RightThigh", "RightShin"]
+
+        print("\n" + "="*70)
+        print(f"GROUND TRUTH DEBUG - Sample {idx}")
+        print("="*70)
+        print(f"\nArmature: {armature.name}")
+        print(f"World Location: {armature.location}")
+        print(f"World Rotation: {armature.rotation_euler}")
+        print(f"World Scale: {armature.scale}")
+
+        print("\n" + "-"*70)
+        print("KEY LIMB BONES - GROUND TRUTH VALUES")
+        print("-"*70)
+        print(f"{'Bone':<15} {'GT Axis-Angle':<35} {'Angle (deg)':<15}")
+        print("-"*70)
+
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            bone = pose_bones.get(bone_name)
+            if bone is None:
+                continue
+
+            axis_angle = gt_rots[i]
+            angle = np.linalg.norm(axis_angle)
+
+            if angle > 1e-6:
+                axis = axis_angle / angle
+                quat = Quaternion((axis[0], axis[1], axis[2]), angle)
+            else:
+                quat = Quaternion((1, 0, 0, 0))
+
+            bone.rotation_mode = 'QUATERNION'
+            bone.rotation_quaternion = quat.normalized()
+
+            # Debug output for key bones
+            if bone_name in debug_bones:
+                gt_str = f"[{axis_angle[0]:+.4f}, {axis_angle[1]:+.4f}, {axis_angle[2]:+.4f}]"
+                print(f"{bone_name:<15} {gt_str:<35} {np.degrees(angle):.1f}")
+
+        print("\n" + "-"*70)
+        print("DETAILED QUATERNION CONVERSION (Key Bones)")
+        print("-"*70)
+
+        for bone_name in debug_bones:
+            i = CONTROLLED_BONES.index(bone_name)
+            axis_angle = gt_rots[i]
+            angle = np.linalg.norm(axis_angle)
+
+            print(f"\n{bone_name}:")
+            print(f"  Raw axis-angle: [{axis_angle[0]:+.4f}, {axis_angle[1]:+.4f}, {axis_angle[2]:+.4f}]")
+            print(f"  Angle (radians): {angle:.4f} ({np.degrees(angle):.1f} deg)")
+
+            if angle > 1e-6:
+                axis = axis_angle / angle
+                print(f"  Normalized axis: [{axis[0]:+.4f}, {axis[1]:+.4f}, {axis[2]:+.4f}]")
+                quat = Quaternion((axis[0], axis[1], axis[2]), angle)
+                print(f"  Blender Quaternion(axis, angle): w={quat.w:.4f}, x={quat.x:.4f}, y={quat.y:.4f}, z={quat.z:.4f}")
+            else:
+                print(f"  (Near-zero rotation - using identity)")
+
+            # Show what's actually on the bone now
+            bone = pose_bones.get(bone_name)
+            if bone:
+                print(f"  Applied quaternion: w={bone.rotation_quaternion.w:.4f}, x={bone.rotation_quaternion.x:.4f}, y={bone.rotation_quaternion.y:.4f}, z={bone.rotation_quaternion.z:.4f}")
+
+        print("\n" + "="*70)
+        print("END GROUND TRUTH DEBUG")
+        print("="*70 + "\n")
+
+        context.view_layer.update()
+        self.report({'INFO'}, f"Applied GROUND TRUTH for sample {idx}")
+        return {'FINISHED'}
+
+
+class NEURAL_OT_CompareVisual(Operator):
+    """Toggle between prediction and ground truth for visual comparison"""
+    bl_idname = "neural.compare_visual"
+    bl_label = "Toggle Pred/Truth"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    _current_idx = 0
+    _showing_prediction = True
+
+    def execute(self, context):
+        import numpy as np
+        from .neural_network.config import DATA_DIR
+        import os
+
+        data_path = os.path.join(DATA_DIR, "training_data.npz")
+        if not os.path.exists(data_path):
+            self.report({'ERROR'}, "No test data")
+            return {'CANCELLED'}
+
+        data = np.load(data_path, allow_pickle=True)
+        n_samples = len(data['test_outputs'])
+
+        if n_samples == 0:
+            self.report({'ERROR'}, "No test samples")
+            return {'CANCELLED'}
+
+        cls = NEURAL_OT_CompareVisual
+
+        if cls._showing_prediction:
+            bpy.ops.neural.apply_ground_truth(sample_index=cls._current_idx)
+            cls._showing_prediction = False
+            self.report({'INFO'}, f"Sample {cls._current_idx}: GROUND TRUTH")
+        else:
+            cls._current_idx = (cls._current_idx + 1) % n_samples
+            bpy.ops.neural.apply_test_pose(sample_index=cls._current_idx)
+            cls._showing_prediction = True
+            self.report({'INFO'}, f"Sample {cls._current_idx}: PREDICTION")
+
+        return {'FINISHED'}
+
+
+# =============================================================================
+# DIAGNOSTIC: Validate entire FK pipeline
+# =============================================================================
+
+class NEURAL_OT_ValidatePipeline(Operator):
+    """Validate the entire extraction->FK->Blender pipeline"""
+    bl_idname = "neural.validate_pipeline"
+    bl_label = "Validate FK Pipeline"
+    bl_options = {'REGISTER'}
+
+    def _print_correct_orientations(self, armature):
+        """Print the correct REST_ORIENTATIONS values that should go in config.py"""
+        import numpy as np
+        from mathutils import Quaternion
+        from .neural_network.config import CONTROLLED_BONES, PARENT_INDICES, NUM_BONES
+
+        # Reset to rest pose
+        for bone in armature.pose.bones:
+            bone.rotation_quaternion = Quaternion((1, 0, 0, 0))
+        import bpy
+        bpy.context.view_layer.update()
+
+        arm_matrix = armature.matrix_world
+        arm_rot = arm_matrix.to_3x3()
+
+        print("\n" + "=" * 70)
+        print(" CORRECT REST_ORIENTATIONS FOR config.py")
+        print("=" * 70)
+        print(" Copy this into config.py to fix the FK computation:")
+        print("-" * 70)
+
+        # Collect orientations
+        rest_orientations = np.zeros((NUM_BONES, 3, 3), dtype=np.float32)
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            bone = armature.pose.bones.get(bone_name)
+            if bone:
+                rest_mat = bone.bone.matrix_local.to_3x3()
+                world_rest_mat = arm_rot @ rest_mat
+                rest_orientations[i] = np.array([
+                    [world_rest_mat[0][0], world_rest_mat[0][1], world_rest_mat[0][2]],
+                    [world_rest_mat[1][0], world_rest_mat[1][1], world_rest_mat[1][2]],
+                    [world_rest_mat[2][0], world_rest_mat[2][1], world_rest_mat[2][2]],
+                ], dtype=np.float32)
+
+        # Print as Python code
+        print("\nREST_ORIENTATIONS = np.array([")
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            mat = rest_orientations[i]
+            print(f"    # {bone_name}")
+            print(f"    [[{mat[0,0]:+.6f}, {mat[0,1]:+.6f}, {mat[0,2]:+.6f}],")
+            print(f"     [{mat[1,0]:+.6f}, {mat[1,1]:+.6f}, {mat[1,2]:+.6f}],")
+            print(f"     [{mat[2,0]:+.6f}, {mat[2,1]:+.6f}, {mat[2,2]:+.6f}]],")
+        print("], dtype=np.float32)")
+
+        print("\n" + "=" * 70)
+
+    def execute(self, context):
+        import numpy as np
+        from mathutils import Vector, Quaternion, Matrix
+        from .neural_network.config import (
+            CONTROLLED_BONES, REST_POSITIONS, END_EFFECTORS,
+            PARENT_INDICES, NUM_BONES, BONE_TO_INDEX,
+            REST_POSITIONS_ARRAY, REST_ORIENTATIONS, LOCAL_OFFSETS,
+        )
+
+        armature = context.scene.target_armature
+        if not armature:
+            self.report({'ERROR'}, "Set target armature first")
+            return {'CANCELLED'}
+
+        print("\n" + "=" * 70)
+        print(" FK PIPELINE VALIDATION")
+        print("=" * 70)
+        print(" This test verifies that our FK math matches Blender's actual transforms.")
+        print(" If this fails, training will NOT produce usable results.")
+        print("=" * 70)
+
+        # =====================================================================
+        # TEST 1: Do config.py REST_POSITIONS match the actual armature?
+        # =====================================================================
+        print("\n" + "-" * 70)
+        print(" TEST 1: REST_POSITIONS vs Actual Armature (in rest pose)")
+        print("-" * 70)
+
+        # We need to check rest pose, so temporarily clear all pose transforms
+        # Save current pose first
+        saved_rotations = {}
+        for bone in armature.pose.bones:
+            saved_rotations[bone.name] = bone.rotation_quaternion.copy()
+            bone.rotation_quaternion = Quaternion((1, 0, 0, 0))  # Identity
+
+        context.view_layer.update()
+
+        arm_matrix = armature.matrix_world
+        rest_errors = []
+        print(f"\n {'Bone':<15} {'Config Pos':<25} {'Actual Pos':<25} {'Error':<10}")
+        print("-" * 70)
+
+        for bone_name in CONTROLLED_BONES:
+            bone = armature.pose.bones.get(bone_name)
+            if not bone:
+                print(f" {bone_name:<15} MISSING IN ARMATURE!")
+                continue
+
+            config_pos = np.array(REST_POSITIONS[bone_name])
+            actual_pos = arm_matrix @ bone.head
+            actual_pos_np = np.array([actual_pos.x, actual_pos.y, actual_pos.z])
+
+            error = np.linalg.norm(config_pos - actual_pos_np)
+            rest_errors.append(error)
+
+            status = "OK" if error < 0.01 else "BAD"
+            config_str = f"({config_pos[0]:+.3f}, {config_pos[1]:+.3f}, {config_pos[2]:+.3f})"
+            actual_str = f"({actual_pos_np[0]:+.3f}, {actual_pos_np[1]:+.3f}, {actual_pos_np[2]:+.3f})"
+            print(f" {bone_name:<15} {config_str:<25} {actual_str:<25} {error*100:.1f}cm [{status}]")
+
+        avg_rest_error = np.mean(rest_errors) * 100
+        max_rest_error = np.max(rest_errors) * 100
+
+        print("-" * 70)
+        print(f" Average error: {avg_rest_error:.2f} cm")
+        print(f" Max error: {max_rest_error:.2f} cm")
+
+        if max_rest_error > 1.0:
+            print("\n [FAIL] REST_POSITIONS in config.py don't match armature!")
+            print(" Update the REST_POSITIONS dict in config.py with the actual values above.")
+            test1_passed = False
+        else:
+            print("\n [PASS] REST_POSITIONS match armature.")
+            test1_passed = True
+
+        # =====================================================================
+        # TEST 2: FK with IDENTITY rotations (should match rest positions exactly)
+        # =====================================================================
+        print("\n" + "-" * 70)
+        print(" TEST 2: FK with Identity Rotations (sanity check)")
+        print("-" * 70)
+        print(" If all local rotations are identity, FK should output REST_POSITIONS exactly.")
+
+        # Keep armature in rest pose (identity rotations)
+        # root at its rest position, identity rotation
+        from .neural_network.forward_kinematics import forward_kinematics
+
+        identity_rotations = np.zeros((NUM_BONES, 3), dtype=np.float32)  # All zeros = identity
+        hips_rest_pos = np.array(REST_POSITIONS["Hips"], dtype=np.float32)
+        identity_root_rot = np.eye(3, dtype=np.float32)
+
+        fk_positions_identity, _ = forward_kinematics(
+            identity_rotations, hips_rest_pos, identity_root_rot, use_axis_angle=True
+        )
+
+        print(f"\n {'Bone':<15} {'REST_POSITIONS':<25} {'FK Output':<25} {'Error':<10}")
+        print("-" * 70)
+
+        identity_errors = []
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            rest_pos = REST_POSITIONS_ARRAY[i]
+            fk_pos = fk_positions_identity[i]
+            error = np.linalg.norm(fk_pos - rest_pos)
+            identity_errors.append(error)
+
+            status = "OK" if error < 0.001 else "BAD"
+            rest_str = f"({rest_pos[0]:+.3f}, {rest_pos[1]:+.3f}, {rest_pos[2]:+.3f})"
+            fk_str = f"({fk_pos[0]:+.3f}, {fk_pos[1]:+.3f}, {fk_pos[2]:+.3f})"
+            if error > 0.001:  # Only print mismatches
+                print(f" {bone_name:<15} {rest_str:<25} {fk_str:<25} {error*100:.1f}cm [{status}]")
+
+        max_identity_error = np.max(identity_errors) * 100
+        if max_identity_error < 0.1:
+            print(f" All bones match! Max error: {max_identity_error:.3f}cm")
+            print("\n [PASS] FK identity test passed.")
+            test2_passed = True
+        else:
+            print(f"\n Max error: {max_identity_error:.2f}cm")
+            print("\n [FAIL] FK doesn't even work with identity rotations!")
+            print(" The FK structure itself is broken.")
+            test2_passed = False
+
+        # =====================================================================
+        # TEST 3: FK computation on a real pose
+        # =====================================================================
+        print("\n" + "-" * 70)
+        print(" TEST 3: FK Computation vs Blender (on actual pose)")
+        print("-" * 70)
+
+        # Restore the original pose
+        for bone_name, rot in saved_rotations.items():
+            bone = armature.pose.bones.get(bone_name)
+            if bone:
+                bone.rotation_quaternion = rot
+
+        context.view_layer.update()
+
+        # Get Blender's actual world positions for ALL bones
+        print("\n Getting Blender's actual bone positions...")
+        actual_bone_pos = {}
+        for bone_name in CONTROLLED_BONES:
+            bone = armature.pose.bones.get(bone_name)
+            if bone:
+                world_pos = arm_matrix @ bone.head
+                actual_bone_pos[bone_name] = np.array([world_pos.x, world_pos.y, world_pos.z])
+
+        # Get local rotations and run our FK
+        print("\n Extracting local rotations...")
+        local_rotations = np.zeros((NUM_BONES, 3), dtype=np.float32)
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            bone = armature.pose.bones.get(bone_name)
+            if bone:
+                quat = bone.rotation_quaternion
+                axis, angle = quat.to_axis_angle()
+                local_rotations[i] = np.array([axis.x * angle, axis.y * angle, axis.z * angle])
+
+        # Get root info
+        hips = armature.pose.bones.get("Hips")
+        root_pos = arm_matrix @ hips.head
+        root_pos_np = np.array([root_pos.x, root_pos.y, root_pos.z])
+
+        # root_rotation = armature's world rotation (NOT the hips bone matrix!)
+        # The FK already applies REST_ORIENTATIONS internally, so root_rotation
+        # should only encode the armature's world transform.
+        arm_rot_3x3 = arm_matrix.to_3x3()
+        root_rot = np.array([
+            [arm_rot_3x3[0][0], arm_rot_3x3[0][1], arm_rot_3x3[0][2]],
+            [arm_rot_3x3[1][0], arm_rot_3x3[1][1], arm_rot_3x3[1][2]],
+            [arm_rot_3x3[2][0], arm_rot_3x3[2][1], arm_rot_3x3[2][2]],
+        ], dtype=np.float32)
+
+        print(f"\n Root position: ({root_pos_np[0]:.4f}, {root_pos_np[1]:.4f}, {root_pos_np[2]:.4f})")
+        print(f" Armature rotation: identity={np.allclose(root_rot, np.eye(3))}")
+
+        # Run our FK
+        print("\n Running our FK computation...")
+        from .neural_network.forward_kinematics import forward_kinematics
+
+        fk_positions, fk_rotations = forward_kinematics(
+            local_rotations, root_pos_np, root_rot, use_axis_angle=True
+        )
+
+        # Compare ALL bone positions
+        print("\n" + "-" * 70)
+        print(f" {'Bone':<15} {'Blender Pos':<25} {'FK Pos':<25} {'Error':<10}")
+        print("-" * 70)
+
+        fk_errors = []
+        failed_bones = []
+        for i, bone_name in enumerate(CONTROLLED_BONES):
+            fk_pos = fk_positions[i]
+            actual_pos = actual_bone_pos[bone_name]
+
+            error = np.linalg.norm(fk_pos - actual_pos)
+            fk_errors.append(error)
+
+            status = "OK" if error < 0.01 else ("WARN" if error < 0.05 else "BAD")
+            actual_str = f"({actual_pos[0]:+.3f}, {actual_pos[1]:+.3f}, {actual_pos[2]:+.3f})"
+            fk_str = f"({fk_pos[0]:+.3f}, {fk_pos[1]:+.3f}, {fk_pos[2]:+.3f})"
+
+            if error > 0.01:  # Only print bones with errors
+                print(f" {bone_name:<15} {actual_str:<25} {fk_str:<25} {error*100:.1f}cm [{status}]")
+                failed_bones.append(bone_name)
+
+        if not failed_bones:
+            print(" All 23 bones match! No errors.")
+
+        avg_fk_error = np.mean(fk_errors) * 100
+        max_fk_error = np.max(fk_errors) * 100
+
+        print("-" * 70)
+        print(f" Bones tested: {len(CONTROLLED_BONES)}")
+        print(f" Bones with errors: {len(failed_bones)}")
+        print(f" Average FK error: {avg_fk_error:.2f} cm")
+        print(f" Max FK error: {max_fk_error:.2f} cm")
+
+        if max_fk_error > 5.0:
+            print("\n [FAIL] FK computation doesn't match Blender!")
+            print(" Our math is wrong. The FK function needs to be fixed.")
+            test2_passed = False
+        elif max_fk_error > 1.0:
+            print("\n [WARN] FK has small errors. May affect accuracy.")
+            test2_passed = True
+        else:
+            print("\n [PASS] FK matches Blender!")
+            test2_passed = True
+
+        # =====================================================================
+        # SUMMARY
+        # =====================================================================
+        print("\n" + "=" * 70)
+        print(" VALIDATION SUMMARY")
+        print("=" * 70)
+        print(f" Test 1 (REST_POSITIONS): {'PASS' if test1_passed else 'FAIL'}")
+        print(f" Test 2 (FK Computation): {'PASS' if test2_passed else 'FAIL'}")
+
+        if test1_passed and test2_passed:
+            print("\n [ALL PASS] Pipeline is valid! Training should work.")
+        elif not test1_passed:
+            print("\n [ACTION REQUIRED] Update REST_POSITIONS in config.py")
+        else:
+            print("\n [ACTION REQUIRED] FK math needs debugging.")
+            print(" Check forward_kinematics.py")
+            # Print the correct REST_ORIENTATIONS for config.py
+            self._print_correct_orientations(armature)
+
+        print("=" * 70 + "\n")
+
+        if test1_passed and test2_passed:
+            self.report({'INFO'}, "Pipeline validation PASSED!")
+        else:
+            self.report({'WARNING'}, "Pipeline validation FAILED - see console")
+
+        return {'FINISHED'}
+
+
+# =============================================================================
 # REGISTRATION
 # =============================================================================
 
@@ -798,12 +2049,28 @@ def register():
     bpy.utils.register_class(NEURAL_OT_SaveData)
     bpy.utils.register_class(NEURAL_OT_LoadData)
     bpy.utils.register_class(NEURAL_OT_AppendData)
+    bpy.utils.register_class(NEURAL_OT_RunDiagnostics)
+    # Verification operators
+    bpy.utils.register_class(NEURAL_OT_VerifyModel)
+    bpy.utils.register_class(NEURAL_OT_ApplyTestPose)
+    bpy.utils.register_class(NEURAL_OT_ApplyGroundTruth)
+    bpy.utils.register_class(NEURAL_OT_CompareVisual)
+    # Pipeline validation operators
+    bpy.utils.register_class(NEURAL_OT_ValidatePipeline)
     bpy.types.Scene.anim2_test = bpy.props.PointerProperty(type=ANIM2_TestProperties)
 
 
 def unregister():
     del bpy.types.Scene.anim2_test
+    # Pipeline validation operators
+    bpy.utils.unregister_class(NEURAL_OT_ValidatePipeline)
+    # Verification operators
+    bpy.utils.unregister_class(NEURAL_OT_CompareVisual)
+    bpy.utils.unregister_class(NEURAL_OT_ApplyGroundTruth)
+    bpy.utils.unregister_class(NEURAL_OT_ApplyTestPose)
+    bpy.utils.unregister_class(NEURAL_OT_VerifyModel)
     # Neural IK operators
+    bpy.utils.unregister_class(NEURAL_OT_RunDiagnostics)
     bpy.utils.unregister_class(NEURAL_OT_AppendData)
     bpy.utils.unregister_class(NEURAL_OT_LoadData)
     bpy.utils.unregister_class(NEURAL_OT_SaveData)

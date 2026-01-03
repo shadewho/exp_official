@@ -890,6 +890,13 @@ class ReactionParentingNode(_ReactionNodeKind):
     bl_label  = "Parent / Unparent"
     KIND = "PARENTING"
 
+    def init(self, context):
+        super().init(context)
+
+        # Vector input for local offset (can connect Float data nodes)
+        s_offset = self.inputs.new("ExpVectorSocketType", "Local Offset")
+        s_offset.reaction_prop = "parenting_local_offset"
+
     def draw_buttons(self, context, layout):
         scn = _scene()
         idx = self.reaction_index
@@ -900,72 +907,30 @@ class ReactionParentingNode(_ReactionNodeKind):
 
         box = layout.box()
         box.prop(r, "name", text="Name")
-
-        # Operation
-        row = box.row(align=True)
-        row.prop(r, "parenting_op", text="Operation")
-        row.prop(r, "parenting_follow_mode", text="Mode")
+        box.prop(r, "parenting_op", text="Operation")
 
         # Target (child)
         tgt = layout.box()
         tgt.label(text="Target (Child)")
-        tgt.prop(r, "parenting_target_use_character", text="Use Character as Target")
-        if not getattr(r, "parenting_target_use_character", False):
-            tgt.prop_search(r, "parenting_target_object", bpy.context.scene, "objects", text="Target Object")
+        tgt.prop(r, "parenting_target_use_character", text="Use Character")
+        if not r.parenting_target_use_character:
+            tgt.prop_search(r, "parenting_target_object", scn, "objects", text="Object")
         else:
-            char = getattr(bpy.context.scene, "target_armature", None)
+            char = scn.target_armature
             tgt.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
 
-        # Parent side
-        par = layout.box()
-        par.label(text="Parent")
-        par.prop(r, "parenting_parent_use_armature", text="Use Character Armature")
-        if getattr(r, "parenting_parent_use_armature", True):
-            char = getattr(bpy.context.scene, "target_armature", None)
-            par.label(text=f"Armature: {char.name if char else '—'}", icon='ARMATURE_DATA')
-            par.prop(r, "parenting_bone_name", text="Bone (name)")
-        else:
-            par.prop_search(r, "parenting_parent_object", bpy.context.scene, "objects", text="Parent Object")
-
-        # Child-Of options
-        if getattr(r, "parenting_follow_mode", "PARENT") == "CHILD_OF":
-            fo = layout.box()
-            fo.label(text="Child-Of (Selective Follow)")
-
-            # cleaner, left-aligned controls
-            try:
-                fo.use_property_split = False
-                fo.use_property_decorate = False
-            except Exception:
-                pass
-
-            row = fo.row(align=True)
-            row.prop(r, "parenting_follow_influence", text="Influence")
-
-            # helper: toggle on left, XYZ on right (single row)
-            def _axes_line(master_prop: str, label: str, px: str, py: str, pz: str):
-                block = fo.box()
-                split = block.split(factor=0.55, align=True)
-
-                left = split.row(align=True)
-                left.prop(r, master_prop, text=label)
-
-                right = split.row(align=True)
-                right.enabled = getattr(r, master_prop)
-                right.alignment = 'LEFT'
-                right.label(text="Axes:")
-                right.prop(r, px, text="X")
-                right.prop(r, py, text="Y")
-                right.prop(r, pz, text="Z")
-
-            _axes_line("parenting_follow_loc", "Follow Location",
-                       "parenting_follow_loc_x", "parenting_follow_loc_y", "parenting_follow_loc_z")
-
-            _axes_line("parenting_follow_rot", "Follow Rotation",
-                       "parenting_follow_rot_x", "parenting_follow_rot_y", "parenting_follow_rot_z")
-
-            _axes_line("parenting_follow_scl", "Follow Scale",
-                       "parenting_follow_scl_x", "parenting_follow_scl_y", "parenting_follow_scl_z")
+        # Parent (only for PARENT_TO)
+        if r.parenting_op == "PARENT_TO":
+            par = layout.box()
+            par.label(text="Parent")
+            par.prop(r, "parenting_parent_use_armature", text="Use Character Armature")
+            if r.parenting_parent_use_armature:
+                char = scn.target_armature
+                par.label(text=f"Armature: {char.name if char else '—'}", icon='ARMATURE_DATA')
+                par.prop(r, "parenting_bone_name", text="Bone")
+            else:
+                par.prop_search(r, "parenting_parent_object", scn, "objects", text="Object")
+        # NOTE: Local Offset is drawn by the socket (inline with XYZ inputs)
 
 
 
@@ -1176,4 +1141,43 @@ class ReactionRagdollNode(_ReactionNodeKind):
 
         # Info box
         info = layout.box()
-        info.label(text="Character collapses - all bones go limp.", icon='PHYSICS')
+        info.label(text="Verlet ragdoll with mesh collision.", icon='PHYSICS')
+
+
+class ReactionEnableHealthNode(_ReactionNodeKind):
+    bl_idname = "ReactionEnableHealthNodeType"
+    bl_label  = "Enable Health"
+    KIND = "ENABLE_HEALTH"
+
+    def init(self, context):
+        super().init(context)
+
+        # Object socket - accepts any object (can connect ObjectDataNode with "use character")
+        s_obj = self.inputs.new("ExpObjectSocketType", "Target Object")
+        s_obj.reaction_prop = "health_target_object"
+        s_obj.use_prop_search = True
+
+        # Float sockets for health values
+        s_start = self.inputs.new("ExpFloatSocketType", "Start Value")
+        s_start.reaction_prop = "health_start_value"
+
+        s_min = self.inputs.new("ExpFloatSocketType", "Min Value")
+        s_min.reaction_prop = "health_min_value"
+
+        s_max = self.inputs.new("ExpFloatSocketType", "Max Value")
+        s_max.reaction_prop = "health_max_value"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        # Info box
+        info = layout.box()
+        info.label(text="Attach health to any object.", icon='FUND')

@@ -19,6 +19,8 @@ try:
         PARENT_INDICES,
         LENGTHS_ARRAY,
         REST_POSITIONS_ARRAY,
+        REST_ORIENTATIONS,
+        LOCAL_OFFSETS,
         BONE_TO_INDEX,
         END_EFFECTORS,
         CONTROLLED_BONES,
@@ -29,6 +31,8 @@ except ImportError:
         PARENT_INDICES,
         LENGTHS_ARRAY,
         REST_POSITIONS_ARRAY,
+        REST_ORIENTATIONS,
+        LOCAL_OFFSETS,
         BONE_TO_INDEX,
         END_EFFECTORS,
         CONTROLLED_BONES,
@@ -93,46 +97,6 @@ def axis_angle_to_matrix(axis_angles: np.ndarray) -> np.ndarray:
     return R
 
 
-def euler_to_matrix(eulers: np.ndarray, order: str = 'XYZ') -> np.ndarray:
-    """
-    Convert Euler angles to rotation matrices.
-
-    Args:
-        eulers: Shape (N, 3) or (3,) - Euler angles in radians
-        order: Rotation order (default XYZ)
-
-    Returns:
-        Shape (N, 3, 3) or (3, 3) - rotation matrices
-    """
-    single = eulers.ndim == 1
-    if single:
-        eulers = eulers.reshape(1, -1)
-
-    n = len(eulers)
-
-    # Compute sin/cos for each axis
-    cx, sx = np.cos(eulers[:, 0]), np.sin(eulers[:, 0])
-    cy, sy = np.cos(eulers[:, 1]), np.sin(eulers[:, 1])
-    cz, sz = np.cos(eulers[:, 2]), np.sin(eulers[:, 2])
-
-    # XYZ rotation order: Rz @ Ry @ Rx
-    R = np.zeros((n, 3, 3), dtype=np.float32)
-
-    R[:, 0, 0] = cy * cz
-    R[:, 0, 1] = -cy * sz
-    R[:, 0, 2] = sy
-    R[:, 1, 0] = cx * sz + cz * sx * sy
-    R[:, 1, 1] = cx * cz - sx * sy * sz
-    R[:, 1, 2] = -cy * sx
-    R[:, 2, 0] = sx * sz - cx * cz * sy
-    R[:, 2, 1] = cz * sx + cx * sy * sz
-    R[:, 2, 2] = cx * cy
-
-    if single:
-        return R[0]
-    return R
-
-
 def forward_kinematics(
     rotations: np.ndarray,
     root_position: np.ndarray = None,
@@ -144,6 +108,10 @@ def forward_kinematics(
 
     This is the core FK function. Given local rotations for each bone,
     compute where each bone ends up in world space.
+
+    IMPORTANT: Local rotations from Blender are in bone-local space.
+    Each bone has a rest orientation that defines its local coordinate frame.
+    The FK must account for these rest orientations to match Blender's transforms.
 
     Args:
         rotations: Shape (23, 3) - local rotations per bone
@@ -162,11 +130,10 @@ def forward_kinematics(
     if root_rotation is None:
         root_rotation = np.eye(3, dtype=np.float32)
 
-    # Convert local rotations to matrices
-    if use_axis_angle:
-        local_rots = axis_angle_to_matrix(rotations)  # (23, 3, 3)
-    else:
-        local_rots = euler_to_matrix(rotations)  # (23, 3, 3)
+    # Convert local rotations to matrices (always axis-angle)
+    if not use_axis_angle:
+        raise ValueError("Only axis-angle rotations are supported")
+    local_rots = axis_angle_to_matrix(rotations)  # (23, 3, 3)
 
     # Output arrays
     positions = np.zeros((NUM_BONES, 3), dtype=np.float32)
@@ -178,20 +145,28 @@ def forward_kinematics(
 
         if parent_idx < 0:
             # Root bone (Hips)
-            world_rots[i] = root_rotation @ local_rots[i]
+            # World rotation = input root rotation @ rest orientation @ local rotation
+            # The rest orientation defines the bone's local frame
+            # The local rotation rotates within that frame
+            world_rots[i] = root_rotation @ REST_ORIENTATIONS[i] @ local_rots[i]
             positions[i] = root_position
         else:
-            # Child bone - inherit parent transform
-            parent_rot = world_rots[parent_idx]
+            # Child bone
+            parent_world_rot = world_rots[parent_idx]
             parent_pos = positions[parent_idx]
 
-            # World rotation = parent rotation @ local rotation
-            world_rots[i] = parent_rot @ local_rots[i]
+            # Position: parent position + parent's world rotation applied to local offset
+            # LOCAL_OFFSETS[i] is the offset from parent to child in parent's local frame
+            positions[i] = parent_pos + parent_world_rot @ LOCAL_OFFSETS[i]
 
-            # Position = parent position + rotated bone offset
-            # Use rest pose offset, rotated by parent
-            rest_offset = REST_POSITIONS_ARRAY[i] - REST_POSITIONS_ARRAY[parent_idx]
-            positions[i] = parent_pos + parent_rot @ rest_offset
+            # World rotation: parent world @ relative rest orientation @ local rotation
+            # relative_rest = how this bone's rest frame relates to parent's rest frame
+            # relative_rest = parent_rest.T @ child_rest (transform from parent frame to child frame)
+            parent_rest = REST_ORIENTATIONS[parent_idx]
+            child_rest = REST_ORIENTATIONS[i]
+            relative_rest = parent_rest.T @ child_rest
+
+            world_rots[i] = parent_world_rot @ relative_rest @ local_rots[i]
 
     return positions, world_rots
 
@@ -508,60 +483,6 @@ def compute_fk_loss_with_orientation(
     return position_loss, orientation_loss, position_errors, orientation_errors
 
 
-def compute_orientation_loss_gradient(
-    predicted_rotations: np.ndarray,
-    target_effector_rotations: np.ndarray,
-    root_positions: np.ndarray = None,
-    root_rotations: np.ndarray = None,
-    epsilon: float = 1e-4,
-) -> np.ndarray:
-    """
-    Compute gradient of orientation loss with respect to rotations.
-    Uses numerical differentiation (finite differences).
-
-    Only computes gradient for bones in the kinematic chains leading to effectors.
-
-    Args:
-        predicted_rotations: Shape (batch, 69) - flattened bone rotations
-        target_effector_rotations: Shape (batch, 15) - flattened target Euler rotations
-        root_positions: Shape (batch, 3)
-        root_rotations: Shape (batch, 3, 3)
-        epsilon: Step size for finite differences
-
-    Returns:
-        gradient: Shape (batch, 69) - gradient of orientation loss w.r.t. rotations
-    """
-    batch_size = predicted_rotations.shape[0]
-    n_params = predicted_rotations.shape[1]
-
-    gradient = np.zeros_like(predicted_rotations)
-
-    # Compute base loss
-    def orientation_loss(rots):
-        _, orient_loss, _, _ = compute_fk_loss_with_orientation(
-            rots,
-            np.zeros((batch_size, 5, 3)),  # Dummy positions (not used for orient loss)
-            target_effector_rotations,
-            root_positions,
-            root_rotations,
-        )
-        return orient_loss
-
-    # Numerical gradient via central differences
-    for i in range(n_params):
-        rotations_plus = predicted_rotations.copy()
-        rotations_plus[:, i] += epsilon
-        loss_plus = orientation_loss(rotations_plus)
-
-        rotations_minus = predicted_rotations.copy()
-        rotations_minus[:, i] -= epsilon
-        loss_minus = orientation_loss(rotations_minus)
-
-        gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)
-
-    return gradient
-
-
 def compute_contact_loss(
     predicted_rotations: np.ndarray,
     ground_heights: np.ndarray,
@@ -675,197 +596,3 @@ def clamp_rotations(
     clamped = np.clip(rotations, limits_min, limits_max)
     violations = np.abs(rotations - clamped)
     return clamped, violations
-
-
-# =============================================================================
-# Gradient computation for FK loss (for training)
-# =============================================================================
-
-def compute_fk_loss_gradient(
-    predicted_rotations: np.ndarray,
-    target_effector_positions: np.ndarray,
-    root_positions: np.ndarray = None,
-    root_rotations: np.ndarray = None,
-    epsilon: float = 1e-4,
-) -> np.ndarray:
-    """
-    Compute gradient of FK loss with respect to rotations.
-    Uses numerical differentiation (finite differences).
-
-    Args:
-        predicted_rotations: Shape (batch, 69) - flattened bone rotations
-        target_effector_positions: Shape (batch, 15) - flattened target positions
-        root_positions: Shape (batch, 3)
-        root_rotations: Shape (batch, 3, 3) - root rotation matrices
-        epsilon: Step size for finite differences
-
-    Returns:
-        gradient: Shape (batch, 69) - gradient of loss w.r.t. rotations
-    """
-    batch_size = predicted_rotations.shape[0]
-    n_params = predicted_rotations.shape[1]
-
-    gradient = np.zeros_like(predicted_rotations)
-
-    # Numerical gradient via central differences
-    for i in range(n_params):
-        # Forward step
-        rotations_plus = predicted_rotations.copy()
-        rotations_plus[:, i] += epsilon
-        loss_plus, _ = compute_fk_loss(rotations_plus, target_effector_positions, root_positions, root_rotations)
-
-        # Backward step
-        rotations_minus = predicted_rotations.copy()
-        rotations_minus[:, i] -= epsilon
-        loss_minus, _ = compute_fk_loss(rotations_minus, target_effector_positions, root_positions, root_rotations)
-
-        # Central difference
-        gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)
-
-    return gradient
-
-
-def compute_contact_loss_simple(
-    predicted_rotations: np.ndarray,
-    contact_flags: np.ndarray,
-    root_positions: np.ndarray = None,
-    ground_height: float = 0.0,
-) -> Tuple[float, np.ndarray]:
-    """
-    Simplified contact loss: feet should be at ground height when grounded.
-
-    Uses flat ground assumption (Z=0 relative to armature).
-
-    Args:
-        predicted_rotations: Shape (batch, 69) - flattened bone rotations
-        contact_flags: Shape (batch, 2) - 1 if foot should be grounded [left, right]
-        root_positions: Shape (batch, 3) - root world positions
-        ground_height: Z coordinate of ground (default 0)
-
-    Returns:
-        loss: Scalar contact violation
-        foot_heights: Shape (batch, 2) - actual foot Z positions
-    """
-    batch_size = predicted_rotations.shape[0]
-
-    # Reshape rotations
-    rotations = predicted_rotations.reshape(batch_size, NUM_BONES, 3)
-
-    # Run FK
-    positions, _ = forward_kinematics_batch(rotations, root_positions)
-
-    # Get foot positions
-    left_foot_idx = BONE_TO_INDEX["LeftFoot"]
-    right_foot_idx = BONE_TO_INDEX["RightFoot"]
-
-    foot_heights = np.stack([
-        positions[:, left_foot_idx, 2],   # Z coordinate
-        positions[:, right_foot_idx, 2],
-    ], axis=1)  # (batch, 2)
-
-    # Height error: feet should be at ground_height when grounded
-    height_error = (foot_heights - ground_height) * contact_flags
-    loss = float(np.mean(height_error ** 2))
-
-    return loss, foot_heights
-
-
-def compute_contact_loss_gradient(
-    predicted_rotations: np.ndarray,
-    contact_flags: np.ndarray,
-    root_positions: np.ndarray = None,
-    ground_height: float = 0.0,
-    epsilon: float = 1e-4,
-) -> np.ndarray:
-    """
-    Compute gradient of contact loss with respect to rotations.
-    Uses numerical differentiation (finite differences).
-
-    Only computes gradient for leg bones (optimization - other bones don't affect feet).
-
-    Args:
-        predicted_rotations: Shape (batch, 69) - flattened bone rotations
-        contact_flags: Shape (batch, 2) - grounded flags [left, right]
-        root_positions: Shape (batch, 3)
-        ground_height: Z coordinate of ground
-        epsilon: Step size for finite differences
-
-    Returns:
-        gradient: Shape (batch, 69) - gradient of loss w.r.t. rotations
-    """
-    batch_size = predicted_rotations.shape[0]
-    n_params = predicted_rotations.shape[1]
-
-    gradient = np.zeros_like(predicted_rotations)
-
-    # Only compute gradient for bones that affect foot positions
-    # Left leg: LeftThigh (15), LeftShin (16), LeftFoot (17), LeftToeBase (18)
-    # Right leg: RightThigh (19), RightShin (20), RightFoot (21), RightToeBase (22)
-    # Also Hips (0) affects everything
-    leg_bone_indices = [0, 15, 16, 17, 18, 19, 20, 21, 22]
-
-    # Convert bone indices to rotation parameter indices (3 params per bone)
-    leg_param_indices = []
-    for bone_idx in leg_bone_indices:
-        leg_param_indices.extend([bone_idx * 3, bone_idx * 3 + 1, bone_idx * 3 + 2])
-
-    # Numerical gradient via central differences (only for leg params)
-    for i in leg_param_indices:
-        # Forward step
-        rotations_plus = predicted_rotations.copy()
-        rotations_plus[:, i] += epsilon
-        loss_plus, _ = compute_contact_loss_simple(
-            rotations_plus, contact_flags, root_positions, ground_height
-        )
-
-        # Backward step
-        rotations_minus = predicted_rotations.copy()
-        rotations_minus[:, i] -= epsilon
-        loss_minus, _ = compute_contact_loss_simple(
-            rotations_minus, contact_flags, root_positions, ground_height
-        )
-
-        # Central difference
-        gradient[:, i] = (loss_plus - loss_minus) / (2 * epsilon)
-
-    return gradient
-
-
-def infer_contact_flags(
-    target_effector_positions: np.ndarray,
-    ground_height: float = 0.0,
-    threshold: float = 0.1,
-) -> np.ndarray:
-    """
-    Infer contact flags from training data.
-
-    If a foot's target Z position is close to ground, it's grounded.
-
-    Args:
-        target_effector_positions: Shape (batch, 5, 3) - target positions
-            Effector order: LeftHand, RightHand, LeftFoot, RightFoot, Head
-        ground_height: Z coordinate of ground
-        threshold: Max height above ground to count as grounded
-
-    Returns:
-        contact_flags: Shape (batch, 2) - [left_grounded, right_grounded]
-    """
-    # Ensure correct shape
-    if target_effector_positions.ndim == 2:
-        # (batch, 15) -> (batch, 5, 3)
-        target_effector_positions = target_effector_positions.reshape(-1, 5, 3)
-
-    # LeftFoot is index 2, RightFoot is index 3
-    left_foot_z = target_effector_positions[:, 2, 2]   # Z of LeftFoot
-    right_foot_z = target_effector_positions[:, 3, 2]  # Z of RightFoot
-
-    # Grounded if Z is close to ground
-    left_grounded = (left_foot_z - ground_height) < threshold
-    right_grounded = (right_foot_z - ground_height) < threshold
-
-    contact_flags = np.stack([
-        left_grounded.astype(np.float32),
-        right_grounded.astype(np.float32),
-    ], axis=1)  # (batch, 2)
-
-    return contact_flags

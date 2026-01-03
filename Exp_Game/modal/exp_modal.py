@@ -442,8 +442,11 @@ class ExpModal(bpy.types.Operator):
         reset_all_tasks()
         reset_all_counters(context.scene)
         reset_all_timers(context.scene)
-        reset_property_reactions(context.scene)   
+        reset_property_reactions(context.scene)
 
+        # 4F) Clear health cache (fresh start, ENABLE_HEALTH reactions haven't run yet)
+        from ..systems.exp_health import clear_all_health
+        clear_all_health()
 
         # 5) Center the cursor for reading mouse deltas
         center_cursor_in_3d_view(context)
@@ -834,6 +837,11 @@ class ExpModal(bpy.types.Operator):
         # ========== PROJECTILE CLEANUP ==========
         from ..reactions.exp_projectiles import clear as clear_projectiles
         clear_projectiles()
+        # ====================================
+
+        # ========== HEALTH CLEANUP ==========
+        from ..systems.exp_health import clear_all_health
+        clear_all_health()
         # ====================================
 
         # NOTE: Do NOT call reset_fullscreen_state() here!

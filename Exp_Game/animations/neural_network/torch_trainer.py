@@ -55,28 +55,28 @@ sys.path.insert(0, SCRIPT_DIR)
 from config import (
     DATA_DIR, WEIGHTS_DIR, BEST_WEIGHTS_PATH,
     INPUT_SIZE, HIDDEN_SIZE_1, HIDDEN_SIZE_2, OUTPUT_SIZE,
-    NUM_BONES, CONTROLLED_BONES, END_EFFECTORS,
+    NUM_BONES, END_EFFECTORS,
     PARENT_INDICES, LENGTHS_ARRAY, REST_POSITIONS_ARRAY,
+    REST_ORIENTATIONS, LOCAL_OFFSETS,
     LIMITS_MIN, LIMITS_MAX, BONE_TO_INDEX,
-    FK_LOSS_WEIGHT, POSE_LOSS_WEIGHT, CONTACT_LOSS_WEIGHT, LIMIT_PENALTY_WEIGHT,
-    POSITION_SCALE, ROTATION_SCALE, HEIGHT_SCALE,
 )
+from context import normalize_input
 
 # =============================================================================
 # Hyperparameters
 # =============================================================================
 BATCH_SIZE = 512          # Large batches for GPU saturation
-MAX_EPOCHS = 300
-EARLY_STOP_PATIENCE = 50
+MAX_EPOCHS = 500
+EARLY_STOP_PATIENCE = 75  # More patience with new loss weights
 LEARNING_RATE = 1e-3
 
 # Loss weights
-POSITION_WEIGHT = 1.0     # FK position loss
-ORIENTATION_WEIGHT = 0.7  # Effector rotation loss (increased for orientation test)
-POSE_WEIGHT = 0.3         # Match training poses
-CONTACT_WEIGHT = 0.5      # Foot grounding
-LIMIT_WEIGHT = 0.5        # Joint limits (anatomical)
-SMOOTH_WEIGHT = 0.10      # Temporal smoothness (helps noise robustness)
+POSITION_WEIGHT = 5.0     # FK position loss - DOMINANT for IK accuracy
+ORIENTATION_WEIGHT = 0.5  # Effector rotation loss
+POSE_WEIGHT = 0.1         # Match training poses (low - positions matter more)
+CONTACT_WEIGHT = 0.3      # Foot grounding
+LIMIT_WEIGHT = 0.3        # Joint limits (anatomical)
+SMOOTH_WEIGHT = 0.05      # Temporal smoothness (helps noise robustness)
 
 # Ground plane
 GROUND_HEIGHT = 0.0
@@ -84,6 +84,7 @@ CONTACT_THRESHOLD = 0.1
 
 # Mixed precision (set False if NaN issues)
 USE_AMP = True
+INPUT_NOISE_STD = 0.01  # small noise on inputs for robustness
 
 # =============================================================================
 # Pre-computed tensors (move to GPU once)
@@ -91,8 +92,21 @@ USE_AMP = True
 PARENT_INDICES_T = torch.tensor(PARENT_INDICES, dtype=torch.long, device=DEVICE)
 BONE_LENGTHS_T = torch.tensor(LENGTHS_ARRAY, dtype=torch.float32, device=DEVICE)
 REST_POSITIONS_T = torch.tensor(REST_POSITIONS_ARRAY, dtype=torch.float32, device=DEVICE)
+LOCAL_OFFSETS_T = torch.tensor(LOCAL_OFFSETS, dtype=torch.float32, device=DEVICE)
+REST_ORIENTATIONS_T = torch.tensor(REST_ORIENTATIONS, dtype=torch.float32, device=DEVICE)
 LIMITS_MIN_T = torch.tensor(LIMITS_MIN, dtype=torch.float32, device=DEVICE)
 LIMITS_MAX_T = torch.tensor(LIMITS_MAX, dtype=torch.float32, device=DEVICE)
+
+# Pre-compute relative rest orientations (parent^T @ child) for FK
+# This transforms from parent's frame to child's rest frame
+RELATIVE_REST_ORIENTATIONS_T = torch.zeros(NUM_BONES, 3, 3, dtype=torch.float32, device=DEVICE)
+for i in range(NUM_BONES):
+    parent_idx = PARENT_INDICES[i]
+    if parent_idx < 0:
+        RELATIVE_REST_ORIENTATIONS_T[i] = REST_ORIENTATIONS_T[i]  # Root uses its own rest orientation
+    else:
+        # relative = parent_rest.T @ child_rest
+        RELATIVE_REST_ORIENTATIONS_T[i] = REST_ORIENTATIONS_T[parent_idx].T @ REST_ORIENTATIONS_T[i]
 
 # Effector bone indices
 EFFECTOR_INDICES = torch.tensor(
@@ -166,73 +180,30 @@ def prepare_data(data):
     return result
 
 
-def normalize_input(inputs):
-    """
-    Normalize inputs for training - MUST match context.py exactly!
-
-    Scales positions and rotations to comparable magnitudes.
-    """
-    normalized = inputs.copy()
-    single = normalized.ndim == 1
-    if single:
-        normalized = normalized.reshape(1, -1)
-
-    # Constants from config.py
-    POSITION_SCALE = 1.0
-    ROTATION_SCALE = np.pi
-    HEIGHT_SCALE = 2.0
-
-    # Effector data (30 values): alternating pos/rot per effector
-    for i in range(5):
-        base = i * 6
-        # Position: divide by POSITION_SCALE (1m = 1 unit)
-        normalized[:, base:base+3] /= POSITION_SCALE
-        # Rotation: divide by pi to get ~[-1, 1]
-        normalized[:, base+3:base+6] /= ROTATION_SCALE
-
-    # Root orientation (6 values at indices 30-35): already unit vectors, skip
-
-    # Ground context (12 values at indices 36-47)
-    ground_start = 36  # INPUT_SLICES['ground'][0]
-    for foot in range(2):
-        foot_base = ground_start + foot * 6
-        # Height offset: divide by height scale
-        normalized[:, foot_base] /= HEIGHT_SCALE
-        # Normal (3 values): already unit, skip
-        # Contact flags (2 values): already 0/1, skip
-
-    # Motion state (2 values at indices 48-49): phase is 0-1, task is small int, skip
-
-    if single:
-        normalized = normalized[0]
-
-    return normalized
-
-
 # =============================================================================
 # Neural Network Model
 # =============================================================================
 class NeuralIK(nn.Module):
-    """MLP for IK: 50 -> 128 -> 96 -> 69"""
+    """MLP for IK: 50 -> 256 -> 256 -> 128 -> 69 (LeakyReLU hidden)"""
 
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(INPUT_SIZE, HIDDEN_SIZE_1)
-        self.fc2 = nn.Linear(HIDDEN_SIZE_1, HIDDEN_SIZE_2)
-        self.fc3 = nn.Linear(HIDDEN_SIZE_2, OUTPUT_SIZE)
+        self.fc1 = nn.Linear(INPUT_SIZE, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 128)
+        self.fc4 = nn.Linear(128, OUTPUT_SIZE)
+        self.act = nn.LeakyReLU(0.1)
 
         # Xavier initialization
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        nn.init.xavier_uniform_(self.fc3.weight)
-        nn.init.zeros_(self.fc1.bias)
-        nn.init.zeros_(self.fc2.bias)
-        nn.init.zeros_(self.fc3.bias)
+        for layer in (self.fc1, self.fc2, self.fc3, self.fc4):
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
 
     def forward(self, x):
-        x = torch.tanh(self.fc1(x))
-        x = torch.tanh(self.fc2(x))
-        x = self.fc3(x)
+        x = self.act(self.fc1(x))
+        x = self.act(self.fc2(x))
+        x = self.act(self.fc3(x))
+        x = self.fc4(x)
         return x
 
 
@@ -407,11 +378,15 @@ def quaternion_geodesic_loss(q1, q2):
 
 
 # =============================================================================
-# Forward Kinematics (Batched)
+# Forward Kinematics (Batched) - CORRECTED to match Blender's bone transforms
 # =============================================================================
 def forward_kinematics(rotations, root_positions, root_rotations):
     """
     Compute FK to get world positions and rotations of all bones.
+
+    IMPORTANT: Local rotations from Blender are in bone-local space.
+    Each bone has a rest orientation that defines its local coordinate frame.
+    The FK must account for these rest orientations to match Blender's transforms.
 
     Args:
         rotations: (batch, 23, 3, 3) local rotation matrices
@@ -424,8 +399,8 @@ def forward_kinematics(rotations, root_positions, root_rotations):
     """
     batch = rotations.shape[0]
 
-    # Initialize with rest pose positions
-    positions = REST_POSITIONS_T.unsqueeze(0).expand(batch, -1, -1).clone()
+    # Output arrays
+    positions = torch.zeros(batch, NUM_BONES, 3, device=DEVICE)
     world_rotations = torch.zeros(batch, NUM_BONES, 3, 3, device=DEVICE)
 
     # Process bones in order (parent before child guaranteed by CONTROLLED_BONES order)
@@ -434,26 +409,28 @@ def forward_kinematics(rotations, root_positions, root_rotations):
         local_rot = rotations[:, bone_idx]  # (batch, 3, 3)
 
         if parent_idx == -1:
-            # Root bone - use provided world transform
-            world_rotations[:, bone_idx] = root_rotations @ local_rot
+            # Root bone (Hips)
+            # World rotation = input root rotation @ rest orientation @ local rotation
+            # The rest orientation defines the bone's local frame
+            # The local rotation rotates within that frame
+            rest_orient = RELATIVE_REST_ORIENTATIONS_T[bone_idx].unsqueeze(0).expand(batch, -1, -1)
+            world_rotations[:, bone_idx] = root_rotations @ rest_orient @ local_rot
             positions[:, bone_idx] = root_positions
         else:
-            # Child bone - inherit from parent
-            parent_rot = world_rotations[:, parent_idx]  # (batch, 3, 3)
+            # Child bone
+            parent_world_rot = world_rotations[:, parent_idx]  # (batch, 3, 3)
             parent_pos = positions[:, parent_idx]  # (batch, 3)
 
-            # World rotation = parent_world_rot @ local_rot
-            world_rotations[:, bone_idx] = parent_rot @ local_rot
-
-            # Position = parent_pos + parent_rot @ (bone_offset)
-            # Bone offset is the local direction from parent to this bone * length
-            rest_offset = REST_POSITIONS_T[bone_idx] - REST_POSITIONS_T[parent_idx]
-            rest_dir = rest_offset / (torch.norm(rest_offset) + 1e-8)
-            bone_length = BONE_LENGTHS_T[parent_idx]
-
-            # Transform offset by parent rotation
-            offset = (parent_rot @ rest_dir.unsqueeze(-1)).squeeze(-1) * bone_length
+            # Position: parent position + parent's world rotation applied to local offset
+            # LOCAL_OFFSETS_T[i] is the offset from parent to child in parent's local frame
+            local_offset = LOCAL_OFFSETS_T[bone_idx]  # (3,)
+            offset = (parent_world_rot @ local_offset.unsqueeze(-1)).squeeze(-1)
             positions[:, bone_idx] = parent_pos + offset
+
+            # World rotation: parent world @ relative rest orientation @ local rotation
+            # relative_rest = how this bone's rest frame relates to parent's rest frame
+            relative_rest = RELATIVE_REST_ORIENTATIONS_T[bone_idx].unsqueeze(0).expand(batch, -1, -1)
+            world_rotations[:, bone_idx] = parent_world_rot @ relative_rest @ local_rot
 
     return positions, world_rotations
 
@@ -638,27 +615,11 @@ def compute_limit_penalty(pred_rotations):
     return penalty
 
 
-def clamp_rotations(pred_rotations):
-    """
-    Hard clamp rotations to joint limits.
-
-    Args:
-        pred_rotations: (batch, 69)
-
-    Returns:
-        clamped: (batch, 69)
-    """
-    batch = pred_rotations.shape[0]
-    rotations = pred_rotations.view(batch, NUM_BONES, 3)
-    clamped = torch.clamp(rotations, LIMITS_MIN_T, LIMITS_MAX_T)
-    return clamped.view(batch, OUTPUT_SIZE)
-
-
 # =============================================================================
 # Training
 # =============================================================================
-def train(data):
-    """Main training loop."""
+def train(data, fresh_start=False):
+    """Main training loop. Set fresh_start=True to ignore saved weights."""
     # Unpack data
     train_inputs = data['train_inputs']
     train_outputs = data['train_outputs']
@@ -683,12 +644,13 @@ def train(data):
     # Model
     model = NeuralIK().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS)
 
-    # Mixed precision scaler
-    scaler = torch.cuda.amp.GradScaler() if USE_AMP and DEVICE.type == 'cuda' else None
+    # Mixed precision scaler (new API to silence deprecation)
+    scaler = torch.amp.GradScaler("cuda") if USE_AMP and DEVICE.type == 'cuda' else None
 
-    # Try to load existing weights
-    if os.path.exists(BEST_WEIGHTS_PATH):
+    # Try to load existing weights (unless fresh_start requested)
+    if not fresh_start and os.path.exists(BEST_WEIGHTS_PATH):
         try:
             weights = np.load(BEST_WEIGHTS_PATH, allow_pickle=True).item()
             model.fc1.weight.data = torch.tensor(weights['W1'].T, device=DEVICE)
@@ -697,9 +659,13 @@ def train(data):
             model.fc2.bias.data = torch.tensor(weights['b2'], device=DEVICE)
             model.fc3.weight.data = torch.tensor(weights['W3'].T, device=DEVICE)
             model.fc3.bias.data = torch.tensor(weights['b3'], device=DEVICE)
+            model.fc4.weight.data = torch.tensor(weights['W4'].T, device=DEVICE)
+            model.fc4.bias.data = torch.tensor(weights['b4'], device=DEVICE)
             print(f"Resumed from saved weights")
         except Exception as e:
             print(f"Could not load weights: {e}, starting fresh")
+    elif fresh_start:
+        print("Fresh start requested - using random initialization")
 
     # Training state
     best_pos_loss = float('inf')
@@ -716,7 +682,64 @@ def train(data):
     print(f" AMP:        {'Enabled' if scaler else 'Disabled'}")
     print(f" Weights:    Position={POSITION_WEIGHT}, Orient={ORIENTATION_WEIGHT}, Pose={POSE_WEIGHT}")
     print(f"             Contact={CONTACT_WEIGHT}, Limit={LIMIT_WEIGHT}")
-    print(f"{'='*70}\n")
+    print(f"{'='*70}")
+
+    # =========================================================================
+    # FK VALIDATION - Verify FK matches Blender's actual bone positions
+    # =========================================================================
+    print(f"\n{'-'*70}")
+    print(f" FK VALIDATION - Testing if our math matches Blender")
+    print(f"{'-'*70}")
+
+    # Use first 100 test samples for validation
+    n_val = min(100, n_test)
+
+    # Get ground truth rotations and run FK
+    gt_rots_flat = test_outputs[:n_val]  # (n_val, 69) axis-angle
+    gt_rots = gt_rots_flat.view(n_val, NUM_BONES, 3)  # (n_val, 23, 3)
+
+    # Build rotation matrices from axis-angle
+    gt_rotmats = axis_angle_to_rotmat(gt_rots)  # (n_val, 23, 3, 3)
+
+    # Build root rotation from forward/up vectors
+    root_rot_mats = build_root_rotation(test_root_fwd[:n_val], test_root_up[:n_val])
+
+    # Run FK with ground truth rotations
+    fk_positions, _ = forward_kinematics(gt_rotmats, test_root_pos[:n_val], root_rot_mats)
+
+    # Extract effector positions
+    fk_effector_pos = fk_positions[:, EFFECTOR_INDICES]  # (n_val, 5, 3)
+
+    # Get target effector positions from training data
+    target_effector_pos = test_targets[:n_val].view(n_val, 5, 3)  # (n_val, 5, 3)
+
+    # Compute per-effector errors
+    effector_errors = torch.norm(fk_effector_pos - target_effector_pos, dim=-1)  # (n_val, 5)
+    mean_errors = effector_errors.mean(dim=0) * 100  # to cm
+    overall_rmse = torch.sqrt((effector_errors ** 2).mean()).item() * 100
+
+    print(f" Testing FK on {n_val} ground truth samples...")
+    print(f" (Ground truth rotations should produce ground truth positions)")
+    print()
+    for i, name in enumerate(END_EFFECTORS):
+        err_cm = mean_errors[i].item()
+        status = "OK" if err_cm < 1.0 else ("WARN" if err_cm < 5.0 else "BAD")
+        print(f"   {name:12s}: {err_cm:6.2f} cm  [{status}]")
+
+    print(f"\n   Overall RMSE: {overall_rmse:.2f} cm")
+
+    if overall_rmse < 1.0:
+        print(f"\n   [PASS] FK matches Blender (error < 1cm)")
+        print(f"   Trained rotations will look correct in Blender!")
+    elif overall_rmse < 5.0:
+        print(f"\n   [WARN] FK close but not exact (error {overall_rmse:.1f}cm)")
+        print(f"   Results may have slight differences from Blender.")
+    else:
+        print(f"\n   [FAIL] FK does NOT match Blender (error {overall_rmse:.1f}cm)")
+        print(f"   WARNING: Trained network will NOT work correctly!")
+        print(f"   Check REST_ORIENTATIONS and LOCAL_OFFSETS in config.py")
+
+    print(f"{'-'*70}\n")
 
     start_time = time.time()
 
@@ -752,13 +775,17 @@ def train(data):
             batch_rf = train_rf[i0:i1]
             batch_ru = train_ru[i0:i1]
 
+            # Light input noise for robustness
+            if INPUT_NOISE_STD > 0:
+                batch_in = batch_in + torch.randn_like(batch_in) * INPUT_NOISE_STD
+
             # Build root rotation
             root_rot = build_root_rotation(batch_rf, batch_ru)
 
             optimizer.zero_grad()
 
             if scaler:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast("cuda"):
                     # Forward
                     pred = model(batch_in)
 
@@ -845,13 +872,18 @@ def train(data):
             print(f"\n  Early stopping after {EARLY_STOP_PATIENCE} epochs without improvement")
             break
 
+        # Scheduler step per epoch
+        scheduler.step()
+
         # Progress
         t = time.time() - epoch_start
         if epoch % 5 == 0 or epoch == 1 or is_best:
             star = " *" if is_best else ""
             print(f"[{100*epoch/MAX_EPOCHS:5.1f}%] Epoch {epoch:3d} | "
-                  f"Pos={epoch_pos:.4f} Ori={epoch_orient:.4f} | "
+                  f"Pos={epoch_pos:.4f} Ori={epoch_orient:.4f} Pose={epoch_pose:.4f} "
+                  f"Contact={epoch_contact:.4f} Limit={epoch_limit:.4f} | "
                   f"Test P:{test_pos:.4f} O:{test_orient:.4f} | "
+                  f"LR={scheduler.get_last_lr()[0]:.6f} | "
                   f"{t:.2f}s{star}")
 
     total_time = time.time() - start_time
@@ -879,6 +911,8 @@ def save_weights(model, best_loss=0.0, total_updates=0):
         'b2': model.fc2.bias.data.cpu().numpy(),
         'W3': model.fc3.weight.data.cpu().numpy().T,
         'b3': model.fc3.bias.data.cpu().numpy(),
+        'W4': model.fc4.weight.data.cpu().numpy().T,
+        'b4': model.fc4.bias.data.cpu().numpy(),
         'best_loss': float(best_loss),
         'total_updates': int(total_updates),
     }
@@ -1024,21 +1058,85 @@ def run_tests(model, data):
 # Main
 # =============================================================================
 if __name__ == "__main__":
+    import sys
+
+    # Help text
+    if '--help' in sys.argv or '-h' in sys.argv:
+        print("""
+Neural IK - PyTorch GPU Trainer
+===============================
+
+Usage: python torch_trainer.py [OPTIONS]
+
+Options:
+    --fresh     Start fresh training from random weights.
+                Use this after fixing bugs or changing the FK computation.
+                Without this flag, training resumes from saved weights.
+
+    --help      Show this help message.
+
+What the trainer does:
+    1. Loads training data extracted from Blender animations
+    2. Validates FK computation matches Blender's bone transforms
+    3. Trains neural network to predict bone rotations from target positions
+    4. Saves best weights to weights/best.npy
+    5. Runs test suite to verify accuracy
+
+Log column meanings:
+    Pos     = Position loss (how far effectors are from targets, in meters^2)
+    Ori     = Orientation loss (rotation error of effectors)
+    Pose    = Pose matching loss (how close to training poses)
+    Contact = Foot grounding loss (feet on ground when expected)
+    Limit   = Joint limit penalty (anatomical constraints)
+    Test P  = Test set position loss (generalization check)
+    Test O  = Test set orientation loss
+    *       = New best model saved
+""")
+        sys.exit(0)
+
+    # Check for --fresh flag to start fresh training (ignore saved weights)
+    FRESH_START = '--fresh' in sys.argv
+
     print(f"\n{'='*70}")
     print(f" NEURAL IK - PyTorch GPU Trainer")
+    print(f"{'='*70}")
+    print(f" Run with --help for usage information")
     print(f"{'='*70}\n")
+
+    if FRESH_START:
+        print("*** FRESH START MODE ***")
+        print("    Ignoring saved weights, training from scratch.")
+        print("    Use this after fixing FK bugs or changing architecture.\n")
 
     # Load and prepare data
     raw_data = load_data()
     data = prepare_data(raw_data)
 
     # Train
-    model = train(data)
+    model = train(data, fresh_start=FRESH_START)
 
     # Run tests
     all_passed = run_tests(model, data)
 
+    print(f"\n{'='*70}")
+    print(f" TRAINING COMPLETE")
+    print(f"{'='*70}")
+
     if all_passed:
-        print("All tests passed! Model is ready.")
+        print(" All tests PASSED!")
+        print()
+        print(" Next steps:")
+        print("   1. Reinstall addon in Blender (copy Desktop -> AppData)")
+        print("   2. Open Blender and go to the Neural IK panel")
+        print("   3. Click 'Reload Weights' to load the trained model")
+        print("   4. Use 'Toggle Pred/Truth' to compare predictions vs ground truth")
+        print("   5. Predictions should now match ground truth visually!")
     else:
-        print("Some tests failed. Review results and consider more training data or architecture changes.")
+        print(" Some tests FAILED - review output above.")
+        print()
+        print(" Possible issues:")
+        print("   - Not enough training data (extract more animations)")
+        print("   - FK validation failed (check config.py bone data)")
+        print("   - Need more training epochs (increase MAX_EPOCHS)")
+
+    print(f"{'='*70}\n")

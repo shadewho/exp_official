@@ -126,6 +126,7 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Parent / Unparent", "ReactionParentingNodeType")
         add("Track To",           "ReactionTrackingNodeType")
         add("Ragdoll",            "ReactionRagdollNodeType")
+        add("Enable Health",      "ReactionEnableHealthNodeType")
 
 
 class NODE_MT_exploratory_add_counter_timer(Menu):

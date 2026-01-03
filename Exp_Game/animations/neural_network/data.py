@@ -240,12 +240,17 @@ class AnimationDataExtractor:
         # =====================================================================
         # ROOT INFO: For FK computation
         # =====================================================================
+        # CRITICAL: Use armature's WORLD rotation, NOT hips bone matrix!
+        # FK already applies REST_ORIENTATIONS internally for each bone.
+        # Using hips bone matrix here would DOUBLE-APPLY the rest orientation.
+        # The root_rotation in FK represents "how is the whole armature rotated in world space"
         hips = pose_bones.get("Hips")
         if hips:
             root_world_pos = arm_matrix @ hips.head
-            root_matrix = arm_matrix @ hips.matrix
-            root_forward = Vector(root_matrix.col[1][:3]).normalized()
-            root_up = Vector(root_matrix.col[2][:3]).normalized()
+            # Extract armature's world rotation axes
+            arm_rot = arm_matrix.to_3x3()
+            root_forward = Vector((arm_rot[0][1], arm_rot[1][1], arm_rot[2][1])).normalized()  # Y column
+            root_up = Vector((arm_rot[0][2], arm_rot[1][2], arm_rot[2][2])).normalized()  # Z column
         else:
             root_world_pos = Vector((0, 0, 1))
             root_forward = Vector((0, 1, 0))

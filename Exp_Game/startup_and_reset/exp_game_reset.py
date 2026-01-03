@@ -56,7 +56,7 @@ def capture_scene_state(self, context):
 def restore_scene_state(modal_op, context):
     """
     Correct order:
-      A) restore original parents (also removes runtime Child-Of constraints)
+      A) restore original parents
       B) then restore local transforms and visibility
     """
     state = getattr(modal_op, "_initial_game_state", None)
@@ -238,6 +238,10 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         reset_all_counters(context.scene)
         reset_all_timers(context.scene)
         reset_property_reactions(context.scene)
+
+        # ─── 2.7) Reset health values ─────────────────────────────────────
+        from ..systems.exp_health import reset_all_health
+        reset_all_health()
 
         # ─── 2.5) Reset worker-side tracker state ─────────────────────────
         #    Re-caches trackers which clears _tracker_primed, _tracker_states, etc.

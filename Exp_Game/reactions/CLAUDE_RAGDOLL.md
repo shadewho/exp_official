@@ -1,104 +1,150 @@
-# Ragdoll System (Rig Agnostic)
+# Verlet Particle Ragdoll System
 
-**Status:** Simple pendulum collapse - works on ANY armature
+**Status:** Full physics ragdoll with mesh collision
 
 ## Overview
 
-Simple ragdoll that makes any armature collapse like a marionette with cut strings.
-- Every bone is a pendulum that falls toward gravity
-- No complex physics - just collapse
-- Works on ANY armature - no hardcoded bone names, no role detection
+Ragdoll that works on ANY armature using Verlet particle physics:
+- Each bone joint is a free-moving particle
+- Bones are distance constraints (like strings)
+- Particles collide with static and dynamic proxy meshes
+- True floppy collapse - each segment independent
 
 ---
 
 ## How It Works
 
-### The Simple Model
+### The Verlet Model
 
-Each bone is treated as a pendulum hanging from its parent:
-1. Gravity pulls the bone's tip downward
-2. Bone rotates around its joint toward gravity
-3. Damping prevents wild swinging
-4. Joint limits prevent unnatural poses
+```
+Traditional (BAD)                Verlet (GOOD)
+─────────────────                ────────────────
+Bones rotate on joints           Each joint is a particle
+Parent constrains child          Particles connected by springs
 
-That's it. No spring-to-rest fighting the collapse, no parent alignment.
+    ●──────●──────●                  ●......●......●
+    │      │      │                  .      .      .
+    │ rot  │ rot  │                  . dist . dist .
+    ▼      ▼      ▼                  ▼      ▼      ▼
+Whole thing tilts              Each segment falls independently
+```
 
-### Two-Part System
+### Physics Steps (Worker)
 
-**Main Thread (exp_ragdoll.py):**
-- Position drop: armature falls to ground with gravity
-- Submits bone data to worker
-- Applies rotation results to pose bones
+1. **Verlet Integration**: Apply gravity, compute velocity from position history
+2. **Distance Constraints**: Iterate to maintain bone lengths (8 iterations)
+3. **Mesh Collision**: Push particles out of static/dynamic meshes
+4. **Re-constrain**: Satisfy distances again after collision
+5. **Floor Clamp**: Ensure nothing goes below floor
 
-**Worker (ragdoll.py):**
-- Computes bone rotations based on gravity
-- Simple: `torque = bone_Y x gravity` (pendulum physics)
-- Returns new rotations each frame
+### Data Flow
+
+```
+Trigger RAGDOLL reaction
+        │
+        ▼
+┌───────────────────────────────────────┐
+│  CAPTURE (once at start)              │
+│  - Build particles from bone joints   │
+│  - Create distance constraints        │
+│  - Map bones to particle indices      │
+│  - Activate PHYSICS channel           │
+└───────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────┐
+│  EACH FRAME (30Hz)                    │
+│                                       │
+│  Main Thread:                         │
+│  1. Submit particle data to worker    │
+│                                       │
+│  Worker:                              │
+│  2. Verlet integration (gravity)      │
+│  3. Satisfy distance constraints      │
+│  4. Collide with cached meshes        │
+│  5. Return new particle positions     │
+│                                       │
+│  Main Thread:                         │
+│  6. Convert positions to bone rots    │
+│  7. Apply to armature                 │
+└───────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────┐
+│  FINISH (duration ends)               │
+│  - Restore initial pose               │
+│  - Deactivate PHYSICS channel         │
+│  - Resume normal animations           │
+└───────────────────────────────────────┘
+```
 
 ---
 
 ## Physics Constants
 
-### Position Drop (Main Thread)
+### Worker (ragdoll.py)
+
 ```python
-DROP_GRAVITY = -20.0    # Fast drop (m/s^2)
-DROP_DAMPING = 0.3      # Low bounce
-DROP_DURATION = 1.5     # Full collapse time
+GRAVITY = (0.0, 0.0, -9.8)
+GRAVITY_SCALE = 1.0           # Multiplier
+
+CONSTRAINT_ITERATIONS = 8     # More = stiffer bones
+CONSTRAINT_STIFFNESS = 0.9    # 0-1, bone rigidity
+
+DAMPING = 0.98                # Velocity retention
+GROUND_FRICTION = 0.7         # Friction on ground
+
+COLLISION_RADIUS = 0.05       # Particle sphere size
 ```
 
-### Bone Rotation (Worker)
-```python
-GRAVITY_STRENGTH = 12.0  # How hard gravity pulls
-BONE_DAMPING = 0.85      # Velocity decay (smooth settle)
-BONE_LIMIT = 2.5         # Max rotation radians (~143 degrees)
-MAX_ANG_VEL = 15.0       # Velocity cap
-```
+### Main Thread (exp_ragdoll.py)
 
-All bones use the SAME physics constants - no role detection, no special cases.
+```python
+FIX_ROOT = False              # If True, root stays in place
+```
 
 ---
 
-## Data Flow
+## Mesh Collision
 
-```
-Trigger RAGDOLL reaction
-        |
-        v
-+---------------------------------------+
-|  CAPTURE (once at start)              |
-|  - Per-bone rest matrix               |
-|  - Initial rotations                  |
-|  - Activate PHYSICS channel           |
-+---------------------------------------+
-        |
-        v
-+---------------------------------------+
-|  EACH FRAME (30Hz)                    |
-|                                       |
-|  Main Thread:                         |
-|  1. Update position drop (gravity)    |
-|  2. Submit bone data to worker        |
-|                                       |
-|  Worker:                              |
-|  3. For each bone:                    |
-|     - Project gravity -> bone local   |
-|     - Compute torque from gravity     |
-|     - Integrate velocity + damping    |
-|     - Clamp to joint limits           |
-|  4. Return new rotations              |
-|                                       |
-|  Main Thread:                         |
-|  5. Apply rotations to pose bones     |
-+---------------------------------------+
-        |
-        v
-+---------------------------------------+
-|  FINISH (duration ends)               |
-|  - Restore pose                       |
-|  - Deactivate PHYSICS channel         |
-|  - Resume normal animations           |
-+---------------------------------------+
-```
+The worker has access to:
+- `cached_grid`: Static mesh triangles in spatial grid
+- `cached_dynamic_meshes`: Dynamic mesh triangle data
+- `cached_dynamic_transforms`: Current transforms of dynamic meshes
+
+Each particle checks nearby triangles and is pushed out if inside:
+1. Find closest point on triangle
+2. If distance < COLLISION_RADIUS, push along triangle normal
+3. Reflect velocity for bounce
+
+---
+
+## Particle Building
+
+From armature bones, we build:
+
+1. **Particles**: One per unique joint position
+   - Bones sharing a joint share a particle
+   - Root bones can optionally be fixed
+
+2. **Constraints**: One per bone (head → tail)
+   - Rest length = original bone length
+   - Maintains skeleton structure
+
+3. **Bone Map**: bone_name → (head_idx, tail_idx)
+   - Used to convert particles back to rotations
+
+---
+
+## Converting Particles to Rotations
+
+For each bone:
+1. Get head and tail particle world positions
+2. Calculate target direction: `(tail - head).normalized()`
+3. Get bone's rest direction in world space
+4. Calculate rotation difference
+5. Convert to local rotation (relative to parent)
+6. Apply as quaternion
 
 ---
 
@@ -106,49 +152,63 @@ Trigger RAGDOLL reaction
 
 | File | Purpose |
 |------|---------|
-| `reactions/exp_ragdoll.py` | Main thread: capture, drop, apply |
-| `engine/worker/reactions/ragdoll.py` | Worker: bone physics |
+| `reactions/exp_ragdoll.py` | Main thread: capture, submit, apply |
+| `engine/worker/reactions/ragdoll.py` | Worker: Verlet physics + collision |
 | `animations/layer_manager.py` | PHYSICS channel |
-| `developer/ragdoll_test.py` | Standalone test UI (calls worker directly) |
 
 ---
 
-## Dev Testing
+## Debug Logging
 
-Standalone test in Developer Tools panel:
-1. Select armature via `target_armature`
-2. Developer 2.0 > Ragdoll Test section
-3. Start Ragdoll Test button
-
-Uses the same physics code as runtime - just calls worker function directly on main thread.
-
----
-
-## Debug
-
-Enable: Developer Tools > Game Systems > Ragdoll
-Export: Developer Tools > Export Session Log
+Enable: `bpy.data.scenes["Scene"].dev_debug_ragdoll = True`
+Or: Developer Tools > Game Systems > Ragdoll toggle
 
 Logs show:
-- `DROP z=X vel=Y` - Position drop progress
-- `BONE name: T=(X,Z) R=(X,Y,Z)` - Torque and rotation
-- `WORKER: N ragdolls, M bones, Xus` - Worker timing
+- `START Verlet ragdoll on X, duration=Ys`
+- `Built N particles, M constraints from K bones`
+- `WORKER: grid_cells=X dynamic_meshes=Y`
+- `UPDATE ragdoll N: X particles, Y constraints`
+- `COLLISION: N particles hit mesh`
+- `P0=(x,y,z) P1=(x,y,z) P2=(x,y,z)` - particle positions
+- `FINISHED ragdoll N`
 
 ---
 
-## Tuning
+## Tuning Guide
 
-If collapse is too slow:
-- Increase `GRAVITY_STRENGTH` (worker)
-- Increase `DROP_GRAVITY` (main thread)
+### Ragdoll too stiff / doesn't flop
+- Decrease `CONSTRAINT_STIFFNESS` (0.5-0.9)
+- Decrease `CONSTRAINT_ITERATIONS` (4-6)
 
-If collapse is too chaotic:
-- Increase `BONE_DAMPING` (worker)
-- Decrease `MAX_ANG_VEL` (worker)
+### Ragdoll too floppy / explodes
+- Increase `CONSTRAINT_STIFFNESS` (0.9-1.0)
+- Increase `CONSTRAINT_ITERATIONS` (10-15)
 
-If bones don't droop enough:
-- Increase `BONE_LIMIT`
+### Falls too slow
+- Increase `GRAVITY_SCALE` (1.5-2.0)
 
-If bones curl too aggressively:
-- Decrease `GRAVITY_STRENGTH`
-- Increase `BONE_DAMPING`
+### Bounces too much
+- Decrease `DAMPING` (0.9-0.95)
+- Increase `GROUND_FRICTION` (0.8-0.9)
+
+### Clips through meshes
+- Increase `COLLISION_RADIUS` (0.1-0.2)
+- Ensure meshes are cached (check grid_cells in logs)
+
+### Root flies away
+- Set `FIX_ROOT = True` in exp_ragdoll.py
+
+---
+
+## Architecture: Why Verlet?
+
+Traditional approaches:
+1. **Rotation-based**: Each bone rotates. Parent constrains child. Result: whole thing tilts together.
+2. **Spring physics**: Bones fight each other. Complex tuning. Often unstable.
+
+Verlet advantages:
+1. **Position-based**: Particles move freely, constraints resolve after
+2. **Unconditionally stable**: Can't explode (unlike Euler integration)
+3. **Simple collision**: Just push particles out of meshes
+4. **Natural damping**: Built into position history
+5. **Ignores hierarchy**: Each particle independent, skeleton emerges from constraints

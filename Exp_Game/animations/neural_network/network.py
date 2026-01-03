@@ -18,6 +18,7 @@ from .config import (
     OUTPUT_SIZE,
     HIDDEN_SIZE_1,
     HIDDEN_SIZE_2,
+    HIDDEN_SIZE_3,
     LEARNING_RATE,
     LIMITS_ARRAY,
     LIMIT_PENALTY_WEIGHT,
@@ -31,7 +32,8 @@ class FullBodyIKNetwork:
     Neural network for full-body IK.
 
     Architecture:
-        Input (50) → Hidden1 (128, tanh) → Hidden2 (96, tanh) → Output (69)
+        Input (50) → Hidden1 (256, LeakyReLU) → Hidden2 (256, LeakyReLU)
+        → Hidden3 (128, LeakyReLU) → Output (69)
 
     Input: Root-relative effector targets + environment context
     Output: Axis-angle bone rotations (23 bones × 3)
@@ -54,6 +56,7 @@ class FullBodyIKNetwork:
         self.input_size = INPUT_SIZE
         self.hidden1_size = HIDDEN_SIZE_1
         self.hidden2_size = HIDDEN_SIZE_2
+        self.hidden3_size = HIDDEN_SIZE_3
         self.output_size = OUTPUT_SIZE
 
         # Initialize weights with Xavier initialization
@@ -84,11 +87,17 @@ class FullBodyIKNetwork:
                                      (self.hidden1_size, self.hidden2_size)).astype(np.float32)
         self.b2 = np.zeros(self.hidden2_size, dtype=np.float32)
 
-        # Layer 3: hidden2 → output
-        limit3 = np.sqrt(6 / (self.hidden2_size + self.output_size))
+        # Layer 3: hidden2 → hidden3
+        limit3 = np.sqrt(6 / (self.hidden2_size + self.hidden3_size))
         self.W3 = np.random.uniform(-limit3, limit3,
-                                     (self.hidden2_size, self.output_size)).astype(np.float32)
-        self.b3 = np.zeros(self.output_size, dtype=np.float32)
+                                     (self.hidden2_size, self.hidden3_size)).astype(np.float32)
+        self.b3 = np.zeros(self.hidden3_size, dtype=np.float32)
+
+        # Layer 4: hidden3 → output
+        limit4 = np.sqrt(6 / (self.hidden3_size + self.output_size))
+        self.W4 = np.random.uniform(-limit4, limit4,
+                                     (self.hidden3_size, self.output_size)).astype(np.float32)
+        self.b4 = np.zeros(self.output_size, dtype=np.float32)
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         """
@@ -108,26 +117,31 @@ class FullBodyIKNetwork:
 
         # Layer 1
         z1 = x @ self.W1 + self.b1
-        a1 = np.tanh(z1)
+        a1 = np.maximum(z1, 0.1 * z1)  # LeakyReLU
 
         # Layer 2
         z2 = a1 @ self.W2 + self.b2
-        a2 = np.tanh(z2)
+        a2 = np.maximum(z2, 0.1 * z2)  # LeakyReLU
 
-        # Layer 3 (output - no activation, raw rotation values)
+        # Layer 3
         z3 = a2 @ self.W3 + self.b3
+        a3 = np.maximum(z3, 0.1 * z3)  # LeakyReLU
+
+        # Layer 4 (output - no activation, raw rotation values)
+        z4 = a3 @ self.W4 + self.b4
 
         # Cache for backprop
         self._cache = {
             'x': x,
             'z1': z1, 'a1': a1,
             'z2': z2, 'a2': a2,
-            'z3': z3,
+            'z3': z3, 'a3': a3,
+            'z4': z4,
         }
 
         if single:
-            return z3[0]
-        return z3
+            return z4[0]
+        return z4
 
     def backward(self, loss_grad: np.ndarray, learning_rate: float = None) -> Dict[str, float]:
         """
@@ -152,27 +166,35 @@ class FullBodyIKNetwork:
 
         # Get cached values
         x = self._cache['x']
-        a1, a2 = self._cache['a1'], self._cache['a2']
-        z1, z2 = self._cache['z1'], self._cache['z2']
+        a1, a2, a3 = self._cache['a1'], self._cache['a2'], self._cache['a3']
+        z1, z2, z3 = self._cache['z1'], self._cache['z2'], self._cache['z3']
 
         # Output layer gradients
-        dz3 = loss_grad  # No activation on output
+        dz4 = loss_grad  # No activation on output
+        dW4 = (a3.T @ dz4) / batch_size
+        db4 = np.mean(dz4, axis=0)
+
+        # Hidden layer 3 gradients
+        da3 = dz4 @ self.W4.T
+        dz3 = da3 * np.where(z3 > 0, 1.0, 0.1)  # LeakyReLU derivative
         dW3 = (a2.T @ dz3) / batch_size
         db3 = np.mean(dz3, axis=0)
 
         # Hidden layer 2 gradients
         da2 = dz3 @ self.W3.T
-        dz2 = da2 * (1 - a2**2)  # tanh derivative
+        dz2 = da2 * np.where(z2 > 0, 1.0, 0.1)  # LeakyReLU derivative
         dW2 = (a1.T @ dz2) / batch_size
         db2 = np.mean(dz2, axis=0)
 
         # Hidden layer 1 gradients
         da1 = dz2 @ self.W2.T
-        dz1 = da1 * (1 - a1**2)  # tanh derivative
+        dz1 = da1 * np.where(z1 > 0, 1.0, 0.1)  # LeakyReLU derivative
         dW1 = (x.T @ dz1) / batch_size
         db1 = np.mean(dz1, axis=0)
 
         # Update weights
+        self.W4 -= learning_rate * dW4
+        self.b4 -= learning_rate * db4
         self.W3 -= learning_rate * dW3
         self.b3 -= learning_rate * db3
         self.W2 -= learning_rate * dW2
@@ -311,6 +333,7 @@ class FullBodyIKNetwork:
             'W1': self.W1, 'b1': self.b1,
             'W2': self.W2, 'b2': self.b2,
             'W3': self.W3, 'b3': self.b3,
+            'W4': self.W4, 'b4': self.b4,
             'total_updates': self.total_updates,
             'best_loss': self.best_loss,
         }
@@ -337,6 +360,8 @@ class FullBodyIKNetwork:
             self.b2 = weights['b2']
             self.W3 = weights['W3']
             self.b3 = weights['b3']
+            self.W4 = weights['W4']
+            self.b4 = weights['b4']
             self.total_updates = weights.get('total_updates', 0)
             self.best_loss = weights.get('best_loss', float('inf'))
             return True
@@ -351,7 +376,8 @@ class FullBodyIKNetwork:
             'param_count': (
                 self.W1.size + self.b1.size +
                 self.W2.size + self.b2.size +
-                self.W3.size + self.b3.size
+                self.W3.size + self.b3.size +
+                self.W4.size + self.b4.size
             ),
             'weights_exist': os.path.exists(BEST_WEIGHTS_PATH),
         }

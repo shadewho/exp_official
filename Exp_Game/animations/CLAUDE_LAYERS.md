@@ -17,19 +17,40 @@ class AnimChannel(IntEnum):
     # Future: IK = 3, PROCEDURAL = 4
 ```
 
-Higher priority wins. When PHYSICS is active, BASE is blocked.
+Higher priority wins. When PHYSICS is active, BASE and OVERRIDE are blocked.
 
 ---
 
 ## How PHYSICS Channel Blocks Animations
 
-When `AnimChannel.PHYSICS` is active, `blend_system.apply_to_armature()` returns early without applying any transforms. This allows ragdoll (or other physics) to have exclusive control.
+When `AnimChannel.PHYSICS` is active, the animation pipeline is **completely skipped**:
+
+### In `_update_character_animation()` (exp_loop.py)
 
 ```python
-# In blend_system.py:apply_to_armature()
-layer_mgr = get_layer_manager_for(armature)
-if layer_mgr and layer_mgr.is_channel_active(AnimChannel.PHYSICS):
-    return 0  # Skip - physics has control
+# 1. Layer managers ALWAYS updated (for fade transitions)
+update_all_managers(agg_dt)
+
+# 2. Check if physics has control
+physics_active = layer_manager.is_channel_active(AnimChannel.PHYSICS)
+
+if physics_active:
+    return  # Skip ALL animation processing:
+            # - No animation state updates
+            # - No animation jobs submitted
+            # - No animation results polled
+            # - No blend system applied
+```
+
+**Why skip job submission?** If we submit animation jobs during ragdoll but skip applying them, the results become orphaned. Next frame, a new job overwrites `_pending_anim_batch_job`, and the old result is silently dropped. This caused animations to never resume after ragdoll.
+
+### Safety Check in Fallback Handler
+
+```python
+elif result.job_type == "ANIMATION_COMPUTE_BATCH":
+    if char_physics_active:
+        # Discard orphaned result from before physics activated
+        continue
 ```
 
 ---
@@ -64,27 +85,37 @@ active = mgr.get_active_channel()
 | When | What Happens |
 |------|--------------|
 | Game Start | `init_layer_managers()` creates manager for every animated object |
-| Each Frame | `update_all_managers(dt)` handles fade transitions |
+| Each Frame | `update_all_managers(dt)` handles fade transitions (ALWAYS runs) |
 | Game End | `shutdown_layer_managers()` restores all native actions |
 
 ---
 
-## Current Users
+## Debug Logging
 
-| System | Channel | Purpose |
-|--------|---------|---------|
-| Ragdoll | PHYSICS | Blocks blend_system, allows ragdoll transforms |
+Enable **"Layer Logs"** in Developer Tools > Animation 2.0 section.
+
+Log messages include:
+- `INIT` - Layer managers created for each object
+- `ACTIVATE` - Channel activated with influence and fade
+- `DEACTIVATE` - Channel deactivating with fade
+- `SKIP animation jobs` - Animation pipeline skipped (PHYSICS active)
+- `DISCARD orphaned ANIMATION result` - Stale result from pre-physics discarded
+- Status lines showing all active channels per object
 
 ---
 
-## Future Integration Points
+## Ragdoll Integration
 
-| System | Channel | When Ready |
-|--------|---------|------------|
-| Custom Actions | OVERRIDE | Wire up when needed |
-| Rigid Body | PHYSICS | Add when implemented |
-| Cloth Sim | PHYSICS | Add when implemented |
-| IK | (new channel) | Add when implemented |
+When ragdoll starts:
+1. `exp_ragdoll.py` calls `layer_manager.activate_channel(AnimChannel.PHYSICS)`
+2. `_update_character_animation()` detects physics active, skips animation jobs
+3. Ragdoll system has full control of bone transforms
+
+When ragdoll ends:
+1. `exp_ragdoll.py` calls `layer_manager.deactivate_channel(AnimChannel.PHYSICS, fade_out=0.3)`
+2. `update_all_managers()` processes the fade (runs every frame even during physics)
+3. Once influence reaches 0, channel becomes inactive
+4. Animation jobs resume automatically
 
 ---
 
@@ -95,5 +126,7 @@ active = mgr.get_active_channel()
 | `layer_manager.py` | Core system |
 | `blend_system.py` | Checks PHYSICS channel in apply_to_armature() |
 | `exp_engine_bridge.py` | Init/shutdown calls |
-| `exp_loop.py` | Per-frame update |
+| `exp_loop.py` | Per-frame update + animation pipeline skip when PHYSICS active |
 | `exp_ragdoll.py` | PHYSICS channel user |
+| `dev_properties.py` | `dev_debug_layers` toggle |
+| `dev_logger.py` | LAYERS log category |

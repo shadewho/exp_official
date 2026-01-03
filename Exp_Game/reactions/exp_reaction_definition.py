@@ -236,6 +236,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
             ("RAGDOLL",           "Ragdoll",              "Simulate bone physics with collision"),
+            ("ENABLE_HEALTH",     "Enable Health",        "Attach health component to an object"),
         ],
         default="CUSTOM_ACTION"
     )
@@ -923,43 +924,15 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     parenting_bone_name: bpy.props.StringProperty(
         name="Bone (name)",
         default="",
-        description="Optional bone name on the character armature. Uses a string to survive armature rebuilds."
+        description="Optional bone name on the character armature"
     )
 
-    # -----------------------------
-    # Selective follow via Child-Of
-    # -----------------------------
-    parenting_follow_mode: bpy.props.EnumProperty(
-        name="Follow Mode",
-        items=[
-            ("PARENT",   "Real Parent", "Set Blender parent (full transform)"),
-            ("CHILD_OF", "Child Of",    "Use a Child-Of constraint with per-channel toggles"),
-        ],
-        default="PARENT",
-        description="Choose hard parenting or Child-Of constraint for partial follow"
-    )
-
-    # Group toggles (coarse)
-    parenting_follow_loc: bpy.props.BoolProperty(name="Follow Location", default=True)
-    parenting_follow_rot: bpy.props.BoolProperty(name="Follow Rotation", default=True)
-    parenting_follow_scl: bpy.props.BoolProperty(name="Follow Scale",    default=True)
-
-    # Per-axis toggles (fine)
-    parenting_follow_loc_x: bpy.props.BoolProperty(name="X", default=True)
-    parenting_follow_loc_y: bpy.props.BoolProperty(name="Y", default=True)
-    parenting_follow_loc_z: bpy.props.BoolProperty(name="Z", default=True)
-
-    parenting_follow_rot_x: bpy.props.BoolProperty(name="X", default=True)
-    parenting_follow_rot_y: bpy.props.BoolProperty(name="Y", default=True)
-    parenting_follow_rot_z: bpy.props.BoolProperty(name="Z", default=True)
-
-    parenting_follow_scl_x: bpy.props.BoolProperty(name="X", default=True)
-    parenting_follow_scl_y: bpy.props.BoolProperty(name="Y", default=True)
-    parenting_follow_scl_z: bpy.props.BoolProperty(name="Z", default=True)
-
-    parenting_follow_influence: bpy.props.FloatProperty(
-        name="Influence", default=1.0, min=0.0, max=1.0,
-        description="Influence for Child-Of follow"
+    # Local offset from parent origin
+    parenting_local_offset: bpy.props.FloatVectorProperty(
+        name="Local Offset",
+        size=3,
+        default=(0.0, 0.0, 0.0),
+        description="Local position offset from parent origin"
     )
 
     # --------------------------------------------------
@@ -1041,6 +1014,32 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Duration (sec)",
         default=2.0, min=0.1, max=30.0,
         description="How long the ragdoll simulation runs"
+    )
+
+    # --------------------------------------------------
+    # ENABLE_HEALTH REACTION FIELDS
+    # --------------------------------------------------
+    health_target_object: bpy.props.PointerProperty(
+        name="Target Object",
+        type=bpy.types.Object,
+        description="Object to attach health tracking to"
+    )
+    health_start_value: bpy.props.FloatProperty(
+        name="Start Value",
+        default=100.0,
+        min=0.0,
+        description="Initial health value (also used on reset)"
+    )
+    health_min_value: bpy.props.FloatProperty(
+        name="Min Value",
+        default=0.0,
+        description="Minimum health value (usually 0)"
+    )
+    health_max_value: bpy.props.FloatProperty(
+        name="Max Value",
+        default=100.0,
+        min=0.0,
+        description="Maximum health value"
     )
 
 

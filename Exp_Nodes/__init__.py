@@ -123,6 +123,7 @@ from .reaction_nodes import (
     ReactionParentingNode,
     ReactionTrackingNode,
     ReactionRagdollNode,
+    ReactionEnableHealthNode,
 )
 
 from .trig_react_obj_lists import(
@@ -205,6 +206,7 @@ classes = [
     ReactionParentingNode,
     ReactionTrackingNode,
     ReactionRagdollNode,
+    ReactionEnableHealthNode,
 
     # counters & timers
     CounterNode,

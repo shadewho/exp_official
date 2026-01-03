@@ -57,6 +57,7 @@ from ..interactions.exp_tracker_eval import (
 )
 from ..reactions.exp_bindings import serialize_reaction_bindings
 from ..reactions.exp_custom_ui import update_text_reactions
+from ..reactions.exp_parenting import process_pending_parenting, clear_pending_parenting
 from ..audio.exp_globals import update_sound_tasks
 from ..audio.exp_audio import get_global_audio_state_manager
 from ..developer.dev_stats import get_stats_tracker
@@ -115,6 +116,7 @@ class GameLoop:
         """Clean up game loop resources (called when game stops)."""
         shutdown_blend_system()
         shutdown_ragdoll_system()
+        clear_pending_parenting()
     # ---------- Public API ----------
 
     def on_timer(self, context):
@@ -244,6 +246,7 @@ class GameLoop:
             submit_tracker_evaluation(op, context)
 
             check_interactions(context)
+            process_pending_parenting()  # Apply delayed parenting operations
             update_text_reactions()
             update_sound_tasks()
 
@@ -333,34 +336,44 @@ class GameLoop:
                     self._last_anim_state = new_state
 
         # WORKER-OFFLOADED ANIMATION FLOW:
-        # 1. Update state (times, fades) on main thread
-        update_animations_state(op, agg_dt)
+        # 1. Update ALL layer managers FIRST (fading for all objects)
+        # This MUST always run to handle channel fade transitions (e.g., PHYSICS fade-out)
+        update_all_managers(agg_dt)
 
-        # 1b. Update blend system layer timings (but don't apply yet)
+        # 1b. Update blend system layer timings
         blend_system = get_blend_system()
         if blend_system:
             blend_system.update(agg_dt)
 
-        # 1c. Update ALL layer managers (fading for all objects)
-        update_all_managers(agg_dt)
-
-        # 2. Submit jobs to engine
-        submit_animation_jobs(op)
-
-        # 3. Same-frame sync: poll for results immediately
-        # Worker compute is fast (~100µs), so we wait up to 2ms
-        # This applies the base locomotion animation to the armature
-        # SKIP if physics (ragdoll) is active - physics controls the armature
+        # Check if physics (ragdoll) has control - skip animation job processing
         layer_manager = get_layer_manager()  # Get character's layer manager
         physics_active = layer_manager and layer_manager.is_channel_active(AnimChannel.PHYSICS)
-        if not physics_active:
-            poll_animation_results_with_timeout(op, timeout=0.002)
 
-        # 4. Apply blend system OVERLAY on top of locomotion
-        # This must happen AFTER worker results are applied so overlays work correctly
-        # SKIP if physics is active
+        if physics_active:
+            # PHYSICS active - skip animation job submission and application
+            # Don't submit jobs we're going to discard anyway
+            # But we still updated layer managers above for fade transitions
+            from ..developer.dev_logger import log_game
+            try:
+                if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_layers", False):
+                    log_game("LAYERS", "SKIP animation jobs (PHYSICS active)")
+            except:
+                pass
+            return  # Exit early - physics controls the armature
+
+        # 2. Update animation state (times, fades) - only when physics NOT active
+        update_animations_state(op, agg_dt)
+
+        # 3. Submit jobs to engine
+        submit_animation_jobs(op)
+
+        # 4. Same-frame sync: poll for results immediately
+        # Worker compute is fast (~100µs), so we wait up to 2ms
+        poll_animation_results_with_timeout(op, timeout=0.002)
+
+        # 5. Apply blend system OVERLAY on top of locomotion
         armature = bpy.context.scene.target_armature
-        if blend_system and armature and not physics_active:
+        if blend_system and armature:
             blend_system.apply_to_armature(armature)
 
     def _poll_and_apply_engine_results(self):
@@ -541,6 +554,24 @@ class GameLoop:
 
                 elif result.job_type == "ANIMATION_COMPUTE_BATCH":
                     # Apply computed bone transforms from batched worker job
+                    # Note: Animation jobs are NOT submitted when physics is active,
+                    # so these results should only arrive when physics is inactive.
+                    # Check anyway as a safety measure.
+                    char_layer_mgr = get_layer_manager()
+                    char_physics_active = char_layer_mgr and char_layer_mgr.is_channel_active(AnimChannel.PHYSICS)
+
+                    if char_physics_active:
+                        # Orphaned result from before physics activated - discard it
+                        from ..developer.dev_logger import log_game
+                        try:
+                            if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_layers", False):
+                                log_game("LAYERS", f"DISCARD orphaned ANIMATION result job={result.job_id} (PHYSICS active)")
+                        except:
+                            pass
+                        if hasattr(op, '_pending_anim_batch_job'):
+                            op._pending_anim_batch_job = None
+                        continue
+
                     try:
                         objects_applied = process_animation_result(op, result)
 

@@ -110,11 +110,14 @@ class ContextExtractor:
             raise ValueError("Armature missing Hips bone")
 
         root_world_pos = arm_matrix @ hips_bone.head
-        root_world_matrix = arm_matrix @ hips_bone.matrix
+        # CRITICAL: Use REST matrix, not posed matrix!
+        # The FK applies local rotations separately, so we need the rest frame.
+        # This must match how training data was extracted.
+        root_rest_matrix = arm_matrix @ Matrix(hips_bone.bone.matrix_local)
 
         # Root axes for relative transform
-        root_forward = Vector(root_world_matrix.col[1][:3]).normalized()  # Y forward
-        root_up = Vector(root_world_matrix.col[2][:3]).normalized()  # Z up
+        root_forward = Vector(root_rest_matrix.col[1][:3]).normalized()  # Y forward
+        root_up = Vector(root_rest_matrix.col[2][:3]).normalized()  # Z up
         root_right = root_forward.cross(root_up).normalized()
 
         # Build rotation matrix for world-to-root transform
@@ -249,111 +252,6 @@ class ContextExtractor:
         )
 
 
-def extract_ground_targets(
-    armature: bpy.types.Object,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Extract target effector positions and ground context from current pose.
-
-    Returns:
-        effector_positions: Shape (5, 3) - world positions of effectors
-        ground_info: Shape (2, 6) - ground context per foot
-    """
-    pose_bones = armature.pose.bones
-    arm_matrix = armature.matrix_world
-
-    # Effector positions
-    positions = []
-    for effector_name in END_EFFECTORS:
-        bone = pose_bones.get(effector_name)
-        if bone:
-            world_pos = arm_matrix @ bone.head
-            positions.append([world_pos.x, world_pos.y, world_pos.z])
-        else:
-            positions.append([0.0, 0.0, 0.0])
-
-    # Ground info (simple: assume flat ground at Z=0)
-    ground_info = []
-    for foot_name in CONTACT_EFFECTORS:
-        foot_bone = pose_bones.get(foot_name)
-        if foot_bone:
-            foot_z = (arm_matrix @ foot_bone.head).z
-            height_offset = foot_z  # Relative to Z=0
-            is_grounded = 1.0 if foot_z < 0.1 else 0.0
-        else:
-            height_offset = 0.0
-            is_grounded = 1.0
-
-        ground_info.append([
-            height_offset,
-            0.0, 0.0, 1.0,  # Normal = up
-            is_grounded,
-            1.0,  # desired_contact
-        ])
-
-    return np.array(positions, dtype=np.float32), np.array(ground_info, dtype=np.float32)
-
-
-def build_input_from_targets(
-    effector_positions: np.ndarray,
-    effector_rotations: np.ndarray,
-    root_position: np.ndarray,
-    root_forward: np.ndarray,
-    root_up: np.ndarray,
-    ground_info: np.ndarray,
-    motion_phase: float = 0.0,
-    task_type: float = 0.0,
-) -> np.ndarray:
-    """
-    Build network input from components (no bpy needed).
-
-    This is for runtime use in workers.
-
-    Args:
-        effector_positions: Shape (5, 3) - target positions (root-relative)
-        effector_rotations: Shape (5, 3) - target rotations
-        root_position: Shape (3,) - root world position (for reference)
-        root_forward: Shape (3,) - root forward direction
-        root_up: Shape (3,) - root up direction
-        ground_info: Shape (2, 6) - ground context per foot
-        motion_phase: 0-1 animation phase
-        task_type: Task type as float
-
-    Returns:
-        Shape (50,) input vector
-    """
-    # Flatten effector data
-    effector_data = np.concatenate([
-        effector_positions.flatten(),
-        effector_rotations.flatten(),
-    ])[:30]  # 5 effectors × 6 = 30
-
-    # Actually interleave pos/rot per effector
-    effector_data = []
-    for i in range(5):
-        effector_data.extend(effector_positions[i])
-        effector_data.extend(effector_rotations[i])
-
-    # Root orientation
-    root_data = np.concatenate([root_forward, root_up])
-
-    # Ground data
-    ground_data = ground_info.flatten()
-
-    # Motion state
-    motion_data = np.array([motion_phase, task_type])
-
-    # Combine
-    full_input = np.concatenate([
-        np.array(effector_data),
-        root_data,
-        ground_data,
-        motion_data,
-    ])
-
-    return full_input.astype(np.float32)
-
-
 def augment_input(
     input_vector: np.ndarray,
     noise_scale: float = 0.01,
@@ -437,36 +335,3 @@ def normalize_input(input_vector: np.ndarray) -> np.ndarray:
         normalized = normalized[0]
 
     return normalized
-
-
-def denormalize_input(normalized_vector: np.ndarray) -> np.ndarray:
-    """
-    Reverse normalization to get original input values.
-
-    Args:
-        normalized_vector: Shape (50,) or (batch, 50) - normalized input
-
-    Returns:
-        Denormalized input, same shape
-    """
-    denormalized = normalized_vector.copy()
-    single = denormalized.ndim == 1
-    if single:
-        denormalized = denormalized.reshape(1, -1)
-
-    # Reverse effector normalization
-    for i in range(5):
-        base = i * 6
-        denormalized[:, base:base+3] *= POSITION_SCALE
-        denormalized[:, base+3:base+6] *= ROTATION_SCALE
-
-    # Reverse ground height normalization
-    ground_start = INPUT_SLICES['ground'][0]
-    for foot in range(2):
-        foot_base = ground_start + foot * 6
-        denormalized[:, foot_base] *= HEIGHT_SCALE
-
-    if single:
-        denormalized = denormalized[0]
-
-    return denormalized
