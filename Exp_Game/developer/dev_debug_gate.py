@@ -12,6 +12,8 @@ don't block each other.
 import time
 import bpy
 
+from .dev_properties import DEV_MODE
+
 # Track last print time for each unique message key
 # Key format: "category" for legacy calls, "category:prefix" for log_game calls
 _last_print_times = {}
@@ -31,6 +33,10 @@ def should_print_debug(category: str, message_key: str = None) -> bool:
     Returns:
         True if enough time has passed since last print, False otherwise
     """
+    # Master DEV_MODE check - instant return if disabled
+    if not DEV_MODE:
+        return False
+
     # Handle restricted context (e.g., during addon registration)
     try:
         scene = bpy.context.scene

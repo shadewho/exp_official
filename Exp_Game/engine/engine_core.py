@@ -690,7 +690,7 @@ class EngineCore:
                     status = "SUCCESS" if result.success else "FAILED"
                     print(f"[Engine Core] Received result for job {result.job_id} ({status})")
 
-            except:
+            except Exception:
                 # Queue is empty
                 break
 
@@ -725,7 +725,7 @@ class EngineCore:
                 import bpy
                 if bpy.context and bpy.context.scene:
                     engine_enabled = getattr(bpy.context.scene, "dev_debug_engine", False)
-        except:
+        except Exception:
             # bpy not available or no context - skip debug output
             return
 
@@ -735,7 +735,7 @@ class EngineCore:
         # Import logger (frequency gating handled by logger system via master Hz)
         try:
             from ..developer.dev_logger import log_game
-        except:
+        except Exception:
             return  # Logger not available
 
         # Get current time for uptime calculation
@@ -827,14 +827,14 @@ class EngineCore:
             while not self._job_queue.empty():
                 try:
                     self._job_queue.get_nowait()
-                except:
+                except Exception:
                     break
 
         if self._result_queue:
             while not self._result_queue.empty():
                 try:
                     self._result_queue.get_nowait()
-                except:
+                except Exception:
                     break
 
         # Clean up

@@ -125,7 +125,6 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Action Keys",           "ReactionActionKeysNodeType")
         add("Parent / Unparent", "ReactionParentingNodeType")
         add("Track To",           "ReactionTrackingNodeType")
-        add("Ragdoll",            "ReactionRagdollNodeType")
         add("Enable Health",      "ReactionEnableHealthNodeType")
         add("Display Health UI",  "ReactionDisplayHealthUINodeType")
 

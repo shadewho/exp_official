@@ -48,7 +48,6 @@ from worker.reactions import (
     handle_hitscan_batch,
     handle_transform_batch,
     handle_tracking_batch,
-    handle_ragdoll_update_batch,
 )
 
 # Import animation math from single source of truth (no duplicates!)
@@ -59,18 +58,6 @@ from animations.blend import (
     blend_object_transforms,
     slerp_vectorized,
 )
-
-# Neural IK inference (replaces old IK system)
-from worker.ik import cache_weights as ik_cache_weights, solve as ik_solve
-
-# Import rig cache for worker-based forward kinematics + IK
-from animations.rig_cache import (
-    RigFK,
-    compute_point_at_target_quat,
-    _matrix_to_quat,
-)
-
-# NOTE: Full-body IK removed - using neural network approach instead (see animations/neural_ik.py)
 
 
 # ============================================================================
@@ -107,10 +94,6 @@ _animations_numpy_ready = False
 # Pose library cache: {pose_name: {bone_transforms: {bone: [10 floats]}, source_armature: str}}
 # Sent once via CACHE_POSES job. Used by PLAY_POSE jobs for pose playback.
 _cached_poses = {}
-
-# Rig cache: {armature_name: RigFK instance}
-# Sent once via CACHE_RIG job. Used for worker-based forward kinematics + IK.
-_cached_rigs = {}
 
 # NOTE: Tracker state moved to worker/interactions/trackers.py
 
@@ -502,8 +485,6 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
         for i, bone_name in enumerate(bone_names):
             bone_transforms[bone_name] = tuple(blended[i].tolist())
 
-    # NOTE: IK code removed - using neural network approach instead (see animations/neural_ik.py)
-
     calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
 
     logs.append(("POSE-BLEND", f"[NUMPY] {len(bone_transforms)} bones weight={weight:.2f} {calc_time_us:.0f}µs"))
@@ -517,7 +498,7 @@ def _handle_pose_blend_compute(job_data: dict) -> dict:
     }
 
 
-# NOTE: IK_SOLVE_BATCH handler removed - using neural network approach instead
+# NOTE: IK_SOLVE_BATCH handler removed - IK system was removed
 
 
 # ============================================================================
@@ -824,68 +805,7 @@ def process_job(job) -> dict:
                 }
 
         # CACHE_JOINT_LIMITS removed - not needed for rigid animations
-
-        elif job.job_type == "CACHE_RIG":
-            # Cache rig data for worker-based forward kinematics + IK.
-            # Sent ONCE at game start. Used by POSE_BLEND_COMPUTE for full FK/IK.
-            global _cached_rigs
-            rig_data = job.data.get("rig_data", {})
-            armature_name = job.data.get("armature_name", "")
-
-            if rig_data and armature_name:
-                # Create RigFK instance and load data
-                rig_fk = RigFK()
-                success = rig_fk.load(rig_data)
-
-                if success:
-                    _cached_rigs[armature_name] = rig_fk
-
-                    bone_count = rig_fk.bone_count
-                    logs = [("ANIM-WORKER", f"CACHE_RIG {armature_name} {bone_count} bones")]
-
-                    result_data = {
-                        "success": True,
-                        "armature_name": armature_name,
-                        "bone_count": bone_count,
-                        "message": "Rig cached successfully for FK/IK",
-                        "logs": logs
-                    }
-                else:
-                    result_data = {
-                        "success": False,
-                        "error": "Failed to load rig data"
-                    }
-            else:
-                result_data = {
-                    "success": False,
-                    "error": "Missing rig_data or armature_name"
-                }
-
-        elif job.job_type == "CACHE_NEURAL_IK":
-            # Cache neural IK network weights in worker memory.
-            # Sent ONCE at game start via broadcast_job.
-            # Weights stay cached for entire game session.
-            weights = job.data.get("weights", {})
-
-            if weights:
-                result_data = ik_cache_weights(weights)
-            else:
-                result_data = {
-                    "success": False,
-                    "error": "No weights provided"
-                }
-
-        elif job.job_type == "NEURAL_IK_SOLVE":
-            # Neural IK inference: raw target data → bone quaternions.
-            # Main thread sends minimal data (positions), worker builds input and computes.
-            # Returns (23, 4) quaternions for all controlled bones.
-            #
-            # Expected job.data keys:
-            #   effector_positions: {name: (x,y,z)}
-            #   root_position, root_forward, root_up
-            #   ground_height, contact_left, contact_right
-            #   motion_phase, task_type
-            result_data = ik_solve(job.data)
+        # CACHE_RIG removed - IK system was removed
 
         elif job.job_type == "ANIMATION_COMPUTE_BATCH":
             # OPTIMIZED: Compute blended poses for ALL objects in ONE job
@@ -899,8 +819,6 @@ def process_job(job) -> dict:
             # Input: {"pose_a": {...}, "pose_b": {...}, "weight": float}
             # Output: {"bone_transforms": {...}}
             result_data = _handle_pose_blend_compute(job.data)
-
-        # NOTE: IK_SOLVE_BATCH and FULL_BODY_IK removed - using neural network approach
 
         elif job.job_type == "CACHE_TRACKERS":
             # Cache serialized tracker definitions - delegated to interactions module
@@ -940,15 +858,6 @@ def process_job(job) -> dict:
             # Tracking movement (sweep/slide/gravity) - offloaded from main thread
             # Uses unified_raycast for collision detection
             result_data = handle_tracking_batch(
-                job.data,
-                _cached_grid,
-                _cached_dynamic_meshes,
-                _cached_dynamic_transforms
-            )
-
-        elif job.job_type == "RAGDOLL_UPDATE_BATCH":
-            # Ragdoll bone physics simulation - gravity + ray collision
-            result_data = handle_ragdoll_update_batch(
                 job.data,
                 _cached_grid,
                 _cached_dynamic_meshes,

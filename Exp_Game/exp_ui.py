@@ -1,8 +1,5 @@
 # File: exp_ui.py
 import bpy
-from .props_and_utils.exp_utilities import (
-    get_game_world)
-from ..Exp_UI.main_config import UPLOAD_URL
 
 
 def _is_create_panel_enabled(scene, key: str) -> bool:
@@ -20,15 +17,13 @@ def _is_create_panel_enabled(scene, key: str) -> bool:
 # ─────────────────────────────────────────────────────────
 class EXP_OT_FilterCreatePanels(bpy.types.Operator):
     bl_idname = "exploratory.filter_create_panels"
-    bl_label = "Filter Create Panels"
-    bl_description = "Choose which Create panels to show/hide"
+    bl_label = "Filter Panels"
+    bl_description = "Choose which panels to show/hide"
     bl_options = {'INTERNAL'}
 
     _ITEMS = [
         ("CHAR",   "Character / Actions / Audio"),
         ("PROXY",  "Proxy Mesh & Spawn"),
-        ("UPLOAD", "Upload Helper"),
-        ("PERF",   "Performance"),
         ("PHYS",   "Character Physics & View"),
         ("DEV",    "Developer Tools"),
     ]
@@ -38,7 +33,7 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Show these panels in 'Create':")
+        layout.label(text="Show these panels:")
 
         col = layout.column(align=True)
         # each flag as its own vertical toggle with proper text
@@ -62,48 +57,30 @@ class ExploratoryPanel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
-        # ─── Main navigation ────────────────────────────────────────────
-        row = layout.row(align=True)
-        row.scale_x = 1.5   # make buttons wider
-        row.scale_y = 1.5   # make buttons taller
-        row.prop(scene, "main_category", expand=True)
+        col = layout.column(align=True)
 
-        layout.separator()
+        # Play button
+        row = col.row()
+        row.scale_y = 2.0
+        play_op = row.operator(
+            "exploratory.start_game",
+            text="▶     Play"
+        )
 
-        # ─── CREATE MODE ──────────────────────────────────────────────
-        if scene.main_category == 'CREATE':
-            col = layout.column(align=True)
-            
-            # # Play in windowed mode
-            # op = col.operator(
-            #     "view3d.exp_modal",
-            #     text="▶     Play Windowed (Slower)"
-            # )
-            # op.launched_from_ui = False
-            
-            # Play in fullscreen
+        # Demo world button
+        col.separator()
+        col.operator(
+            "exploratory.append_demo_scene",
+            text="Demo",
+            icon='FILE_MOVIE'
+        )
 
-            row = col.row()
-            row.scale_y = 2.0
-            play_op = row.operator(
-                "exploratory.start_game",
-                text="▶     Play"
-            )
-                 
-
-            # ---Append demo world (button sits right under the Play buttons)
-            col.separator()
-            col.operator(
-                "exploratory.append_demo_scene",
-                text="Demo",
-                icon='FILE_MOVIE'
-            )
-
-            col.separator()
-            col.operator("exploratory.filter_create_panels", text="Filter Create Panels", icon='FILTER')
+        # Panel filter
+        col.separator()
+        col.operator("exploratory.filter_create_panels", text="Filter Panels", icon='FILTER')
 
 # --------------------------------------------------------------------
-# Character, Actions, Audio (only visible in Explore mode)
+# Character, Actions, Audio
 # --------------------------------------------------------------------
 class ExploratoryCharacterPanel(bpy.types.Panel):
     bl_label = "Character, Actions, Audio"
@@ -115,8 +92,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return (context.scene.main_category == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'CHAR'))
+        return _is_create_panel_enabled(context.scene, 'CHAR')
 
     def draw(self, context):
         layout = self.layout
@@ -341,7 +317,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             box.label(text="No poses saved yet")
 
 # --------------------------------------------------------------------
-# Proxy Meshes (only visible in Create mode)
+# Proxy Meshes
 # --------------------------------------------------------------------
 class ExploratoryProxyMeshPanel(bpy.types.Panel):
     bl_label = "Proxy Mesh and Spawn"
@@ -353,8 +329,7 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return (context.scene.main_category == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'PROXY'))
+        return _is_create_panel_enabled(context.scene, 'PROXY')
 
     def draw(self, context):
         layout = self.layout
@@ -403,199 +378,6 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
         spawn_box.prop(scene, "spawn_use_nearest_z_surface", text="Find Nearest Z Surface")
 
 
-# ─── Upload Helper Panel (6-step flow) ─────────────────────────────────────────
-class VIEW3D_PT_Exploratory_UploadHelper(bpy.types.Panel):
-    bl_label = "Upload Helper"
-    bl_idname = "VIEW3D_PT_Exploratory_UploadHelper"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Exploratory"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return (context.scene.main_category == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'UPLOAD'))
-
-    def draw(self, context):
-        layout = self.layout
-        scene  = context.scene
-
-        # Header
-        layout.label(text="Ready to Upload?", icon='EVENT_UP_ARROW')
-        layout.label(text="Follow the steps below, top to bottom.")
-
-        # ────────────────────────────────────────────────────────────
-        # Step 1: Set Game World
-        # ────────────────────────────────────────────────────────────
-        step1 = layout.box()
-        step1.label(text="Step 1: Set Game World", icon='WORLD')
-        row = step1.row(align=True)
-        row.operator("exploratory.set_game_world", text="Set Current Scene as Game World", icon='WORLD')
-
-        game_world = get_game_world()
-        step1.separator()
-        if game_world:
-            step1.label(text=f"Current Game World: {game_world.name}", icon='CHECKMARK')
-        else:
-            warn = step1.column(align=True); warn.alert = True
-            warn.label(text="No Game World Assigned!", icon='ERROR')
-            warn.label(text="Switch to your target scene and click the button above.")
-
-        # ────────────────────────────────────────────────────────────
-        # Step 2: Remove Character (clean materials/images from it)
-        # ────────────────────────────────────────────────────────────
-        step2 = layout.box()
-        step2.label(text="Step 2: Remove Character", icon='ARMATURE_DATA')
-        step2.label(text="Removes the character and purges its materials/images if unused.")
-        step2.operator("exploratory.remove_character", text="Remove Character", icon='TRASH')
-
-        # ────────────────────────────────────────────────────────────
-        # Step 3: Pack Data
-        # ────────────────────────────────────────────────────────────
-        step3 = layout.box()
-        step3.label(text="Step 3: Pack Assets", icon='PACKAGE')
-        step3.label(text="Embed all external assets and sounds into this .blend.")
-
-        col = step3.column(align=True)
-        col.operator("file.pack_all", text="Pack Data", icon='PACKAGE')
-        col.operator("exp_audio.pack_all_sounds", text="Pack Sounds", icon='SOUND')
-
-        # ────────────────────────────────────────────────────────────
-        # Step 4: Purge Unused Data
-        # ────────────────────────────────────────────────────────────
-        step4 = layout.box()
-        step4.label(text="Step 4: Purge Unused Data", icon='TRASH')
-        step4.label(text="Remove orphaned datablocks to minimize file size.")
-        op = step4.operator("outliner.orphans_purge", text="Purge Orphans (Recursive)", icon='TRASH')
-        op.do_recursive = True
-
-        # ────────────────────────────────────────────────────────────
-        # Step 5: Save & Refresh File Size
-        # ────────────────────────────────────────────────────────────
-        step5 = layout.box()
-        step5.label(text="Step 5: Save & Refresh File Size", icon='FILE_TICK')
-
-        row5 = step5.row(align=True)
-        row5.operator("wm.save_mainfile", text="Save .blend", icon='FILE_BLEND')
-        row5.operator("exploratory.uploadhelper_refresh_size", text="Refresh Size", icon='FILE_TICK')
-
-        cap_mib  = 500.0
-        size_mib = getattr(scene, "upload_helper_file_size", 0.0)
-        pct      = (size_mib / cap_mib) * 100.0 if cap_mib else 0.0
-
-        step5.separator()
-        if not bpy.data.filepath:
-            step5.label(text="File not saved yet.", icon='ERROR')
-        step5.label(text=f"Current Size: {size_mib:.2f} MiB / {cap_mib:.0f} MiB  ({pct:4.1f}%)", icon='FILE')
-
-        # ────────────────────────────────────────────────────────────
-        # Step 6: Upload Page
-        # ────────────────────────────────────────────────────────────
-        step6 = layout.box()
-        step6.label(text="Step 6: Ready to upload!", icon='URL')
-        row6 = step6.row(align=True)
-        op_url = row6.operator("wm.url_open", text="Open Upload Page", icon='URL')
-        op_url.url = UPLOAD_URL
-
-        # Optional: quick tips
-        layout.separator()
-        tips = layout.box()
-        tips.label(text="Tips", icon='INFO')
-        tips.label(text="• Keep textures modest in resolution.")
-        tips.label(text="• Delete test/unused meshes, actions, images.")
-        tips.label(text="• Redo steps upon further edits.")
-
-
-
-class VIEW3D_PT_Exploratory_Performance(bpy.types.Panel):
-    bl_label = "Performance"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Exploratory"
-    bl_idname = "VIEW3D_PT_exploratory_performance"
-    bl_options = {'DEFAULT_CLOSED'}
-
-
-    @classmethod
-    def poll(cls, context):
-        return (context.scene.main_category == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'PERF'))
-
-    def draw(self, context):
-        layout = self.layout
-        scene  = context.scene
-        # ─── Culling ─────────────────────────
-        layout.label(text="Cull Distance Entries")
-        self._draw_entry_list(layout, scene)
-        self._draw_entry_details(layout, scene)
-
-    def _draw_entry_list(self, layout, scene):
-        row = layout.row()
-        row.template_list(
-            "EXP_PERFORMANCE_UL_List", "", 
-            scene, "performance_entries",
-            scene, "performance_entries_index",
-            rows=4
-        )
-        col = row.column(align=True)
-        col.operator("exploratory.add_performance_entry", icon='ADD', text="")
-        rem = col.operator("exploratory.remove_performance_entry", icon='REMOVE', text="")
-        rem.index = scene.performance_entries_index
-
-    def _draw_entry_details(self, layout, scene):
-        idx = scene.performance_entries_index
-        if not (0 <= idx < len(scene.performance_entries)):
-            return
-
-        entry = scene.performance_entries[idx]
-        box = layout.box()
-        box.label(text=f"Entry: {entry.name}")
-
-        # ─── Name & Enable ─────────────────────────────────────────
-        box.prop(entry, "name", text="Label")
-
-        # ─── Trigger Settings ──────────────────────────────────────
-        trigger_box = box.box()
-        trigger_box.label(text="Trigger Settings")
-        trigger_box.prop(entry, "trigger_type", text="Mode")
-        if entry.trigger_type == 'BOX':
-            trigger_box.prop(entry, "trigger_mesh", text="Bounding Mesh")
-            trigger_box.prop(entry, "hide_trigger_mesh", text="Hide Mesh During Game")
-
-        # ─── Target Selection ──────────────────────────────────────
-        target_box = box.box()
-        target_box.label(text="Cull Target")
-        target_box.prop(entry, "use_collection", text="Cull a Collection?")
-        if entry.use_collection:
-            target_box.prop(entry, "target_collection", text="Collection")
-            target_box.prop(entry, "cascade_collections", text="Cascade Into Child Collections")
-            excl = target_box.row()
-            excl.enabled = (entry.trigger_type != 'BOX')
-            excl.prop(entry, "exclude_collection", text="Hide Entire Collection")
-        else:
-            target_box.prop(entry, "target_object", text="Object")
-
-        # ─── Distance Settings ─────────────────────────────────────
-        dist_box = box.box()
-        dist_box.label(text="Distance Settings")
-        # Only allow numeric distance for RADIAL mode
-        dist_row = dist_box.row()
-        dist_row.enabled = (entry.trigger_type == 'RADIAL')
-        dist_row.prop(entry, "cull_distance", text="Cull Radius")
-
-        # ─── Placeholder Options ───────────────────────────────────
-        ph_box = box.box()
-        ph_box.prop(entry, "has_placeholder", text="Enable Placeholder")
-
-        if entry.has_placeholder:
-            ph_box.label(text="Placeholder Settings")
-            ph_box.prop(entry, "placeholder_use_collection", text="Use Collection as Placeholder")
-            if entry.placeholder_use_collection:
-                ph_box.prop(entry, "placeholder_collection", text="Placeholder Collection")
-            else:
-                ph_box.prop(entry, "placeholder_object", text="Placeholder Object")
-
 # -----------------------------
 # UI: Character Physics (grouped)
 # -----------------------------
@@ -609,8 +391,7 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return (getattr(context.scene, "main_category", "EXPLORE") == 'CREATE'
-                and _is_create_panel_enabled(context.scene, 'PHYS'))
+        return _is_create_panel_enabled(context.scene, 'PHYS')
 
     def draw(self, context):
         layout = self.layout

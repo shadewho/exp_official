@@ -33,15 +33,6 @@ from ..reactions.exp_tracking import (
     submit_tracking_batch,
     apply_tracking_results,
 )
-from ..reactions.exp_ragdoll import (
-    init_ragdoll_system,
-    shutdown_ragdoll_system,
-    has_active_ragdolls,
-    is_armature_ragdolling,
-    submit_ragdoll_update,
-    process_ragdoll_results,
-)
-from ..systems.exp_performance import update_performance_culling, apply_cull_result
 from ..physics.exp_dynamic import update_dynamic_meshes
 from ..physics.exp_view import (
     update_camera_for_operator,
@@ -67,7 +58,6 @@ from ..animations.blend_system import (
     shutdown_blend_system,
     get_blend_system,
 )
-from ..animations.layer_manager import get_layer_manager, update_all_managers, AnimChannel
 
 
 class GameLoop:
@@ -110,13 +100,9 @@ class GameLoop:
         # Initialize reaction node cache (eliminates node graph iteration for dynamic inputs)
         init_reaction_node_cache(bpy.context.scene)
 
-        # Initialize ragdoll system
-        init_ragdoll_system()
-
     def shutdown(self):
         """Clean up game loop resources (called when game stops)."""
         shutdown_blend_system()
-        shutdown_ragdoll_system()
         clear_pending_parenting()
     # ---------- Public API ----------
 
@@ -164,11 +150,6 @@ class GameLoop:
                 # NOTE: update_hitscan_tasks() moved to A3 (runs every frame)
                 update_tracking_tasks(dt_sim)
 
-                # Submit ragdoll update per 30 Hz step so catch-up frames stay in sync
-                engine = getattr(op, "engine", None)
-                if engine and engine.is_alive() and has_active_ragdolls():
-                    submit_ragdoll_update(engine, dt_sim)
-
             # B1a) Submit transform batch to worker (after t values updated)
             engine = getattr(op, "engine", None)
             transform_job_id = None
@@ -202,14 +183,12 @@ class GameLoop:
                 submit_hitscan_batch(engine)
                 submit_projectile_update(engine, dt_sim)
 
-            # B3) Distance-based culling (has its own throttling): once
-            update_performance_culling(op, context)
-
             # B4) Animations & audio: once with aggregated dt
             self._update_character_animation(op, agg_dt)
 
         # C) Input gating based on game mobility flags (unchanged)
         mg = context.scene.mobility_game
+
         if not mg.allow_movement:
             for k in (op.pref_forward_key, op.pref_backward_key,
                     op.pref_left_key, op.pref_right_key):
@@ -219,11 +198,7 @@ class GameLoop:
             op.keys_pressed.remove(op.pref_run_key)
 
         # D) Physics integration (execute exactly 'steps' iterations at 30 Hz)
-        # SKIP KCC physics only when CHARACTER's armature is ragdolling
-        # (Other armatures can ragdoll without affecting player movement)
-        character_armature = context.scene.target_armature
-        if not is_armature_ragdolling(character_armature):
-            op.update_movement_and_gravity(context, steps)
+        op.update_movement_and_gravity(context, steps)
 
         # D2) Poll engine results (apply non-camera results)
         self._poll_and_apply_engine_results()
@@ -291,83 +266,57 @@ class GameLoop:
         if not armature:
             return
 
-        # Check if locomotion is locked by BlendSystem (forced animation playing)
-        blend_system = get_blend_system()
-        locomotion_locked = blend_system and blend_system.is_locomotion_locked(armature.name)
+        # Get current game time for one-shot timing
+        game_time = get_game_time()
 
-        # Only update state machine if not locked
-        if not locomotion_locked:
-            # Get current game time for one-shot timing
-            game_time = get_game_time()
+        # Update state machine
+        new_state, state_changed = sm.update(
+            keys_pressed=op.keys_pressed,
+            delta_time=agg_dt,
+            is_grounded=op.is_grounded,
+            vertical_velocity=op.z_velocity,
+            game_time=game_time
+        )
 
-            # Update state machine
-            new_state, state_changed = sm.update(
-                keys_pressed=op.keys_pressed,
-                delta_time=agg_dt,
-                is_grounded=op.is_grounded,
-                vertical_velocity=op.z_velocity,
-                game_time=game_time
-            )
+        # If state changed, play the new animation
+        if state_changed:
+            action_name = sm.get_action_name()
+            if action_name and ctrl.has_animation(action_name):
+                props = sm.get_state_properties()
 
-            # If state changed, play the new animation
-            if state_changed:
-                action_name = sm.get_action_name()
-                if action_name and ctrl.has_animation(action_name):
-                    props = sm.get_state_properties()
+                # Get blend time from scene property (default 0.15s)
+                blend_time = bpy.context.scene.character_actions.blend_time
 
-                    # Get blend time from scene property (default 0.15s)
-                    blend_time = bpy.context.scene.character_actions.blend_time
+                # Play on armature with crossfade
+                ctrl.play(
+                    armature.name,
+                    action_name,
+                    weight=1.0,
+                    speed=props['speed'],
+                    looping=props['loop'],
+                    fade_in=blend_time,
+                    replace=True
+                )
 
-                    # Play on armature with crossfade
-                    ctrl.play(
-                        armature.name,
-                        action_name,
-                        weight=1.0,
-                        speed=props['speed'],
-                        looping=props['loop'],
-                        fade_in=blend_time,
-                        replace=True
-                    )
+                # Start one-shot tracking if needed
+                if props['is_one_shot']:
+                    anim = ctrl.cache.get(action_name)
+                    if anim:
+                        sm.start_one_shot(anim.duration / props['speed'], game_time)
 
-                    # Start one-shot tracking if needed
-                    if props['is_one_shot']:
-                        anim = ctrl.cache.get(action_name)
-                        if anim:
-                            sm.start_one_shot(anim.duration / props['speed'], game_time)
-
-                # Update audio state
-                if new_state != self._last_anim_state:
-                    audio_state_mgr = get_global_audio_state_manager()
-                    audio_state_mgr.update_audio_state(new_state)
-                    self._last_anim_state = new_state
+            # Update audio state
+            if new_state != self._last_anim_state:
+                audio_state_mgr = get_global_audio_state_manager()
+                audio_state_mgr.update_audio_state(new_state)
+                self._last_anim_state = new_state
 
         # WORKER-OFFLOADED ANIMATION FLOW:
-        # 1. Update ALL layer managers FIRST (fading for all objects)
-        # This MUST always run to handle channel fade transitions (e.g., PHYSICS fade-out)
-        update_all_managers(agg_dt)
-
-        # 1b. Update blend system layer timings
+        # 1. Update blend system layer timings
         blend_system = get_blend_system()
         if blend_system:
             blend_system.update(agg_dt)
 
-        # Check if physics (ragdoll) has control - skip animation job processing
-        layer_manager = get_layer_manager()  # Get character's layer manager
-        physics_active = layer_manager and layer_manager.is_channel_active(AnimChannel.PHYSICS)
-
-        if physics_active:
-            # PHYSICS active - skip animation job submission and application
-            # Don't submit jobs we're going to discard anyway
-            # But we still updated layer managers above for fade transitions
-            from ..developer.dev_logger import log_game
-            try:
-                if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_layers", False):
-                    log_game("LAYERS", "SKIP animation jobs (PHYSICS active)")
-            except:
-                pass
-            return  # Exit early - physics controls the armature
-
-        # 2. Update animation state (times, fades) - only when physics NOT active
+        # 2. Update animation state (times, fades)
         update_animations_state(op, agg_dt)
 
         # 3. Submit jobs to engine
@@ -424,11 +373,6 @@ class GameLoop:
             engine.output_debug_stats()  # Gets context from bpy.context internally
 
         for result in results:
-            # Log RAGDOLL results at top level for debugging
-            if result.job_type == "RAGDOLL_UPDATE_BATCH":
-                from ..developer.dev_logger import log_game
-                log_game("RAGDOLL", f"POLL job={result.job_id} success={result.success}")
-
             # Process result and track latency metrics
             if hasattr(op, 'process_engine_result'):
                 op.process_engine_result(result)
@@ -438,12 +382,6 @@ class GameLoop:
                 if result.job_type == "ECHO":
                     # Echo test - no action needed
                     pass
-                elif result.job_type == "CULL_BATCH":
-                    # Apply performance culling result
-                    try:
-                        apply_cull_result(op, result.result)
-                    except Exception as e:
-                        print(f"[GameLoop] Error applying cull result: {e}")
                 elif result.job_type == "CAMERA_OCCLUSION_FULL":
                     # Cache camera occlusion result - only if it matches current pending job
                     try:
@@ -576,7 +514,7 @@ class GameLoop:
                     try:
                         if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_anim_worker", False):
                             log_game("ANIM-WORKER", f"DISCARD_LATE job={result.job_id} (arrived after blend system)")
-                    except:
+                    except Exception:
                         pass
                     # Clear pending job to prevent stale tracking
                     if hasattr(op, '_pending_anim_batch_job'):
@@ -637,35 +575,8 @@ class GameLoop:
                     except Exception as e:
                         print(f"[GameLoop] Error applying tracking results: {e}")
 
-                elif result.job_type == "RAGDOLL_UPDATE_BATCH":
-                    # Apply ragdoll physics results from worker
-                    from ..developer.dev_logger import log_game
-                    log_game("RAGDOLL", f"RESULT job={result.job_id} success={result.success}")
-                    try:
-                        if not result.success:
-                            log_game("RAGDOLL", f"RESULT_ERROR: {result.error}")
-                        updated_ragdolls = result.result.get("updated_ragdolls", []) if result.result else []
-                        log_game("RAGDOLL", f"RESULT updated_ragdolls={len(updated_ragdolls)}")
-                        process_ragdoll_results(updated_ragdolls)
-                        # Process worker logs
-                        worker_logs = result.result.get("logs", []) if result.result else []
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
-                    except Exception as e:
-                        log_game("RAGDOLL", f"RESULT_EXCEPTION: {e}")
-                        import traceback
-                        traceback.print_exc()
-
             else:
                 # Job failed - already logged in process_engine_result
-                # Log failed RAGDOLL jobs for debugging
-                if result.job_type == "RAGDOLL_UPDATE_BATCH":
-                    from ..developer.dev_logger import log_game
-                    log_game("RAGDOLL", f"FAILED job={result.job_id} error={result.error}")
-                    from ..reactions.exp_ragdoll import handle_ragdoll_job_failure
-                    handle_ragdoll_job_failure(error=str(result.error))
-
                 # CRITICAL: Clear pending_job_id for camera jobs to prevent permanent stuck state
                 if result.job_type == "CAMERA_OCCLUSION_FULL":
                     from ..physics.exp_view import _view_state_for

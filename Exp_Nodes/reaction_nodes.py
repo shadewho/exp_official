@@ -153,7 +153,6 @@ def _draw_common_fields(layout, r, kind: str):
             header.prop(r, "char_action_loop_duration", text="Loop Duration")
         header.prop(r, "char_action_speed", text="Speed Multiplier")
         header.prop(r, "char_action_blend_time", text="Blend Time")
-        header.prop(r, "char_action_force", text="Force (Lock Locomotion)")
 
     elif t == "SOUND":
         # Sound pointer
@@ -1104,44 +1103,6 @@ class ReactionCrosshairsNode(_ReactionNodeKind):
     bl_idname = "ReactionCrosshairsNodeType"
     bl_label  = "Enable Crosshairs"
     KIND = "ENABLE_CROSSHAIRS"
-
-
-class ReactionRagdollNode(_ReactionNodeKind):
-    bl_idname = "ReactionRagdollNodeType"
-    bl_label  = "Ragdoll"
-    KIND = "RAGDOLL"
-
-    def init(self, context):
-        super().init(context)
-
-        # Duration socket - only input needed
-        s_dur = self.inputs.new("ExpFloatSocketType", "Duration")
-        s_dur.reaction_prop = "ragdoll_duration"
-
-    def draw_buttons(self, context, layout):
-        scn = _scene()
-        idx = self.reaction_index
-        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
-            layout.label(text="(Missing Reaction)", icon='ERROR')
-            return
-        r = scn.reactions[idx]
-
-        box = layout.box()
-        box.prop(r, "name", text="Name")
-
-        # Target section
-        tgt = layout.box()
-        tgt.label(text="Target")
-        tgt.prop(r, "ragdoll_target_use_character", text="Use Character")
-        if not getattr(r, "ragdoll_target_use_character", True):
-            tgt.prop_search(r, "ragdoll_target_armature", bpy.context.scene, "objects", text="Armature")
-        else:
-            char = getattr(bpy.context.scene, "target_armature", None)
-            tgt.label(text=f"Armature: {char.name if char else '—'}", icon='ARMATURE_DATA')
-
-        # Info box
-        info = layout.box()
-        info.label(text="Verlet ragdoll with mesh collision.", icon='PHYSICS')
 
 
 class ReactionEnableHealthNode(_ReactionNodeKind):

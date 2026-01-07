@@ -20,7 +20,7 @@ def _atexit_restore_cursor():
             # Try to restore cursor in any available window
             if bpy.context and bpy.context.window:
                 bpy.context.window.cursor_modal_restore()
-        except:
+        except Exception:
             pass  # Best effort - might fail if Blender is shutting down
         _cursor_captured = False
 
@@ -40,7 +40,7 @@ def force_restore_cursor():
     try:
         if bpy.context and bpy.context.window:
             bpy.context.window.cursor_modal_restore()
-    except:
+    except Exception:
         pass
 
     # Also try all windows as fallback
@@ -48,9 +48,9 @@ def force_restore_cursor():
         for window in bpy.context.window_manager.windows:
             try:
                 window.cursor_modal_restore()
-            except:
+            except Exception:
                 pass
-    except:
+    except Exception:
         pass
 
     _cursor_captured = False

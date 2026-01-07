@@ -1,4 +1,4 @@
-#Exploratory/Exp_UI/prefs_persistence.py
+#Exploratory/prefs_persistence.py
 import bpy, os, json
 
 ADDON_NAME = "Exploratory"
@@ -10,13 +10,13 @@ def _prefs_file_path() -> str:
 
 def write_prefs():
     global _applying
-    # if we’re currently in apply_prefs(), don’t overwrite
+    # if we're currently in apply_prefs(), don't overwrite
     if _applying:
         return
 
     prefs = bpy.context.preferences.addons[ADDON_NAME].preferences
 
-    # respect the “Keep Preferences” toggle
+    # respect the "Keep Preferences" toggle
     if not getattr(prefs, "keep_preferences", True):
         path = _prefs_file_path()
         if os.path.isfile(path):

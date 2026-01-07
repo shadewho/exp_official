@@ -235,7 +235,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
-            ("RAGDOLL",           "Ragdoll",              "Simulate bone physics with collision"),
             ("ENABLE_HEALTH",     "Enable Health",        "Attach health component to an object"),
             ("DISPLAY_HEALTH_UI", "Display Health UI",    "Show health bar on screen"),
         ],
@@ -298,11 +297,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         ],
         default="ALL",
         description="Which body part to affect with this animation"
-    )
-    char_action_force: bpy.props.BoolProperty(
-        name="Force Animation",
-        default=False,
-        description="Lock locomotion while this animation plays (prevents walk/run/jump from interrupting)"
     )
 
     #--------------------------------------------------------
@@ -997,25 +991,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         description="0 = unlimited. Stops automatically after this many seconds"
     )
 
-
-    # --------------------------------------------------
-    # RAGDOLL REACTION FIELDS
-    # --------------------------------------------------
-    ragdoll_target_use_character: bpy.props.BoolProperty(
-        name="Use Character",
-        default=True,
-        description="If True, ragdoll the scene.target_armature; else use the specified armature"
-    )
-    ragdoll_target_armature: bpy.props.PointerProperty(
-        name="Target Armature",
-        type=bpy.types.Object,
-        description="Armature to ragdoll if 'Use Character' is False"
-    )
-    ragdoll_duration: bpy.props.FloatProperty(
-        name="Duration (sec)",
-        default=2.0, min=0.1, max=30.0,
-        description="How long the ragdoll simulation runs"
-    )
 
     # --------------------------------------------------
     # ENABLE_HEALTH REACTION FIELDS

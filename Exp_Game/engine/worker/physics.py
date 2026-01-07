@@ -772,7 +772,7 @@ def handle_kcc_physics_step(job_data, cached_grid, cached_dynamic_meshes, cached
                                 worker_logs.append(("SLIDE",
                                     f"applied={slide_applied:.3f}m requested={slide_requested:.3f}m eff={effectiveness:.0f}% "
                                     f"normal=({bn_x:.2f},{bn_y:.2f},{bn_z:.2f}) blocked={slide_blocked}"))
-                            except:
+                            except Exception:
                                 pass  # Silently ignore any logging errors
         else:
             # No collision - full movement

@@ -32,8 +32,6 @@ if not _IS_WORKER_PROCESS:
         ExploratoryPanel,
         ExploratoryCharacterPanel,
         ExploratoryProxyMeshPanel,
-        VIEW3D_PT_Exploratory_UploadHelper,
-        VIEW3D_PT_Exploratory_Performance,
         VIEW3D_PT_Exploratory_PhysicsTuning,
         EXP_OT_FilterCreatePanels,
     )
@@ -86,10 +84,6 @@ if not _IS_WORKER_PROCESS:
         unregister_counter_timer_properties
     )
 
-    from .systems.exp_performance import (
-        register   as register_performance,
-        unregister as unregister_performance
-    )
     from .reactions.exp_mobility_and_game_reactions import (
         MobilityReactionsPG,
         MeshVisibilityReactionsPG,
@@ -193,9 +187,6 @@ if not _IS_WORKER_PROCESS:
 
         bpy.utils.register_class(ExploratoryProxyMeshPanel)
 
-        bpy.utils.register_class(VIEW3D_PT_Exploratory_UploadHelper)
-
-        bpy.utils.register_class(VIEW3D_PT_Exploratory_Performance)
 
         bpy.utils.register_class(DEV_PT_DeveloperTools)
 
@@ -247,9 +238,6 @@ if not _IS_WORKER_PROCESS:
 
         # ─── Demo scene ──────────────────────────────────
         exp_demo_scene.register()
-
-        # ─── Performance Culling ──────────────────────────────────
-        register_performance()
 
         register_upload_helper()
 
@@ -306,8 +294,6 @@ if not _IS_WORKER_PROCESS:
         # --- Panels & UILists ---
         bpy.utils.unregister_class(EXPLORATORY_OT_DuplicateGlobalReaction)
         bpy.utils.unregister_class(ExploratoryPanel)
-        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_UploadHelper)
-        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Performance)
         bpy.utils.unregister_class(DEV_PT_DeveloperTools)
         bpy.utils.unregister_class(ExploratoryCharacterPanel)
         bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
@@ -351,9 +337,6 @@ if not _IS_WORKER_PROCESS:
         # ─── Engine Testing Operators ──────────────────────────────
         bpy.utils.unregister_class(EXP_ENGINE_OT_StressTest)
         bpy.utils.unregister_class(EXP_ENGINE_OT_QuickTest)
-
-        # ─── Performance Culling ──────────────────────────────────
-        unregister_performance()
 
         # ─── Pose Library ──────────────────────────────
         pose_lib.unregister_pose_library()

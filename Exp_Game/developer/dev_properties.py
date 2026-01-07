@@ -13,6 +13,19 @@ There is ONE physics system, not two separate ones.
 
 import bpy
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MASTER DEVELOPER MODE TOGGLE
+# ══════════════════════════════════════════════════════════════════════════════
+# Set to False to completely disable all developer features:
+#   - Hides the Developer Tools panel
+#   - Disables all logging (log_game calls become no-ops)
+#   - Disables all debug visualizations
+#   - Zero performance overhead when disabled
+#
+# Set to True to enable developer features (controlled by individual toggles)
+# ══════════════════════════════════════════════════════════════════════════════
+DEV_MODE = True
+
 
 def register_properties():
     """Register all developer debug properties on Scene."""
@@ -56,16 +69,6 @@ def register_properties():
         name="Game Systems", default=False)
     bpy.types.Scene.dev_section_anim = bpy.props.BoolProperty(
         name="Animation 2.0", default=False)
-
-    # Neural IK UI toggles
-    bpy.types.Scene.dev_neural_show_advanced = bpy.props.BoolProperty(
-        name="Show Advanced", default=False)
-    bpy.types.Scene.dev_neural_show_create = bpy.props.BoolProperty(
-        name="Create New Data", default=False)
-    bpy.types.Scene.dev_neural_show_diagnostics = bpy.props.BoolProperty(
-        name="Show Diagnostics", default=False)
-    bpy.types.Scene.dev_neural_show_verification = bpy.props.BoolProperty(
-        name="Show Verification", default=False)
 
     # ══════════════════════════════════════════════════════════════════════════
     # ENGINE HEALTH
@@ -649,31 +652,6 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_ragdoll = bpy.props.BoolProperty(
-        name="Ragdoll",
-        description=(
-            "Ragdoll physics diagnostics (worker-offloaded):\n"
-            "• Active ragdolls (armature, duration)\n"
-            "• Bone state submission (positions, velocities)\n"
-            "• Worker physics (Verlet, collisions, constraints)\n"
-            "• Apply results (bone transforms)\n"
-            "• Recovery blend status"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_neural_ik = bpy.props.BoolProperty(
-        name="Neural IK",
-        description=(
-            "Neural IK / Dynamic Actions diagnostics:\n"
-            "• Weight caching at game start\n"
-            "• IK solve jobs (targets, inference time)\n"
-            "• Bone rotation results\n"
-            "• Layer integration status"
-        ),
-        default=False
-    )
-
     bpy.types.Scene.dev_debug_health = bpy.props.BoolProperty(
         name="Health",
         description=(
@@ -1061,10 +1039,6 @@ def unregister_properties():
         'dev_section_kcc_visual',
         'dev_section_game',
         'dev_section_anim',
-        'dev_neural_show_advanced',
-        'dev_neural_show_create',
-        'dev_neural_show_diagnostics',
-        'dev_neural_show_verification',
 
         # Engine
         'dev_debug_engine',
@@ -1128,8 +1102,6 @@ def unregister_properties():
         'dev_debug_hitscans',
         'dev_debug_transforms',
         'dev_debug_tracking',
-        'dev_debug_ragdoll',
-        'dev_debug_neural_ik',
         'dev_debug_health',
 
         # Pose Library
@@ -1214,10 +1186,6 @@ def unregister_properties():
         'pose_blend_ik_leg_L_target',
         'pose_blend_ik_leg_R',
         'pose_blend_ik_leg_R_target',
-        # Ragdoll standalone test (removed)
-        'dev_section_ragdoll_test',
-        'dev_ragdoll_test_duration',
-        'dev_ragdoll_test_include_drop',
     ]
 
     for prop in old_props:

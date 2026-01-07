@@ -63,6 +63,10 @@ def copy_addon_files():
     Handles Windows file locking gracefully by skipping locked files.
     Returns (success: bool, message: str)
     """
+    # Check if source directory exists
+    if not os.path.exists(SRC):
+        return False, f"Source directory not found: {SRC}"
+
     # Directories and files to ignore
     ignore_patterns = {
         '.git',

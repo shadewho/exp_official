@@ -21,7 +21,7 @@ Transform Format:
   10-float array: [quat_w, quat_x, quat_y, quat_z, loc_x, loc_y, loc_z, scale_x, scale_y, scale_z]
 
 NOTE: Joint limits removed - not needed for rigid animations.
-NOTE: IK code removed - using neural network approach instead.
+NOTE: IK code removed.
 """
 
 from .data import BakedAnimation, Transform, IDENTITY_TRANSFORM

@@ -25,8 +25,6 @@ from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_prope
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
 from ..audio import exp_globals
 from ..audio.exp_globals import stop_all_sounds
-from ...Exp_UI.download_and_explore.cleanup import cleanup_downloaded_worlds, cleanup_downloaded_datablocks
-from ..systems.exp_performance import init_performance_state, restore_performance_state
 from ..mouse_and_movement.exp_cursor import (
     setup_cursor_region,
     handle_mouse_move,
@@ -48,9 +46,6 @@ from .exp_engine_bridge import (
     shutdown_animations,
     cache_animations_in_workers,
     cache_poses_in_workers,
-    cache_neural_ik_in_workers,
-    init_animation_layer_manager,
-    shutdown_animation_layer_manager,
 )
 
 def _first_view3d_r3d():
@@ -301,16 +296,7 @@ class ExpModal(bpy.types.Operator):
                 except Exception as engine_error:
                     print(f"  ✗ Engine shutdown failed: {engine_error}")
 
-            # 3. SECURITY: Clear downloaded world files on crash (only if launched from UI)
-            # This ensures .blend files are deleted even if cancel() failed
-            if getattr(self, 'launched_from_ui', False):
-                try:
-                    cleanup_downloaded_worlds()
-                    print("  ✓ Downloaded world files cleared")
-                except Exception as cleanup_error:
-                    print(f"  ✗ World cleanup failed: {cleanup_error}")
-
-            # 4. Clear global operator references
+            # 3. Clear global operator references
             global _active_modal_operator
             _active_modal_operator = None
             exp_globals.ACTIVE_MODAL_OP = None
@@ -428,9 +414,6 @@ class ExpModal(bpy.types.Operator):
 
         #capture character state after spawning
         capture_initial_character_state(self, context)
-
-        # ── Initialize cull state ─────────────────────────────
-        init_performance_state(self, context)
 
         #4D Game time
         init_time()  # Start the game clock at 0
@@ -584,18 +567,6 @@ class ExpModal(bpy.types.Operator):
             # Cache pose library in workers (must happen AFTER engine is running)
             cache_poses_in_workers(self, context)
 
-            # Cache neural IK weights in workers (must happen AFTER engine is running)
-            # Wrapped in try-except: neural IK is optional, shouldn't crash game if it fails
-            try:
-                cache_neural_ik_in_workers(self, context)
-            except Exception as e:
-                from ..developer.dev_logger import log_game
-                log_game("NEURAL_IK", f"INIT_FAIL {e}")
-
-            # Initialize animation layer manager and disable native action evaluation
-            # CRITICAL: Prevents Blender's C-level action from overwriting ragdoll/IK transforms
-            init_animation_layer_manager(self, context)
-
             # Initialize interaction offload tracking
             self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job
             self._interaction_map = []  # Maps worker indices to scene interactions
@@ -691,258 +662,6 @@ class ExpModal(bpy.types.Operator):
 
         self._game_state = self.STATE_RUNNING
 
-    # =========================================================
-    # TEMPORARY: Neural IK test (K key)
-    # =========================================================
-
-    def _test_neural_ik_solve(self, context):
-        """
-        TEMPORARY test function - press K to trigger IK solve toward pose library target.
-
-        1. Gets target pose from pose library (currently selected)
-        2. Extracts effector positions from target pose
-        3. Neural IK solves for those positions
-        4. Applies result and measures error
-        """
-        from ..developer.dev_logger import log_game
-        from mathutils import Quaternion, Vector
-        import time
-        import json
-
-        if not hasattr(self, 'engine') or not self.engine:
-            log_game("NEURAL_IK", "TEST_FAIL no engine")
-            return
-
-        armature = context.scene.target_armature
-        if not armature or armature.type != 'ARMATURE':
-            log_game("NEURAL_IK", "TEST_FAIL no armature")
-            return
-
-        scene = context.scene
-        pose_bones = armature.pose.bones
-        arm_matrix = armature.matrix_world
-
-        # Check if pose library has poses
-        if not hasattr(scene, 'pose_library') or len(scene.pose_library) == 0:
-            log_game("NEURAL_IK", "TEST_FAIL no poses in library - capture some poses first")
-            return
-
-        # Get selected pose from library
-        pose_idx = getattr(scene, 'pose_library_index', 0)
-        if pose_idx < 0 or pose_idx >= len(scene.pose_library):
-            pose_idx = 0
-        target_pose = scene.pose_library[pose_idx]
-
-        try:
-            target_bone_data = json.loads(target_pose.bone_data_json)
-        except:
-            log_game("NEURAL_IK", "TEST_FAIL invalid pose data")
-            return
-
-        log_game("NEURAL_IK", f"TEST_TARGET pose='{target_pose.name}' bones={len(target_bone_data)}")
-
-        # First: Extract root position from CURRENT pose (where character IS)
-        hips = pose_bones.get("Hips")
-        if not hips:
-            log_game("NEURAL_IK", "TEST_FAIL no Hips bone")
-            return
-
-        root_pos = arm_matrix @ hips.head
-        root_matrix = arm_matrix @ hips.matrix
-        root_fwd = root_matrix.col[1][:3]
-        root_up = root_matrix.col[2][:3]
-
-        # Save current pose
-        saved_pose = {}
-        for bone_name in target_bone_data.keys():
-            pb = pose_bones.get(bone_name)
-            if pb:
-                saved_pose[bone_name] = (
-                    pb.rotation_quaternion.copy(),
-                    pb.location.copy(),
-                    pb.scale.copy()
-                )
-
-        # Temporarily apply target pose to read target effector world positions
-        for bone_name, transform in target_bone_data.items():
-            pb = pose_bones.get(bone_name)
-            if pb:
-                pb.rotation_mode = 'QUATERNION'
-                pb.rotation_quaternion = Quaternion((transform[0], transform[1], transform[2], transform[3]))
-                pb.location = Vector((transform[4], transform[5], transform[6]))
-                pb.scale = Vector((transform[7], transform[8], transform[9]))
-
-        # Force update to get correct world positions
-        context.view_layer.update()
-
-        # Extract target effector positions (from the target pose)
-        effector_names = ["LeftHand", "RightHand", "LeftFoot", "RightFoot", "Head"]
-        target_effector_positions = {}
-        for name in effector_names:
-            bone = pose_bones.get(name)
-            if bone:
-                world_pos = arm_matrix @ bone.head
-                target_effector_positions[name] = (world_pos.x, world_pos.y, world_pos.z)
-
-        # Log target effector positions
-        log_game("NEURAL_IK", "TARGET_EFFECTORS (world coords):")
-        for name, pos in target_effector_positions.items():
-            log_game("NEURAL_IK", f"  {name}: ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f})")
-
-        # Restore original pose
-        for bone_name, (rot, loc, scale) in saved_pose.items():
-            pb = pose_bones.get(bone_name)
-            if pb:
-                pb.rotation_quaternion = rot
-                pb.location = loc
-                pb.scale = scale
-        context.view_layer.update()
-
-        # Log CURRENT effector positions (before IK)
-        current_effector_positions = {}
-        for name in effector_names:
-            bone = pose_bones.get(name)
-            if bone:
-                world_pos = arm_matrix @ bone.head
-                current_effector_positions[name] = (world_pos.x, world_pos.y, world_pos.z)
-
-        log_game("NEURAL_IK", "CURRENT_EFFECTORS (before IK):")
-        for name, pos in current_effector_positions.items():
-            target_pos = target_effector_positions.get(name, (0, 0, 0))
-            dist = ((pos[0]-target_pos[0])**2 + (pos[1]-target_pos[1])**2 + (pos[2]-target_pos[2])**2) ** 0.5
-            log_game("NEURAL_IK", f"  {name}: ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) dist_to_target={dist:.3f}m")
-
-        # Build job data: current root + target effectors
-        job_data = {
-            "effector_positions": target_effector_positions,
-            "root_position": (root_pos.x, root_pos.y, root_pos.z),
-            "root_forward": (root_fwd[0], root_fwd[1], root_fwd[2]),
-            "root_up": (root_up[0], root_up[1], root_up[2]),
-            "ground_height": 0.0,
-            "contact_left": True,
-            "contact_right": True,
-            "motion_phase": 0.0,
-            "task_type": 0,
-        }
-
-        # Log job inputs
-        log_game("NEURAL_IK", f"JOB_INPUT root=({root_pos.x:.3f},{root_pos.y:.3f},{root_pos.z:.3f})")
-        log_game("NEURAL_IK", f"JOB_INPUT fwd=({root_fwd[0]:.3f},{root_fwd[1]:.3f},{root_fwd[2]:.3f}) up=({root_up[0]:.3f},{root_up[1]:.3f},{root_up[2]:.3f})")
-
-        # Submit to engine (worker does build_input + inference)
-        t0 = time.perf_counter()
-        job_id = self.engine.submit_job("NEURAL_IK_SOLVE", job_data)
-
-        if job_id is None or job_id < 0:
-            log_game("NEURAL_IK", "TEST_FAIL job submit failed")
-            return
-
-        log_game("NEURAL_IK", f"SUBMIT job={job_id} (INSTANT apply, no animation)")
-
-        # Poll for result (short timeout - don't block game)
-        timeout = 0.05  # 50ms max
-        start = time.perf_counter()
-        result = None
-
-        while time.perf_counter() - start < timeout:
-            results = list(self.engine.poll_results(max_results=10))
-            for r in results:
-                if r.job_id == job_id:
-                    result = r
-                    break
-            if result:
-                break
-            time.sleep(0.001)
-
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-
-        if result is None:
-            log_game("NEURAL_IK", f"TIMEOUT job={job_id} after {elapsed_ms:.1f}ms")
-            return
-
-        if not result.success:
-            log_game("NEURAL_IK", f"FAIL job={job_id} error={result.error}")
-            return
-
-        # Extract all diagnostic data from worker result
-        result_data = result.result
-        inference_us = result_data.get("inference_us", 0)
-        bone_rotations = result_data.get("bone_rotations")
-        num_bones = len(bone_rotations) if bone_rotations is not None else 0
-
-        # Input stats
-        input_range = result_data.get("input_range", (0, 0))
-        input_mean = result_data.get("input_mean", 0)
-        norm_range = result_data.get("normalized_range", (0, 0))
-        norm_mean = result_data.get("normalized_mean", 0)
-
-        # Output stats
-        output_range = result_data.get("output_range", (0, 0))
-        output_mean = result_data.get("output_mean", 0)
-        angle_deg = result_data.get("angle_magnitudes_deg", (0, 0, 0))
-
-        # Effector relative positions (what network saw)
-        effector_rel = result_data.get("effector_rel_pos", {})
-
-        log_game("NEURAL_IK", f"RESULT job={job_id} bones={num_bones} time={inference_us:.0f}µs total={elapsed_ms:.1f}ms")
-        log_game("NEURAL_IK", f"INPUT_STATS raw=[{input_range[0]:.3f},{input_range[1]:.3f}] mean={input_mean:.3f}")
-        log_game("NEURAL_IK", f"NORM_STATS  norm=[{norm_range[0]:.3f},{norm_range[1]:.3f}] mean={norm_mean:.3f}")
-        log_game("NEURAL_IK", f"OUTPUT_STATS axis_angle=[{output_range[0]:.3f},{output_range[1]:.3f}] mean={output_mean:.3f}")
-        log_game("NEURAL_IK", f"ROTATION_MAG min={angle_deg[0]:.1f}° max={angle_deg[1]:.1f}° avg={angle_deg[2]:.1f}°")
-
-        # Log relative positions network saw
-        log_game("NEURAL_IK", "EFFECTOR_REL (root-relative, what network sees):")
-        for name, pos in effector_rel.items():
-            log_game("NEURAL_IK", f"  {name}: ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f})")
-
-        # Apply result to animation layer system (INSTANT - single frame)
-        if bone_rotations is not None:
-            from ..animations.neural_ik_layer import apply_neural_ik_result
-            success = apply_neural_ik_result(bone_rotations, weight=1.0)
-            if success:
-                log_game("NEURAL_IK", f"APPLIED bones={num_bones} weight=1.0 (INSTANT)")
-
-                # Measure error: compare resulting effector positions to targets
-                context.view_layer.update()
-                total_error = 0.0
-                error_details = []
-                result_effector_positions = {}
-
-                log_game("NEURAL_IK", "RESULT_EFFECTORS (after IK):")
-                for name in effector_names:
-                    bone = pose_bones.get(name)
-                    if bone and name in target_effector_positions:
-                        result_pos = arm_matrix @ bone.head
-                        result_effector_positions[name] = (result_pos.x, result_pos.y, result_pos.z)
-                        target_pos = target_effector_positions[name]
-                        current_pos = current_effector_positions.get(name, (0, 0, 0))
-
-                        # Error from target
-                        dx = result_pos.x - target_pos[0]
-                        dy = result_pos.y - target_pos[1]
-                        dz = result_pos.z - target_pos[2]
-                        dist_to_target = (dx*dx + dy*dy + dz*dz) ** 0.5
-
-                        # How much we moved from current
-                        moved = ((result_pos.x-current_pos[0])**2 + (result_pos.y-current_pos[1])**2 + (result_pos.z-current_pos[2])**2) ** 0.5
-
-                        total_error += dist_to_target
-                        error_details.append(f"{name}={dist_to_target:.3f}m")
-                        log_game("NEURAL_IK", f"  {name}: ({result_pos.x:.3f}, {result_pos.y:.3f}, {result_pos.z:.3f}) err={dist_to_target:.3f}m moved={moved:.3f}m")
-
-                avg_error = total_error / len(effector_names) if effector_names else 0
-
-                # Determine if we "reached" the target (threshold: 5cm per effector)
-                reached = avg_error < 0.05
-                status = "REACHED" if reached else "MISSED"
-
-                log_game("NEURAL_IK", f"ACCURACY total_err={total_error:.3f}m avg_err={avg_error:.3f}m status={status}")
-                log_game("NEURAL_IK", f"PER_EFFECTOR [{', '.join(error_details)}]")
-            else:
-                log_game("NEURAL_IK", "APPLY_FAIL layer creation failed")
-
-    # =========================================================
-
     def modal(self, context, event):
         try:
             # End game hotkey - always works, even when paused
@@ -999,10 +718,6 @@ class ExpModal(bpy.types.Operator):
                 else:
                     self.handle_key_input(event)
 
-            # TEMPORARY: K key triggers neural IK test solve
-            elif event.type == 'K' and event.value == 'PRESS':
-                self._test_neural_ik_solve(context)
-
             # Mouse -> camera rotation
             elif event.type == 'MOUSEMOVE':
                 # ========== DELTA SANITY CHECK (logging only for now) ==========
@@ -1042,16 +757,6 @@ class ExpModal(bpy.types.Operator):
 
         # ========== ANIMATION SHUTDOWN ==========
         shutdown_animations(self, context)
-        # ========================================
-
-        # ========== NEURAL IK LAYER SHUTDOWN ==========
-        from ..animations.neural_ik_layer import destroy_neural_ik_layer
-        destroy_neural_ik_layer()
-        # ========================================
-
-        # ========== LAYER MANAGER SHUTDOWN ==========
-        # Restore native action before engine shutdown
-        shutdown_animation_layer_manager(self, context)
         # ========================================
 
         # ========== ENGINE SHUTDOWN ==========
@@ -1128,7 +833,11 @@ class ExpModal(bpy.types.Operator):
         # Export fast buffer logger diagnostics if enabled
         from ..developer.dev_logger import export_game_log, clear_log, get_buffer_size
         if context.scene.dev_export_session_log and get_buffer_size() > 0:
-            export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+            import os
+            log_path = "C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt"
+            log_dir = os.path.dirname(log_path)
+            if os.path.exists(log_dir):
+                export_game_log(log_path)
             clear_log()
         # ====================================
 
@@ -1139,9 +848,6 @@ class ExpModal(bpy.types.Operator):
         #if in fullscreen, exit
         exit_fullscreen_once()
 
-        #restore UI mode
-        context.scene.ui_current_mode = 'GAME'
-        
         # Remove the modal timer if it exists
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
@@ -1163,13 +869,10 @@ class ExpModal(bpy.types.Operator):
                         entry.mesh_object.hide_viewport = original
 
         #-----------------------------------------------
-        ### Cleanup scene and temporary blend file ###
-        # ONLY clean up downloaded worlds when launched from UI (exploring someone else's world)
-        # When launched locally, there's no downloaded .blend to clean up
+        ### Cleanup scene ###
+        # When launched from UI, revert to original scene
         if self.launched_from_ui:
-            revert_to_original_scene(context)   #1
-            cleanup_downloaded_worlds()         #2
-            cleanup_downloaded_datablocks()     #3
+            revert_to_original_scene(context)
         #-----------------------------------------------
 
         # Unregister UI draw handler (also clears text)

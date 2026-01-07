@@ -10,7 +10,6 @@ from ..reactions.exp_bindings import reset_bindings, serialize_reaction_bindings
 from ..startup_and_reset.exp_spawn import spawn_user
 from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
-from ..systems.exp_performance import rearm_performance_after_reset
 from ..reactions.exp_crosshairs import disable_crosshairs
 from ..reactions.exp_tracking import clear as clear_tracking_tasks
 from ..reactions.exp_projectiles import clear as clear_projectiles
@@ -259,9 +258,6 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         except Exception:
             pass
         spawn_user()
-
-        # Re-arm performance culling after restoring visibility
-        rearm_performance_after_reset(modal_op, context)
 
         self.report({'INFO'}, "Game fully reset.")
         return {'FINISHED'}

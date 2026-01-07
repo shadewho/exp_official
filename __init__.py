@@ -44,10 +44,8 @@ _IS_WORKER_PROCESS = (
 if not _IS_WORKER_PROCESS:
     # Safe to import bpy - we're in normal Blender context
     import bpy
-    from .update_addon import WEBAPP_OT_UpdateAddon, WEBAPP_OT_RefreshVersion
-
     # persistence handlers
-    from .Exp_UI.prefs_persistence import (
+    from .prefs_persistence import (
         apply_prefs,
         register_prefs_handlers,
         unregister_prefs_handlers,
@@ -61,25 +59,15 @@ if not _IS_WORKER_PROCESS:
     from .build_character import EXPLORATORY_OT_BuildCharacter, EXPLORATORY_OT_BuildArmature
 
     # submodule APIs
-    from . import Exp_Game, Exp_UI, Exp_Nodes, dev_refresh
+    from . import Exp_Game, Exp_Nodes, dev_refresh
 
     def register():
-        # 0) SECURITY: Clear any leftover downloaded world files from previous crashes
-        # This ensures .blend files don't persist across Blender sessions
-        try:
-            from .Exp_UI.download_and_explore.cleanup import cleanup_world_downloads
-            cleanup_world_downloads()
-        except Exception:
-            pass  # Folder may not exist on first run
-
         # 1) register core classes
         for cls in (
             EXPLORATORY_OT_SetKeybind,
             ExploratoryAddonPreferences,
             EXPLORATORY_OT_BuildCharacter,
             EXPLORATORY_OT_BuildArmature,
-            WEBAPP_OT_UpdateAddon,
-            WEBAPP_OT_RefreshVersion,
         ):
             bpy.utils.register_class(cls)
 
@@ -90,7 +78,6 @@ if not _IS_WORKER_PROCESS:
         # 3) register submodules
         #    Order matters a bit: Game defines properties/types that node sockets may reference.
         Exp_Game.register()
-        Exp_UI.register()
         Exp_Nodes.register()   # <-- your Nodes system is now part of main init
         dev_refresh.register()  # <-- development refresh panel (ENABLED flag controls visibility)
 
@@ -112,13 +99,10 @@ if not _IS_WORKER_PROCESS:
 
         dev_refresh.unregister()
         Exp_Nodes.unregister()
-        Exp_UI.unregister()
         Exp_Game.unregister()
 
         # 3) unregister core classes (reverse order)
         for cls in reversed((
-            WEBAPP_OT_RefreshVersion,
-            WEBAPP_OT_UpdateAddon,
             EXPLORATORY_OT_BuildArmature,
             EXPLORATORY_OT_BuildCharacter,
             EXPLORATORY_OT_SetKeybind,

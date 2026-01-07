@@ -79,7 +79,7 @@ class PoseEntry(PropertyGroup):
         try:
             data = json.loads(self.bone_data_json)
             return len(data)
-        except:
+        except Exception:
             return 0
 
 

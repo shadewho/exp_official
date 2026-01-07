@@ -122,7 +122,6 @@ from .reaction_nodes import (
     UtilityDelayNode,
     ReactionParentingNode,
     ReactionTrackingNode,
-    ReactionRagdollNode,
     ReactionEnableHealthNode,
     ReactionDisplayHealthUINode,
 )
@@ -206,7 +205,6 @@ classes = [
     ReactionActionKeysNode,
     ReactionParentingNode,
     ReactionTrackingNode,
-    ReactionRagdollNode,
     ReactionEnableHealthNode,
     ReactionDisplayHealthUINode,
 

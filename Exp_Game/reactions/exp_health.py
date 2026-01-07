@@ -330,7 +330,7 @@ def _unload_health_images():
         if img:
             try:
                 img.gl_free()
-            except:
+            except Exception:
                 pass
     _images.clear()
 
@@ -591,7 +591,7 @@ def disable_health_ui():
     if _draw_handle is not None:
         try:
             bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
-        except:
+        except Exception:
             pass
         _draw_handle = None
 

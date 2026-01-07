@@ -276,36 +276,31 @@ def _compute_bone_group_colors() -> Dict[str, Tuple]:
 
 
 # =============================================================================
-# IK VISUALIZATION
+# IK VISUALIZATION (REMOVED)
 # =============================================================================
 
 def _draw_ik_chains(armature, all_verts, all_colors, scene):
-    """Draw IK chains - STUBBED: Old IK system removed, using neural network approach."""
-    # NOTE: IK visualization disabled - neural IK system in development
+    """Draw IK chains - STUBBED: IK system removed."""
     pass
 
 
 def _draw_default_ik_chains(armature, all_verts, all_colors):
-    """Draw IK chain bones - STUBBED: Old IK system removed."""
-    # NOTE: IK visualization disabled - neural IK system in development
+    """Draw IK chain bones - STUBBED: IK system removed."""
     pass
 
 
 def _draw_ik_targets(armature, all_verts, all_colors, scene):
-    """Draw IK target spheres - STUBBED: Old IK system removed."""
-    # NOTE: IK visualization disabled - neural IK system in development
+    """Draw IK target spheres - STUBBED: IK system removed."""
     pass
 
 
 def _draw_ik_poles(armature, all_verts, all_colors, scene):
-    """Draw IK pole vectors - STUBBED: Old IK system removed."""
-    # NOTE: IK visualization disabled - neural IK system in development
+    """Draw IK pole vectors - STUBBED: IK system removed."""
     pass
 
 
 def _draw_ik_reach(armature, all_verts, all_colors, scene):
-    """Draw IK reach spheres - STUBBED: Old IK system removed."""
-    # NOTE: IK visualization disabled - neural IK system in development
+    """Draw IK reach spheres - STUBBED: IK system removed."""
     pass
 
 
@@ -412,12 +407,11 @@ def _draw_active_mask(armature, all_verts, all_colors, scene):
 
 
 # =============================================================================
-# FULL-BODY IK VISUALIZATION - STUBBED (neural IK in development)
+# FULL-BODY IK VISUALIZATION (REMOVED)
 # =============================================================================
 
 def _draw_full_body_ik(armature, all_verts, all_colors, scene):
-    """Draw full-body IK state - STUBBED: Old IK system removed."""
-    # NOTE: IK visualization disabled - neural IK system in development
+    """Draw full-body IK state - STUBBED: IK system removed."""
     pass
 
 
@@ -518,7 +512,6 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
     PERFORMANCE: Minimal work - just reads cached state.
     """
     from ..animations.blend_system import get_blend_system
-    # NOTE: IK imports removed - neural IK system in development
 
     lines = []
 
@@ -529,8 +522,6 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
     orange = (1.0, 0.6, 0.2, 1.0)
     magenta = (1.0, 0.4, 1.0, 1.0)
     gray = (0.6, 0.6, 0.6, 1.0)
-
-    # NOTE: Full-Body IK status removed - neural IK system in development
 
     # Blend System State
     blend_sys = get_blend_system()
@@ -568,10 +559,6 @@ def _build_status_lines() -> List[Tuple[str, Tuple]]:
                 lines.append((f"Ovr: {name} ({w:.0%})", orange))
             else:
                 lines.append((f"Ovr: {len(active_ovr)} layers", orange))
-
-        # Locomotion lock (per current target armature)
-        if armature and blend_sys.is_locomotion_locked(armature.name):
-            lines.append(("LOCKED", orange))
 
     # If nothing active, show idle
     if not lines:
@@ -700,16 +687,13 @@ def _tag_redraw():
 def get_visualizer_state() -> Dict:
     """Get current visualizer state for UI display."""
     from ..animations.blend_system import get_blend_system
-    # NOTE: IK imports removed - neural IK system in development
 
     state = {
         "active": is_visualizer_active(),
-        "ik_active": False,  # IK disabled - neural system in development
+        "ik_active": False,  # IK system removed
         "ik_chains": [],
         "layers": {"base": None, "additive": [], "override": []},
     }
-
-    # NOTE: IK chains removed - neural IK system in development
 
     # Blend layers
     blend_sys = get_blend_system()

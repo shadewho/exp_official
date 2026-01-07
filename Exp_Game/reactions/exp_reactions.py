@@ -308,21 +308,10 @@ def execute_char_action_reaction(r):
     speed = max(0.05, float(getattr(r, "char_action_speed", 1.0) or 1.0))
     blend_time = float(getattr(r, "char_action_blend_time", 0.15) or 0.15)
     bone_group = getattr(r, "char_action_bone_group", "ALL")
-    force = bool(getattr(r, "char_action_force", False))
     loop_duration = float(getattr(r, "char_action_loop_duration", 10.0) or 10.0)
-
-    # Get animation duration for lock/priority calculation
-    anim_duration = ctrl.get_animation_duration(action_name) if hasattr(ctrl, 'get_animation_duration') else 2.0
-    lock_duration = loop_duration if loop else (anim_duration / speed)
-
-    blend_sys = get_blend_system()
 
     # If full body, use AnimationController directly
     if bone_group == "ALL":
-        # Lock locomotion only for full body + force (freezes state machine)
-        if force and blend_sys:
-            blend_sys.lock_locomotion(lock_duration, armature.name)
-
         ctrl.play(
             armature.name,
             action_name,
@@ -332,7 +321,7 @@ def execute_char_action_reaction(r):
             fade_in=blend_time,
             replace=True
         )
-        log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} body=ALL speed={speed:.2f} force={force}")
+        log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} body=ALL speed={speed:.2f}")
     else:
         # Partial body - use BlendSystem overlay
         # Locomotion continues normally, overlay plays on specific bones
@@ -340,8 +329,7 @@ def execute_char_action_reaction(r):
             log_game("ANIMATIONS", f"CHAR_ACTION_SKIP no_blend_system anim={action_name}")
             return
 
-        # Force gives higher priority so other overlays don't interrupt
-        priority = 100 if force else 0
+        priority = 0
 
         # For looping, use loop_duration as the total duration
         # For play once, use -1.0 to play full animation once
@@ -358,7 +346,7 @@ def execute_char_action_reaction(r):
             looping=loop,
             priority=priority
         )
-        log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} body={bone_group} speed={speed:.2f} force={force} priority={priority} duration={override_duration:.2f}")
+        log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} body={bone_group} speed={speed:.2f} priority={priority} duration={override_duration:.2f}")
 
 
 def execute_custom_action_reaction(r):

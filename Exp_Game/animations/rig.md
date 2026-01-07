@@ -409,10 +409,10 @@ Key bone positions in rest (T-pose):
 - Neck/Head chain: look-at tracking
 - Finger chains: procedural grip (curl based on object size)
 
-### For Physics/Ragdoll
+### For Physics
 
 - Each bone can map to a rigidbody capsule
-- Key ragdoll joints: Hips, Spine2, Head, UpperArms, ForeArms, Thighs, Shins
+- Key physics joints: Hips, Spine2, Head, UpperArms, ForeArms, Thighs, Shins
 - Joint limits should match natural human range of motion
 
 ---

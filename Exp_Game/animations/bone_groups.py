@@ -4,14 +4,13 @@ Bone Groups and Blend Masks for the Exploratory Standard Rig.
 
 Defines body part groupings for:
 - Additive animation blending (upper body reach while walking)
-- IK masking (apply IK to specific chains)
 - Partial body animations (play animation on subset of bones)
 
 Based on rig.md - 54 bones total (including Root).
 """
 
 import numpy as np
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List
 
 from ..developer.dev_logger import log_game
 

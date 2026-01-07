@@ -226,7 +226,7 @@ def apply_transform_results(result):
             finished_indices.append(i)
             try:
                 finished_names.append(f"{obj.name}({task.rot_interp})")
-            except:
+            except Exception:
                 finished_names.append("(deleted)")
 
     # Remove finished tasks in reverse order

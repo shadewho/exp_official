@@ -23,6 +23,7 @@ Usage:
 import time
 from typing import List, Dict, Optional
 from .dev_debug_gate import should_print_debug
+from .dev_properties import DEV_MODE
 
 # Global log buffer
 _log_buffer: List[Dict] = []
@@ -88,13 +89,6 @@ _CATEGORY_MAP = {
 
     # Tracker System
     'TRACKERS': 'trackers',
-
-    # Ragdoll System
-    'RAGDOLL': 'ragdoll',
-    'RAGDOLL_TEST': 'ragdoll',  # Standalone ragdoll test uses same toggle
-
-    # Neural IK / Dynamic Actions
-    'NEURAL_IK': 'neural_ik',
 
     # Animation Layer System
     'LAYERS': 'layers',
@@ -168,6 +162,10 @@ def log_game(category: str, message: str):
     that different log types (e.g., BATCH_SUBMIT vs BATCH_RESULT) don't block
     each other even when they occur in the same frame.
     """
+    # Master DEV_MODE check - instant return if disabled
+    if not DEV_MODE:
+        return
+
     global _log_buffer, _total_logs, _logs_per_category
 
     # Map category to debug property and check frequency gate
@@ -203,6 +201,10 @@ def log_worker_messages(worker_logs: list):
     Note: Uses per-message-type gating (same as log_game) to prevent different
     log types from blocking each other.
     """
+    # Master DEV_MODE check - instant return if disabled
+    if not DEV_MODE:
+        return
+
     global _log_buffer, _total_logs, _logs_per_category
 
     for category, message in worker_logs:

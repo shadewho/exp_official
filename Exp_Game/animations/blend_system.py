@@ -1,11 +1,10 @@
 # Exp_Game/animations/blend_system.py
 """
-Animation Blend System - Layered animation with masks and IK.
+Animation Blend System - Layered animation with masks.
 
 ARCHITECTURE:
 - Layers stack on top of base locomotion
 - Each layer has a mask (which bones it affects) and weight
-- IK runs last, adjusting specific chains
 - Designed to integrate with Exp_Nodes reaction system
 
 LAYER TYPES:
@@ -129,27 +128,6 @@ class AnimationLayer:
 
 
 # =============================================================================
-# IK TARGET
-# =============================================================================
-
-@dataclass
-class IKTarget:
-    """
-    An active IK target for a chain.
-    """
-    chain: str                          # "arm_L", "arm_R", "leg_L", "leg_R"
-    target_position: np.ndarray         # World-space position
-    pole_position: Optional[np.ndarray] = None  # Pole hint (optional)
-    influence: float = 1.0              # IK influence (0-1)
-
-    # Optional: target object name (updated each frame)
-    target_object: Optional[str] = None
-
-    # State
-    active: bool = True
-
-
-# =============================================================================
 # BLEND SYSTEM
 # =============================================================================
 
@@ -157,7 +135,7 @@ class BlendSystem:
     """
     Main animation blend system.
 
-    Manages layers, evaluates blend stack, applies IK.
+    Manages layers and evaluates blend stack.
     """
 
     def __init__(self, animation_cache=None):
@@ -174,9 +152,6 @@ class BlendSystem:
         self._additive_layers: List[AnimationLayer] = []
         self._override_layers: List[AnimationLayer] = []
 
-        # IK targets
-        self._ik_targets: Dict[str, IKTarget] = {}
-
         # Reference pose (T-pose for additive calculations)
         self._reference_pose: Optional[np.ndarray] = None
 
@@ -186,58 +161,8 @@ class BlendSystem:
         # Callbacks for when layers finish
         self._on_layer_finished: List[Callable[[str], None]] = []
 
-        # Locomotion lock per armature - prevents state machine from changing animations
-        self._locomotion_locks: Dict[str, float] = {}  # armature_name -> remaining lock time
-
         # Layer counter for unique naming (faster than perf_counter)
         self._layer_counter: int = 0
-
-    def lock_locomotion(self, duration: float, armature_name: str) -> None:
-        """Lock locomotion for a specific armature for specified duration (seconds)."""
-        if not armature_name:
-            return
-        cur = self._locomotion_locks.get(armature_name, 0.0)
-        self._locomotion_locks[armature_name] = max(cur, duration)
-        log_game("ANIMATIONS", f"LOCOMOTION_LOCK armature={armature_name} duration={duration:.2f}s")
-
-    def unlock_locomotion(self, armature_name: str = None) -> None:
-        """Immediately unlock locomotion (all or specific armature)."""
-        if armature_name:
-            self._locomotion_locks.pop(armature_name, None)
-            log_game("ANIMATIONS", f"LOCOMOTION_UNLOCK armature={armature_name}")
-        else:
-            self._locomotion_locks.clear()
-            log_game("ANIMATIONS", "LOCOMOTION_UNLOCK_ALL")
-
-    def is_locomotion_locked(self, armature_name: str = None) -> bool:
-        """Check if locomotion is currently locked (specific or any)."""
-        if armature_name:
-            return self._locomotion_locks.get(armature_name, 0.0) > 0.0
-        return any(t > 0.0 for t in self._locomotion_locks.values())
-
-    # =========================================================================
-    # RAGDOLL LOCK (Blocks ALL animations during ragdoll)
-    # =========================================================================
-
-    def start_ragdoll_lock(self, armature_name: str, duration: float) -> None:
-        """
-        Lock animations for ragdoll duration.
-        This is stronger than locomotion lock - blocks ALL animation changes.
-        """
-        if not hasattr(self, '_ragdoll_active'):
-            self._ragdoll_active = {}
-
-        import time
-        self._ragdoll_active[armature_name] = time.time() + duration
-        # Lock only this armature's locomotion, not global
-        self.lock_locomotion(duration + 0.5, armature_name)
-        log_game("ANIMATIONS", f"RAGDOLL_LOCK armature={armature_name} duration={duration:.2f}s")
-
-    def end_ragdoll_lock(self, armature_name: str) -> None:
-        """Remove ragdoll lock for an armature."""
-        if hasattr(self, '_ragdoll_active'):
-            self._ragdoll_active.pop(armature_name, None)
-        log_game("ANIMATIONS", f"RAGDOLL_UNLOCK armature={armature_name}")
 
     # =========================================================================
     # LAYER MANAGEMENT
@@ -426,66 +351,6 @@ class BlendSystem:
         return count
 
     # =========================================================================
-    # IK MANAGEMENT
-    # =========================================================================
-
-    def set_ik_target(
-        self,
-        chain: str,
-        position: Tuple[float, float, float],
-        influence: float = 1.0,
-        pole_position: Tuple[float, float, float] = None
-    ) -> None:
-        """
-        Set an IK target for a chain.
-
-        Args:
-            chain: "arm_L", "arm_R", "leg_L", "leg_R"
-            position: World-space target position
-            influence: IK influence (0-1)
-            pole_position: Optional pole vector position
-        """
-        self._ik_targets[chain] = IKTarget(
-            chain=chain,
-            target_position=np.array(position, dtype=np.float32),
-            pole_position=np.array(pole_position, dtype=np.float32) if pole_position else None,
-            influence=influence,
-            active=True
-        )
-
-        log_game("IK", f"TARGET_SET chain={chain} pos=({position[0]:.2f},{position[1]:.2f},{position[2]:.2f}) influence={influence:.2f}")
-
-    def set_ik_target_object(
-        self,
-        chain: str,
-        object_name: str,
-        influence: float = 1.0
-    ) -> None:
-        """
-        Set IK target to track a Blender object (updated each frame).
-        """
-        self._ik_targets[chain] = IKTarget(
-            chain=chain,
-            target_position=np.zeros(3, dtype=np.float32),  # Updated in evaluate
-            target_object=object_name,
-            influence=influence,
-            active=True
-        )
-
-        log_game("IK", f"TARGET_OBJECT chain={chain} object={object_name} influence={influence:.2f}")
-
-    def clear_ik_target(self, chain: str) -> None:
-        """Clear IK target for a chain."""
-        if chain in self._ik_targets:
-            del self._ik_targets[chain]
-            log_game("IK", f"TARGET_CLEAR chain={chain}")
-
-    def clear_all_ik(self) -> None:
-        """Clear all IK targets."""
-        self._ik_targets.clear()
-        log_game("IK", "TARGET_CLEAR_ALL")
-
-    # =========================================================================
     # EVALUATION
     # =========================================================================
 
@@ -497,19 +362,6 @@ class BlendSystem:
             delta_time: Time since last frame
         """
         current_time = time.perf_counter()
-
-        # Update locomotion locks per armature
-        expired = []
-        for arm_name, t in self._locomotion_locks.items():
-            if t > 0:
-                t -= delta_time
-                if t <= 0:
-                    expired.append(arm_name)
-                else:
-                    self._locomotion_locks[arm_name] = t
-        for arm_name in expired:
-            self._locomotion_locks.pop(arm_name, None)
-            log_game("ANIMATIONS", f"LOCOMOTION_LOCK_EXPIRED armature={arm_name}")
 
         # Update base layer
         if self._base_layer:
@@ -777,21 +629,16 @@ class BlendSystem:
             for callback in self._on_layer_finished:
                 callback(name)
 
-    def get_active_ik_targets(self) -> Dict[str, IKTarget]:
-        """Get all active IK targets."""
-        return {k: v for k, v in self._ik_targets.items() if v.active}
-
     def get_layer_count(self) -> Tuple[int, int, int]:
         """Get count of (base, additive, override) layers."""
         base = 1 if self._base_layer else 0
         return (base, len(self._additive_layers), len(self._override_layers))
 
     def clear_all(self) -> None:
-        """Clear all layers and IK targets."""
+        """Clear all layers."""
         self._base_layer = None
         self._additive_layers.clear()
         self._override_layers.clear()
-        self._ik_targets.clear()
         self._last_pose = None
 
     def _sample_armature_pose(self, armature) -> np.ndarray:
@@ -828,19 +675,6 @@ class BlendSystem:
         """
         if not armature or armature.type != 'ARMATURE':
             return 0
-
-        # Check if PHYSICS channel is active - if so, don't apply animations
-        from .layer_manager import get_layer_manager_for, AnimChannel
-        layer_mgr = get_layer_manager_for(armature)
-        if layer_mgr and layer_mgr.is_channel_active(AnimChannel.PHYSICS):
-            # Log when physics blocks animations (uses layer debug toggle)
-            try:
-                import bpy
-                if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_layers", False):
-                    log_game("LAYERS", f"BLOCKED apply_to_armature: {armature.name} (PHYSICS active)")
-            except:
-                pass
-            return 0  # Physics system controls the armature
 
         # Sample current armature pose to use as base (preserves locomotion)
         current_pose = self._sample_armature_pose(armature)

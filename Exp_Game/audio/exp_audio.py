@@ -9,8 +9,6 @@ import time
 from ..props_and_utils.exp_time import get_game_time
 from bpy.props import StringProperty, IntProperty
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty, IntProperty
-from bpy_extras.io_utils import ImportHelper
 ##############################################################################
 # MAP FROM AnimState => The property name in scene.character_audio
 ##############################################################################
@@ -300,7 +298,7 @@ def list_sounds_in_blend(blend_path: str):
     try:
         with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
             sound_names = data_from.sounds
-    except:
+    except Exception:
         sound_names = []
     return [(s, s, f"Sound: {s}") for s in sound_names]
 
