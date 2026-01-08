@@ -102,8 +102,7 @@ if not _IS_WORKER_PROCESS:
     # --- Animation 2.0 Operators & Properties ---
     from .animations import test_panel as anim2_test_panel
 
-    # --- Pose Library ---
-    from .animations import pose_library as pose_lib
+    # NOTE: Pose Library removed (2025) - not used
 
     # ============================================================================
     # START GAME KEYMAP MANAGEMENT
@@ -251,8 +250,7 @@ if not _IS_WORKER_PROCESS:
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.register()
 
-        # ─── Pose Library ──────────────────────────────
-        pose_lib.register_pose_library()
+        # NOTE: Pose Library registration removed (2025) - not used
 
         # ─── Start Game Keymap ──────────────────────────────
         register_start_game_keymap()
@@ -338,8 +336,7 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(EXP_ENGINE_OT_StressTest)
         bpy.utils.unregister_class(EXP_ENGINE_OT_QuickTest)
 
-        # ─── Pose Library ──────────────────────────────
-        pose_lib.unregister_pose_library()
+        # NOTE: Pose Library unregistration removed (2025) - not used
 
         # ─── Animation 2.0 Operators & Properties ──────────────────────────────
         anim2_test_panel.unregister()

@@ -62,7 +62,7 @@ BONE_INDEX: Dict[str, int] = {
     "RightHandRing1": 40,
     "RightHandRing2": 41,
     "RightHandRing3": 42,
-    "Root": 43,             # World anchor - IK targets relative to this
+    "Root": 43,             # World anchor
     "RightHandThumb1": 44,
     "RightHandThumb2": 45,
     "RightHandThumb3": 46,
@@ -135,7 +135,7 @@ BONE_GROUPS: Dict[str, List[str]] = {
     "HEAD_NECK": ["NeckLower", "NeckUpper", "Head"],
     "SPINE_HEAD": ["Spine", "Spine1", "Spine2", "NeckLower", "NeckUpper", "Head"],
 
-    # Arms (IK chains)
+    # Arms
     "ARM_L": ["LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand"] + LEFT_FINGERS,
     "ARM_R": ["RightShoulder", "RightArm", "RightForeArm", "RightHand"] + RIGHT_FINGERS,
     "ARMS": [
@@ -143,25 +143,17 @@ BONE_GROUPS: Dict[str, List[str]] = {
         "RightShoulder", "RightArm", "RightForeArm", "RightHand",
     ] + ALL_FINGERS,
 
-    # Arms without fingers (for simpler IK)
+    # Arms without fingers
     "ARM_L_NO_FINGERS": ["LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand"],
     "ARM_R_NO_FINGERS": ["RightShoulder", "RightArm", "RightForeArm", "RightHand"],
 
-    # Just the IK chain (no shoulder)
-    "ARM_L_IK": ["LeftArm", "LeftForeArm", "LeftHand"],
-    "ARM_R_IK": ["RightArm", "RightForeArm", "RightHand"],
-
-    # Legs (IK chains)
+    # Legs
     "LEG_L": ["LeftThigh", "LeftShin", "LeftFoot", "LeftToeBase"],
     "LEG_R": ["RightThigh", "RightShin", "RightFoot", "RightToeBase"],
     "LEGS": [
         "LeftThigh", "LeftShin", "LeftFoot", "LeftToeBase",
         "RightThigh", "RightShin", "RightFoot", "RightToeBase",
     ],
-
-    # Just the IK chain (no toe)
-    "LEG_L_IK": ["LeftThigh", "LeftShin", "LeftFoot"],
-    "LEG_R_IK": ["RightThigh", "RightShin", "RightFoot"],
 
     # Hands and fingers
     "HAND_L": ["LeftHand"] + LEFT_FINGERS,
@@ -177,7 +169,7 @@ BONE_GROUPS: Dict[str, List[str]] = {
     # Root and Hips
     "ROOT": ["Root"],              # World anchor bone
     "HIPS": ["Hips"],              # Pelvis control bone
-    "ROOT_HIPS": ["Root", "Hips"], # Both for full-body IK
+    "ROOT_HIPS": ["Root", "Hips"],
 }
 
 
@@ -286,17 +278,13 @@ class BlendMasks:
     UPPER_BODY = create_blend_mask("UPPER_BODY", 1.0)
     LOWER_BODY = create_blend_mask("LOWER_BODY", 1.0)
 
-    # Individual arms (for IK)
+    # Individual arms
     ARM_LEFT = create_blend_mask("ARM_L", 1.0)
     ARM_RIGHT = create_blend_mask("ARM_R", 1.0)
-    ARM_LEFT_IK = create_blend_mask("ARM_L_IK", 1.0)
-    ARM_RIGHT_IK = create_blend_mask("ARM_R_IK", 1.0)
 
-    # Individual legs (for IK)
+    # Individual legs
     LEG_LEFT = create_blend_mask("LEG_L", 1.0)
     LEG_RIGHT = create_blend_mask("LEG_R", 1.0)
-    LEG_LEFT_IK = create_blend_mask("LEG_L_IK", 1.0)
-    LEG_RIGHT_IK = create_blend_mask("LEG_R_IK", 1.0)
 
     # Head/look-at
     HEAD_NECK = create_blend_mask("HEAD_NECK", 1.0)

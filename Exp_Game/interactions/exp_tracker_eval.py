@@ -408,7 +408,8 @@ def cache_trackers_in_worker(modal, context) -> bool:
 
     Also extracts referenced object names for Phase 1.1 world state filtering.
     """
-    if not hasattr(modal, 'engine') or not modal.engine:
+    # PERFORMANCE: Direct access - class-level default is None
+    if not modal.engine:
         log_game("TRACKERS", "CACHE_SKIP engine not available")
         return False
 
@@ -439,7 +440,8 @@ def submit_tracker_evaluation(modal, context) -> int:
     """
     global _tracker_generation
 
-    if not hasattr(modal, 'engine') or not modal.engine:
+    # PERFORMANCE: Direct access - class-level default is None
+    if not modal.engine:
         return -1
 
     # Collect world state

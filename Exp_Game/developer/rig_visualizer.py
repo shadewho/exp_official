@@ -4,7 +4,6 @@ Comprehensive Rig Visualizer - Shows animation system state in 3D viewport.
 
 FEATURES:
 - Bone group visualization (color bones by group)
-- IK chain visualization (targets, poles, reach spheres)
 - Animation layer stack (active layers, weights, masks)
 - Billboard text overlay (state info above character)
 - Independent of N-panel selection - shows when enabled
@@ -73,14 +72,10 @@ GROUP_COLORS = {
     # Arms
     "ARM_L": (0.0, 0.8, 1.0, 0.8),          # Cyan
     "ARM_R": (0.0, 0.8, 1.0, 0.8),          # Cyan
-    "ARM_L_IK": (0.0, 1.0, 1.0, 0.9),       # Bright cyan
-    "ARM_R_IK": (0.0, 1.0, 1.0, 0.9),       # Bright cyan
 
     # Legs
     "LEG_L": (0.6, 1.0, 0.2, 0.8),          # Lime
     "LEG_R": (0.6, 1.0, 0.2, 0.8),          # Lime
-    "LEG_L_IK": (0.8, 1.0, 0.0, 0.9),       # Bright lime
-    "LEG_R_IK": (0.8, 1.0, 0.0, 0.9),       # Bright lime
 
     # Extremities
     "HAND_L": (1.0, 0.5, 0.0, 0.8),         # Orange
@@ -101,26 +96,7 @@ LAYER_COLORS = {
     "OVERRIDE": (1.0, 0.4, 0.2, 0.9),       # Orange-red
 }
 
-# IK state colors
-IK_COLORS = {
-    "reachable": (0.2, 1.0, 0.2, 0.9),      # Green
-    "at_limit": (1.0, 1.0, 0.0, 0.9),       # Yellow
-    "out_of_reach": (1.0, 0.2, 0.2, 0.9),   # Red
-    "pole": (1.0, 0.5, 0.0, 0.9),           # Orange
-    "chain_upper": (0.0, 1.0, 1.0, 0.9),    # Cyan
-    "chain_lower": (1.0, 0.0, 1.0, 0.9),    # Magenta
-}
-
-# Full-Body IK colors
-FBIK_COLORS = {
-    "hips": (1.0, 1.0, 0.0, 0.9),           # Yellow - hips control
-    "hips_drop": (1.0, 0.5, 0.0, 0.7),      # Orange - hips drop indicator
-    "foot_target": (0.2, 1.0, 0.2, 0.9),    # Green - foot grounded
-    "hand_target": (0.2, 0.8, 1.0, 0.9),    # Cyan - hand reach
-    "hand_limit": (1.0, 0.6, 0.0, 0.9),     # Orange - hand at limit
-    "look_at": (1.0, 0.0, 1.0, 0.9),        # Magenta - look-at target
-    "spine_lean": (0.8, 0.8, 0.2, 0.7),     # Pale yellow - spine direction
-}
+# NOTE: IK_COLORS and FBIK_COLORS removed (2025) - IK system not used
 
 
 # =============================================================================
@@ -155,26 +131,11 @@ def _draw_rig_visualizer():
     if getattr(scene, 'dev_rig_vis_bone_groups', False):
         _draw_bone_groups(armature, all_verts, all_colors, scene)
 
-    if getattr(scene, 'dev_rig_vis_ik_chains', False):
-        _draw_ik_chains(armature, all_verts, all_colors, scene)
-
-    if getattr(scene, 'dev_rig_vis_ik_targets', False):
-        _draw_ik_targets(armature, all_verts, all_colors, scene)
-
-    if getattr(scene, 'dev_rig_vis_ik_poles', False):
-        _draw_ik_poles(armature, all_verts, all_colors, scene)
-
-    if getattr(scene, 'dev_rig_vis_ik_reach', False):
-        _draw_ik_reach(armature, all_verts, all_colors, scene)
-
     if getattr(scene, 'dev_rig_vis_bone_axes', False):
         _draw_bone_axes(armature, all_verts, all_colors, scene)
 
     if getattr(scene, 'dev_rig_vis_active_mask', False):
         _draw_active_mask(armature, all_verts, all_colors, scene)
-
-    if getattr(scene, 'dev_rig_vis_full_body_ik', False):
-        _draw_full_body_ik(armature, all_verts, all_colors, scene)
 
     # Single batched draw
     if all_verts:
@@ -254,7 +215,7 @@ def _compute_bone_group_colors() -> Dict[str, Tuple]:
     # Priority order for group assignment (most specific first)
     group_priority = [
         "ROOT", "FINGERS", "HAND_L", "HAND_R", "FOOT_L", "FOOT_R",
-        "ARM_L_IK", "ARM_R_IK", "LEG_L_IK", "LEG_R_IK",
+        "ARM_L", "ARM_R", "LEG_L", "LEG_R",
         "HEAD_NECK", "SPINE", "UPPER_BODY", "LOWER_BODY", "ALL"
     ]
 
@@ -273,35 +234,6 @@ def _compute_bone_group_colors() -> Dict[str, Tuple]:
                     break
 
     return bone_colors
-
-
-# =============================================================================
-# IK VISUALIZATION (REMOVED)
-# =============================================================================
-
-def _draw_ik_chains(armature, all_verts, all_colors, scene):
-    """Draw IK chains - STUBBED: IK system removed."""
-    pass
-
-
-def _draw_default_ik_chains(armature, all_verts, all_colors):
-    """Draw IK chain bones - STUBBED: IK system removed."""
-    pass
-
-
-def _draw_ik_targets(armature, all_verts, all_colors, scene):
-    """Draw IK target spheres - STUBBED: IK system removed."""
-    pass
-
-
-def _draw_ik_poles(armature, all_verts, all_colors, scene):
-    """Draw IK pole vectors - STUBBED: IK system removed."""
-    pass
-
-
-def _draw_ik_reach(armature, all_verts, all_colors, scene):
-    """Draw IK reach spheres - STUBBED: IK system removed."""
-    pass
 
 
 # =============================================================================
@@ -404,15 +336,6 @@ def _draw_active_mask(armature, all_verts, all_colors, scene):
 
         all_verts.extend([head, tail])
         all_colors.extend([color, color])
-
-
-# =============================================================================
-# FULL-BODY IK VISUALIZATION (REMOVED)
-# =============================================================================
-
-def _draw_full_body_ik(armature, all_verts, all_colors, scene):
-    """Draw full-body IK state - STUBBED: IK system removed."""
-    pass
 
 
 # =============================================================================
@@ -690,8 +613,6 @@ def get_visualizer_state() -> Dict:
 
     state = {
         "active": is_visualizer_active(),
-        "ik_active": False,  # IK system removed
-        "ik_chains": [],
         "layers": {"base": None, "additive": [], "override": []},
     }
 

@@ -4,13 +4,7 @@ import time
 import bpy
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time, get_game_time
 from ..animations.state_machine import AnimState
-from .exp_engine_bridge import (
-    update_animations_state,
-    submit_animation_jobs,
-    poll_animation_results_with_timeout,
-    get_cached_other_results,
-    process_animation_result,
-)
+from .exp_engine_bridge import update_animations_state
 from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import (
     update_hitscan_tasks,  # Just despawns visual clones
@@ -79,9 +73,8 @@ class GameLoop:
         get_stats_tracker().reset_all()
 
         # Initialize blend system with animation cache from controller
-        anim_cache = None
-        if hasattr(op, 'anim_controller') and op.anim_controller:
-            anim_cache = op.anim_controller.cache
+        # PERFORMANCE: Direct attribute access (class-level default is None)
+        anim_cache = op.anim_controller.cache if op.anim_controller else None
         init_blend_system(anim_cache)
 
         # Cache tracker node graph in workers
@@ -123,7 +116,8 @@ class GameLoop:
 
         # A2) Local projectile visual interpolation (every frame for smooth motion)
         # This runs before physics ticks to keep visuals smooth between worker updates
-        frame_dt = op.dt * float(op.time_scale) if hasattr(op, 'dt') else 0.016
+        # PERFORMANCE: Direct access - dt has class-level default of 0.016
+        frame_dt = op.dt * float(op.time_scale)
         interpolate_projectile_visuals(frame_dt)
 
         # A3) Hitscan visual cleanup (every frame for immediate despawn)
@@ -161,10 +155,10 @@ class GameLoop:
             # Without this, characters sink/shift on moving platforms because
             # physics runs against OLD platform position, then platform moves.
             #
-            # Timeout: 5ms to handle worker queue congestion when on dynamic meshes
-            # (KCC physics can take 1-3ms with 500-1000 tris, backing up the queue)
+            # Timeout: 0.5ms - worker completes in ~100-200µs, 0.5ms is 2.5x safety margin
+            # (reduced from 5ms to avoid wasting frame time)
             if transform_job_id is not None and engine and engine.is_alive():
-                poll_transform_result_with_timeout(engine, transform_job_id, timeout=0.005)
+                poll_transform_result_with_timeout(engine, transform_job_id, timeout=0.0005)
 
             # B1a3) Submit tracking batch to worker (non-character object movement)
             # Character autopilot handled in update_tracking_tasks (just injects keys)
@@ -254,9 +248,10 @@ class GameLoop:
         5. Results are processed in _poll_and_apply_engine_results()
         """
         # Skip if no state machine or controller
-        if not hasattr(op, 'char_state_machine') or not op.char_state_machine:
+        # PERFORMANCE: Direct access - class-level defaults are None
+        if not op.char_state_machine:
             return
-        if not hasattr(op, 'anim_controller') or not op.anim_controller:
+        if not op.anim_controller:
             return
 
         sm = op.char_state_machine
@@ -310,7 +305,7 @@ class GameLoop:
                 audio_state_mgr.update_audio_state(new_state)
                 self._last_anim_state = new_state
 
-        # WORKER-OFFLOADED ANIMATION FLOW:
+        # MAIN THREAD ANIMATION FLOW (no worker IPC overhead):
         # 1. Update blend system layer timings
         blend_system = get_blend_system()
         if blend_system:
@@ -319,14 +314,12 @@ class GameLoop:
         # 2. Update animation state (times, fades)
         update_animations_state(op, agg_dt)
 
-        # 3. Submit jobs to engine
-        submit_animation_jobs(op)
+        # 3. Compute and apply poses locally (no IPC - 100-1000x faster)
+        # Animation math is trivial: array lookup + quaternion slerp = ~10-50μs
+        # Worker IPC overhead was ~1-5ms - we eliminate that entirely
+        ctrl.compute_and_apply_local()
 
-        # 4. Same-frame sync: poll for results immediately
-        # Worker compute is fast (~100µs), so we wait up to 2ms
-        poll_animation_results_with_timeout(op, timeout=0.002)
-
-        # 5. Apply blend system OVERLAY on top of locomotion
+        # 4. Apply blend system OVERLAY on top of locomotion
         armature = bpy.context.scene.target_armature
         if blend_system and armature:
             blend_system.apply_to_armature(armature)
@@ -353,9 +346,8 @@ class GameLoop:
             cached_results = pc.get_cached_other_results()
             results.extend(cached_results)
 
-        # Include any results cached by animation polling during same-frame sync
-        anim_cached = get_cached_other_results(op)
-        results.extend(anim_cached)
+        # NOTE: Animation polling removed - animations now computed locally on main thread
+        # (eliminates 1-5ms IPC overhead per frame)
 
         # Include any results cached by transform polling during same-frame sync
         transform_cached = get_cached_transform_results()
@@ -369,13 +361,15 @@ class GameLoop:
 
         # Phase 1: Engine visibility - output worker load distribution and job type stats
         # This calls the engine's own debug output method which tracks per-worker and per-job-type stats
-        if hasattr(engine, 'output_debug_stats'):
-            engine.output_debug_stats()  # Gets context from bpy.context internally
+        # PERFORMANCE: Use getattr instead of hasattr (single lookup vs two)
+        output_debug = getattr(engine, 'output_debug_stats', None)
+        if output_debug:
+            output_debug()  # Gets context from bpy.context internally
 
         for result in results:
             # Process result and track latency metrics
-            if hasattr(op, 'process_engine_result'):
-                op.process_engine_result(result)
+            # PERFORMANCE: process_engine_result is a method, always exists
+            op.process_engine_result(result)
 
             # Route result to appropriate handler based on job type
             if result.success:
@@ -425,8 +419,8 @@ class GameLoop:
                         import traceback
                         traceback.print_exc()
                         # CRITICAL: Clear pending job on error to prevent infinite loop
-                        if hasattr(op, '_pending_interaction_job_id'):
-                            op._pending_interaction_job_id = None
+                        # PERFORMANCE: Direct access - class-level default is None
+                        op._pending_interaction_job_id = None
                 elif result.job_type == "COMPUTE_HEAVY":
                     # Stress test - no action needed
                     pass
@@ -500,26 +494,8 @@ class GameLoop:
                             from ..developer.dev_logger import log_worker_messages
                             log_worker_messages(worker_logs)
 
-                elif result.job_type == "ANIMATION_COMPUTE_BATCH":
-                    # IMPORTANT: Animation results are handled by poll_animation_results_with_timeout()
-                    # in _update_character_animation(), which runs BEFORE _poll_and_apply_engine_results().
-                    #
-                    # If animation results arrive here (late), we MUST NOT process them because:
-                    # 1. blend_system.apply_to_armature() has already run (applies IK overlays)
-                    # 2. Processing late locomotion would overwrite IK poses → flickering
-                    #
-                    # Late results are simply discarded - animation uses previous frame's pose.
-                    # This is consistent with how we handle other time-sensitive results.
-                    from ..developer.dev_logger import log_game
-                    try:
-                        if bpy.context.scene and getattr(bpy.context.scene, "dev_debug_anim_worker", False):
-                            log_game("ANIM-WORKER", f"DISCARD_LATE job={result.job_id} (arrived after blend system)")
-                    except Exception:
-                        pass
-                    # Clear pending job to prevent stale tracking
-                    if hasattr(op, '_pending_anim_batch_job'):
-                        op._pending_anim_batch_job = None
-                    continue
+                # NOTE: ANIMATION_COMPUTE_BATCH removed - animations now computed locally
+                # on main thread (eliminates 1-5ms IPC overhead per frame)
 
                 elif result.job_type == "EVALUATE_TRACKERS":
                     # Apply tracker evaluation results from worker

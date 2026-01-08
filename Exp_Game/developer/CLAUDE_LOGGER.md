@@ -113,10 +113,6 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | `ANIM-CACHE` | `anim_cache` | Animation caching in workers |
 | `ANIM-WORKER` | `anim_worker` | Animation worker job routing |
 | `TEST_MODAL` | `animations` | Animation 2.0 test modal playback |
-| **Pose System** (Development/Testing) |
-| `POSES` | `poses` | Pose library capture/apply |
-| `POSE-CACHE` | `poses` | Pose cache transfer to workers |
-| `POSE-BLEND` | `pose_blend` | Pose-to-pose blending diagnostics |
 
 ---
 

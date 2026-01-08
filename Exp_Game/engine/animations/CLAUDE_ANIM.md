@@ -215,7 +215,6 @@ This would replace hardcoded locomotion states with user-configurable animation 
 - [ ] Additive animation layers (overlay actions on top of base)
 - [ ] Animation events/notifies (trigger sounds/effects at specific frames)
 - [ ] Bone masks (apply animation to subset of skeleton)
-- [ ] IK integration (procedural adjustments after animation)
 - [ ] Nodes system integration
 - [ ] Smart/context-aware animation selection
 

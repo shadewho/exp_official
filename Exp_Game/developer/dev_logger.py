@@ -77,22 +77,17 @@ _CATEGORY_MAP = {
     'AUDIO': 'audio',
     'ANIMATIONS': 'animations',
     'ANIM-CACHE': 'anim_cache',
-    'ANIM-WORKER': 'anim_worker',
+    # NOTE: ANIM-WORKER removed (2025-01) - animations computed locally, no worker
     'TEST_MODAL': 'animations',  # Animation 2.0 test modal
     'PROJECTILE': 'projectiles',
     'HITSCAN': 'hitscans',
 
-    # Pose Library System
-    'POSES': 'poses',
-    'POSE-CACHE': 'poses',
-    'POSE-BLEND': 'pose_blend',  # Pose-to-pose blending diagnostics
+    # NOTE: Pose Library System removed (2025) - not used
 
     # Tracker System
     'TRACKERS': 'trackers',
 
-    # Animation Layer System
-    'LAYERS': 'layers',
-    'LAYER_MGR': 'layers',  # Legacy category name
+    # NOTE: LAYERS/LAYER_MGR removed (2025) - layer system not used
 
     # World State Optimization (Phase 1.1)
     'WORLD-STATE': 'world_state',

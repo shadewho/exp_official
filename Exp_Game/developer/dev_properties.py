@@ -377,7 +377,6 @@ def register_properties():
         description=(
             "Comprehensive rig and animation system visualization:\n"
             "• Bone groups (colored by membership)\n"
-            "• IK chains, targets, poles, reach\n"
             "• Active blend masks\n"
             "• Bone local axes\n"
             "\n"
@@ -404,41 +403,15 @@ def register_properties():
             ("HEAD_NECK", "Head & Neck", "Highlight head and neck bones"),
             ("ARM_L", "Left Arm", "Highlight left arm bones"),
             ("ARM_R", "Right Arm", "Highlight right arm bones"),
-            ("ARM_L_IK", "Left Arm IK", "Highlight left arm IK chain"),
-            ("ARM_R_IK", "Right Arm IK", "Highlight right arm IK chain"),
             ("LEG_L", "Left Leg", "Highlight left leg bones"),
             ("LEG_R", "Right Leg", "Highlight right leg bones"),
-            ("LEG_L_IK", "Left Leg IK", "Highlight left leg IK chain"),
-            ("LEG_R_IK", "Right Leg IK", "Highlight right leg IK chain"),
             ("FINGERS", "Fingers", "Highlight finger bones"),
             ("ROOT", "Root (Hips)", "Highlight root/hips bone"),
         ],
         default="ALL"
     )
 
-    bpy.types.Scene.dev_rig_vis_ik_chains = bpy.props.BoolProperty(
-        name="IK Chains",
-        description="Draw IK chain bones (cyan = upper, magenta = lower)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_rig_vis_ik_targets = bpy.props.BoolProperty(
-        name="IK Targets",
-        description="Draw IK target spheres (green = reachable, red = out of reach)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_rig_vis_ik_poles = bpy.props.BoolProperty(
-        name="IK Poles",
-        description="Draw pole vector arrows (orange = bend direction)",
-        default=True
-    )
-
-    bpy.types.Scene.dev_rig_vis_ik_reach = bpy.props.BoolProperty(
-        name="IK Reach",
-        description="Draw maximum reach spheres from root joints",
-        default=False
-    )
+    # NOTE: IK visualization properties removed (2025) - IK system not used
 
     bpy.types.Scene.dev_rig_vis_bone_axes = bpy.props.BoolProperty(
         name="Bone Axes",
@@ -452,18 +425,7 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_rig_vis_full_body_ik = bpy.props.BoolProperty(
-        name="Full-Body IK",
-        description=(
-            "Visualize full-body IK constraints and results:\n"
-            "• Hips drop indicator (vertical line)\n"
-            "• Foot grounding targets (green spheres)\n"
-            "• Hand reach targets (cyan spheres)\n"
-            "• Look-at target (magenta crosshair)\n"
-            "• Color indicates constraint satisfaction"
-        ),
-        default=True
-    )
+    # NOTE: dev_rig_vis_full_body_ik removed (2025) - IK system not used
 
     bpy.types.Scene.dev_rig_vis_line_width = bpy.props.FloatProperty(
         name="Line Width",
@@ -485,7 +447,7 @@ def register_properties():
     # Text overlay properties
     bpy.types.Scene.dev_rig_vis_text_overlay = bpy.props.BoolProperty(
         name="Text Overlay",
-        description="Show animation state text above character (IK, layers, etc.)",
+        description="Show animation state text above character",
         default=True
     )
 
@@ -580,30 +542,8 @@ def register_properties():
         default=False
     )
 
-    bpy.types.Scene.dev_debug_anim_worker = bpy.props.BoolProperty(
-        name="Animation Worker",
-        description=(
-            "Animation worker diagnostics:\n"
-            "• Shows designated animation worker ID\n"
-            "• Cache transfer to single worker (saves memory)\n"
-            "• Job routing to animation worker\n"
-            "• Compute times on animation worker"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_layers = bpy.props.BoolProperty(
-        name="Animation Layers",
-        description=(
-            "Animation layer system diagnostics:\n"
-            "• Layer managers created per object\n"
-            "• Channel activations (BASE/OVERRIDE/PHYSICS)\n"
-            "• Channel deactivations and fades\n"
-            "• Active channel per object\n"
-            "• Physics blocking animation apply"
-        ),
-        default=False
-    )
+    # NOTE: dev_debug_anim_worker removed (2025-01) - animations computed locally, no worker
+    # NOTE: dev_debug_layers removed (2025) - layer system not used
 
     bpy.types.Scene.dev_debug_projectiles = bpy.props.BoolProperty(
         name="Projectiles",
@@ -665,346 +605,8 @@ def register_properties():
         default=False
     )
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # POSE LIBRARY SYSTEM
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_debug_poses = bpy.props.BoolProperty(
-        name="Pose Library",
-        description=(
-            "Pose library system diagnostics:\n"
-            "• Pose capture events\n"
-            "• Pose cache transfer to workers\n"
-            "• Pose playback and blending\n"
-            "• Worker cache confirmation"
-        ),
-        default=False
-    )
-
-    bpy.types.Scene.dev_debug_pose_blend = bpy.props.BoolProperty(
-        name="Pose Blend",
-        description=(
-            "Pose-to-pose blending diagnostics:\n"
-            "• Per-frame timing breakdown\n"
-            "• Worker computation time\n"
-            "• IK chain solve time\n"
-            "• Bone transform application time"
-        ),
-        default=False
-    )
-
-    # --- Pose Test Properties (Animation 2.0 Dev Panel) ---
-
-    def _get_pose_items(self, context):
-        """Dynamic enum callback for pose selection dropdown."""
-        items = []
-        if context and hasattr(context, 'scene') and hasattr(context.scene, 'pose_library'):
-            for i, pose in enumerate(context.scene.pose_library):
-                items.append((pose.name, pose.name, pose.description or "", 'ARMATURE_DATA', i))
-        # Always need at least one item for Blender enums
-        if not items:
-            items.append(("NONE", "No Poses", "Capture a pose first", 'ERROR', 0))
-        return items
-
-    bpy.types.Scene.pose_test_name = bpy.props.EnumProperty(
-        name="Test Pose",
-        description="Pose to play for testing",
-        items=_get_pose_items
-    )
-
-    bpy.types.Scene.pose_test_blend_time = bpy.props.FloatProperty(
-        name="Blend Time",
-        description="Time to blend into/out of the pose",
-        default=0.25,
-        min=0.0,
-        max=2.0,
-        unit='TIME'
-    )
-
-    bpy.types.Scene.pose_blend_enabled = bpy.props.BoolProperty(
-        name="Pose-to-Pose",
-        description="Enable pose-to-pose blending (blend between two poses with optional IK)",
-        default=False
-    )
-
-    # NOTE: pose_test_bone_group removed - now using unified test_bone_group
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # UNIFIED ANIMATION TEST SUITE
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.test_mode = bpy.props.EnumProperty(
-        name="Test Mode",
-        description="Select which animation system to test",
-        items=[
-            ("ANIMATION", "Anim", "Test animation playback and blending", 'PLAY', 0),
-            ("POSE", "Pose", "Test pose library and pose-to-pose blending", 'ARMATURE_DATA', 1),
-            ("IK", "IK", "Test IK chain solving", 'CON_KINEMATIC', 2),
-        ],
-        default="ANIMATION"
-    )
-
-    bpy.types.Scene.test_bone_group = bpy.props.EnumProperty(
-        name="Bone Group",
-        description="Which bones to affect (used by Pose and IK modes)",
-        items=[
-            ("ALL", "Full Body", "Apply to all bones"),
-            ("UPPER_BODY", "Upper Body", "Apply to spine, arms, head"),
-            ("LOWER_BODY", "Lower Body", "Apply to hips and legs"),
-            ("ARM_L", "Left Arm", "Apply to left arm only"),
-            ("ARM_R", "Right Arm", "Apply to right arm only"),
-            ("ARMS", "Both Arms", "Apply to both arms"),
-            ("LEG_L", "Left Leg", "Apply to left leg only"),
-            ("LEG_R", "Right Leg", "Apply to right leg only"),
-            ("LEGS", "Both Legs", "Apply to both legs"),
-            ("SPINE_HEAD", "Spine & Head", "Apply to spine, neck, and head"),
-        ],
-        default="ALL"
-    )
-
-    # --- Animation Mode Options ---
-    # Note: Uses existing props from ANIM2_TestProperties in test_panel.py:
-    # - props.selected_animation, props.blend_animation, props.blend_weight
-    # - props.play_speed, props.fade_time, props.loop_playback
-
-    bpy.types.Scene.test_blend_enabled = bpy.props.BoolProperty(
-        name="Blend Secondary",
-        description="Enable blending a second animation",
-        default=False
-    )
-
-    # Joint limits property removed - not needed for rigid animations
-
-    # --- Pose Mode Options ---
-    # Note: Uses existing pose_test_name, pose_test_blend_time from above
-
-    # --- IK Mode Options ---
-    bpy.types.Scene.test_ik_chain = bpy.props.EnumProperty(
-        name="IK Chain",
-        description="Which limb chain to solve IK for",
-        items=[
-            ("leg_L", "Left Leg", "Left leg IK (thigh → shin → foot)"),
-            ("leg_R", "Right Leg", "Right leg IK (thigh → shin → foot)"),
-            ("arm_L", "Left Arm", "Left arm IK (upper → forearm → hand)"),
-            ("arm_R", "Right Arm", "Right arm IK (upper → forearm → hand)"),
-        ],
-        default="leg_L"
-    )
-
-    bpy.types.Scene.test_ik_target = bpy.props.PointerProperty(
-        name="IK Target",
-        description="Object to use as IK target (Empty, etc.)",
-        type=bpy.types.Object
-    )
-
-    bpy.types.Scene.test_ik_influence = bpy.props.FloatProperty(
-        name="IK Influence",
-        description="How much IK affects the final pose (0 = none, 1 = full)",
-        default=1.0,
-        min=0.0,
-        max=1.0,
-        subtype='FACTOR'
-    )
-
-    bpy.types.Scene.test_ik_pole = bpy.props.EnumProperty(
-        name="Pole Direction",
-        description="Hint for knee/elbow bend direction",
-        items=[
-            ("AUTO", "Auto", "Automatically determine from rest pose"),
-            ("FORWARD", "Forward (+Y)", "Bend forward"),
-            ("BACK", "Back (-Y)", "Bend backward"),
-            ("LEFT", "Left (-X)", "Bend left"),
-            ("RIGHT", "Right (+X)", "Bend right"),
-            ("UP", "Up (+Z)", "Bend upward"),
-            ("DOWN", "Down (-Z)", "Bend downward"),
-        ],
-        default="AUTO"
-    )
-
-    bpy.types.Scene.test_ik_advanced = bpy.props.BoolProperty(
-        name="Advanced Mode",
-        description="Show advanced IK controls (XYZ offset, pole offset)",
-        default=False
-    )
-
-    bpy.types.Scene.test_ik_target_xyz = bpy.props.FloatVectorProperty(
-        name="Target Offset",
-        description="Manual XYZ offset from rest position (advanced mode)",
-        default=(0.0, 0.0, 0.0),
-        subtype='XYZ',
-        unit='LENGTH'
-    )
-
-    bpy.types.Scene.test_ik_pole_offset = bpy.props.FloatProperty(
-        name="Pole Offset",
-        description="Distance of pole from joint midpoint",
-        default=0.5,
-        min=0.1,
-        max=2.0,
-        unit='LENGTH'
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # POSE BLEND MODE OPTIONS (Pose-to-Pose with IK)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    def _get_pose_items_a(self, context):
-        """Dynamic enum callback for pose A selection."""
-        items = []
-        if context and hasattr(context, 'scene') and hasattr(context.scene, 'pose_library'):
-            for i, pose in enumerate(context.scene.pose_library):
-                items.append((pose.name, pose.name, pose.description or "", 'ARMATURE_DATA', i))
-        if not items:
-            items.append(("NONE", "No Poses", "Capture poses first", 'ERROR', 0))
-        return items
-
-    def _get_pose_items_b(self, context):
-        """Dynamic enum callback for pose B selection."""
-        items = []
-        if context and hasattr(context, 'scene') and hasattr(context.scene, 'pose_library'):
-            # Add REST as first option
-            items.append(("REST", "Rest Pose", "Blend to/from rest pose (T-pose)", 'ARMATURE_DATA', 0))
-            for i, pose in enumerate(context.scene.pose_library):
-                items.append((pose.name, pose.name, pose.description or "", 'ARMATURE_DATA', i + 1))
-        if not items:
-            items.append(("NONE", "No Poses", "Capture poses first", 'ERROR', 0))
-        return items
-
-    bpy.types.Scene.pose_blend_mode = bpy.props.EnumProperty(
-        name="IK Mode",
-        description="How IK targets are determined",
-        items=[
-            ("POSE_TO_POSE", "Pose → Pose", "IK targets from Pose B positions (blend between two poses)"),
-            ("POSE_TO_TARGET", "Pose → Target", "IK targets from external objects (reach toward objects)"),
-        ],
-        default="POSE_TO_POSE"
-    )
-
-    bpy.types.Scene.pose_blend_a = bpy.props.EnumProperty(
-        name="Pose A",
-        description="Starting pose for blend",
-        items=_get_pose_items_a
-    )
-
-    bpy.types.Scene.pose_blend_b = bpy.props.EnumProperty(
-        name="Pose B",
-        description="Target pose for blend (or REST for T-pose)",
-        items=_get_pose_items_b
-    )
-
-    bpy.types.Scene.pose_blend_weight = bpy.props.FloatProperty(
-        name="Blend",
-        description="Blend weight: 0.0 = Pose A, 1.0 = Pose B",
-        default=0.0,
-        min=0.0,
-        max=1.0,
-        subtype='FACTOR'
-    )
-
-    # ── Multi-Chain IK System ──────────────────────────────────────────────────
-    # Each chain can be enabled independently with its own target object
-    # This allows testing multiple IK chains simultaneously
-
-    # Left Arm IK
-    bpy.types.Scene.pose_blend_ik_arm_L = bpy.props.BoolProperty(
-        name="Left Arm",
-        description="Enable left arm IK",
-        default=False
-    )
-    bpy.types.Scene.pose_blend_ik_arm_L_target = bpy.props.PointerProperty(
-        name="L Arm Target",
-        description="Target object for left arm IK",
-        type=bpy.types.Object
-    )
-
-    # Right Arm IK
-    bpy.types.Scene.pose_blend_ik_arm_R = bpy.props.BoolProperty(
-        name="Right Arm",
-        description="Enable right arm IK",
-        default=False
-    )
-    bpy.types.Scene.pose_blend_ik_arm_R_target = bpy.props.PointerProperty(
-        name="R Arm Target",
-        description="Target object for right arm IK",
-        type=bpy.types.Object
-    )
-
-    # Left Leg IK
-    bpy.types.Scene.pose_blend_ik_leg_L = bpy.props.BoolProperty(
-        name="Left Leg",
-        description="Enable left leg IK",
-        default=False
-    )
-    bpy.types.Scene.pose_blend_ik_leg_L_target = bpy.props.PointerProperty(
-        name="L Leg Target",
-        description="Target object for left leg IK",
-        type=bpy.types.Object
-    )
-
-    # Right Leg IK
-    bpy.types.Scene.pose_blend_ik_leg_R = bpy.props.BoolProperty(
-        name="Right Leg",
-        description="Enable right leg IK",
-        default=False
-    )
-    bpy.types.Scene.pose_blend_ik_leg_R_target = bpy.props.PointerProperty(
-        name="R Leg Target",
-        description="Target object for right leg IK",
-        type=bpy.types.Object
-    )
-
-    # Shared influence for all IK chains
-    bpy.types.Scene.pose_blend_ik_influence = bpy.props.FloatProperty(
-        name="IK Influence",
-        description="How much IK affects the blended pose (applies to all chains)",
-        default=1.0,
-        min=0.0,
-        max=1.0,
-        subtype='FACTOR'
-    )
-
-    bpy.types.Scene.pose_blend_auto_play = bpy.props.BoolProperty(
-        name="Auto Play",
-        description="Continuously blend back and forth for testing",
-        default=False
-    )
-
-    bpy.types.Scene.pose_blend_duration = bpy.props.FloatProperty(
-        name="Duration",
-        description="Time to blend from A to B (seconds)",
-        default=1.0,
-        min=0.1,
-        max=5.0,
-        unit='TIME'
-    )
-
-    bpy.types.Scene.pose_blend_hold_start = bpy.props.FloatProperty(
-        name="Hold Start",
-        description="Time to hold at Pose A before blending (seconds)",
-        default=1.0,
-        min=0.0,
-        max=5.0,
-        unit='TIME'
-    )
-
-    bpy.types.Scene.pose_blend_hold_end = bpy.props.FloatProperty(
-        name="Hold End",
-        description="Time to hold at Pose B after blending (seconds)",
-        default=1.0,
-        min=0.0,
-        max=5.0,
-        unit='TIME'
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # RIG ANALYZER
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.rig_analysis_report = bpy.props.StringProperty(
-        name="Rig Analysis Report",
-        description="Last rig analysis report (generated by Rig Analyzer)",
-        default=""
-    )
+    # NOTE: Pose Library System removed (2025) - not used
+    # dev_debug_poses moved to old_props for cleanup
 
     # ══════════════════════════════════════════════════════════════════════════
     # SESSION LOG EXPORT
@@ -1097,23 +699,11 @@ def unregister_properties():
         'dev_debug_animations',
         'dev_debug_anim_cache',
         'dev_debug_anim_worker',
-        'dev_debug_layers',
         'dev_debug_projectiles',
         'dev_debug_hitscans',
         'dev_debug_transforms',
         'dev_debug_tracking',
         'dev_debug_health',
-
-        # Pose Library
-        'dev_debug_poses',
-        'dev_debug_pose_blend',
-        'pose_test_name',
-        'pose_test_blend_time',
-        'pose_blend_enabled',
-        # pose_test_bone_group moved to old_props (replaced by test_bone_group)
-
-        # Rig Analyzer
-        'rig_analysis_report',
 
         # Session export
         'dev_export_session_log',
@@ -1186,6 +776,17 @@ def unregister_properties():
         'pose_blend_ik_leg_L_target',
         'pose_blend_ik_leg_R',
         'pose_blend_ik_leg_R_target',
+        # Rig Analyzer (removed 2025 - unused)
+        'rig_analysis_report',
+        # Pose Library debug (removed 2025 - unused)
+        'dev_debug_poses',
+        # Animation Layers (removed 2025 - layer system not used)
+        'dev_debug_layers',
+        # Pose blend/test (removed 2025 - IK system not used)
+        'dev_debug_pose_blend',
+        'pose_test_name',
+        'pose_test_blend_time',
+        'pose_blend_enabled',
     ]
 
     for prop in old_props:

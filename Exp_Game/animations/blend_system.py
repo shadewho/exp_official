@@ -467,8 +467,7 @@ class BlendSystem:
                 if override_pose is not None:
                     pose = self._apply_override(pose, override_pose, layer)
 
-        # 4. IK will be applied separately (needs armature context)
-        # Store for external IK application
+        # Store final pose
         self._last_pose = pose
 
         return pose

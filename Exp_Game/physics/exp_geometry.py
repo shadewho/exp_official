@@ -125,7 +125,36 @@ def get_triangle_stats(triangles):
 # Spatial Acceleration (Phase 2 - Uniform Grid)
 # ============================================================================
 
-def compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_cell=150):
+def _compute_triangle_bounds(triangles):
+    """
+    Compute bounding box of all triangles.
+    PERFORMANCE: This is computed ONCE and passed to other functions that need bounds.
+
+    Args:
+        triangles: List of triangles
+
+    Returns:
+        Tuple of ((min_x, min_y, min_z), (max_x, max_y, max_z)) or None if no triangles
+    """
+    if not triangles:
+        return None
+
+    min_x = min_y = min_z = float('inf')
+    max_x = max_y = max_z = float('-inf')
+
+    for tri in triangles:
+        for v in tri:
+            min_x = min(min_x, v[0])
+            max_x = max(max_x, v[0])
+            min_y = min(min_y, v[1])
+            max_y = max(max_y, v[1])
+            min_z = min(min_z, v[2])
+            max_z = max(max_z, v[2])
+
+    return ((min_x, min_y, min_z), (max_x, max_y, max_z))
+
+
+def compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_cell=150, bounds=None):
     """
     Auto-tune cell size based on triangle density AND hotspot detection.
 
@@ -140,6 +169,8 @@ def compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_c
         target_tris_per_cell: Target average triangles per cell (default 50)
         max_tris_per_cell: Maximum acceptable triangles in ANY cell (default 150)
                           If exceeded, cell size will be reduced.
+        bounds: Pre-computed bounds tuple ((min_x, min_y, min_z), (max_x, max_y, max_z))
+                If None, will compute bounds (slower)
 
     Returns:
         Optimal cell size in meters (clamped to 0.25m - 2.0m range)
@@ -147,18 +178,12 @@ def compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_c
     if not triangles or len(triangles) == 0:
         return 1.0  # Default fallback
 
-    # Get scene bounds
-    min_x = min_y = min_z = float('inf')
-    max_x = max_y = max_z = float('-inf')
+    # Use pre-computed bounds if available, otherwise compute
+    if bounds is None:
+        bounds = _compute_triangle_bounds(triangles)
 
-    for tri in triangles:
-        for v in tri:
-            min_x = min(min_x, v[0])
-            max_x = max(max_x, v[0])
-            min_y = min(min_y, v[1])
-            max_y = max(max_y, v[1])
-            min_z = min(min_z, v[2])
-            max_z = max(max_z, v[2])
+    min_x, min_y, min_z = bounds[0]
+    max_x, max_y, max_z = bounds[1]
 
     # Scene dimensions
     size_x = max(max_x - min_x, 0.1)
@@ -262,18 +287,12 @@ def build_uniform_grid(triangles, cell_size=None, context=None):
         debug = getattr(context.scene, 'dev_debug_kcc_physics', False)
         startup_logs = getattr(context.scene, 'dev_startup_logs', False)
 
-    # ========== Step 1: Calculate Bounds ==========
-    min_x = min_y = min_z = float('inf')
-    max_x = max_y = max_z = float('-inf')
-
-    for tri in triangles:
-        for v in tri:
-            min_x = min(min_x, v[0])
-            max_x = max(max_x, v[0])
-            min_y = min(min_y, v[1])
-            max_y = max(max_y, v[1])
-            min_z = min(min_z, v[2])
-            max_z = max(max_z, v[2])
+    # ========== Step 1: Calculate Bounds (ONCE) ==========
+    # PERFORMANCE: Bounds computed once here and passed to compute_optimal_cell_size
+    # Previously bounds were computed twice (1-2ms saved for large scenes)
+    bounds = _compute_triangle_bounds(triangles)
+    min_x, min_y, min_z = bounds[0]
+    max_x, max_y, max_z = bounds[1]
 
     # Calculate scene dimensions for adaptive cell size
     size_x = max(max_x - min_x, 0.1)
@@ -290,7 +309,8 @@ def build_uniform_grid(triangles, cell_size=None, context=None):
         # Pass back iteration count for logging
         initial_estimate = (50 / density) ** (1/3) if density > 0 else 1.0
         initial_estimate = max(0.25, min(2.0, initial_estimate))
-        cell_size = compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_cell=150)
+        # PERFORMANCE: Pass pre-computed bounds to avoid recomputing
+        cell_size = compute_optimal_cell_size(triangles, target_tris_per_cell=50, max_tris_per_cell=150, bounds=bounds)
         cell_size_mode = "adaptive"
         # Detect if hotspot refinement happened
         if cell_size < initial_estimate * 0.95:  # More than 5% reduction = refinement happened

@@ -84,16 +84,15 @@ _cached_dynamic_meshes = {}
 _cached_dynamic_transforms = {}
 
 # Animation cache: {anim_name: {bone_transforms: np.ndarray, bone_names: list, duration, fps, ...}}
-# Sent once via CACHE_ANIMATIONS job. Per-frame, only times/weights are sent.
-# NOW USES NUMPY ARRAYS for 30-100x faster blending!
+# NOTE (2025-01): Animation jobs are NO LONGER SENT - animations computed locally on main thread.
+# This eliminates 1-5ms IPC overhead per frame for trivial math (array lookup + quaternion slerp).
+# Worker animation code kept for reference/future use but is currently inactive.
 _cached_animations = {}
 
 # Flag to track if numpy arrays have been reconstructed from lists
 _animations_numpy_ready = False
 
-# Pose library cache: {pose_name: {bone_transforms: {bone: [10 floats]}, source_armature: str}}
-# Sent once via CACHE_POSES job. Used by PLAY_POSE jobs for pose playback.
-_cached_poses = {}
+# NOTE: Pose library cache (_cached_poses) removed (2025) - not used
 
 # NOTE: Tracker state moved to worker/interactions/trackers.py
 
@@ -260,20 +259,22 @@ def _compute_single_object_pose(object_name: str, playing_list: list, logs: list
         blended = blend_bone_poses(poses, bone_weights)
 
         # Convert numpy array to dict for compatibility with apply code
+        # PERFORMANCE: tuple(arr) is faster than tuple(arr.tolist()) - avoids intermediate list
         bone_transforms = {}
         if bone_names and blended.size > 0:
             for i, name in enumerate(bone_names):
                 if i < len(blended):
-                    bone_transforms[name] = tuple(blended[i].tolist())
+                    bone_transforms[name] = tuple(blended[i])
 
         result["bone_transforms"] = bone_transforms
         result["bones_count"] = len(bone_transforms)
 
     # Blend object transforms (for non-armature objects) - uses imported function
+    # PERFORMANCE: tuple(arr) is faster than tuple(arr.tolist()) - avoids intermediate list
     if object_transforms:
         blended_obj = blend_object_transforms(object_transforms, object_weights)
         if blended_obj is not None:
-            result["object_transform"] = tuple(blended_obj.tolist())
+            result["object_transform"] = tuple(blended_obj)
 
     return result
 
@@ -394,111 +395,7 @@ def _handle_animation_compute_batch(job_data: dict) -> dict:
     }
 
 
-# ============================================================================
-# POSE BLEND COMPUTE (Worker-side pose-to-pose blending)
-# ============================================================================
-
-def _handle_pose_blend_compute(job_data: dict) -> dict:
-    """
-    Handle POSE_BLEND_COMPUTE job - blend between two poses with optional IK.
-
-    This is the WORKER-BASED version of pose-to-pose blending.
-    All slerp/lerp math happens here, not on main thread.
-
-    Input job_data:
-        {
-            "pose_a": {bone_name: [qw,qx,qy,qz,lx,ly,lz,sx,sy,sz], ...},
-            "pose_b": {bone_name: [10 floats], ...},
-            "weight": float (0-1),
-            "bone_names": [list of bone names to blend],
-            "ik_chains": [
-                {
-                    "chain": "arm_R",
-                    "target": [x, y, z],
-                    "influence": float,
-                    "char_forward": [x, y, z],
-                    "char_right": [x, y, z],
-                    "char_up": [x, y, z],
-                },
-                ...
-            ]
-        }
-
-    Returns:
-        {
-            "success": bool,
-            "bone_transforms": {bone_name: (10-float tuple), ...},
-            "ik_results": {chain_name: {...}, ...},
-            "calc_time_us": float,
-            "logs": [(category, message), ...]
-        }
-    """
-    calc_start = time.perf_counter()
-    logs = []
-
-    pose_a = job_data.get("pose_a", {})
-    pose_b = job_data.get("pose_b", {})
-    weight = job_data.get("weight", 0.5)
-    bone_names = job_data.get("bone_names", list(set(pose_a.keys()) | set(pose_b.keys())))
-    ik_chains = job_data.get("ik_chains", [])
-
-    # Identity transform for missing bones
-    identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-
-    # Blend poses using numpy
-    bone_transforms = {}
-    num_bones = len(bone_names)
-
-    if num_bones > 0:
-        # Build numpy arrays for vectorized blending
-        transforms_a = np.zeros((num_bones, 10), dtype=np.float32)
-        transforms_b = np.zeros((num_bones, 10), dtype=np.float32)
-
-        for i, bone_name in enumerate(bone_names):
-            t_a = pose_a.get(bone_name, identity)
-            t_b = pose_b.get(bone_name, identity)
-            transforms_a[i] = t_a
-            transforms_b[i] = t_b
-
-        # Quaternion slerp (indices 0-3) - vectorized
-        quats_a = transforms_a[:, :4]
-        quats_b = transforms_b[:, :4]
-        blended_quats = slerp_vectorized(quats_a, quats_b, weight)
-
-        # Location lerp (indices 4-6) - simple vectorized lerp
-        locs_a = transforms_a[:, 4:7]
-        locs_b = transforms_b[:, 4:7]
-        blended_locs = locs_a + (locs_b - locs_a) * weight
-
-        # Scale lerp (indices 7-9)
-        scales_a = transforms_a[:, 7:10]
-        scales_b = transforms_b[:, 7:10]
-        blended_scales = scales_a + (scales_b - scales_a) * weight
-
-        # Combine into result
-        blended = np.zeros((num_bones, 10), dtype=np.float32)
-        blended[:, :4] = blended_quats
-        blended[:, 4:7] = blended_locs
-        blended[:, 7:10] = blended_scales
-
-        # Convert to dict
-        for i, bone_name in enumerate(bone_names):
-            bone_transforms[bone_name] = tuple(blended[i].tolist())
-
-    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
-
-    logs.append(("POSE-BLEND", f"[NUMPY] {len(bone_transforms)} bones weight={weight:.2f} {calc_time_us:.0f}µs"))
-
-    return {
-        "success": True,
-        "bone_transforms": bone_transforms,
-        "bones_count": len(bone_transforms),
-        "calc_time_us": calc_time_us,
-        "logs": logs
-    }
-
-
-# NOTE: IK_SOLVE_BATCH handler removed - IK system was removed
+# NOTE: POSE_BLEND_COMPUTE and IK_SOLVE_BATCH handlers removed (2025) - IK/pose system not used
 
 
 # ============================================================================
@@ -769,41 +666,7 @@ def process_job(job) -> dict:
                     "error": "No animation data provided"
                 }
 
-        elif job.job_type == "CACHE_POSES":
-            # Cache pose library for subsequent PLAY_POSE jobs
-            # Sent ONCE at game start. Poses are static snapshots (no animation).
-            global _cached_poses
-            poses_data = job.data.get("poses", {})
-
-            if poses_data:
-                # Clear existing cache and store new poses
-                _cached_poses.clear()
-
-                for pose_name, pose_dict in poses_data.items():
-                    _cached_poses[pose_name] = pose_dict
-
-                pose_count = len(_cached_poses)
-                total_bones = sum(
-                    p.get("bone_count", 0)
-                    for p in _cached_poses.values()
-                )
-
-                # Log for diagnostics (no console print - use log system only)
-                logs = [("POSE-CACHE", f"WORKER_CACHED {pose_count} poses, {total_bones} bones")]
-
-                result_data = {
-                    "success": True,
-                    "pose_count": pose_count,
-                    "total_bones": total_bones,
-                    "message": "Poses cached successfully",
-                    "logs": logs
-                }
-            else:
-                result_data = {
-                    "success": False,
-                    "error": "No pose data provided"
-                }
-
+        # NOTE: CACHE_POSES removed (2025) - pose library not used
         # CACHE_JOINT_LIMITS removed - not needed for rigid animations
         # CACHE_RIG removed - IK system was removed
 
@@ -814,11 +677,7 @@ def process_job(job) -> dict:
             # This eliminates O(n) IPC overhead - one round trip regardless of object count
             result_data = _handle_animation_compute_batch(job.data)
 
-        elif job.job_type == "POSE_BLEND_COMPUTE":
-            # Pose-to-pose blending (worker-based)
-            # Input: {"pose_a": {...}, "pose_b": {...}, "weight": float}
-            # Output: {"bone_transforms": {...}}
-            result_data = _handle_pose_blend_compute(job.data)
+        # NOTE: POSE_BLEND_COMPUTE removed (2025) - IK/pose system not used
 
         elif job.job_type == "CACHE_TRACKERS":
             # Cache serialized tracker definitions - delegated to interactions module
@@ -936,8 +795,13 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
                 # Add worker_id to result before sending (CRITICAL for grid cache verification)
                 result["worker_id"] = worker_id
 
-                # Send result back
-                result_queue.put(result)
+                # Send result back (with timeout to prevent deadlock)
+                try:
+                    result_queue.put(result, timeout=1.0)
+                except Exception:
+                    # Queue full or broken - log and continue (better than blocking forever)
+                    if DEBUG_ENGINE:
+                        print(f"[Engine Worker {worker_id}] WARNING: Result queue full, discarding result for job {job.job_id}")
 
                 jobs_processed += 1
 

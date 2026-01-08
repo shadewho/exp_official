@@ -2,7 +2,7 @@
 
 **Last Updated**: 2025-12-27
 
-This is the official humanoid rig for the Exploratory game engine. All default animations, IK systems, and procedural features target this exact bone structure.
+This is the official humanoid rig for the Exploratory game engine. All default animations and procedural features target this exact bone structure.
 
 ---
 
@@ -64,15 +64,15 @@ Root (ARMATURE ROOT - at origin, Z=0)
 
 | Bone | Parent | Length | Position (Head) | Purpose |
 |------|--------|--------|-----------------|---------|
-| `Root` | None (armature root) | 0m | (0, 0, 0) | World anchor - character's position in scene. IK targets are relative to this. Never animated directly. |
+| `Root` | None (armature root) | 0m | (0, 0, 0) | World anchor - character's position in scene. Never animated directly. |
 
-**Important:** The `Root` bone is the armature root, positioned at the origin (ground level). It defines WHERE the character is in the world. All IK foot targets should be relative to Root, so when the character moves through the world, foot positions remain consistent.
+**Important:** The `Root` bone is the armature root, positioned at the origin (ground level). It defines WHERE the character is in the world.
 
 ### Core/Spine Bones (9)
 
 | Bone | Parent | Length | Position (Head) | Purpose |
 |------|--------|--------|-----------------|---------|
-| `Hips` | Root | 0.136m | (0, 0.056, 1.001) | Pelvis control - can translate (crouch) and rotate (lean/tilt). Moving Hips moves the body, leg IK compensates to keep feet grounded. |
+| `Hips` | Root | 0.136m | (0, 0.056, 1.001) | Pelvis control - can translate (crouch) and rotate (lean/tilt). |
 | `Spine` | Hips | 0.145m | (0, 0.056, 1.137) | Lower back |
 | `Spine1` | Spine | 0.191m | (0, 0.051, 1.282) | Mid back |
 | `Spine2` | Spine1 | 0.149m | (0, 0.050, 1.473) | Upper back / chest |
@@ -123,65 +123,7 @@ Each hand has 5 fingers with 3 bones each:
 
 ---
 
-## IK Chain Definitions
-
-### Leg IK (Two-Bone Solver)
-
-Used for foot grounding and stepping.
-
-```python
-LEG_IK = {
-    "leg_L": {
-        "root": "LeftThigh",       # Hip pivot
-        "mid": "LeftShin",         # Knee pivot
-        "tip": "LeftFoot",         # Ankle (IK target)
-        "end": "LeftToeBase",      # Toe (for ground alignment)
-        "len_upper": 0.4947,       # Thigh length
-        "len_lower": 0.4784,       # Shin length
-        "reach": 0.9731,           # Max reach (thigh + shin)
-        "pole_forward": (0, 1, 0), # Knee bends forward (+Y)
-        "rest_foot_z": 0.098,      # Foot height in rest pose
-    },
-    "leg_R": {
-        "root": "RightThigh",
-        "mid": "RightShin",
-        "tip": "RightFoot",
-        "end": "RightToeBase",
-        "len_upper": 0.4947,
-        "len_lower": 0.4775,
-        "reach": 0.9722,
-        "pole_forward": (0, 1, 0),
-        "rest_foot_z": 0.098,
-    },
-}
-```
-
-### Arm IK (Two-Bone Solver)
-
-Used for reaching, grabbing, pointing.
-
-```python
-ARM_IK = {
-    "arm_L": {
-        "root": "LeftArm",         # Shoulder pivot
-        "mid": "LeftForeArm",      # Elbow pivot
-        "tip": "LeftHand",         # Wrist (IK target)
-        "len_upper": 0.2782,       # Upper arm length
-        "len_lower": 0.2863,       # Forearm length
-        "reach": 0.5645,           # Max reach (upper + lower)
-        "pole_back": (0, -1, 0),   # Elbow bends backward (-Y)
-    },
-    "arm_R": {
-        "root": "RightArm",
-        "mid": "RightForeArm",
-        "tip": "RightHand",
-        "len_upper": 0.2782,
-        "len_lower": 0.2863,
-        "reach": 0.5645,
-        "pole_back": (0, -1, 0),
-    },
-}
-```
+## Chain Definitions
 
 ### Look-At Chain
 
@@ -271,14 +213,14 @@ FINGERS = {
 | Shoulder width | 0.27m | Collision capsule width hint |
 | Arm reach (from shoulder) | 0.73m | Grab distance calculations |
 | Leg length (hip to ankle) | 0.97m | Step height limits |
-| Foot to floor (rest) | 0.098m | Ground offset for IK |
+| Foot to floor (rest) | 0.098m | Ground offset |
 | Eye height (approx) | ~1.65m | Camera placement |
 | Total height | 1.97m | Collision capsule height |
 
-### IK Reach Limits
+### Limb Reach Limits
 
-| Chain | Max Reach | Notes |
-|-------|-----------|-------|
+| Limb | Max Reach | Notes |
+|------|-----------|-------|
 | Left Leg | 0.973m | Thigh (0.495) + Shin (0.478) |
 | Right Leg | 0.972m | Thigh (0.495) + Shin (0.478) |
 | Left Arm | 0.565m | UpperArm (0.278) + ForeArm (0.286) |
@@ -297,7 +239,7 @@ BONE_INDEX = {
     "LeftArm": 2,
     "LeftFoot": 3,
     # ... (middle bones)
-    "Root": 43,           # World anchor for full-body IK
+    "Root": 43,           # World anchor
     "RightHandThumb1": 44,
     # ... (remaining bones)
     "Spine": 51,
@@ -387,7 +329,7 @@ Key bone positions in rest (T-pose):
 - All characters must use this exact rig
 - Weight paint your mesh to the provided armature
 - Default animations will work automatically
-- IK and procedural systems are pre-configured
+- Procedural systems are pre-configured
 
 ### For Animation
 
@@ -395,13 +337,6 @@ Key bone positions in rest (T-pose):
 - Rest pose is T-pose with palms facing down
 - Root motion uses Hips bone
 - Baked animations store 10 floats per bone (quat + loc + scale)
-
-### For IK System
-
-- Two-bone IK uses analytical solver (law of cosines)
-- Pole vectors: knees bend forward (+Y), elbows bend backward (-Y)
-- Foot IK target = ankle position, toe aligns to ground normal
-- Hand IK target = wrist position
 
 ### For Procedural Animation
 
@@ -472,7 +407,7 @@ The Hips bone is listed in the table below for documentation completeness, but t
 | LeftFoot | [-80, 45] | [-30, 30] | [-40, 40] |
 | LeftToeBase | [-40, 40] | [0, 0] | [0, 0] |
 
-*Note: Shin Y/Z limits relaxed from [-10,10]/[0,0] to [-20,20]/[-15,15] based on IK test data analysis (2025-12-29).*
+*Note: Shin Y/Z limits relaxed from [-10,10]/[0,0] to [-20,20]/[-15,15] based on animation test data analysis (2025-12-29).*
 
 ### Right Leg (Mirrored)
 
@@ -590,13 +525,12 @@ The Hips bone is listed in the table below for documentation completeness, but t
 
 ### Purpose
 
-**This section is critical for IK and procedural animation.**
+**This section is critical for procedural animation.**
 
 When we rotate a bone, we rotate around its LOCAL axes (X, Y, Z). But each bone has a different orientation in rest pose. Without knowing what each axis points to, we cannot:
 
-1. **Apply IK correctly** - To bend an elbow, we need to know WHICH axis to rotate around
-2. **Interpret joint limits** - "LeftShin X: [-150, 10]" is meaningless unless we know what X means for that bone
-3. **Validate poses** - We can't check if a knee is bending forward vs backward without knowing the axes
+1. **Interpret joint limits** - "LeftShin X: [-150, 10]" is meaningless unless we know what X means for that bone
+2. **Validate poses** - We can't check if a knee is bending forward vs backward without knowing the axes
 
 ### Axis Conventions
 
@@ -604,7 +538,7 @@ When we rotate a bone, we rotate around its LOCAL axes (X, Y, Z). But each bone 
 - **X-axis**: Perpendicular to Y, typically the "twist" axis (rotating the limb like turning a doorknob)
 - **Z-axis**: Perpendicular to both, typically the "bend" axis for some bones
 
-### Key Insight for IK
+### Key Joint Bend Axes
 
 | Joint | Bend Motion | Which Axis | Direction |
 |-------|-------------|------------|-----------|
@@ -641,7 +575,7 @@ Each bone's local coordinate system in rest pose (T-pose).
 | `RightFoot` | RIGHT | FORWARD+DOWN | FORWARD+UP |
 | `RightToeBase` | RIGHT | FORWARD | UP |
 
-### IK Chain Axis Summary
+### Limb Axis Summary
 
 **Arms (in T-pose, arms horizontal):**
 ```
@@ -667,7 +601,7 @@ RightThigh:  Y → DOWN (toward knee)
 
 ### How to Use This Data
 
-**For IK Solving:**
+**For Procedural Animation:**
 ```python
 # To bend the right elbow (make forearm swing toward body):
 right_forearm.rotation_euler.z = bend_angle  # Z is the bend axis
@@ -709,7 +643,7 @@ For precise calculations, here are the exact axis vectors:
 
 | Date | Change |
 |------|--------|
-| 2025-12-29 | Relaxed Shin Y/Z limits based on IK test data analysis |
+| 2025-12-29 | Relaxed Shin Y/Z limits based on animation test data analysis |
 | 2025-12-26 | Added Bone Local Axis Orientations section |
 | 2025-12-25 | Added Joint Rotation Limits section |
 | 2025-12-20 | Initial comprehensive documentation |

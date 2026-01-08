@@ -46,7 +46,8 @@ def init_engine(modal, context) -> tuple[bool, str]:
     if startup_logs:
         print("\n[STARTUP 1/5] Spawning engine workers...")
 
-    if not hasattr(modal, 'engine'):
+    # PERFORMANCE: Check for None instead of hasattr (class-level default is None)
+    if modal.engine is None:
         modal.engine = EngineCore()
 
     modal.engine.start()
@@ -173,7 +174,8 @@ def shutdown_engine(modal, context):
         modal: ExpModal operator instance
         context: Blender context
     """
-    if not hasattr(modal, 'engine') or not modal.engine:
+    # PERFORMANCE: Direct access - class-level default is None
+    if not modal.engine:
         return
 
     debug = context.scene.dev_debug_engine
@@ -228,7 +230,8 @@ def submit_engine_job(modal, job_type: str, data: dict) -> int:
     Returns:
         job_id or -1 if submission failed
     """
-    if not hasattr(modal, 'engine') or not modal.engine:
+    # PERFORMANCE: Direct access - class-level default is None
+    if not modal.engine:
         return -1
 
     job_id = modal.engine.submit_job(job_type, data)
@@ -352,8 +355,7 @@ def init_animations(modal, context) -> tuple[bool, str]:
     # Create fresh controller
     modal.anim_controller = AnimationController()
 
-    # Initialize pending animation batch job tracking (batched system)
-    modal._pending_anim_batch_job = None
+    # NOTE: _pending_anim_batch_job removed (2025-01) - animations computed locally
 
     # Bake ALL actions in the blend file - no armature dependency
     from ..developer.dev_logger import log_game
@@ -417,109 +419,10 @@ def init_animations(modal, context) -> tuple[bool, str]:
         if failed:
             print(f"[ANIMATIONS] ⚠ {len(failed)} actions failed to bake")
 
-    # NOTE: Worker caching happens later via cache_animations_in_workers()
-    # This is called after init_engine() in exp_modal.py
+    # NOTE: Animations computed locally on main thread (2025-01 optimization)
+    # No worker caching needed - eliminates IPC overhead
 
     return True, f"Baked {baked_count} actions"
-
-
-# Designated animation worker ID (0 = first worker)
-# All animation jobs are routed to this worker only.
-# This saves memory (only 1 copy of cache instead of N) and transfer time.
-ANIMATION_WORKER_ID = 0
-
-
-def cache_animations_in_workers(modal, context) -> bool:
-    """
-    Cache baked animations in the ANIMATION WORKER ONLY.
-    MUST be called AFTER init_engine() since it needs workers to be running.
-
-    OPTIMIZATION: Only send cache to worker 0 (animation worker).
-    - Saves ~28MB memory (no 4x duplication of 9MB cache)
-    - Saves ~180ms transfer time at startup
-    - Animation jobs are always routed to this worker anyway
-
-    Args:
-        modal: ExpModal operator instance
-        context: Blender context
-
-    Returns:
-        True if caching succeeded
-    """
-    from ..developer.dev_logger import log_game
-
-    if not hasattr(modal, 'anim_controller') or not modal.anim_controller:
-        return True  # No animations to cache
-
-    if modal.anim_controller.cache.count == 0:
-        log_game("ANIM-CACHE", "EMPTY no animations baked")
-        return True  # No animations baked
-
-    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
-        log_game("ANIM-CACHE", "SKIP engine not available")
-        return False
-
-    # Log animation list
-    anim_count = modal.anim_controller.cache.count
-    anim_names = list(modal.anim_controller.cache.names)
-    log_game("ANIM-CACHE", f"CACHING {anim_count} animations: {anim_names}")
-
-    # Log animation worker designation
-    log_game("ANIM-WORKER", f"DESIGNATED worker={ANIMATION_WORKER_ID} for all animation jobs")
-
-    # Measure serialization time
-    serialize_start = time.perf_counter()
-    cache_data = modal.anim_controller.get_cache_data_for_workers()
-    serialize_elapsed = (time.perf_counter() - serialize_start) * 1000
-
-    # Estimate data size
-    import sys
-    try:
-        data_size_kb = sys.getsizeof(str(cache_data)) / 1024
-    except Exception:
-        data_size_kb = 0
-
-    log_game("ANIM-CACHE", f"SERIALIZED {anim_count} anims in {serialize_elapsed:.0f}ms (~{data_size_kb:.0f}KB)")
-
-    # Send cache to ANIMATION WORKER ONLY (not all workers)
-    transfer_start = time.perf_counter()
-    job_id = modal.engine.submit_job(
-        "CACHE_ANIMATIONS",
-        cache_data,
-        check_overload=False,
-        target_worker=ANIMATION_WORKER_ID
-    )
-
-    # Wait for cache confirmation from animation worker
-    if job_id is not None and job_id >= 0:
-        start_time = time.perf_counter()
-        timeout = 1.0
-        confirmed = False
-
-        while not confirmed:
-            if time.perf_counter() - start_time > timeout:
-                log_game("ANIM-WORKER", f"TIMEOUT worker={ANIMATION_WORKER_ID} cache not confirmed")
-                break
-
-            results = list(modal.engine.poll_results(max_results=50))
-            for result in results:
-                if result.job_type == "CACHE_ANIMATIONS" and result.success:
-                    if result.worker_id == ANIMATION_WORKER_ID:
-                        confirmed = True
-                        break
-
-            if confirmed:
-                break
-            time.sleep(0.002)
-
-        transfer_elapsed_ms = (time.perf_counter() - transfer_start) * 1000
-
-        if confirmed:
-            log_game("ANIM-WORKER", f"CACHE_OK worker={ANIMATION_WORKER_ID} {anim_count}anims ({transfer_elapsed_ms:.0f}ms)")
-        else:
-            log_game("ANIM-WORKER", f"CACHE_FAIL worker={ANIMATION_WORKER_ID} timeout after {transfer_elapsed_ms:.0f}ms")
-
-    return True
 
 
 def shutdown_animations(modal, context):
@@ -532,7 +435,8 @@ def shutdown_animations(modal, context):
     """
     debug = context.scene.dev_debug_engine
 
-    if hasattr(modal, 'anim_controller') and modal.anim_controller:
+    # PERFORMANCE: Direct access - class-level defaults are None
+    if modal.anim_controller:
         if debug:
             cache_count = modal.anim_controller.cache.count
             print(f"[ANIMATIONS] Clearing {cache_count} cached animations...")
@@ -543,315 +447,40 @@ def shutdown_animations(modal, context):
         if debug:
             print("[ANIMATIONS] Animation system shutdown complete")
 
-    # Clear pending batch job
-    if hasattr(modal, '_pending_anim_batch_job'):
-        modal._pending_anim_batch_job = None
-
 
 def update_animations_state(modal, delta_time: float):
     """
     Update animation state (times, fades). Call at start of frame.
-    This prepares data for worker submission.
+    This prepares data for local computation via compute_and_apply_local().
 
     Args:
         modal: ExpModal operator instance
         delta_time: Time since last frame in seconds
     """
-    if hasattr(modal, 'anim_controller') and modal.anim_controller:
+    # PERFORMANCE: Direct access - class-level default is None
+    if modal.anim_controller:
         modal.anim_controller.update_state(delta_time)
 
 
-def submit_animation_jobs(modal) -> int:
-    """
-    Submit ANIMATION_COMPUTE_BATCH job to ANIMATION WORKER for all active animations.
-    BATCHED: One IPC round-trip for ALL animated objects (O(1) instead of O(n)).
-    TARGETED: Always routed to ANIMATION_WORKER_ID (worker 0) which has the cache.
-
-    Call after update_animations_state().
-
-    Args:
-        modal: ExpModal operator instance
-
-    Returns:
-        Number of objects included in batch (0 if no batch submitted)
-    """
-    if not hasattr(modal, 'anim_controller') or not modal.anim_controller:
-        return 0
-
-    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
-        return 0
-
-    # Get job data for all objects with active animations
-    jobs_data = modal.anim_controller.get_compute_job_data()
-
-    if not jobs_data:
-        # Log when no animation jobs (helps debug if controller has no active anims)
-        from ..developer.dev_logger import log_game
-        active_states = len(modal.anim_controller._states)
-        cache_count = modal.anim_controller.cache.count
-        log_game("ANIMATIONS", f"NO_JOBS states={active_states} cache={cache_count}")
-        return 0
-
-    from ..developer.dev_logger import log_game
-
-    # BATCHED + TARGETED: Submit ONE job to ANIMATION WORKER
-    batch_data = {"objects": jobs_data}
-    job_id = modal.engine.submit_job(
-        "ANIMATION_COMPUTE_BATCH",
-        batch_data,
-        target_worker=ANIMATION_WORKER_ID
-    )
-
-    if job_id is not None and job_id >= 0:
-        # Track pending batch job (store list of object names for result processing)
-        modal._pending_anim_batch_job = {
-            "job_id": job_id,
-            "object_names": list(jobs_data.keys())
-        }
-
-        # Log batch submission with worker info
-        obj_count = len(jobs_data)
-        total_anims = sum(len(d.get("playing", [])) for d in jobs_data.values())
-        log_game("ANIMATIONS", f"BATCH_SUBMIT job={job_id} objs={obj_count} anims={total_anims}")
-        log_game("ANIM-WORKER", f"JOB job={job_id} -> worker={ANIMATION_WORKER_ID}")
-
-        return obj_count
-
-    return 0
-
-
-def process_animation_result(modal, result) -> int:
-    """
-    Process an ANIMATION_COMPUTE_BATCH result and apply to Blender.
-    Call when receiving result from engine.
-
-    Args:
-        modal: ExpModal operator instance
-        result: EngineResult object
-
-    Returns:
-        Number of objects processed (0 if not an animation result)
-    """
-    # Check for pending batch job
-    if not hasattr(modal, '_pending_anim_batch_job') or not modal._pending_anim_batch_job:
-        return 0
-
-    job_id = result.job_id
-    if job_id != modal._pending_anim_batch_job.get("job_id"):
-        return 0
-
-    # Clear pending job
-    modal._pending_anim_batch_job = None
-
-    if not result.success:
-        from ..developer.dev_logger import log_game
-        log_game("ANIMATIONS", f"BATCH_FAIL job={job_id} error={result.error}")
-        return 0
-
-    result_data = result.result
-    results_dict = result_data.get("results", {})
-
-    if not results_dict:
-        return 0
-
-    if not hasattr(modal, 'anim_controller') or not modal.anim_controller:
-        return 0
-
-    # Apply all object poses from batch result
-    objects_processed = 0
-    for object_name, obj_result in results_dict.items():
-        bone_transforms = obj_result.get("bone_transforms", {})
-        object_transform = obj_result.get("object_transform")
-        if bone_transforms or object_transform:
-            modal.anim_controller.apply_worker_result(object_name, bone_transforms, object_transform)
-            objects_processed += 1
-
-    return objects_processed
-
-
-def poll_animation_results_with_timeout(modal, timeout: float = 0.002) -> int:
-    """
-    Poll for ANIMATION_COMPUTE_BATCH result with short timeout for same-frame sync.
-    BATCHED: Only ONE result to wait for regardless of object count.
-
-    Non-animation results that arrive during polling are cached for later processing
-    by _poll_and_apply_engine_results().
-
-    Args:
-        modal: ExpModal operator instance
-        timeout: Max time to wait in seconds (default 2ms)
-
-    Returns:
-        Number of objects whose poses were applied
-    """
-    if not hasattr(modal, 'engine') or not modal.engine:
-        return 0
-
-    # Check for pending batch job
-    if not hasattr(modal, '_pending_anim_batch_job') or not modal._pending_anim_batch_job:
-        return 0
-
-    # Initialize cached results list if needed (for non-animation results)
-    if not hasattr(modal, '_cached_other_results'):
-        modal._cached_other_results = []
-
-    # Small pre-poll delay to give worker time to start (like camera does)
-    time.sleep(0.00015)  # 150µs
-
-    start_time = time.perf_counter()
-    objects_applied = 0
-
-    while time.perf_counter() - start_time < timeout:
-        # Non-blocking poll
-        results = list(modal.engine.poll_results(max_results=20))
-
-        for result in results:
-            if result.job_type == "ANIMATION_COMPUTE_BATCH":
-                objects_applied = process_animation_result(modal, result)
-
-                # Process worker logs
-                if result.success:
-                    result_data = result.result
-                    worker_logs = result_data.get("logs", [])
-                    total_objects = result_data.get("total_objects", 0)
-                    total_bones = result_data.get("total_bones", 0)
-                    total_anims = result_data.get("total_anims", 0)
-                    calc_time = result_data.get("calc_time_us", 0.0)
-
-                    # Log batch result
-                    from ..developer.dev_logger import log_game
-                    log_game("ANIMATIONS", f"BATCH_RESULT job={result.job_id} objs={total_objects} bones={total_bones} anims={total_anims} time={calc_time:.0f}µs")
-
-                    # Log which worker processed the job
-                    log_game("ANIM-WORKER", f"RESULT job={result.job_id} worker={result.worker_id} {total_objects}objs {total_bones}bones {calc_time:.0f}µs")
-
-                    if worker_logs:
-                        from ..developer.dev_logger import log_worker_messages
-                        log_worker_messages(worker_logs)
-            else:
-                # Cache non-animation results for later processing
-                modal._cached_other_results.append(result)
-
-        # Batch job completed (only one to wait for)
-        if not modal._pending_anim_batch_job:
-            break
-
-        # Brief sleep to avoid busy spin
-        time.sleep(0.0001)  # 100µs
-
-    return objects_applied
-
-
-def get_cached_other_results(modal) -> list:
-    """
-    Get and clear any results cached during animation polling.
-    Call from _poll_and_apply_engine_results() to process these.
-    """
-    if not hasattr(modal, '_cached_other_results'):
-        return []
-    results = modal._cached_other_results
-    modal._cached_other_results = []
-    return results
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# POSE LIBRARY CACHING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def cache_poses_in_workers(modal, context) -> bool:
-    """
-    Cache pose library in the ANIMATION WORKER for runtime pose playback.
-    MUST be called AFTER init_engine() since it needs workers to be running.
-
-    Poses are sent to ANIMATION_WORKER_ID (worker 0) since pose playback
-    integrates with the animation blend system.
-
-    Args:
-        modal: ExpModal operator instance
-        context: Blender context
-
-    Returns:
-        True if caching succeeded or no poses to cache
-    """
-    import json
-    from ..developer.dev_logger import log_game
-
-    scene = context.scene
-
-    # Check if pose library exists and has poses
-    if not hasattr(scene, 'pose_library') or len(scene.pose_library) == 0:
-        log_game("POSE-CACHE", "EMPTY no poses in library")
-        return True  # No poses to cache is not an error
-
-    if not hasattr(modal, 'engine') or not modal.engine or not modal.engine.is_alive():
-        log_game("POSE-CACHE", "SKIP engine not available")
-        return False
-
-    # Convert pose library to worker-friendly format
-    # Format: {pose_name: {bone_transforms: {bone: [10 floats]}, source_armature: str}}
-    poses_data = {}
-
-    for pose_entry in scene.pose_library:
-        try:
-            bone_data = json.loads(pose_entry.bone_data_json)
-            poses_data[pose_entry.name] = {
-                "bone_transforms": bone_data,
-                "source_armature": pose_entry.source_armature_name,
-                "bone_count": len(bone_data),
-            }
-        except json.JSONDecodeError:
-            log_game("POSE-CACHE", f"SKIP pose='{pose_entry.name}' invalid JSON")
-            continue
-
-    if not poses_data:
-        log_game("POSE-CACHE", "EMPTY no valid poses after parsing")
-        return True
-
-    # Log pose list
-    pose_count = len(poses_data)
-    pose_names = list(poses_data.keys())
-    total_bones = sum(p["bone_count"] for p in poses_data.values())
-    log_game("POSE-CACHE", f"CACHING {pose_count} poses: {pose_names}")
-
-    # Send cache to ANIMATION WORKER ONLY
-    transfer_start = time.perf_counter()
-    job_id = modal.engine.submit_job(
-        "CACHE_POSES",
-        {"poses": poses_data},
-        check_overload=False,
-        target_worker=ANIMATION_WORKER_ID
-    )
-
-    # Wait for cache confirmation from animation worker
-    if job_id is not None and job_id >= 0:
-        start_time = time.perf_counter()
-        timeout = 1.0
-        confirmed = False
-
-        while not confirmed:
-            if time.perf_counter() - start_time > timeout:
-                log_game("POSE-CACHE", f"TIMEOUT worker={ANIMATION_WORKER_ID} cache not confirmed")
-                break
-
-            results = list(modal.engine.poll_results(max_results=50))
-            for result in results:
-                if result.job_type == "CACHE_POSES" and result.success:
-                    if result.worker_id == ANIMATION_WORKER_ID:
-                        confirmed = True
-                        break
-
-            if confirmed:
-                break
-            time.sleep(0.002)
-
-        transfer_elapsed_ms = (time.perf_counter() - transfer_start) * 1000
-
-        if confirmed:
-            log_game("POSE-CACHE", f"CACHE_OK worker={ANIMATION_WORKER_ID} {pose_count}poses {total_bones}bones ({transfer_elapsed_ms:.0f}ms)")
-        else:
-            log_game("POSE-CACHE", f"CACHE_FAIL worker={ANIMATION_WORKER_ID} timeout after {transfer_elapsed_ms:.0f}ms")
-
-    return True
-
-
-# Joint limits caching removed - not needed for rigid animations
+# =============================================================================
+# REMOVED: Worker animation functions (2025-01 optimization)
+# =============================================================================
+# Animation computation moved to main thread - eliminates 1-5ms IPC overhead
+# per frame for trivial math operations (array lookups + quaternion slerp).
+#
+# Removed functions:
+# - submit_animation_jobs() - No longer needed, compute_and_apply_local() replaces
+# - process_animation_result() - No longer needed, results computed locally
+# - poll_animation_results_with_timeout() - No longer needed, no polling
+# - get_cached_other_results() - No longer needed, no result caching
+# - cache_animations_in_workers() - No longer needed, cache stays on main thread
+# - ANIMATION_WORKER_ID - No longer needed, no worker designation
+#
+# The new flow in exp_loop.py:
+#   update_animations_state(op, agg_dt)    # Update times/fades
+#   ctrl.compute_and_apply_local()         # Sample, blend, apply (all local)
+# =============================================================================
+
+
+# NOTE: Pose Library Caching removed (2025) - not used
+# NOTE: Worker animation functions removed (2025-01) - animations computed locally

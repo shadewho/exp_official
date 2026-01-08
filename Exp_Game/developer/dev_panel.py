@@ -261,13 +261,10 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
                 if scene.dev_rig_vis_bone_axes:
                     col.prop(scene, "dev_rig_vis_axis_length", text="Axis Length")
 
-            # ─── Debug Toggles (cleaned up) ────────────────────────────────
+            # ─── Debug Toggles ────────────────────────────────
             col = box.column(align=True)
             col.prop(scene, "dev_debug_animations", text="Animation Logs")
             col.prop(scene, "dev_debug_anim_cache", text="Cache Logs")
-            col.prop(scene, "dev_debug_anim_worker", text="Anim Worker Logs")
-            col.prop(scene, "dev_debug_pose_blend", text="Pose Blend Logs")
-            col.prop(scene, "dev_debug_layers", text="Layer Logs")
 
             props = scene.anim2_test
             ctrl = get_test_controller()
