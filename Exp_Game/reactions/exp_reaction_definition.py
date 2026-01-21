@@ -933,9 +933,19 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     # --------------------------------------------------
     # TRACK TO (chase / move toward) REACTION FIELDS
     # --------------------------------------------------
+    track_mode: bpy.props.EnumProperty(
+        name="Mode",
+        items=[
+            ('DIRECT', "Direct", "Move straight toward target, stop at walls"),
+            ('PATHFINDING', "Pathfinding", "Smart navigation around obstacles (like zombies)"),
+        ],
+        default='DIRECT',
+        description="How the mover navigates toward the target"
+    )
+
     track_from_use_character: bpy.props.BoolProperty(
         name="From: Use Character",
-        default=True,
+        default=False,
         description="If True, the mover is scene.target_armature; else use 'From Object'"
     )
     track_from_object: bpy.props.PointerProperty(

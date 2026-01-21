@@ -545,6 +545,18 @@ def register_properties():
     # NOTE: dev_debug_anim_worker removed (2025-01) - animations computed locally, no worker
     # NOTE: dev_debug_layers removed (2025) - layer system not used
 
+    bpy.types.Scene.dev_debug_startup_diag = bpy.props.BoolProperty(
+        name="Startup Diagnostics",
+        description=(
+            "Cold start diagnostics:\n"
+            "• Frame interval tracking (first 100 frames)\n"
+            "• Physics steps histogram\n"
+            "• Hiccup detection (frames > 50ms)\n"
+            "• Good/bad start classification"
+        ),
+        default=False
+    )
+
     bpy.types.Scene.dev_debug_projectiles = bpy.props.BoolProperty(
         name="Projectiles",
         description=(
@@ -699,6 +711,7 @@ def unregister_properties():
         'dev_debug_animations',
         'dev_debug_anim_cache',
         'dev_debug_anim_worker',
+        'dev_debug_startup_diag',
         'dev_debug_projectiles',
         'dev_debug_hitscans',
         'dev_debug_transforms',

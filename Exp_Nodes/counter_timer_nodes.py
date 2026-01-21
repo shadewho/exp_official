@@ -337,3 +337,4 @@ class TimerNode(_ExploratoryNodeOnly, bpy.types.Node):
             nm = getattr(scn.timers[idx], "name", "")
             return nm if nm else "Timer"
         return "Timer"
+#test

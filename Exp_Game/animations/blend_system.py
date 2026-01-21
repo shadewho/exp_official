@@ -26,7 +26,6 @@ Usage:
     final_pose = blend_system.evaluate(delta_time)
 """
 
-import time
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
@@ -37,6 +36,7 @@ from .bone_groups import (
     create_blend_mask, get_bone_indices
 )
 from ..developer.dev_logger import log_game
+from ..props_and_utils.exp_time import get_game_time
 
 # Import vectorized blend functions for performance
 from ..engine.animations.blend import (
@@ -164,6 +164,9 @@ class BlendSystem:
         # Layer counter for unique naming (faster than perf_counter)
         self._layer_counter: int = 0
 
+        # Dirty flag for lazy layer sorting (avoids O(n log n) per play call)
+        self._layers_dirty: bool = False
+
     # =========================================================================
     # LAYER MANAGEMENT
     # =========================================================================
@@ -205,7 +208,7 @@ class BlendSystem:
             speed=speed,
             looping=looping,
             fade_in=fade_time,
-            start_time=time.perf_counter()
+            start_time=get_game_time()
         )
 
         log_game("ANIMATIONS", f"BASE_LAYER set={animation_name} speed={speed:.2f} fade={fade_time:.2f}s")
@@ -261,11 +264,11 @@ class BlendSystem:
             fade_in=fade_in,
             fade_out=fade_out,
             priority=priority,
-            start_time=time.perf_counter()
+            start_time=get_game_time()
         )
 
         self._additive_layers.append(layer)
-        self._sort_layers()
+        self._layers_dirty = True  # Mark for lazy sorting in evaluate()
 
         log_game("ANIMATIONS", f"ADDITIVE_PLAY name={animation_name} mask={mask} weight={weight:.2f}")
         return layer_name
@@ -308,11 +311,11 @@ class BlendSystem:
             fade_in=fade_in,
             fade_out=fade_out,
             priority=priority,
-            start_time=time.perf_counter()
+            start_time=get_game_time()
         )
 
         self._override_layers.append(layer)
-        self._sort_layers()
+        self._layers_dirty = True  # Mark for lazy sorting in evaluate()
 
         log_game("ANIMATIONS", f"OVERRIDE_PLAY name={animation_name} mask={mask} weight={weight:.2f}")
         return layer_name
@@ -361,8 +364,6 @@ class BlendSystem:
         Args:
             delta_time: Time since last frame
         """
-        current_time = time.perf_counter()
-
         # Update base layer
         if self._base_layer:
             self._update_layer(self._base_layer, delta_time)
@@ -396,8 +397,8 @@ class BlendSystem:
         # Check layer duration (separate from animation duration for looping)
         # layer.duration controls how long the LAYER plays before fading out
         if layer.duration > 0 and not layer.fading_out:
-            # Calculate total elapsed time since layer started
-            elapsed = time.perf_counter() - layer.start_time
+            # Calculate total elapsed time since layer started (uses game time, not wall clock)
+            elapsed = get_game_time() - layer.start_time
             if elapsed >= layer.duration:
                 layer.fading_out = True
                 log_game("ANIMATIONS", f"LAYER_DURATION_END name={layer.animation_name} elapsed={elapsed:.2f}s")
@@ -433,6 +434,11 @@ class BlendSystem:
         Returns:
             Pose array (num_bones, 10) or None if nothing to evaluate
         """
+        # Lazy sort: only sort when layers were added since last evaluate
+        if self._layers_dirty:
+            self._sort_layers()
+            self._layers_dirty = False
+
         # Fast check: anything to evaluate?
         has_base = self._base_layer is not None
         has_additive = any(l.weight > WEIGHT_THRESHOLD and not l.finished for l in self._additive_layers)

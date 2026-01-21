@@ -22,6 +22,9 @@ from .exp_bindings import resolve_vector, resolve_euler, resolve_float
 _active_transform_tasks = []
 _pending_transform_job_id = None
 
+# Reusable buffer for transform batch data (avoids allocation per frame)
+_transform_batch_buffer = []
+
 
 class TransformTask:
     """Stores transform interpolation parameters. Computation happens in worker."""
@@ -160,16 +163,18 @@ def submit_transform_batch(engine):
     if _pending_transform_job_id is not None:
         return None
 
-    # Build batch data
-    transforms_data = [task.to_worker_data() for task in _active_transform_tasks]
+    # Build batch data (reuse buffer to avoid allocation)
+    _transform_batch_buffer.clear()
+    for task in _active_transform_tasks:
+        _transform_batch_buffer.append(task.to_worker_data())
 
     job_id = engine.submit_job("TRANSFORM_BATCH", {
-        "transforms": transforms_data,
+        "transforms": _transform_batch_buffer,
     })
 
     _pending_transform_job_id = job_id
 
-    log_game("TRANSFORMS", f"SUBMIT batch={len(transforms_data)} job_id={job_id}")
+    log_game("TRANSFORMS", f"SUBMIT batch={len(_transform_batch_buffer)} job_id={job_id}")
 
     return job_id
 
@@ -333,6 +338,7 @@ def clear_transform_tasks():
     _active_transform_tasks.clear()
     _pending_transform_job_id = None
     _cached_other_results = []
+    _transform_batch_buffer.clear()
 
 
 # ------------------------------

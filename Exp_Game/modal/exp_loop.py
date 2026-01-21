@@ -4,7 +4,13 @@ import time
 import bpy
 from ..props_and_utils.exp_time import update_real_time, tick_sim_time, get_game_time
 from ..animations.state_machine import AnimState
-from .exp_engine_bridge import update_animations_state
+from .exp_engine_bridge import (
+    update_animations_state,
+    submit_animation_jobs,
+    process_animation_result,
+    poll_animation_results_with_timeout,
+    get_cached_anim_other_results,
+)
 from ..reactions.exp_reactions import update_property_tasks
 from ..reactions.exp_projectiles import (
     update_hitscan_tasks,  # Just despawns visual clones
@@ -183,6 +189,22 @@ def _handle_cache_animations_result(op, result, stats):
             log_worker_messages(worker_logs)
 
 
+def _handle_animation_compute_batch_result(op, result, stats):
+    """Handle ANIMATION_COMPUTE_BATCH result - apply computed poses to bpy."""
+    try:
+        objects_applied = process_animation_result(op, result)
+        if objects_applied > 0:
+            from ..developer.dev_logger import log_game
+            log_game("ANIM", f"Applied poses to {objects_applied} objects")
+    except Exception as e:
+        print(f"[GameLoop] Error applying animation batch result: {e}")
+
+
+def _handle_clear_animation_cache_result(op, result, stats):
+    """Handle CLEAR_ANIMATION_CACHE result."""
+    pass  # No action needed, just acknowledge
+
+
 def _handle_evaluate_trackers_result(op, result, stats):
     """Handle EVALUATE_TRACKERS result."""
     try:
@@ -253,6 +275,8 @@ _RESULT_HANDLERS = {
     "CACHE_GRID": _handle_cache_grid_result,
     "CACHE_DYNAMIC_MESH": _handle_cache_dynamic_mesh_result,
     "CACHE_ANIMATIONS": _handle_cache_animations_result,
+    "ANIMATION_COMPUTE_BATCH": _handle_animation_compute_batch_result,
+    "CLEAR_ANIMATION_CACHE": _handle_clear_animation_cache_result,
     "EVALUATE_TRACKERS": _handle_evaluate_trackers_result,
     "CACHE_TRACKERS": _handle_cache_trackers_result,
     "HITSCAN_BATCH": _handle_hitscan_batch_result,
@@ -276,6 +300,15 @@ class GameLoop:
         # Summary print timers (for 1Hz stats)
         self._last_engine_summary = time.perf_counter()
         self._last_kcc_summary = time.perf_counter()
+
+        # COLD START DIAGNOSTICS - track first 100 frames to detect bad starts
+        self._startup_diag_frames = 100  # How many frames to analyze
+        self._startup_diag_frame = 0
+        self._startup_diag_intervals = []  # Frame intervals in ms
+        self._startup_diag_steps = []  # Physics steps per frame
+        self._startup_diag_start = time.perf_counter()
+        self._startup_diag_last_time = self._startup_diag_start
+        self._startup_diag_logged = False
 
         # Reset stats tracker on game start
         get_stats_tracker().reset_all()
@@ -305,6 +338,52 @@ class GameLoop:
         """Clean up game loop resources (called when game stops)."""
         shutdown_blend_system()
         clear_pending_parenting()
+
+    def _log_startup_diagnostics(self, log_game):
+        """
+        Log startup timing diagnostics to help identify cold start issues.
+        Called after first N frames to compare good vs bad starts.
+        """
+        if not self._startup_diag_intervals:
+            return
+
+        intervals = self._startup_diag_intervals
+        steps = self._startup_diag_steps
+
+        # Frame interval stats
+        avg_interval = sum(intervals) / len(intervals)
+        min_interval = min(intervals)
+        max_interval = max(intervals)
+
+        # Count hiccups (frames > 50ms = missed frame)
+        hiccups = sum(1 for i in intervals if i > 50)
+
+        # Count fast frames (< 20ms = catching up)
+        fast_frames = sum(1 for i in intervals if i < 20)
+
+        # Physics steps histogram
+        steps_0 = sum(1 for s in steps if s == 0)
+        steps_1 = sum(1 for s in steps if s == 1)
+        steps_2 = sum(1 for s in steps if s == 2)
+        steps_3 = sum(1 for s in steps if s >= 3)
+
+        # Effective FPS
+        total_time = sum(intervals) / 1000  # seconds
+        effective_fps = len(intervals) / total_time if total_time > 0 else 0
+
+        # Determine health status
+        # Bad signs: many hiccups, low FPS, lots of catchup steps
+        is_healthy = hiccups < 5 and effective_fps > 25 and steps_3 < 10
+        status = "GOOD" if is_healthy else "COLD_START_DETECTED"
+
+        log_game("STARTUP-DIAG", f"{status} frames={len(intervals)} fps={effective_fps:.1f} avg={avg_interval:.1f}ms min={min_interval:.1f}ms max={max_interval:.1f}ms hiccups={hiccups} fast={fast_frames}")
+        log_game("STARTUP-DIAG", f"PHYSICS_STEPS 0={steps_0} 1={steps_1} 2={steps_2} 3+={steps_3}")
+
+        # If cold start detected, log first 10 frame intervals for debugging
+        if not is_healthy:
+            first_10 = [f"{i:.0f}" for i in intervals[:10]]
+            log_game("STARTUP-DIAG", f"FIRST_10_INTERVALS_MS: {' '.join(first_10)}")
+
     # ---------- Public API ----------
 
     def on_timer(self, context):
@@ -315,8 +394,20 @@ class GameLoop:
         op = self.op
 
         # Increment frame counter for fast logger
-        from ..developer.dev_logger import increment_frame
+        from ..developer.dev_logger import increment_frame, log_game
         increment_frame()
+
+        # COLD START DIAGNOSTICS - collect timing data for first N frames
+        if self._startup_diag_frame < self._startup_diag_frames:
+            now = time.perf_counter()
+            interval_ms = (now - self._startup_diag_last_time) * 1000
+            self._startup_diag_intervals.append(interval_ms)
+            self._startup_diag_last_time = now
+            self._startup_diag_frame += 1
+        elif not self._startup_diag_logged:
+            # Log startup diagnostics summary
+            self._log_startup_diagnostics(log_game)
+            self._startup_diag_logged = True
 
         # A) Timebases (scaled + wall clock)
         op.update_time()        # scaled per-frame dt (UI / interpolation)
@@ -334,6 +425,10 @@ class GameLoop:
         # B) Decide how many 30 Hz physics steps are due (bounded catch-up)
         steps = op._physics_steps_due()
         op._perf_last_physics_steps = steps
+
+        # COLD START DIAGNOSTICS - track physics steps
+        if self._startup_diag_frame <= self._startup_diag_frames and len(self._startup_diag_steps) < self._startup_diag_frames:
+            self._startup_diag_steps.append(steps)
 
         if steps:
             # Shared SIM dt per 30 Hz step; aggregated dt for bulk systems
@@ -513,21 +608,38 @@ class GameLoop:
                 audio_state_mgr.update_audio_state(new_state)
                 self._last_anim_state = new_state
 
-        # MAIN THREAD ANIMATION FLOW (no worker IPC overhead):
+        # WORKER-OFFLOADED ANIMATION FLOW:
+        # ALL animation computation runs on dedicated worker (worker 0).
+        # Main thread ONLY does:
+        #   1. State updates (times, fades)
+        #   2. Job submission
+        #   3. Result polling with timeout (same-frame sync)
+        #   4. bpy writes (applying poses)
+        #
+        # Benefits:
+        # - Frees main thread from sampling/blending math
+        # - Parallelizes computation while main thread does other work
+        # - Same-frame sync via polling ensures no animation lag
+
         # 1. Update blend system layer timings
         blend_system = get_blend_system()
         if blend_system:
             blend_system.update(agg_dt)
 
-        # 2. Update animation state (times, fades)
+        # 2. Update animation state (times, fades) - required before job submission
         update_animations_state(op, agg_dt)
 
-        # 3. Compute and apply poses locally (no IPC - 100-1000x faster)
-        # Animation math is trivial: array lookup + quaternion slerp = ~10-50μs
-        # Worker IPC overhead was ~1-5ms - we eliminate that entirely
-        ctrl.compute_and_apply_local()
+        # 3. Submit animation compute jobs to worker 0
+        engine = getattr(op, "engine", None)
+        if engine and engine.is_alive():
+            submit_animation_jobs(op)
 
-        # 4. Apply blend system OVERLAY on top of locomotion
+            # 4. SAME-FRAME SYNC: Poll for results immediately (2ms timeout)
+            # Worker computes in ~100-500µs, so 2ms is plenty of headroom
+            # This ensures animations update THIS frame, not next frame
+            poll_animation_results_with_timeout(op, timeout=0.002)
+
+        # 5. Apply blend system OVERLAY on top of locomotion (additive layers)
         armature = bpy.context.scene.target_armature
         if blend_system and armature:
             blend_system.apply_to_armature(armature)
@@ -596,6 +708,16 @@ class GameLoop:
                     handler(op, result, stats)
 
         for result in transform_cached:
+            stats.record_engine_job_completed()
+            op.process_engine_result(result)
+            if result.success:
+                handler = _RESULT_HANDLERS.get(result.job_type)
+                if handler:
+                    handler(op, result, stats)
+
+        # Include any results cached by animation polling during same-frame sync
+        anim_cached = get_cached_anim_other_results(op)
+        for result in anim_cached:
             stats.record_engine_job_completed()
             op.process_engine_result(result)
             if result.success:

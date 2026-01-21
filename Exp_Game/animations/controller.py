@@ -1,19 +1,24 @@
 # Exp_Game/animations/controller.py
 """
-AnimationController - Main thread animation orchestrator.
+AnimationController - Animation state and playback management.
 
-MAIN THREAD ARCHITECTURE (2025-01 optimization):
-- All animation work happens on main thread (no IPC overhead)
-- Sampling and blending use vectorized numpy (fast)
-- Direct apply to Blender pose bones
+WORKER-OFFLOADED ARCHITECTURE:
+- Animation state (times, fades) updated on main thread
+- Sampling and blending computed on dedicated worker (worker 0)
+- Results applied to Blender pose bones on main thread
 
 Usage:
     controller = AnimationController()
     controller.play("Player", "Walk")
 
-    # Each frame:
-    controller.update_state(delta_time)      # Update times/fades
-    controller.compute_and_apply_local()     # Sample, blend, apply (all local)
+    # Each frame (via exp_engine_bridge):
+    update_animations_state(modal, dt)           # Update times/fades
+    submit_animation_jobs(modal)                 # Submit batch job to worker 0
+    poll_animation_results_with_timeout(modal)   # Same-frame sync
+    # Results applied via process_animation_result() -> apply_worker_result()
+
+Note: compute_and_apply_local() exists for testing/debugging but is not
+used in the main game loop - all animation compute is offloaded to workers.
 """
 
 import bpy
@@ -461,9 +466,8 @@ class AnimationController:
         """
         Get job data for worker-based animation compute.
 
-        NOTE: Main game uses compute_and_apply_local() instead. This method
-        is kept for the developer test panel (animations/test_panel.py) which
-        optionally uses workers for testing.
+        Called by submit_animation_jobs() to prepare data for
+        ANIMATION_COMPUTE_BATCH job to worker 0.
 
         Returns:
             Dict[object_name, job_data] where job_data is:
@@ -566,7 +570,9 @@ class AnimationController:
                 lx, ly, lz = object_transform[4:7]
                 sx, sy, sz = object_transform[7:10]
 
-                obj.rotation_mode = 'QUATERNION'
+                # Only set rotation_mode if not already quaternion (avoid redundant write)
+                if obj.rotation_mode != 'QUATERNION':
+                    obj.rotation_mode = 'QUATERNION'
                 obj.rotation_quaternion = (qw, qx, qy, qz)
                 obj.location = (lx, ly, lz)
                 obj.scale = (sx, sy, sz)
@@ -673,9 +679,8 @@ class AnimationController:
         """
         Get animation cache data formatted for CACHE_ANIMATIONS job.
 
-        NOTE: Main game uses compute_and_apply_local() instead - no worker caching.
-        This method is kept for the developer test panel (animations/test_panel.py)
-        which optionally uses workers for testing.
+        Called by cache_animations_in_workers() at game start to send
+        all baked animations to worker 0.
 
         Returns:
             Dict ready to send as CACHE_ANIMATIONS job data:

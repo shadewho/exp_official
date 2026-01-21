@@ -1,6 +1,24 @@
 import bpy
 import mathutils
-import time
+
+# Generation counter - increment to invalidate all cached transforms
+# (call reset_dyn_transform_generation() when workers reset)
+_dyn_transform_generation = 0
+
+
+def reset_dyn_transform_generation():
+    """Call this when workers are reset to force re-sending all transforms."""
+    global _dyn_transform_generation
+    _dyn_transform_generation += 1
+
+
+def _matrix_close(m1, m2, tolerance=1e-5):
+    """Fast matrix comparison - returns True if matrices are nearly identical."""
+    for i in range(4):
+        for j in range(4):
+            if abs(m1[i][j] - m2[i][j]) > tolerance:
+                return False
+    return True
 
 # ═══════════════════════════════════════════════════════════════════════════
 # UNIFIED DYNAMIC MESH SYSTEM (2025-12-13)
@@ -151,14 +169,28 @@ def update_dynamic_meshes(modal_op):
                     log_game("DYN-CACHE", f"CACHED {dyn_obj.name}: {len(triangles)} tris, radius={radius:.2f}m")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # PHASE 2: Send transforms for ALL dynamic meshes
+    # PHASE 2: Send transforms for CHANGED dynamic meshes only (dirty checking)
     # ═══════════════════════════════════════════════════════════════════════
-    # Worker caches transforms, so stationary meshes have zero worker cost.
-    # We still send all transforms because worker cache can be cleared/reset
-    # and we need to ensure it always has current data.
+    # Worker caches transforms, so stationary meshes have zero main thread cost.
+    # We use generation counter to detect worker resets - if generation changed,
+    # invalidate all cached matrices and force re-send.
     # ═══════════════════════════════════════════════════════════════════════
 
+    # Initialize dirty checking state
+    if not hasattr(modal_op, "_prev_dyn_matrices"):
+        modal_op._prev_dyn_matrices = {}
+        modal_op._prev_dyn_generation = _dyn_transform_generation
+
+    # Check if generation changed (worker was reset)
+    if modal_op._prev_dyn_generation != _dyn_transform_generation:
+        modal_op._prev_dyn_matrices.clear()
+        modal_op._prev_dyn_generation = _dyn_transform_generation
+
     mesh_count = 0
+    moved_count = 0
+
+    # Zero velocity vector for stationary meshes
+    zero_velocity = mathutils.Vector((0.0, 0.0, 0.0))
 
     for pm in scene.proxy_meshes:
         dyn_obj = pm.mesh_object
@@ -166,6 +198,7 @@ def update_dynamic_meshes(modal_op):
             continue
 
         mesh_count += 1
+        obj_id = id(dyn_obj)
         cur_M = dyn_obj.matrix_world
 
         # Get cached radius (or compute if missing - fallback only)
@@ -178,10 +211,33 @@ def update_dynamic_meshes(modal_op):
         modal_op.dynamic_objects_map[dyn_obj] = rad
 
         # ─────────────────────────────────────────────────────────────────
-        # Compute velocities for platform carry (moving platforms)
-        # OPTIMIZED: Avoid redundant matrix copies on first frame
+        # Dirty checking: skip expensive velocity computation for stationary meshes
+        # IMPORTANT: Always update caches to avoid velocity spikes when movement resumes
         # ─────────────────────────────────────────────────────────────────
+        prev_M = modal_op._prev_dyn_matrices.get(obj_id)
+        is_stationary = prev_M is not None and _matrix_close(cur_M, prev_M)
+
+        # Always update matrix cache to avoid drift accumulation
+        modal_op._prev_dyn_matrices[obj_id] = cur_M.copy()
+
+        # Get current position (cheap - just a vector copy)
         cur_pos = cur_M.translation.copy()
+
+        if is_stationary:
+            # Stationary - set zero velocities, skip expensive quaternion math
+            modal_op.platform_linear_velocity_map[dyn_obj] = zero_velocity
+            modal_op.platform_ang_velocity_map[dyn_obj] = zero_velocity
+            # Still update position cache to avoid velocity spikes when movement resumes
+            modal_op.platform_prev_positions[dyn_obj] = cur_pos
+            # Note: We skip updating prev_quaternions here since it requires to_quaternion()
+            # This is safe because angular velocity will be recalculated when movement resumes
+            continue
+
+        moved_count += 1
+
+        # ─────────────────────────────────────────────────────────────────
+        # Compute velocities for platform carry (moving platforms)
+        # ─────────────────────────────────────────────────────────────────
         prev_pos = modal_op.platform_prev_positions.get(dyn_obj)
 
         if prev_pos is not None:
@@ -198,7 +254,7 @@ def update_dynamic_meshes(modal_op):
 
         if prev_quat is None:
             # First frame for this mesh - no angular velocity yet
-            modal_op.platform_ang_velocity_map[dyn_obj] = mathutils.Vector((0.0, 0.0, 0.0))
+            modal_op.platform_ang_velocity_map[dyn_obj] = zero_velocity
         else:
             # Compute delta rotation: delta = cur @ prev.inverted()
             # Quaternion inversion is just conjugate for unit quaternions - O(1)!
@@ -212,7 +268,7 @@ def update_dynamic_meshes(modal_op):
                     log_game("DYN-CACHE", f"WARN: axis_angle failed: {type(e).__name__}")
                 axis, angle = mathutils.Vector((0.0, 0.0, 1.0)), 0.0
 
-            omega = axis * (angle / frame_dt) if angle > 1.0e-9 else mathutils.Vector((0.0, 0.0, 0.0))
+            omega = axis * (angle / frame_dt) if angle > 1.0e-9 else zero_velocity
             modal_op.platform_ang_velocity_map[dyn_obj] = omega
 
         # Store current quaternion for next frame (4 floats vs 16 for matrix)
@@ -223,7 +279,7 @@ def update_dynamic_meshes(modal_op):
     # ═══════════════════════════════════════════════════════════════════════
     if debug_dyn_cache and mesh_count > 0:
         from ..developer.dev_logger import log_game
-        log_game("DYN-CACHE", f"TRANSFORMS: sent={mesh_count} meshes")
+        log_game("DYN-CACHE", f"TRANSFORMS: total={mesh_count} moved={moved_count} stationary={mesh_count - moved_count}")
 
 
 def cleanup_dynamic_mesh_state(modal_op):
@@ -240,6 +296,10 @@ def cleanup_dynamic_mesh_state(modal_op):
         modal_op.platform_ang_velocity_map.clear()
     if hasattr(modal_op, "platform_prev_quaternions"):
         modal_op.platform_prev_quaternions.clear()
+
+    # Clear dirty checking state
+    if hasattr(modal_op, "_prev_dyn_matrices"):
+        modal_op._prev_dyn_matrices.clear()
 
     # Clear mesh tracking
     if hasattr(modal_op, "_cached_dyn_radius"):

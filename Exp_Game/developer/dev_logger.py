@@ -76,8 +76,10 @@ _CATEGORY_MAP = {
     'INTERACTIONS': 'interactions',
     'AUDIO': 'audio',
     'ANIMATIONS': 'animations',
+    'ANIM': 'animations',  # Animation batch submit/results
     'ANIM-CACHE': 'anim_cache',
-    # NOTE: ANIM-WORKER removed (2025-01) - animations computed locally, no worker
+    'ANIM-WORKER': 'anim_cache',  # Worker-side animation logs
+    'STARTUP-DIAG': 'startup_diag',  # Cold start diagnostics
     'TEST_MODAL': 'animations',  # Animation 2.0 test modal
     'PROJECTILE': 'projectiles',
     'HITSCAN': 'hitscans',
@@ -108,8 +110,6 @@ def start_session():
     _total_logs = 0
     _logs_per_category.clear()
     _log_buffer.clear()
-
-    print("[DevLogger] Session started - fast logging active")
 
 
 def increment_frame():
@@ -230,7 +230,6 @@ def export_game_log(filepath: str) -> bool:
     global _log_buffer, _session_start_time
 
     if not _log_buffer:
-        print("[DevLogger] No logs to export (buffer empty)")
         return False
 
     try:
@@ -261,11 +260,9 @@ def export_game_log(filepath: str) -> bool:
             f.write(f"END OF LOG - {_total_logs} entries\n")
             f.write("=" * 80 + "\n")
 
-        print(f"[DevLogger] ✓ Exported {_total_logs} logs to: {filepath}")
         return True
 
-    except Exception as e:
-        print(f"[DevLogger] ERROR exporting log: {e}")
+    except Exception:
         return False
 
 

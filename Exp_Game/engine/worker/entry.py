@@ -11,6 +11,7 @@ import traceback
 import sys
 import os
 from queue import Empty
+import numpy as np
 
 # Add engine folder to path for worker submodule imports
 # This is necessary because bootstrap uses spec_from_file_location
@@ -28,6 +29,17 @@ from worker.math import (
 from worker.physics import handle_kcc_physics_step
 from worker.jobs import handle_camera_occlusion
 from worker.reactions.transforms import handle_transform_batch
+from worker.reactions.hitscan import handle_hitscan_batch
+from worker.reactions.projectiles import handle_projectile_update_batch
+from worker.reactions.tracking import handle_tracking_batch
+
+# Animation imports (worker-safe, no bpy)
+from animations.blend import (
+    sample_bone_animation,
+    blend_bone_poses,
+    sample_object_animation,
+    blend_object_transforms,
+)
 
 
 # ============================================================================
@@ -53,6 +65,162 @@ _cached_dynamic_meshes = {}
 # Worker caches last known transform for each mesh.
 _cached_dynamic_transforms = {}
 
+# Animation cache: {anim_name: dict} - stores raw animation dicts, NOT BakedAnimation objects
+# Sent once via CACHE_ANIMATIONS job at game start
+# Dicts contain: bone_transforms, bone_names, object_transforms, duration, fps, animated_mask
+_cached_animations = {}
+
+# Flag for lazy numpy conversion - reset when cache is populated
+_animations_numpy_ready = False
+
+
+# ============================================================================
+# ANIMATION HELPER FUNCTIONS
+# ============================================================================
+
+def _ensure_numpy_arrays():
+    """
+    Convert cached animation data from lists to numpy arrays (one-time operation).
+    Called lazily on first animation compute after cache is populated.
+    Returns list of log messages to report status.
+    """
+    global _animations_numpy_ready
+
+    logs = []
+
+    if _animations_numpy_ready:
+        return logs
+
+    convert_start = time.perf_counter()
+
+    total_bones = 0
+    animated_bones = 0
+
+    for anim_name, anim_data in _cached_animations.items():
+        # Convert bone_transforms list to numpy array
+        bt = anim_data.get("bone_transforms")
+        if bt is not None and not isinstance(bt, np.ndarray):
+            if len(bt) > 0:
+                anim_data["bone_transforms"] = np.array(bt, dtype=np.float32)
+                if len(anim_data["bone_transforms"].shape) > 1:
+                    total_bones += anim_data["bone_transforms"].shape[1]
+            else:
+                anim_data["bone_transforms"] = np.empty((0, 0, 10), dtype=np.float32)
+
+        # Convert animated_mask list to numpy array
+        am = anim_data.get("animated_mask")
+        if am is not None and not isinstance(am, np.ndarray):
+            anim_data["animated_mask"] = np.array(am, dtype=bool)
+            animated_bones += int(np.sum(anim_data["animated_mask"]))
+
+        # Convert object_transforms if present
+        ot = anim_data.get("object_transforms")
+        if ot is not None and not isinstance(ot, np.ndarray):
+            anim_data["object_transforms"] = np.array(ot, dtype=np.float32)
+
+    convert_ms = (time.perf_counter() - convert_start) * 1000
+    _animations_numpy_ready = True
+
+    logs.append(("ANIM-WORKER", f"NUMPY_READY {len(_cached_animations)} anims | {total_bones} bones ({animated_bones} animated) | convert={convert_ms:.1f}ms"))
+
+    return logs
+
+
+def _compute_single_object_pose(object_name: str, playing_list: list, logs: list) -> dict:
+    """
+    Compute blended pose for a single object using NUMPY VECTORIZED operations.
+
+    Args:
+        object_name: Name of the object
+        playing_list: List of playing animation dicts
+        logs: List to append log messages to
+
+    Returns:
+        {
+            "bone_transforms": {bone_name: (10-float tuple), ...},
+            "bones_count": int,
+            "object_transform": (10-float tuple) or None,
+            "anims_blended": int,
+        }
+    """
+    if not playing_list:
+        return {
+            "bone_transforms": {},
+            "bones_count": 0,
+            "object_transform": None,
+            "anims_blended": 0,
+        }
+
+    # Ensure numpy arrays are ready (one-time conversion)
+    numpy_logs = _ensure_numpy_arrays()
+    logs.extend(numpy_logs)
+
+    # Sample each playing animation using numpy
+    poses = []
+    bone_weights = []
+    object_transforms = []
+    object_weights = []
+    bone_names = None
+
+    for p in playing_list:
+        anim_name = p.get("anim_name")
+        anim_time = p.get("time", 0.0)
+        weight = p.get("weight", 1.0)
+        looping = p.get("looping", True)
+
+        if weight < 0.001:
+            continue
+
+        # Get cached animation DICT (not BakedAnimation object!)
+        anim_data = _cached_animations.get(anim_name)
+        if anim_data is None:
+            logs.append(("ANIM-WORKER", f"CACHE_MISS obj={object_name} anim='{anim_name}' cached={list(_cached_animations.keys())}"))
+            continue
+
+        # Sample BONE transforms (for armatures)
+        pose, sample_stats = sample_bone_animation(anim_data, anim_time, looping)
+        if pose.size > 0:
+            poses.append(pose)
+            bone_weights.append(weight)
+
+            if bone_names is None:
+                bone_names = anim_data.get("bone_names", [])
+
+        # Sample OBJECT transforms (for mesh, empty, etc.)
+        obj_transform = sample_object_animation(anim_data, anim_time, looping)
+        if obj_transform is not None:
+            object_transforms.append(obj_transform)
+            object_weights.append(weight)
+
+    # Build result
+    result = {
+        "bone_transforms": {},
+        "bones_count": 0,
+        "object_transform": None,
+        "anims_blended": max(len(poses), len(object_transforms)),
+    }
+
+    # Blend bone poses (for armatures)
+    if poses:
+        blended = blend_bone_poses(poses, bone_weights)
+
+        bone_transforms = {}
+        if bone_names and blended.size > 0:
+            # Optimized: single numpy conversion + C-level zip instead of Python loop
+            # ~5x faster for 100+ bones (avoids per-element tolist() calls)
+            bone_transforms = dict(zip(bone_names[:len(blended)], map(tuple, blended.tolist())))
+
+        result["bone_transforms"] = bone_transforms
+        result["bones_count"] = len(bone_transforms)
+
+    # Blend object transforms (for non-armature objects)
+    if object_transforms:
+        blended_obj = blend_object_transforms(object_transforms, object_weights)
+        if blended_obj is not None:
+            result["object_transform"] = tuple(blended_obj.tolist())
+
+    return result
+
 
 # ============================================================================
 # JOB DISPATCHER
@@ -63,7 +231,7 @@ def process_job(job) -> dict:
     Process a single job and return result as a plain dict (pickle-safe).
     IMPORTANT: NO bpy access here!
     """
-    global _cached_grid, _cached_dynamic_meshes, _cached_dynamic_transforms
+    global _cached_grid, _cached_dynamic_meshes, _cached_dynamic_transforms, _cached_animations, _animations_numpy_ready
     start_time = time.perf_counter()
 
     try:
@@ -347,6 +515,117 @@ def process_job(job) -> dict:
         elif job.job_type == "TRANSFORM_BATCH":
             # Transform interpolation batch - delegated to worker.reactions.transforms
             result_data = handle_transform_batch(job.data)
+
+        elif job.job_type == "HITSCAN_BATCH":
+            # Hitscan raycast batch - delegated to worker.reactions.hitscan
+            result_data = handle_hitscan_batch(
+                job.data,
+                _cached_grid,
+                _cached_dynamic_meshes,
+                _cached_dynamic_transforms
+            )
+
+        elif job.job_type == "PROJECTILE_UPDATE_BATCH":
+            # Projectile physics batch - delegated to worker.reactions.projectiles
+            result_data = handle_projectile_update_batch(
+                job.data,
+                _cached_grid,
+                _cached_dynamic_meshes,
+                _cached_dynamic_transforms
+            )
+
+        elif job.job_type == "TRACKING_BATCH":
+            # Object tracking batch - delegated to worker.reactions.tracking
+            result_data = handle_tracking_batch(
+                job.data,
+                _cached_grid,
+                _cached_dynamic_meshes,
+                _cached_dynamic_transforms
+            )
+
+        elif job.job_type == "CACHE_ANIMATIONS":
+            # Cache animation DICTS for subsequent ANIMATION_COMPUTE_BATCH jobs
+            # Sent ONCE at game start to avoid serialization overhead per frame
+            # IMPORTANT: Store raw dicts, NOT BakedAnimation objects!
+            # Numpy conversion happens lazily via _ensure_numpy_arrays()
+            animations_data = job.data.get("animations", {})
+
+            # Clear existing cache and reset numpy flag
+            _cached_animations.clear()
+            _animations_numpy_ready = False
+
+            cached_count = 0
+            total_bones = 0
+            cached_names = []
+
+            for anim_name, anim_dict in animations_data.items():
+                # Store dict directly - numpy conversion is lazy
+                _cached_animations[anim_name] = anim_dict
+                cached_count += 1
+                cached_names.append(anim_name)
+                total_bones += len(anim_dict.get("bone_names", []))
+
+            # DEBUG: Print to worker stdout to confirm caching happened
+            print(f"[Worker CACHE_ANIMATIONS] Cached {cached_count} animations: {cached_names}")
+
+            result_data = {
+                "success": True,
+                "cached_count": cached_count,
+                "cached_names": cached_names,
+                "total_bones": total_bones,
+                "message": f"Cached {cached_count} animations",
+                "logs": [("ANIM-CACHE", f"WORKER_CACHED {cached_count} anims: {cached_names}")]
+            }
+
+        elif job.job_type == "ANIMATION_COMPUTE_BATCH":
+            # Compute blended poses for all animated objects in one batch
+            # Input: {"objects": {obj_name: {"playing": [{anim_name, time, weight, looping}, ...]}}}
+            # Output: {"results": {obj_name: {"bone_transforms": {...}, "object_transform": ...}}}
+            calc_start = time.perf_counter()
+            logs = []
+            objects_data = job.data.get("objects", {})
+
+            results = {}
+            total_bones = 0
+            total_anims = 0
+
+            for object_name, obj_data in objects_data.items():
+                playing_list = obj_data.get("playing", [])
+
+                # Use helper function that handles numpy conversion and blending
+                obj_result = _compute_single_object_pose(object_name, playing_list, logs)
+
+                results[object_name] = {
+                    "bone_transforms": obj_result["bone_transforms"],
+                    "object_transform": obj_result.get("object_transform"),
+                }
+
+                total_bones += obj_result["bones_count"]
+                total_anims += obj_result["anims_blended"]
+
+            calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
+
+            result_data = {
+                "success": True,
+                "results": results,
+                "objects_processed": len(results),
+                "total_bones_computed": total_bones,
+                "total_anims": total_anims,
+                "calc_time_us": calc_time_us,
+                "logs": logs,
+            }
+
+        elif job.job_type == "CLEAR_ANIMATION_CACHE":
+            # Clear animation cache - sent on game end/reset
+            cleared_count = len(_cached_animations)
+            _cached_animations.clear()
+            _animations_numpy_ready = False
+
+            result_data = {
+                "success": True,
+                "cleared_count": cleared_count,
+                "message": "Animation cache cleared"
+            }
 
         else:
             # Unknown job type - still succeed but note it

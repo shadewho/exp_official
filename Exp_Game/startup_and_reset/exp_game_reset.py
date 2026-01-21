@@ -209,9 +209,27 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             restore_scene_state(modal_op, context)
             apply_hide_during_game(modal_op, context)
 
+        # CRITICAL: Force depsgraph update so matrix_world values are current
+        # Without this, reading matrix_world after setting obj.location returns stale values
+        # which causes massive velocity spikes when seeding platform_prev_positions
+        context.view_layer.update()
+
         # ---- Reset dynamic platform state so no stale deltas apply after reset ----
         # Drop any notion of being "on a platform"
         modal_op.grounded_platform = None
+
+        # CRITICAL: Reset KCC's internal platform tracking state
+        # Without this, the relative position from the old platform persists
+        # and causes the player to spawn far from the spawn point
+        if hasattr(modal_op, 'physics_controller') and modal_op.physics_controller:
+            kcc = modal_op.physics_controller
+            kcc._platform_relative_pos = None
+            kcc._platform_obj_id = None
+            kcc._pending_platform_yaw_delta = 0.0
+            kcc._platform_prev_yaws = {}
+            kcc._prev_dynamic_transforms = {}
+            kcc.ground_obj = None
+            kcc.vel = kcc.vel.__class__((0.0, 0.0, 0.0))  # Reset velocity
 
         # Re-seed prev positions to CURRENT matrices post-restore
         # NOTE: platform_delta_map and platform_motion_map removed (dead code)
@@ -258,6 +276,14 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         except Exception:
             pass
         spawn_user()
+
+        # ─── 4) CRITICAL: Sync KCC position to armature's new spawn position ───
+        # Without this, KCC.step() overwrites the spawn position with stale self.pos
+        if hasattr(modal_op, 'physics_controller') and modal_op.physics_controller:
+            arm = context.scene.target_armature
+            if arm:
+                modal_op.physics_controller.pos = arm.location.copy()
+                modal_op.physics_controller.on_ground = False  # Will re-detect ground next frame
 
         self.report({'INFO'}, "Game fully reset.")
         return {'FINISHED'}

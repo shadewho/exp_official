@@ -219,6 +219,7 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
             col.prop(scene, "dev_debug_transforms", text="Transforms")
             col.prop(scene, "dev_debug_tracking", text="Tracking (Track To)")
             col.prop(scene, "dev_debug_health", text="Health")
+            col.prop(scene, "dev_debug_startup_diag", text="Startup Diagnostics")
 
         # ═══════════════════════════════════════════════════════════════
         # Animation 2.0 (Collapsible)

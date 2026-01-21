@@ -870,6 +870,10 @@ class ReactionTrackingNode(_ReactionNodeKind):
         if not r.track_to_use_character:
             dst.prop_search(r, "track_to_object", bpy.context.scene, "objects", text="To Object")
 
+        mode = layout.box()
+        mode.label(text="Navigation Mode")
+        mode.prop(r, "track_mode", text="")
+
         opts = layout.box()
         opts.label(text="Options")
         opts.prop(r, "track_speed", text="Speed (m/s)")

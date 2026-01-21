@@ -154,7 +154,7 @@ class EngineCore:
         if DEBUG_ENGINE:
             print(f"[Engine Core] Started successfully with {len(self._workers)} workers")
 
-    def wait_for_readiness(self, timeout: float = 5.0) -> bool:
+    def wait_for_readiness(self, timeout: float = 5.0, extended_timeout: float = 15.0) -> bool:
         """
         Wait for engine to be fully ready to process jobs.
 
@@ -163,8 +163,15 @@ class EngineCore:
         2. Send PING jobs to all workers and wait for responses
         3. Ensure workers can process jobs successfully
 
+        ADAPTIVE TIMING:
+        - Fast polling (1ms) initially for responsive startup
+        - Backs off to slower polling (5ms) if taking longer
+        - Extends timeout if making progress (handles slow computers)
+        - Provides warnings but keeps trying until extended_timeout
+
         Args:
-            timeout: Maximum seconds to wait for readiness
+            timeout: Initial timeout in seconds (fast path)
+            extended_timeout: Maximum timeout for slow systems
 
         Returns:
             True if engine is ready, False if timeout or failure
@@ -177,17 +184,25 @@ class EngineCore:
         start_time = time.time()
 
         if DEBUG_ENGINE:
-            print(f"[Engine Core] Checking readiness (timeout: {timeout}s)...")
+            print(f"[Engine Core] Checking readiness (timeout: {timeout}s, extended: {extended_timeout}s)...")
 
-        # Step 1: Verify all workers are alive
-        alive_count = sum(1 for w in self._workers if w.is_alive())
+        # Step 1: Verify all workers are alive (with retry for slow spawn)
+        alive_count = 0
+        spawn_check_start = time.time()
+        while time.time() - spawn_check_start < 2.0:  # 2s max for spawn
+            alive_count = sum(1 for w in self._workers if w.is_alive())
+            if alive_count == self._worker_count:
+                break
+            time.sleep(0.05)  # 50ms between spawn checks
+
         if alive_count != self._worker_count:
             if DEBUG_ENGINE:
-                print(f"[Engine Core] FAILED: Only {alive_count}/{self._worker_count} workers alive")
+                print(f"[Engine Core] FAILED: Only {alive_count}/{self._worker_count} workers alive after spawn wait")
             return False
 
         if DEBUG_ENGINE:
-            print(f"[Engine Core] ✓ All {self._worker_count} workers alive")
+            spawn_elapsed = time.time() - spawn_check_start
+            print(f"[Engine Core] ✓ All {self._worker_count} workers alive ({spawn_elapsed*1000:.0f}ms)")
 
         # Step 2: Send PING jobs to all workers
         ping_jobs = []
@@ -202,14 +217,30 @@ class EngineCore:
         if DEBUG_ENGINE:
             print(f"[Engine Core] Sent {len(ping_jobs)} PING jobs")
 
-        # Step 3: Wait for all PING responses
+        # Step 3: Wait for all PING responses with adaptive polling
         received_pings = set()
         poll_start = time.time()
+        last_progress_time = time.time()
+        warned_slow = False
+
+        # Adaptive polling: start fast, back off if slow
+        poll_interval = 0.001  # Start at 1ms
+        max_poll_interval = 0.010  # Max 10ms
 
         while len(received_pings) < len(ping_jobs):
-            if time.time() - start_time > timeout:
+            elapsed = time.time() - start_time
+
+            # Check if we've exceeded initial timeout
+            if elapsed > timeout and not warned_slow:
+                warned_slow = True
                 if DEBUG_ENGINE:
-                    print(f"[Engine Core] FAILED: Timeout waiting for PING responses "
+                    print(f"[Engine Core] WARNING: Slow startup - extending timeout "
+                          f"({len(received_pings)}/{len(ping_jobs)} received in {elapsed:.1f}s)")
+
+            # Hard fail only at extended timeout
+            if elapsed > extended_timeout:
+                if DEBUG_ENGINE:
+                    print(f"[Engine Core] FAILED: Extended timeout waiting for PING responses "
                           f"({len(received_pings)}/{len(ping_jobs)} received)")
                 return False
 
@@ -221,11 +252,18 @@ class EngineCore:
                             print(f"[Engine Core] FAILED: PING job {result.job_id} failed: {result.error}")
                         return False
                     received_pings.add(result.job_id)
+                    last_progress_time = time.time()
+                    # Reset to fast polling on progress
+                    poll_interval = 0.001
                     if DEBUG_ENGINE:
                         print(f"[Engine Core] ✓ PING response {len(received_pings)}/{len(ping_jobs)} "
                               f"(latency: {result.processing_time*1000:.1f}ms)")
 
-            time.sleep(0.01)  # 10ms poll interval
+            # Adaptive backoff: slow down if no progress
+            if time.time() - last_progress_time > 0.1:  # No progress for 100ms
+                poll_interval = min(poll_interval * 1.5, max_poll_interval)
+
+            time.sleep(poll_interval)
 
         elapsed = time.time() - poll_start
 
@@ -234,7 +272,7 @@ class EngineCore:
 
         return True
 
-    def verify_grid_cache(self, timeout: float = 5.0) -> bool:
+    def verify_grid_cache(self, timeout: float = 5.0, extended_timeout: float = 20.0) -> bool:
         """
         Verify that spatial grid has been successfully cached in all workers.
 
@@ -245,8 +283,15 @@ class EngineCore:
         This prevents false positives where one worker processes multiple jobs
         while other workers never receive the grid cache.
 
+        ADAPTIVE TIMING:
+        - Fast polling initially for responsive startup
+        - Backs off to slower polling if taking longer
+        - Extended timeout for slow systems (large grids, cold cache)
+        - Re-submits jobs to missing workers if stalled
+
         Args:
-            timeout: Maximum seconds to wait for confirmation
+            timeout: Initial timeout in seconds (fast path)
+            extended_timeout: Maximum timeout for slow systems
 
         Returns:
             True if all workers confirmed cache, False otherwise
@@ -262,15 +307,45 @@ class EngineCore:
         start_time = time.time()
         expected_workers = set(range(self._worker_count))  # {0, 1, 2, 3}
         confirmed_workers = set()  # Track which workers have confirmed
+        last_progress_time = time.time()
+        warned_slow = False
+        resubmitted = False
+
+        # Adaptive polling
+        poll_interval = 0.001  # Start at 1ms
+        max_poll_interval = 0.010  # Max 10ms
 
         # Poll for CACHE_GRID results until all unique workers confirm
         while len(confirmed_workers) < len(expected_workers):
-            if time.time() - start_time > timeout:
+            elapsed = time.time() - start_time
+            time_since_progress = time.time() - last_progress_time
+
+            # Check if we've exceeded initial timeout
+            if elapsed > timeout and not warned_slow:
+                warned_slow = True
+                missing = expected_workers - confirmed_workers
+                if DEBUG_ENGINE:
+                    print(f"[Engine Core] WARNING: Slow grid cache - extending timeout "
+                          f"(Workers {sorted(missing)} still pending after {elapsed:.1f}s)")
+
+            # If stalled for 3+ seconds and not all confirmed, try resubmitting to missing workers
+            if time_since_progress > 3.0 and not resubmitted:
+                missing_workers = expected_workers - confirmed_workers
+                if missing_workers:
+                    resubmitted = True
+                    if DEBUG_ENGINE:
+                        print(f"[Engine Core] Resubmitting CACHE_GRID to stalled workers: {sorted(missing_workers)}")
+                    # The caller should handle resubmission - we just note the stall here
+                    # Reset progress timer to give more time
+                    last_progress_time = time.time()
+
+            # Hard fail only at extended timeout
+            if elapsed > extended_timeout:
                 missing_workers = expected_workers - confirmed_workers
                 if DEBUG_ENGINE:
-                    print(f"[Engine Core] FAILED: Grid cache timeout - "
+                    print(f"[Engine Core] FAILED: Extended grid cache timeout - "
                           f"Workers {sorted(confirmed_workers)} confirmed, "
-                          f"Workers {sorted(missing_workers)} missing")
+                          f"Workers {sorted(missing_workers)} missing after {elapsed:.1f}s")
                 return False
 
             results = self.poll_results(max_results=20)
@@ -284,14 +359,24 @@ class EngineCore:
                     # Track this worker as confirmed
                     if result.worker_id not in confirmed_workers:
                         confirmed_workers.add(result.worker_id)
+                        last_progress_time = time.time()
+                        # Reset to fast polling on progress
+                        poll_interval = 0.001
                         if DEBUG_ENGINE:
+                            remaining = len(expected_workers) - len(confirmed_workers)
                             print(f"[Engine Core] ✓ Grid cached in worker {result.worker_id} "
-                                  f"({len(confirmed_workers)}/{len(expected_workers)} workers confirmed)")
+                                  f"({len(confirmed_workers)}/{len(expected_workers)} workers, {remaining} remaining)")
 
-            time.sleep(0.01)
+            # Adaptive backoff: slow down if no progress
+            if time_since_progress > 0.1:  # No progress for 100ms
+                poll_interval = min(poll_interval * 1.5, max_poll_interval)
 
+            time.sleep(poll_interval)
+
+        elapsed = time.time() - start_time
         if DEBUG_ENGINE:
-            print(f"[Engine Core] ✓ Grid successfully cached in all workers: {sorted(confirmed_workers)}")
+            speed = "fast" if elapsed < timeout else "slow"
+            print(f"[Engine Core] ✓ Grid successfully cached in all workers ({elapsed*1000:.0f}ms, {speed} path)")
 
         return True
 

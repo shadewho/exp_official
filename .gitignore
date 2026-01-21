@@ -3,3 +3,11 @@ combine.py
 __pycache__/
 *.pyc
 .vscode
+
+# Large files
+*.exe
+*.blend
+*.blend1
+*.zip
+*.rar
+*.7z

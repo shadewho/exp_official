@@ -97,12 +97,6 @@ if sys.platform == 'win32':
         # use GetForegroundWindow - Blender should be foreground during game start
         if _cached_blender_hwnd == 0:
             _cached_blender_hwnd = ctypes.windll.user32.GetForegroundWindow()
-            if _cached_blender_hwnd != 0:
-                print(f"[CURSOR_DEBUG] Cached Blender HWND via fallback: {_cached_blender_hwnd}")
-            else:
-                print("[CURSOR_DEBUG] WARNING: Could not get Blender HWND (both methods failed)")
-        else:
-            print(f"[CURSOR_DEBUG] Cached Blender HWND: {_cached_blender_hwnd}")
 
     def is_blender_focused() -> bool:
         """

@@ -110,9 +110,12 @@ All physics logs show source (static/dynamic) - there is ONE system.
 | `TRACKERS` | `trackers` | Tracker evaluation system |
 | **Animation System** |
 | `ANIMATIONS` | `animations` | Animation batch jobs, blending, bone updates |
+| `ANIM` | `animations` | Animation batch submit/results |
 | `ANIM-CACHE` | `anim_cache` | Animation caching in workers |
-| `ANIM-WORKER` | `anim_worker` | Animation worker job routing |
+| `ANIM-WORKER` | `anim_cache` | Animation worker job routing |
 | `TEST_MODAL` | `animations` | Animation 2.0 test modal playback |
+| **Diagnostics** |
+| `STARTUP-DIAG` | `startup_diag` | Cold start diagnostics (frame timing, physics steps) |
 
 ---
 

@@ -570,8 +570,13 @@ class ExpModal(bpy.types.Operator):
                 self.report({'ERROR'}, f"{error_msg} - aborting game")
                 return {'CANCELLED'}
 
-            # NOTE: Animation worker caching removed (2025-01) - animations now computed locally
-            # This eliminates 1-5ms IPC overhead per frame for trivial math operations
+            # Cache animations in worker now that engine is running
+            from .exp_engine_bridge import cache_animations_in_workers
+            if self.anim_controller and self.anim_controller.cache.count > 0:
+                cache_success = cache_animations_in_workers(self, context)
+                if not cache_success:
+                    self.report({'ERROR'}, "Failed to cache animations in worker - aborting game")
+                    return {'CANCELLED'}
 
             # Initialize interaction offload tracking
             self._pending_interaction_job_id = None  # Track pending INTERACTION_CHECK_BATCH job

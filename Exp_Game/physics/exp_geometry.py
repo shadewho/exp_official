@@ -341,21 +341,7 @@ def build_uniform_grid(triangles, cell_size=None, context=None):
     grid_dims = (nx, ny, nz)
     total_cells = nx * ny * nz
 
-    # Log grid build info (one-time startup event - always useful to see)
-    if startup_logs:
-        print(f"\n[Grid Build] ========== BUILDING SPATIAL GRID ==========")
-        print(f"[Grid Build] Triangles: {tri_count:,}")
-        print(f"[Grid Build] Scene size: ({size_x:.2f}m x {size_y:.2f}m x {size_z:.2f}m) = {volume:.1f}m³")
-        print(f"[Grid Build] Density: {density:.1f} tris/m³")
-        if cell_size_mode == "adaptive":
-            if hotspot_iterations > 0:
-                print(f"[Grid Build] Cell size: {cell_size:.3f}m (ADAPTIVE + HOTSPOT REFINEMENT x{hotspot_iterations})")
-                print(f"[Grid Build]            Initial estimate was too large, reduced to handle dense areas")
-            else:
-                print(f"[Grid Build] Cell size: {cell_size:.3f}m (ADAPTIVE - auto-computed for ~50 tris/cell)")
-        else:
-            print(f"[Grid Build] Cell size: {cell_size:.3f}m (FIXED - manually specified)")
-        print(f"[Grid Build] Grid dimensions: {nx} x {ny} x {nz} = {total_cells:,} cells")
+    # Grid build info logged via dev_logger if enabled
 
     # ========== Step 3: Assign Triangles to Cells ==========
     cells = {}  # (ix, iy, iz) -> [triangle indices]
@@ -420,21 +406,7 @@ def build_uniform_grid(triangles, cell_size=None, context=None):
     stats["cell_size"] = cell_size
     stats["density_tris_per_m3"] = density
 
-    if startup_logs:
-        print(f"[Grid Build] ----- Cell Statistics -----")
-        print(f"[Grid Build] Non-empty cells: {non_empty_cells:,} / {total_cells:,} ({stats['fill_ratio']*100:.1f}% fill)")
-        print(f"[Grid Build] Triangle refs: {total_refs:,} (avg {avg_tris_per_cell:.1f} per cell)")
-        print(f"[Grid Build] Tris per cell: min={min_tris_in_cell}, max={max_tris_in_cell}, target=50")
-        print(f"[Grid Build] Grid memory: {memory_kb:.2f} KB")
-        print(f"[Grid Build] Build time: {build_time_ms:.2f}ms")
-        # Show optimization assessment
-        if avg_tris_per_cell > 100:
-            print(f"[Grid Build] ⚠️  High avg tris/cell ({avg_tris_per_cell:.0f}) - consider smaller cell size")
-        elif avg_tris_per_cell < 10:
-            print(f"[Grid Build] ⚠️  Low avg tris/cell ({avg_tris_per_cell:.0f}) - consider larger cell size")
-        else:
-            print(f"[Grid Build] ✓ Good avg tris/cell ({avg_tris_per_cell:.0f}) - near optimal")
-        print(f"[Grid Build] ============================================\n")
+    # Cell statistics available in returned stats dict
 
     # ========== Return Picklable Structure ==========
     return {
