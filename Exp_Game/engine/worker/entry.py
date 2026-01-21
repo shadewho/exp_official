@@ -4,11 +4,6 @@ Worker process entry point.
 Contains the main worker loop and job dispatcher.
 This module is loaded by worker_bootstrap.py and runs in isolated worker processes.
 IMPORTANT: Uses sys.path manipulation for imports to work with spec_from_file_location.
-
-NUMPY OPTIMIZATION (2025-12):
-  - Animation blending uses numpy vectorized operations
-  - 30-100x faster than previous Python loops
-  - Processes ALL bones in single vectorized calls
 """
 
 import time
@@ -16,8 +11,6 @@ import traceback
 import sys
 import os
 from queue import Empty
-
-import numpy as np
 
 # Add engine folder to path for worker submodule imports
 # This is necessary because bootstrap uses spec_from_file_location
@@ -34,30 +27,7 @@ from worker.math import (
 
 from worker.physics import handle_kcc_physics_step
 from worker.jobs import handle_camera_occlusion
-
-# Import interaction/reaction handlers from new submodules
-from worker.interactions import (
-    handle_interaction_check_batch,
-    handle_cache_trackers,
-    handle_evaluate_trackers,
-    reset_tracker_state,
-)
-from worker.reactions import (
-    handle_projectile_update_batch,
-    reset_projectile_state,
-    handle_hitscan_batch,
-    handle_transform_batch,
-    handle_tracking_batch,
-)
-
-# Import animation math from single source of truth (no duplicates!)
-from animations.blend import (
-    sample_bone_animation,
-    sample_object_animation,
-    blend_bone_poses,
-    blend_object_transforms,
-    slerp_vectorized,
-)
+from worker.reactions.transforms import handle_transform_batch
 
 
 # ============================================================================
@@ -82,325 +52,6 @@ _cached_dynamic_meshes = {}
 # Main thread sends transform updates only when meshes MOVE.
 # Worker caches last known transform for each mesh.
 _cached_dynamic_transforms = {}
-
-# Animation cache: {anim_name: {bone_transforms: np.ndarray, bone_names: list, duration, fps, ...}}
-# NOTE (2025-01): Animation jobs are NO LONGER SENT - animations computed locally on main thread.
-# This eliminates 1-5ms IPC overhead per frame for trivial math (array lookup + quaternion slerp).
-# Worker animation code kept for reference/future use but is currently inactive.
-_cached_animations = {}
-
-# Flag to track if numpy arrays have been reconstructed from lists
-_animations_numpy_ready = False
-
-# NOTE: Pose library cache (_cached_poses) removed (2025) - not used
-
-# NOTE: Tracker state moved to worker/interactions/trackers.py
-
-
-# ============================================================================
-# NUMPY ANIMATION COMPUTE (Vectorized worker-side blending)
-# ============================================================================
-
-def _ensure_numpy_arrays():
-    """
-    Convert cached animation data from lists to numpy arrays (one-time operation).
-    Called lazily on first animation compute after cache is populated.
-    Returns list of log messages to report status.
-    """
-    global _animations_numpy_ready
-
-    logs = []
-
-    if _animations_numpy_ready:
-        return logs
-
-    convert_start = time.perf_counter()
-
-    total_bones = 0
-    animated_bones = 0
-
-    for anim_name, anim_data in _cached_animations.items():
-        # Convert bone_transforms list to numpy array
-        bt = anim_data.get("bone_transforms")
-        if bt is not None and not isinstance(bt, np.ndarray):
-            if len(bt) > 0:
-                anim_data["bone_transforms"] = np.array(bt, dtype=np.float32)
-                if len(anim_data["bone_transforms"].shape) > 1:
-                    total_bones += anim_data["bone_transforms"].shape[1]
-            else:
-                anim_data["bone_transforms"] = np.empty((0, 0, 10), dtype=np.float32)
-
-        # Convert animated_mask list to numpy array
-        am = anim_data.get("animated_mask")
-        if am is not None and not isinstance(am, np.ndarray):
-            anim_data["animated_mask"] = np.array(am, dtype=bool)
-            animated_bones += int(np.sum(anim_data["animated_mask"]))
-
-        # Convert object_transforms if present
-        ot = anim_data.get("object_transforms")
-        if ot is not None and not isinstance(ot, np.ndarray):
-            anim_data["object_transforms"] = np.array(ot, dtype=np.float32)
-
-    convert_ms = (time.perf_counter() - convert_start) * 1000
-    _animations_numpy_ready = True
-
-    # Log numpy conversion success - this confirms numpy is working!
-    logs.append(("ANIMATIONS", f"[NUMPY] READY {len(_cached_animations)} anims | {total_bones} bones ({animated_bones} animated) | convert={convert_ms:.1f}ms"))
-
-    return logs
-
-
-def _compute_single_object_pose(object_name: str, playing_list: list, logs: list) -> dict:
-    """
-    Compute blended pose for a single object using NUMPY VECTORIZED operations.
-    Processes ALL bones at once - no Python loops!
-
-    Supports both:
-    - Armatures: returns bone_transforms dict
-    - Objects: returns object_transform tuple (for mesh, empty, etc.)
-
-    STATIC BONE OPTIMIZATION: Tracks and logs how many bones were skipped.
-
-    Args:
-        object_name: Name of the object
-        playing_list: List of playing animation dicts
-        logs: List to append log messages to
-
-    Returns:
-        {
-            "bone_transforms": {bone_name: (10-float tuple), ...},
-            "bone_names": list,
-            "bones_count": int,
-            "object_transform": (10-float tuple) or None,  # For non-armature objects
-            "anims_blended": int,
-            "static_skipped": int,
-        }
-    """
-    if not playing_list:
-        return {
-            "bone_transforms": {},
-            "bone_names": [],
-            "bones_count": 0,
-            "object_transform": None,
-            "anims_blended": 0,
-            "static_skipped": 0,
-        }
-
-    # Ensure numpy arrays are ready (one-time conversion)
-    # Returns logs on first call only
-    numpy_logs = _ensure_numpy_arrays()
-    logs.extend(numpy_logs)
-
-    # Sample each playing animation using numpy
-    # For bones (armatures)
-    poses = []
-    bone_weights = []
-    # For object-level transforms (mesh, empty, etc.)
-    object_transforms = []
-    object_weights = []
-
-    anim_names = []
-    bone_names = None  # Will be set from first valid animation
-    total_static_skipped = 0
-    total_animated = 0
-
-    for p in playing_list:
-        anim_name = p.get("anim_name")
-        anim_time = p.get("time", 0.0)
-        weight = p.get("weight", 1.0)
-        looping = p.get("looping", True)
-
-        if weight < 0.001:
-            continue
-
-        # Get cached animation
-        anim_data = _cached_animations.get(anim_name)
-        if anim_data is None:
-            logs.append(("ANIMATIONS", f"CACHE_MISS obj={object_name} anim='{anim_name}' cached={len(_cached_animations)}"))
-            continue
-
-        anim_names.append(f"{anim_name}:{weight:.0%}")
-
-        # Sample BONE transforms (for armatures) - uses imported function
-        pose, sample_stats = sample_bone_animation(anim_data, anim_time, looping)
-        if pose.size > 0:
-            poses.append(pose)
-            bone_weights.append(weight)
-
-            # Track static bone skipping stats
-            if sample_stats.get("skipped"):
-                total_static_skipped = max(total_static_skipped, sample_stats.get("static", 0))
-                total_animated = max(total_animated, sample_stats.get("animated", 0))
-
-            # Get bone names from first valid animation
-            if bone_names is None:
-                bone_names = anim_data.get("bone_names", [])
-
-        # Sample OBJECT transforms (for mesh, empty, etc.) - uses imported function
-        obj_transform = sample_object_animation(anim_data, anim_time, looping)
-        if obj_transform is not None:
-            object_transforms.append(obj_transform)
-            object_weights.append(weight)
-
-    # Build result
-    result = {
-        "bone_transforms": {},
-        "bone_names": bone_names or [],
-        "bones_count": 0,
-        "object_transform": None,
-        "anims_blended": max(len(poses), len(object_transforms)),
-        "anim_names": anim_names,
-        "static_skipped": total_static_skipped,
-        "animated_count": total_animated,
-    }
-
-    # Blend bone poses (for armatures) - uses imported function
-    if poses:
-        blended = blend_bone_poses(poses, bone_weights)
-
-        # Convert numpy array to dict for compatibility with apply code
-        # PERFORMANCE: tuple(arr) is faster than tuple(arr.tolist()) - avoids intermediate list
-        bone_transforms = {}
-        if bone_names and blended.size > 0:
-            for i, name in enumerate(bone_names):
-                if i < len(blended):
-                    bone_transforms[name] = tuple(blended[i])
-
-        result["bone_transforms"] = bone_transforms
-        result["bones_count"] = len(bone_transforms)
-
-    # Blend object transforms (for non-armature objects) - uses imported function
-    # PERFORMANCE: tuple(arr) is faster than tuple(arr.tolist()) - avoids intermediate list
-    if object_transforms:
-        blended_obj = blend_object_transforms(object_transforms, object_weights)
-        if blended_obj is not None:
-            result["object_transform"] = tuple(blended_obj)
-
-    return result
-
-
-def _handle_animation_compute_batch(job_data: dict) -> dict:
-    """
-    Handle ANIMATION_COMPUTE_BATCH job - compute blended poses for ALL objects in one job.
-
-    This is the optimized path: ONE IPC round-trip for ALL animated objects.
-
-    Input job_data:
-        {
-            "objects": {
-                "Player": {
-                    "playing": [{"anim_name": str, "time": float, "weight": float, "looping": bool}, ...]
-                },
-                "NPC_1": {
-                    "playing": [...]
-                },
-                ...
-            }
-        }
-
-    Returns:
-        {
-            "success": bool,
-            "results": {
-                "Player": {"bone_transforms": {...}, "bones_count": int, "anims_blended": int},
-                "NPC_1": {"bone_transforms": {...}, ...},
-                ...
-            },
-            "total_objects": int,
-            "total_bones": int,
-            "total_anims": int,
-            "calc_time_us": float,
-            "logs": [(category, message), ...]
-        }
-    """
-    calc_start = time.perf_counter()
-    logs = []
-
-    objects_data = job_data.get("objects", {})
-
-    if not objects_data:
-        return {
-            "success": True,
-            "results": {},
-            "total_objects": 0,
-            "total_bones": 0,
-            "total_anims": 0,
-            "calc_time_us": 0.0,
-            "logs": []
-        }
-
-    # Process ALL objects in this single job
-    results = {}
-    total_bones = 0
-    total_anims = 0
-    total_static_skipped = 0
-    total_animated_interp = 0
-    per_object_logs = []
-
-    for object_name, obj_data in objects_data.items():
-        playing_list = obj_data.get("playing", [])
-
-        # Compute pose for this object
-        obj_result = _compute_single_object_pose(object_name, playing_list, logs)
-
-        # Store result (includes object_transform for non-armature objects)
-        results[object_name] = {
-            "bone_transforms": obj_result["bone_transforms"],
-            "bones_count": obj_result["bones_count"],
-            "object_transform": obj_result.get("object_transform"),
-            "anims_blended": obj_result["anims_blended"],
-        }
-
-        total_bones += obj_result["bones_count"]
-        total_anims += obj_result["anims_blended"]
-        total_static_skipped += obj_result.get("static_skipped", 0)
-        total_animated_interp += obj_result.get("animated_count", obj_result["bones_count"])
-
-        # Per-object log for detailed debugging
-        anim_names = obj_result.get("anim_names", [])
-        if anim_names:
-            anim_str = "+".join(anim_names[:3])
-            if len(anim_names) > 3:
-                anim_str += f"+{len(anim_names)-3}more"
-            per_object_logs.append(f"{object_name}({anim_str})")
-
-    calc_time_us = (time.perf_counter() - calc_start) * 1_000_000
-
-    # Summary log: one line for entire batch
-    # [NUMPY] confirms vectorized path, shows static bone skipping stats
-    obj_count = len(results)
-    if per_object_logs:
-        # Compact format: show up to 3 objects, then count
-        if len(per_object_logs) <= 3:
-            obj_summary = " ".join(per_object_logs)
-        else:
-            obj_summary = f"{per_object_logs[0]} +{len(per_object_logs)-1}more"
-
-        # Include static bone skip info if any bones were skipped
-        if total_static_skipped > 0:
-            skip_info = f" [SKIP {total_static_skipped} static, interp {total_animated_interp}]"
-        else:
-            skip_info = ""
-
-        logs.append(("ANIMATIONS", f"[NUMPY] BATCH {obj_count}obj {total_bones}bones {total_anims}anims {calc_time_us:.0f}µs{skip_info} | {obj_summary}"))
-
-    return {
-        "success": True,
-        "results": results,
-        "total_objects": obj_count,
-        "total_bones": total_bones,
-        "total_anims": total_anims,
-        "calc_time_us": calc_time_us,
-        "logs": logs
-    }
-
-
-# NOTE: POSE_BLEND_COMPUTE and IK_SOLVE_BATCH handlers removed (2025) - IK/pose system not used
-
-
-# ============================================================================
-# TRACKER EVALUATION - MOVED TO worker/interactions/trackers.py
-# ============================================================================
 
 
 # ============================================================================
@@ -607,8 +258,73 @@ def process_job(job) -> dict:
                 result_data = {"entry_ptr": entry_ptr, "next_idx": idx, "changes": changes}
 
         elif job.job_type == "INTERACTION_CHECK_BATCH":
-            # Interaction proximity & collision checks - delegated to interactions module
-            result_data = handle_interaction_check_batch(job.data)
+            # Interaction proximity & collision checks
+            calc_start = time.perf_counter()
+
+            interactions = job.data.get("interactions", [])
+            player_position = job.data.get("player_position", (0, 0, 0))
+
+            triggered_indices = []
+            px, py, pz = player_position
+
+            for i, inter_data in enumerate(interactions):
+                inter_type = inter_data.get("type")
+
+                if inter_type == "PROXIMITY":
+                    obj_a_pos = inter_data.get("obj_a_pos")
+                    obj_b_pos = inter_data.get("obj_b_pos")
+                    threshold = inter_data.get("threshold", 0.0)
+
+                    if obj_a_pos and obj_b_pos:
+                        ax, ay, az = obj_a_pos
+                        bx, by, bz = obj_b_pos
+                        dx = ax - bx
+                        dy = ay - by
+                        dz = az - bz
+                        dist_squared = dx*dx + dy*dy + dz*dz
+                        threshold_squared = threshold * threshold
+
+                        if dist_squared <= threshold_squared:
+                            triggered_indices.append(i)
+
+                elif inter_type == "COLLISION":
+                    aabb_a = inter_data.get("aabb_a")
+                    aabb_b = inter_data.get("aabb_b")
+                    margin = inter_data.get("margin", 0.0)
+
+                    if aabb_a and aabb_b:
+                        a_minx, a_maxx, a_miny, a_maxy, a_minz, a_maxz = aabb_a
+                        b_minx, b_maxx, b_miny, b_maxy, b_minz, b_maxz = aabb_b
+
+                        a_minx -= margin
+                        a_maxx += margin
+                        a_miny -= margin
+                        a_maxy += margin
+                        a_minz -= margin
+                        a_maxz += margin
+
+                        b_minx -= margin
+                        b_maxx += margin
+                        b_miny -= margin
+                        b_maxy += margin
+                        b_minz -= margin
+                        b_maxz += margin
+
+                        overlap_x = (a_minx <= b_maxx) and (a_maxx >= b_minx)
+                        overlap_y = (a_miny <= b_maxy) and (a_maxy >= b_miny)
+                        overlap_z = (a_minz <= b_maxz) and (a_maxz >= b_minz)
+
+                        if overlap_x and overlap_y and overlap_z:
+                            triggered_indices.append(i)
+
+            calc_end = time.perf_counter()
+            calc_time_us = (calc_end - calc_start) * 1_000_000
+
+            result_data = {
+                "triggered_indices": triggered_indices,
+                "count": len(interactions),
+                "calc_time_us": calc_time_us
+            }
 
         elif job.job_type == "KCC_PHYSICS_STEP":
             # Full KCC physics step - delegated to worker.physics module
@@ -628,100 +344,9 @@ def process_job(job) -> dict:
                 _cached_dynamic_transforms
             )
 
-        elif job.job_type == "CACHE_ANIMATIONS":
-            # Cache baked animations for subsequent ANIMATION_COMPUTE jobs
-            # Sent ONCE at game start. Per-frame, only times/weights are sent.
-            # NOW WITH NUMPY: Arrays are lazily converted on first use
-            global _animations_numpy_ready
-            animations_data = job.data.get("animations", {})
-
-            if animations_data:
-                # Clear existing cache and store new animations
-                _cached_animations.clear()
-                _animations_numpy_ready = False  # Reset - will convert to numpy on first use
-
-                for anim_name, anim_dict in animations_data.items():
-                    _cached_animations[anim_name] = anim_dict
-
-                anim_count = len(_cached_animations)
-                # Count bones from new numpy format (bone_names list)
-                total_bones = sum(
-                    len(anim.get("bone_names", []))
-                    for anim in _cached_animations.values()
-                )
-
-                # Log for diagnostics (no console print - use log system only)
-                logs = [("ANIM-CACHE", f"WORKER_CACHED {anim_count} anims, {total_bones} bones (numpy)")]
-
-                result_data = {
-                    "success": True,
-                    "animation_count": anim_count,
-                    "total_bone_channels": total_bones,
-                    "message": "Animations cached successfully (numpy optimized)",
-                    "logs": logs
-                }
-            else:
-                result_data = {
-                    "success": False,
-                    "error": "No animation data provided"
-                }
-
-        # NOTE: CACHE_POSES removed (2025) - pose library not used
-        # CACHE_JOINT_LIMITS removed - not needed for rigid animations
-        # CACHE_RIG removed - IK system was removed
-
-        elif job.job_type == "ANIMATION_COMPUTE_BATCH":
-            # OPTIMIZED: Compute blended poses for ALL objects in ONE job
-            # Input: {"objects": {obj_name: {playing: [...]}, ...}}
-            # Output: {"results": {obj_name: {bone_transforms: {...}}, ...}}
-            # This eliminates O(n) IPC overhead - one round trip regardless of object count
-            result_data = _handle_animation_compute_batch(job.data)
-
-        # NOTE: POSE_BLEND_COMPUTE removed (2025) - IK/pose system not used
-
-        elif job.job_type == "CACHE_TRACKERS":
-            # Cache serialized tracker definitions - delegated to interactions module
-            result_data = handle_cache_trackers(job.data)
-
-        elif job.job_type == "EVALUATE_TRACKERS":
-            # Evaluate all cached trackers - delegated to interactions module
-            result_data = handle_evaluate_trackers(job.data)
-
-        # ─────────────────────────────────────────────────────────────────
-        # REACTION JOBS - delegated to reactions module
-        # ─────────────────────────────────────────────────────────────────
-
-        elif job.job_type == "PROJECTILE_UPDATE_BATCH":
-            # Projectile physics simulation - gravity + sweep raycast
-            result_data = handle_projectile_update_batch(
-                job.data,
-                _cached_grid,
-                _cached_dynamic_meshes,
-                _cached_dynamic_transforms
-            )
-
-        elif job.job_type == "HITSCAN_BATCH":
-            # Hitscan instant raycasting
-            result_data = handle_hitscan_batch(
-                job.data,
-                _cached_grid,
-                _cached_dynamic_meshes,
-                _cached_dynamic_transforms
-            )
-
         elif job.job_type == "TRANSFORM_BATCH":
-            # Transform interpolation (lerp/slerp) - offloaded from main thread
+            # Transform interpolation batch - delegated to worker.reactions.transforms
             result_data = handle_transform_batch(job.data)
-
-        elif job.job_type == "TRACKING_BATCH":
-            # Tracking movement (sweep/slide/gravity) - offloaded from main thread
-            # Uses unified_raycast for collision detection
-            result_data = handle_tracking_batch(
-                job.data,
-                _cached_grid,
-                _cached_dynamic_meshes,
-                _cached_dynamic_transforms
-            )
 
         else:
             # Unknown job type - still succeed but note it
@@ -795,13 +420,8 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
                 # Add worker_id to result before sending (CRITICAL for grid cache verification)
                 result["worker_id"] = worker_id
 
-                # Send result back (with timeout to prevent deadlock)
-                try:
-                    result_queue.put(result, timeout=1.0)
-                except Exception:
-                    # Queue full or broken - log and continue (better than blocking forever)
-                    if DEBUG_ENGINE:
-                        print(f"[Engine Worker {worker_id}] WARNING: Result queue full, discarding result for job {job.job_id}")
+                # Send result back
+                result_queue.put(result)
 
                 jobs_processed += 1
 
@@ -822,4 +442,3 @@ def worker_loop(job_queue, result_queue, worker_id, shutdown_event):
     finally:
         if DEBUG_ENGINE:
             print(f"[Engine Worker {worker_id}] Shutting down (processed {jobs_processed} jobs)")
-            

@@ -508,7 +508,7 @@ def cleanup_camera_state(op_key):
     _VIEWS.pop(op_key, None)
 
 
-def poll_camera_result_with_timeout(op, context, job_id, timeout=0.003):
+def poll_camera_result_with_timeout(op, context, job_id, timeout=0.001):
     """
     Explicitly poll for camera occlusion result with timeout (same-frame pattern).
     Similar to KCC physics polling - waits for specific job to complete.

@@ -5,6 +5,7 @@ This runs on the main thread and coordinates with the modal operator.
 """
 
 import multiprocessing as mp
+from queue import Empty as QueueEmpty  # For efficient polling without broad exception handling
 import time
 import os
 from pathlib import Path
@@ -644,55 +645,58 @@ class EngineCore:
             return []
 
         results = []
+        result_queue = self._result_queue  # Local ref for faster access
 
         for _ in range(max_results):
             try:
-                result_dict = self._result_queue.get_nowait()
-
-                # Convert dict to EngineResult object
-                result = EngineResult(
-                    job_id=result_dict["job_id"],
-                    job_type=result_dict["job_type"],
-                    result=result_dict["result"],
-                    success=result_dict["success"],
-                    error=result_dict.get("error"),
-                    timestamp=result_dict.get("timestamp", time.time()),
-                    processing_time=result_dict.get("processing_time", 0.0),
-                    worker_id=result_dict.get("worker_id", -1)  # Extract worker ID from result
-                )
-
-                results.append(result)
-                self._jobs_completed += 1
-
-                # Phase 1: Track per-worker stats
-                worker_id = result.worker_id
-                if worker_id >= 0 and worker_id in self._worker_stats:
-                    self._worker_stats[worker_id]["jobs_processed"] += 1
-                    self._worker_stats[worker_id]["total_time_ms"] += result.processing_time * 1000
-
-                # Phase 1: Track per-job-type stats
-                job_type = result.job_type
-                if job_type not in self._job_type_stats:
-                    self._job_type_stats[job_type] = {
-                        "count": 0,
-                        "total_time_ms": 0.0,
-                        "avg_time_ms": 0.0
-                    }
-
-                self._job_type_stats[job_type]["count"] += 1
-                self._job_type_stats[job_type]["total_time_ms"] += result.processing_time * 1000
-                self._job_type_stats[job_type]["avg_time_ms"] = (
-                    self._job_type_stats[job_type]["total_time_ms"] /
-                    self._job_type_stats[job_type]["count"]
-                )
-
-                if DEBUG_ENGINE:
-                    status = "SUCCESS" if result.success else "FAILED"
-                    print(f"[Engine Core] Received result for job {result.job_id} ({status})")
-
-            except Exception:
-                # Queue is empty
+                result_dict = result_queue.get_nowait()
+            except QueueEmpty:
+                # Queue is empty - this is the expected exit path
                 break
+            except Exception:
+                # Unexpected error (connection issue, etc.) - stop polling
+                break
+
+            # Convert dict to EngineResult object
+            result = EngineResult(
+                job_id=result_dict["job_id"],
+                job_type=result_dict["job_type"],
+                result=result_dict["result"],
+                success=result_dict["success"],
+                error=result_dict.get("error"),
+                timestamp=result_dict.get("timestamp", time.time()),
+                processing_time=result_dict.get("processing_time", 0.0),
+                worker_id=result_dict.get("worker_id", -1)  # Extract worker ID from result
+            )
+
+            results.append(result)
+            self._jobs_completed += 1
+
+            # Phase 1: Track per-worker stats
+            worker_id = result.worker_id
+            if worker_id >= 0 and worker_id in self._worker_stats:
+                self._worker_stats[worker_id]["jobs_processed"] += 1
+                self._worker_stats[worker_id]["total_time_ms"] += result.processing_time * 1000
+
+            # Phase 1: Track per-job-type stats
+            job_type = result.job_type
+            if job_type not in self._job_type_stats:
+                self._job_type_stats[job_type] = {
+                    "count": 0,
+                    "total_time_ms": 0.0,
+                    "avg_time_ms": 0.0
+                }
+
+            self._job_type_stats[job_type]["count"] += 1
+            self._job_type_stats[job_type]["total_time_ms"] += result.processing_time * 1000
+            self._job_type_stats[job_type]["avg_time_ms"] = (
+                self._job_type_stats[job_type]["total_time_ms"] /
+                self._job_type_stats[job_type]["count"]
+            )
+
+            if DEBUG_ENGINE:
+                status = "SUCCESS" if result.success else "FAILED"
+                print(f"[Engine Core] Received result for job {result.job_id} ({status})")
 
         return results
 

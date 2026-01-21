@@ -94,6 +94,38 @@ def get_global_audio_manager():
     return _global_audio_manager
 
 ##############################################################################
+# Cached Preferences for Performance
+##############################################################################
+# PERF: Cache preferences to avoid O(n) dictionary lookups every frame
+# Preference changes are rare; audio checks happen 30+ times/second
+_cached_prefs = None
+_cached_prefs_time = 0.0
+_PREFS_CACHE_INTERVAL = 1.0  # Re-check preferences every 1 second
+
+def _get_cached_audio_prefs():
+    """Get cached audio preferences. Re-fetches every 1 second to catch changes."""
+    global _cached_prefs, _cached_prefs_time
+    import time
+    now = time.perf_counter()
+    if _cached_prefs is None or (now - _cached_prefs_time) > _PREFS_CACHE_INTERVAL:
+        try:
+            prefs = bpy.context.preferences.addons["Exploratory"].preferences
+            _cached_prefs = {
+                'enable_audio': prefs.enable_audio,
+                'audio_level': prefs.audio_level,
+            }
+        except Exception:
+            _cached_prefs = {'enable_audio': False, 'audio_level': 0.0}
+        _cached_prefs_time = now
+    return _cached_prefs
+
+def invalidate_audio_prefs_cache():
+    """Call this when preferences change to force immediate refresh."""
+    global _cached_prefs
+    _cached_prefs = None
+
+
+##############################################################################
 # CharacterAudioStateManager
 ##############################################################################
 class CharacterAudioStateManager:
@@ -104,8 +136,9 @@ class CharacterAudioStateManager:
         self.current_sound_duration = None
 
     def update_audio_state(self, new_state):
-        prefs = bpy.context.preferences.addons["Exploratory"].preferences
-        if not prefs.enable_audio or prefs.audio_level <= 0:
+        # PERF: Use cached preferences instead of direct Blender lookup
+        prefs = _get_cached_audio_prefs()
+        if not prefs['enable_audio'] or prefs['audio_level'] <= 0:
             self.stop_current_sound()
             self.last_state = None
             return
@@ -141,8 +174,9 @@ class CharacterAudioStateManager:
         self.current_sound_duration = None
 
     def play_sound_for_state(self, state):
-        prefs = bpy.context.preferences.addons["Exploratory"].preferences
-        if not prefs.enable_audio or prefs.audio_level <= 0:
+        # PERF: Use cached preferences instead of direct Blender lookup
+        prefs = _get_cached_audio_prefs()
+        if not prefs['enable_audio'] or prefs['audio_level'] <= 0:
             return
 
         # 1) Resolve the sound pointer for this state
@@ -178,7 +212,7 @@ class CharacterAudioStateManager:
         # 5) Looping vs one-shot
         is_loop = (state in (AnimState.WALK, AnimState.RUN, AnimState.FALL))
         handle.loop_count = -1 if is_loop else 0
-        handle.volume     = prefs.audio_level
+        handle.volume     = prefs['audio_level']
         handle.pitch      = getattr(sound_data, "sound_speed", 1.0)
 
         if is_loop:

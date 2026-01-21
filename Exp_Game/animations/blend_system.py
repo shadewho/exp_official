@@ -481,7 +481,7 @@ class BlendSystem:
         """
         Sample animation pose at current layer time.
 
-        PERFORMANCE: No per-frame logging, optimized bone remapping.
+        PERFORMANCE: Uses cached bone index mapping for fast numpy remapping.
         """
         if layer.pose_provider:
             return layer.pose_provider()
@@ -489,20 +489,17 @@ class BlendSystem:
         if layer.animation_name and self.cache:
             anim = self.cache.get(layer.animation_name)
             if anim:
+                # Ensure standard bone mapping is computed (once per animation)
+                if not anim._std_mapping_ready:
+                    anim.compute_std_bone_mapping(BONE_INDEX, TOTAL_BONES)
+
                 # Sample from BakedAnimation (uses numpy internally)
                 raw_pose = anim.sample(layer.time)
                 if raw_pose is None or raw_pose.size == 0:
                     return None
 
-                # Remap from BakedAnimation's bone order to standard BONE_INDEX order
-                # This loop is unavoidable without caching bone index mappings per-animation
-                result = _IDENTITY_POSE.copy()  # Use pre-computed constant
-                for i, bone_name in enumerate(anim.bone_names):
-                    std_idx = BONE_INDEX.get(bone_name, -1)
-                    if std_idx >= 0 and i < len(raw_pose):
-                        result[std_idx] = raw_pose[i]
-
-                return result
+                # FAST: Use cached mapping for numpy-based remapping
+                return anim.remap_to_standard(raw_pose, _IDENTITY_POSE)
 
         return None
 
@@ -634,11 +631,16 @@ class BlendSystem:
         return (base, len(self._additive_layers), len(self._override_layers))
 
     def clear_all(self) -> None:
-        """Clear all layers."""
+        """Clear all layers and caches."""
         self._base_layer = None
         self._additive_layers.clear()
         self._override_layers.clear()
         self._last_pose = None
+        # Clear optimization caches
+        if hasattr(self, '_pb_cache'):
+            self._pb_cache.clear()
+        if hasattr(self, '_last_applied_pose'):
+            self._last_applied_pose.clear()
 
     def _sample_armature_pose(self, armature) -> np.ndarray:
         """Sample current pose from armature to use as base."""
@@ -666,6 +668,8 @@ class BlendSystem:
         """
         Evaluate blend stack and apply result to armature.
 
+        OPTIMIZED: Uses cached pose_bone lookups and skips unchanged bones.
+
         Args:
             armature: bpy.types.Object (must be ARMATURE type)
 
@@ -683,21 +687,40 @@ class BlendSystem:
         if pose is None:
             return 0
 
-        # Apply to armature bones
-        pose_bones = armature.pose.bones
+        # Get or build pose_bone lookup cache for this armature
+        armature_name = armature.name
+        if not hasattr(self, '_pb_cache'):
+            self._pb_cache = {}
+
+        if armature_name not in self._pb_cache:
+            # Build pose_bone lookup once per armature
+            pose_bones = armature.pose.bones
+            pb_lookup = {}
+            for bone_idx in range(TOTAL_BONES):
+                bone_name = INDEX_TO_BONE.get(bone_idx)
+                if bone_name:
+                    pb = pose_bones.get(bone_name)
+                    if pb:
+                        pb_lookup[bone_idx] = pb
+            self._pb_cache[armature_name] = pb_lookup
+
+        pb_lookup = self._pb_cache[armature_name]
+
+        # Initialize last pose cache if needed
+        if not hasattr(self, '_last_applied_pose'):
+            self._last_applied_pose = {}
+
+        last_pose = self._last_applied_pose.get(armature_name)
         count = 0
 
-        for bone_idx in range(TOTAL_BONES):
-            bone_name = INDEX_TO_BONE.get(bone_idx)
-            if not bone_name:
-                continue
-
-            pose_bone = pose_bones.get(bone_name)
-            if not pose_bone:
-                continue
-
-            # Extract transform: (qw, qx, qy, qz, lx, ly, lz, sx, sy, sz)
+        # Apply to armature bones using cached lookup
+        for bone_idx, pose_bone in pb_lookup.items():
             transform = pose[bone_idx]
+
+            # Skip if unchanged from last apply
+            if last_pose is not None:
+                if np.allclose(last_pose[bone_idx], transform, atol=1e-5):
+                    continue
 
             pose_bone.rotation_quaternion = (
                 float(transform[0]),
@@ -717,7 +740,8 @@ class BlendSystem:
             )
             count += 1
 
-        # No per-frame logging - performance critical path
+        # Cache the applied pose
+        self._last_applied_pose[armature_name] = pose.copy()
 
         return count
 

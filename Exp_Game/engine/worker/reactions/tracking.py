@@ -51,14 +51,12 @@ def handle_tracking_batch(job_data: dict, grid_data, cached_dynamic_meshes, cach
             break
 
     # ─────────────────────────────────────────────────────────────────────────
-    # BUILD UNIFIED DYNAMIC MESHES LIST (only if needed)
-    # Same pattern as physics.py - convert cached dicts to list format
+    # BUILD UNIFIED DYNAMIC MESHES LIST FROM ALL (only if needed)
     # ─────────────────────────────────────────────────────────────────────────
     unified_dynamic_meshes = None
     if any_needs_raycast and cached_dynamic_meshes and cached_dynamic_transforms:
         unified_dynamic_meshes = []
-        for obj_id, transform_data in cached_dynamic_transforms.items():
-            matrix_4x4, world_aabb, inv_matrix = transform_data
+        for obj_id, (matrix_4x4, world_aabb, inv_matrix) in cached_dynamic_transforms.items():
             cached = cached_dynamic_meshes.get(obj_id)
             if cached is None:
                 continue

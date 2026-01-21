@@ -602,15 +602,17 @@ def _remove_active_entries_by_visual(ob: bpy.types.Object | None):
     entry = _obj_to_entry.pop(ob, None)
     if not entry:
         return
-    # Remove from main list
-    if entry in _active_projectiles:
-        _active_projectiles.remove(entry)
-    # Remove from owner index
+    # Mark for removal instead of O(n) remove - will be filtered in next prune
+    entry['_marked_for_removal'] = True
+    # Remove from owner index (this list is typically small, so remove is acceptable)
     owner = entry.get('owner_key')
     if owner is not None:
         lst = _owner_to_entries.get(owner)
-        if lst and entry in lst:
-            lst.remove(entry)
+        if lst:
+            try:
+                lst.remove(entry)
+            except ValueError:
+                pass
             if not lst:
                 _owner_to_entries.pop(owner, None)
 
@@ -641,13 +643,17 @@ def _delete_visual_if_clone(ob: bpy.types.Object | None):
 
 def _prune_expired(now: float):
     """
-    Remove expired projectiles immediately (so counts are accurate when firing rapidly).
+    Remove expired and marked-for-removal projectiles immediately.
+    Uses list rebuild (O(n)) instead of repeated remove() calls (O(n²)).
     Deletes their visuals too. Cleans up O(1) indices.
     """
     if not _active_projectiles:
         return
     keep = []
     for p in _active_projectiles:
+        # Check for marked-for-removal flag (set by _remove_active_entries_by_visual)
+        if p.get('_marked_for_removal'):
+            continue
         if now >= p['end_time']:
             _delete_visual_if_clone(p.get('obj'))
             # Clean up indices
@@ -657,8 +663,11 @@ def _prune_expired(now: float):
             owner = p.get('owner_key')
             if owner is not None:
                 lst = _owner_to_entries.get(owner)
-                if lst and p in lst:
-                    lst.remove(p)
+                if lst:
+                    try:
+                        lst.remove(p)
+                    except ValueError:
+                        pass
                     if not lst:
                         _owner_to_entries.pop(owner, None)
             worker_id = p.get('worker_id')
@@ -690,7 +699,7 @@ def _evict_oldest_visuals_for_reaction(owner_key: int, n_to_evict: int):
 def _evict_oldest_active_for_reaction(owner_key: int, n_to_evict: int):
     """
     Fallback FIFO eviction for reactions with NO visuals (just sim entries).
-    Uses O(1) owner index lookup.
+    Uses O(1) owner index lookup. Marks entries for removal instead of O(n) remove().
     """
     if n_to_evict <= 0:
         return
@@ -703,9 +712,8 @@ def _evict_oldest_active_for_reaction(owner_key: int, n_to_evict: int):
             break
         entry = lst.pop(0)  # FIFO: oldest first
         _delete_visual_if_clone(entry.get('obj'))
-        # Remove from main list
-        if entry in _active_projectiles:
-            _active_projectiles.remove(entry)
+        # Mark for removal instead of O(n) remove - will be filtered in next prune
+        entry['_marked_for_removal'] = True
         # Remove from obj index
         obj_v = entry.get('obj')
         if obj_v:
@@ -842,6 +850,7 @@ def interpolate_projectile_visuals(dt: float):
     Uses cumulative time tracking to extrapolate correctly across multiple frames.
     Worker results reset the extrapolation base.
     Also prunes expired projectiles locally (safety net if worker results delayed).
+    Uses list rebuild (O(n)) instead of repeated remove() calls (O(n²)).
     """
     if not _active_projectiles:
         return
@@ -850,6 +859,9 @@ def interpolate_projectile_visuals(dt: float):
     now = get_game_time()
     keep = []
     for p in _active_projectiles:
+        # Skip marked-for-removal entries
+        if p.get('_marked_for_removal'):
+            continue
         if now >= p.get('end_time', float('inf')):
             _delete_visual_if_clone(p.get('obj'))
             # Clean up indices
@@ -859,8 +871,11 @@ def interpolate_projectile_visuals(dt: float):
             owner = p.get('owner_key')
             if owner is not None:
                 lst = _owner_to_entries.get(owner)
-                if lst and p in lst:
-                    lst.remove(p)
+                if lst:
+                    try:
+                        lst.remove(p)
+                    except ValueError:
+                        pass
                     if not lst:
                         _owner_to_entries.pop(owner, None)
             worker_id = p.get('worker_id')
@@ -1470,9 +1485,8 @@ def process_projectile_results(result) -> int:
                 _emit_impact_event(r, pos_v, get_game_time())
                 log_game("PROJECTILE", f"IMPACT cid={client_id} source={hit_source} pos=({pos_v.x:.2f},{pos_v.y:.2f},{pos_v.z:.2f})")
 
-            # Remove from active list (keep visual for FIFO)
-            if entry in _active_projectiles:
-                _active_projectiles.remove(entry)
+            # Mark for removal (O(1)) instead of O(n) remove - filtered in next prune
+            entry['_marked_for_removal'] = True
 
             # Clean up O(1) indices
             obj_v = entry.get('obj')
@@ -1481,8 +1495,11 @@ def process_projectile_results(result) -> int:
             owner = entry.get('owner_key')
             if owner is not None:
                 lst = _owner_to_entries.get(owner)
-                if lst and entry in lst:
-                    lst.remove(entry)
+                if lst:
+                    try:
+                        lst.remove(entry)
+                    except ValueError:
+                        pass
                     if not lst:
                         _owner_to_entries.pop(owner, None)
 
@@ -1493,8 +1510,8 @@ def process_projectile_results(result) -> int:
         entry = client_id_map.get(client_id)
         if entry:
             _delete_visual_if_clone(entry.get('obj'))
-            if entry in _active_projectiles:
-                _active_projectiles.remove(entry)
+            # Mark for removal (O(1)) instead of O(n) remove
+            entry['_marked_for_removal'] = True
             # Clean up O(1) indices
             obj_v = entry.get('obj')
             if obj_v:
@@ -1502,13 +1519,20 @@ def process_projectile_results(result) -> int:
             owner = entry.get('owner_key')
             if owner is not None:
                 lst = _owner_to_entries.get(owner)
-                if lst and entry in lst:
-                    lst.remove(entry)
+                if lst:
+                    try:
+                        lst.remove(entry)
+                    except ValueError:
+                        pass
                     if not lst:
                         _owner_to_entries.pop(owner, None)
 
     # Log batch results
     log_game("PROJECTILE", f"BATCH_RESULT updated={processed} impacts={len(impacts)} expired={len(expired)}")
+
+    # Filter out marked-for-removal entries (O(n) once vs O(n²) with remove())
+    if impacts or expired:
+        _active_projectiles[:] = [p for p in _active_projectiles if not p.get('_marked_for_removal')]
 
     # Flush impact events
     if impacts:

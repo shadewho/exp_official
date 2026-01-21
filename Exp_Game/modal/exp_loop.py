@@ -54,6 +54,214 @@ from ..animations.blend_system import (
 )
 
 
+# ============================================================================
+# RESULT DISPATCH HANDLERS - Separated for O(1) dict lookup instead of if/elif
+# ============================================================================
+
+def _handle_echo_result(op, result, stats):
+    """Handle ECHO test result - no action needed."""
+    pass
+
+
+def _handle_camera_occlusion_result(op, result, stats):
+    """Handle CAMERA_OCCLUSION_FULL result."""
+    try:
+        from ..developer.dev_logger import log_game
+        op_key = id(op)
+        job_id = result.job_id
+        hit = result.result.get("hit", False)
+        hit_distance = result.result.get("hit_distance", None)
+        hit_source = result.result.get("hit_source", "STATIC")
+        calc_time_us = result.result.get("calc_time_us", 0.0)
+        static_tris = result.result.get("static_triangles_tested", 0)
+        static_cells = result.result.get("static_cells_traversed", 0)
+        dynamic_tris = result.result.get("dynamic_triangles_tested", 0)
+
+        cache_camera_worker_result(op_key, job_id, hit, hit_distance, hit_source, calc_time_us)
+
+        # Record stats for summary
+        stats.record_camera_ray(calc_time_us=calc_time_us, hit=hit)
+
+        # Check if grid is cached in worker (diagnostic)
+        grid_cached = result.result.get("grid_cached", True)
+        if not grid_cached:
+            log_game("CAMERA", "WARNING: Grid not cached in worker! Static geometry will not be tested.")
+
+        # Log unified camera result (uses master Hz control)
+        dynamic_meshes = result.result.get("dynamic_meshes_tested", 0)
+        method = result.result.get("method", "CAMERA_UNIFIED")
+        if hit:
+            log_game("CAMERA", f"HIT({hit_source}) dist={hit_distance:.3f}m | static_tris={static_tris} cells={static_cells} dyn_meshes={dynamic_meshes} | {calc_time_us:.0f}us [{method}]")
+        else:
+            log_game("CAMERA", f"MISS | static_tris={static_tris} cells={static_cells} dyn_meshes={dynamic_meshes} | {calc_time_us:.0f}us [{method}]")
+
+    except Exception as e:
+        print(f"[GameLoop] Error caching camera occlusion result: {e}")
+
+
+def _handle_interaction_check_result(op, result, stats):
+    """Handle INTERACTION_CHECK_BATCH result."""
+    try:
+        apply_interaction_check_result(result, bpy.context)
+    except Exception as e:
+        print(f"[GameLoop] Error applying interaction check result: {e}")
+        import traceback
+        traceback.print_exc()
+        # CRITICAL: Clear pending job on error to prevent infinite loop
+        op._pending_interaction_job_id = None
+
+
+def _handle_compute_heavy_result(op, result, stats):
+    """Handle COMPUTE_HEAVY stress test - no action needed."""
+    pass
+
+
+def _handle_kcc_physics_result(op, result, stats):
+    """Handle KCC_PHYSICS_STEP result (late results - main processing is same-frame)."""
+    try:
+        from ..developer.dev_logger import log_game
+        # Extract debug data for stats
+        debug = result.result.get("debug", {})
+        calc_time = debug.get("calc_time_us", 0.0)
+        rays = debug.get("rays_cast", 0)
+        tris = debug.get("triangles_tested", 0)
+        h_blocked = debug.get("h_blocked", False)
+        did_step = debug.get("did_step_up", False)
+        did_slide = debug.get("did_slide", False)
+        hit_ceiling = debug.get("hit_ceiling", False)
+
+        # Record stats for summary
+        stats.record_kcc_step(
+            calc_time_us=calc_time,
+            rays=rays,
+            tris=tris,
+            blocked=h_blocked,
+            step_up=did_step,
+            slide=did_slide,
+            ceiling=hit_ceiling
+        )
+
+        # Engine health logging
+        dynamic_active = debug.get("dynamic_meshes_active", 0)
+        dynamic_xform_time = debug.get("dynamic_transform_time_us", 0.0)
+        if dynamic_active > 0:
+            log_game("ENGINE",
+                f"MAIN: worker_time={calc_time:.0f}µs (xform={dynamic_xform_time:.0f}µs) "
+                f"rays={rays} tris={tris} dyn={dynamic_active}")
+
+    except Exception as e:
+        print(f"[GameLoop] Error processing KCC stats: {e}")
+
+
+def _handle_cache_grid_result(op, result, stats):
+    """Handle CACHE_GRID result."""
+    from ..developer.dev_debug_gate import should_print_debug
+    if should_print_debug("kcc_physics"):
+        if result.result.get("success"):
+            tris = result.result.get("triangles", 0)
+            cells = result.result.get("cells", 0)
+            print(f"[KCC] Grid cached: {tris:,} triangles, {cells:,} cells")
+        else:
+            print(f"[KCC] Grid cache ERROR: {result.result.get('error', 'Unknown error')}")
+
+
+def _handle_cache_dynamic_mesh_result(op, result, stats):
+    """Handle CACHE_DYNAMIC_MESH result."""
+    if result.result.get("success"):
+        worker_logs = result.result.get("logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
+
+
+def _handle_cache_animations_result(op, result, stats):
+    """Handle CACHE_ANIMATIONS result."""
+    if result.result.get("success"):
+        worker_logs = result.result.get("logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
+
+
+def _handle_evaluate_trackers_result(op, result, stats):
+    """Handle EVALUATE_TRACKERS result."""
+    try:
+        process_tracker_result(result)
+    except Exception as e:
+        print(f"[GameLoop] Error applying tracker result: {e}")
+
+
+def _handle_cache_trackers_result(op, result, stats):
+    """Handle CACHE_TRACKERS result."""
+    if result.result:
+        count = result.result.get("tracker_count", 0)
+        worker_logs = result.result.get("logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
+
+
+def _handle_hitscan_batch_result(op, result, stats):
+    """Handle HITSCAN_BATCH result."""
+    try:
+        process_hitscan_results(result)
+        # Process worker logs
+        worker_logs = result.result.get("logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
+    except Exception as e:
+        print(f"[GameLoop] Error processing hitscan results: {e}")
+
+
+def _handle_projectile_update_result(op, result, stats):
+    """Handle PROJECTILE_UPDATE_BATCH result."""
+    try:
+        process_projectile_results(result)
+        # Process worker logs
+        worker_logs = result.result.get("logs", [])
+        if worker_logs:
+            from ..developer.dev_logger import log_worker_messages
+            log_worker_messages(worker_logs)
+    except Exception as e:
+        print(f"[GameLoop] Error processing projectile results: {e}")
+
+
+def _handle_transform_batch_result(op, result, stats):
+    """Handle TRANSFORM_BATCH result."""
+    try:
+        apply_transform_results(result)
+    except Exception as e:
+        print(f"[GameLoop] Error applying transform results: {e}")
+
+
+def _handle_tracking_batch_result(op, result, stats):
+    """Handle TRACKING_BATCH result."""
+    try:
+        apply_tracking_results(result)
+    except Exception as e:
+        print(f"[GameLoop] Error applying tracking results: {e}")
+
+
+# Dispatch table for O(1) result routing (replaces if/elif chain)
+_RESULT_HANDLERS = {
+    "ECHO": _handle_echo_result,
+    "CAMERA_OCCLUSION_FULL": _handle_camera_occlusion_result,
+    "INTERACTION_CHECK_BATCH": _handle_interaction_check_result,
+    "COMPUTE_HEAVY": _handle_compute_heavy_result,
+    "KCC_PHYSICS_STEP": _handle_kcc_physics_result,
+    "CACHE_GRID": _handle_cache_grid_result,
+    "CACHE_DYNAMIC_MESH": _handle_cache_dynamic_mesh_result,
+    "CACHE_ANIMATIONS": _handle_cache_animations_result,
+    "EVALUATE_TRACKERS": _handle_evaluate_trackers_result,
+    "CACHE_TRACKERS": _handle_cache_trackers_result,
+    "HITSCAN_BATCH": _handle_hitscan_batch_result,
+    "PROJECTILE_UPDATE_BATCH": _handle_projectile_update_result,
+    "TRANSFORM_BATCH": _handle_transform_batch_result,
+    "TRACKING_BATCH": _handle_tracking_batch_result,
+}
+
+
 class GameLoop:
     """
     Per-frame/TIMER orchestrator for ExpModal.
@@ -204,9 +412,9 @@ class GameLoop:
         camera_job_id = submit_camera_occlusion_early(op, context)
 
         # D4) Explicit camera sync - poll with timeout immediately after submission
-        # Worker completes in ~200µs, polling adds ~300µs total (0.9% of 33ms frame budget)
+        # Worker completes in ~200µs, 1ms timeout provides 5x safety margin (3% of 33ms budget)
         if camera_job_id is not None:
-            poll_camera_result_with_timeout(op, context, camera_job_id, timeout=0.003)
+            poll_camera_result_with_timeout(op, context, camera_job_id, timeout=0.001)
 
         # E) Camera update (uses cached worker result with FINAL physics position)
         update_camera_for_operator(context, op)
@@ -329,6 +537,8 @@ class GameLoop:
         Poll multiprocessing engine for completed jobs and apply results.
         Tracks frame-level synchronization metrics and prints summaries.
 
+        Uses O(1) dispatch table lookup instead of if/elif chain for ~5-10µs savings per result.
+
         Note: KCC_PHYSICS_STEP results are now handled same-frame in exp_kcc.py,
         so we skip them here. Other results cached during KCC polling are also processed.
         """
@@ -338,222 +548,35 @@ class GameLoop:
             return
 
         # Non-blocking poll (up to 100 results per frame)
-        results = list(engine.poll_results(max_results=100))
+        # PERF: Iterate directly instead of list() conversion to avoid allocation
+        results = engine.poll_results(max_results=100)
 
         # Also include any results cached by KCC during same-frame polling
         pc = getattr(op, 'physics_controller', None)
-        if pc:
-            cached_results = pc.get_cached_other_results()
-            results.extend(cached_results)
-
-        # NOTE: Animation polling removed - animations now computed locally on main thread
-        # (eliminates 1-5ms IPC overhead per frame)
+        cached_kcc = pc.get_cached_other_results() if pc else []
 
         # Include any results cached by transform polling during same-frame sync
         transform_cached = get_cached_transform_results()
-        results.extend(transform_cached)
 
         stats = get_stats_tracker()
 
-        # Record completions for engine stats
-        for _ in results:
-            stats.record_engine_job_completed()
-
         # Phase 1: Engine visibility - output worker load distribution and job type stats
-        # This calls the engine's own debug output method which tracks per-worker and per-job-type stats
-        # PERFORMANCE: Use getattr instead of hasattr (single lookup vs two)
         output_debug = getattr(engine, 'output_debug_stats', None)
         if output_debug:
-            output_debug()  # Gets context from bpy.context internally
+            output_debug()
 
+        # Process all results using dispatch table
         for result in results:
-            # Process result and track latency metrics
-            # PERFORMANCE: process_engine_result is a method, always exists
+            stats.record_engine_job_completed()
             op.process_engine_result(result)
 
-            # Route result to appropriate handler based on job type
             if result.success:
-                if result.job_type == "ECHO":
-                    # Echo test - no action needed
-                    pass
-                elif result.job_type == "CAMERA_OCCLUSION_FULL":
-                    # Cache camera occlusion result - only if it matches current pending job
-                    try:
-                        from ..developer.dev_logger import log_game
-                        op_key = id(op)
-                        job_id = result.job_id
-                        hit = result.result.get("hit", False)
-                        hit_distance = result.result.get("hit_distance", None)
-                        hit_source = result.result.get("hit_source", "STATIC")
-                        calc_time_us = result.result.get("calc_time_us", 0.0)
-                        static_tris = result.result.get("static_triangles_tested", 0)
-                        static_cells = result.result.get("static_cells_traversed", 0)
-                        dynamic_tris = result.result.get("dynamic_triangles_tested", 0)
-
-                        cache_camera_worker_result(op_key, job_id, hit, hit_distance, hit_source, calc_time_us)
-
-                        # Record stats for summary
-                        stats.record_camera_ray(calc_time_us=calc_time_us, hit=hit)
-
-                        # Check if grid is cached in worker (diagnostic)
-                        grid_cached = result.result.get("grid_cached", True)
-                        if not grid_cached:
-                            log_game("CAMERA", "WARNING: Grid not cached in worker! Static geometry will not be tested.")
-
-                        # Log unified camera result (uses master Hz control)
-                        dynamic_meshes = result.result.get("dynamic_meshes_tested", 0)
-                        method = result.result.get("method", "CAMERA_UNIFIED")
-                        if hit:
-                            log_game("CAMERA", f"HIT({hit_source}) dist={hit_distance:.3f}m | static_tris={static_tris} cells={static_cells} dyn_meshes={dynamic_meshes} | {calc_time_us:.0f}us [{method}]")
-                        else:
-                            log_game("CAMERA", f"MISS | static_tris={static_tris} cells={static_cells} dyn_meshes={dynamic_meshes} | {calc_time_us:.0f}us [{method}]")
-
-                    except Exception as e:
-                        print(f"[GameLoop] Error caching camera occlusion result: {e}")
-                elif result.job_type == "INTERACTION_CHECK_BATCH":
-                    # Apply interaction check result (full offload with state management)
-                    try:
-                        apply_interaction_check_result(result, bpy.context)
-                    except Exception as e:
-                        print(f"[GameLoop] Error applying interaction check result: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        # CRITICAL: Clear pending job on error to prevent infinite loop
-                        # PERFORMANCE: Direct access - class-level default is None
-                        op._pending_interaction_job_id = None
-                elif result.job_type == "COMPUTE_HEAVY":
-                    # Stress test - no action needed
-                    pass
-                elif result.job_type == "KCC_PHYSICS_STEP":
-                    # KCC results are now processed same-frame in exp_kcc.py
-                    # This branch only handles late results (should be rare)
-                    # Still record stats for debug output
-                    try:
-                        # Extract debug data for stats
-                        debug = result.result.get("debug", {})
-                        calc_time = debug.get("calc_time_us", 0.0)
-                        rays = debug.get("rays_cast", 0)
-                        tris = debug.get("triangles_tested", 0)
-                        h_blocked = debug.get("h_blocked", False)
-                        did_step = debug.get("did_step_up", False)
-                        did_slide = debug.get("did_slide", False)
-                        hit_ceiling = debug.get("hit_ceiling", False)
-
-                        # Record stats for summary
-                        stats.record_kcc_step(
-                            calc_time_us=calc_time,
-                            rays=rays,
-                            tris=tris,
-                            blocked=h_blocked,
-                            step_up=did_step,
-                            slide=did_slide,
-                            ceiling=hit_ceiling
-                        )
-
-                        # Engine health logging
-                        from ..developer.dev_logger import log_game
-                        dynamic_active = debug.get("dynamic_meshes_active", 0)
-                        dynamic_xform_time = debug.get("dynamic_transform_time_us", 0.0)
-                        if dynamic_active > 0:
-                            log_game("ENGINE",
-                                f"MAIN: worker_time={calc_time:.0f}µs (xform={dynamic_xform_time:.0f}µs) "
-                                f"rays={rays} tris={tris} dyn={dynamic_active}")
-
-                        # KCC Debug output uses fast buffer logger (log_game)
-                        # NO console prints during gameplay (destroys performance)
-                        # All KCC physics logs are handled in exp_kcc.py via log_game()
-
-                    except Exception as e:
-                        print(f"[GameLoop] Error processing KCC stats: {e}")
-
-                elif result.job_type == "CACHE_GRID":
-                    # Grid caching confirmation
-                    from ..developer.dev_debug_gate import should_print_debug
-                    if should_print_debug("kcc_physics"):
-                        if result.result.get("success"):
-                            tris = result.result.get("triangles", 0)
-                            cells = result.result.get("cells", 0)
-                            print(f"[KCC] Grid cached: {tris:,} triangles, {cells:,} cells")
-                        else:
-                            print(f"[KCC] Grid cache ERROR: {result.result.get('error', 'Unknown error')}")
-
-                elif result.job_type == "CACHE_DYNAMIC_MESH":
-                    # Dynamic mesh caching confirmation
-                    # Process worker logs (cache events)
-                    if result.result.get("success"):
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
-
-                elif result.job_type == "CACHE_ANIMATIONS":
-                    # Animation caching confirmation
-                    if result.result.get("success"):
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
-
-                # NOTE: ANIMATION_COMPUTE_BATCH removed - animations now computed locally
-                # on main thread (eliminates 1-5ms IPC overhead per frame)
-
-                elif result.job_type == "EVALUATE_TRACKERS":
-                    # Apply tracker evaluation results from worker
-                    try:
-                        process_tracker_result(result)
-                    except Exception as e:
-                        print(f"[GameLoop] Error applying tracker result: {e}")
-
-                elif result.job_type == "CACHE_TRACKERS":
-                    # Tracker cache confirmation from worker
-                    if result.result:
-                        count = result.result.get("tracker_count", 0)
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
-
-                elif result.job_type == "HITSCAN_BATCH":
-                    # Process hitscan results from worker
-                    try:
-                        process_hitscan_results(result)
-                        # Process worker logs
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
-                    except Exception as e:
-                        print(f"[GameLoop] Error processing hitscan results: {e}")
-
-                elif result.job_type == "PROJECTILE_UPDATE_BATCH":
-                    # Process projectile update results from worker
-                    try:
-                        process_projectile_results(result)
-                        # Process worker logs
-                        worker_logs = result.result.get("logs", [])
-                        if worker_logs:
-                            from ..developer.dev_logger import log_worker_messages
-                            log_worker_messages(worker_logs)
-                    except Exception as e:
-                        print(f"[GameLoop] Error processing projectile results: {e}")
-
-                elif result.job_type == "TRANSFORM_BATCH":
-                    # Apply transform interpolation results from worker
-                    try:
-                        apply_transform_results(result)
-                    except Exception as e:
-                        print(f"[GameLoop] Error applying transform results: {e}")
-
-                elif result.job_type == "TRACKING_BATCH":
-                    # Apply tracking movement results from worker
-                    try:
-                        apply_tracking_results(result)
-                    except Exception as e:
-                        print(f"[GameLoop] Error applying tracking results: {e}")
-
+                # O(1) dispatch table lookup instead of if/elif chain
+                handler = _RESULT_HANDLERS.get(result.job_type)
+                if handler:
+                    handler(op, result, stats)
             else:
-                # Job failed - already logged in process_engine_result
-                # CRITICAL: Clear pending_job_id for camera jobs to prevent permanent stuck state
+                # Job failed - handle camera stuck state
                 if result.job_type == "CAMERA_OCCLUSION_FULL":
                     from ..physics.exp_view import _view_state_for
                     op_key = id(op)
@@ -563,6 +586,19 @@ class GameLoop:
                         view["pending_job_submit_time"] = 0.0
                         print(f"[Camera ERROR] Cleared stuck pending job {result.job_id}: {result.error}")
 
-        # Periodic sync stats reporting (disabled when test manager is active)
-        # Test manager has its own comprehensive reporting
-        pass
+        # Process cached results from KCC and transform polling
+        for result in cached_kcc:
+            stats.record_engine_job_completed()
+            op.process_engine_result(result)
+            if result.success:
+                handler = _RESULT_HANDLERS.get(result.job_type)
+                if handler:
+                    handler(op, result, stats)
+
+        for result in transform_cached:
+            stats.record_engine_job_completed()
+            op.process_engine_result(result)
+            if result.success:
+                handler = _RESULT_HANDLERS.get(result.job_type)
+                if handler:
+                    handler(op, result, stats)

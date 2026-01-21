@@ -152,14 +152,66 @@ def _get_collection(scn: bpy.types.Scene, attr_name: str):
     return getattr(scn, attr_name, None)
 
 
+# ─────────────────────────────────────────────────────────
+# PERF: UID Index Cache for O(1) slot lookups (replaces O(n) iteration)
+# ─────────────────────────────────────────────────────────
+# Structure: {scene_id: {attr_name: {uid: slot}}}
+_uid_index_cache: dict = {}
+
+def _get_uid_index(scn: bpy.types.Scene, attr_name: str) -> dict:
+    """Get or build the UID -> slot index for a collection."""
+    scene_id = id(scn)
+    if scene_id not in _uid_index_cache:
+        _uid_index_cache[scene_id] = {}
+
+    scene_cache = _uid_index_cache[scene_id]
+    if attr_name not in scene_cache:
+        # Build the index
+        coll = getattr(scn, attr_name, None)
+        index = {}
+        if coll:
+            for slot in coll:
+                uid = getattr(slot, "uid", "")
+                if uid:
+                    index[uid] = slot
+        scene_cache[attr_name] = index
+
+    return scene_cache[attr_name]
+
+
+def _invalidate_uid_index(scn: bpy.types.Scene, attr_name: str):
+    """Invalidate the UID index when slots are added/removed."""
+    scene_id = id(scn)
+    if scene_id in _uid_index_cache:
+        _uid_index_cache[scene_id].pop(attr_name, None)
+
+
+def _register_slot_in_index(scn: bpy.types.Scene, attr_name: str, slot):
+    """Register a newly created slot in the index."""
+    uid = getattr(slot, "uid", "")
+    if not uid:
+        return
+    scene_id = id(scn)
+    if scene_id not in _uid_index_cache:
+        _uid_index_cache[scene_id] = {}
+    if attr_name not in _uid_index_cache[scene_id]:
+        # Index not built yet, will be built on first lookup
+        return
+    _uid_index_cache[scene_id][attr_name][uid] = slot
+
+
+def clear_uid_index_cache():
+    """Clear the entire UID index cache (call on scene change or game reset)."""
+    global _uid_index_cache
+    _uid_index_cache.clear()
+
+
 def _find_by_uid(scn: bpy.types.Scene, attr_name: str, uid: str):
-    coll = _get_collection(scn, attr_name)
-    if not coll:
+    """O(1) lookup using indexed cache instead of O(n) iteration."""
+    if not uid:
         return None
-    for it in coll:
-        if getattr(it, "uid", "") == uid:
-            return it
-    return None
+    index = _get_uid_index(scn, attr_name)
+    return index.get(uid)
 
 
 def _slot_exists(attr_name: str, uid: str) -> bool:
@@ -181,6 +233,8 @@ def create_float_slot(scn: bpy.types.Scene, name: str = "Float") -> str:
     item.has_value = False
     item.value = 0.0
     item.updated_at = 0.0
+    # PERF: Register in index for O(1) lookup
+    _register_slot_in_index(scn, "utility_floats", item)
     return item.uid
 
 
@@ -222,6 +276,8 @@ def create_int_slot(scn: bpy.types.Scene, name: str = "Integer") -> str:
     item.has_value = False
     item.value = 0
     item.updated_at = 0.0
+    # PERF: Register in index for O(1) lookup
+    _register_slot_in_index(scn, "utility_ints", item)
     return item.uid
 
 
@@ -263,6 +319,8 @@ def create_bool_slot(scn: bpy.types.Scene, name: str = "Boolean") -> str:
     item.has_value = False
     item.value = False
     item.updated_at = 0.0
+    # PERF: Register in index for O(1) lookup
+    _register_slot_in_index(scn, "utility_bools", item)
     return item.uid
 
 
@@ -304,6 +362,8 @@ def create_object_slot(scn: bpy.types.Scene, name: str = "Object") -> str:
     item.has_value = False
     item.object_name = ""
     item.updated_at = 0.0
+    # PERF: Register in index for O(1) lookup
+    _register_slot_in_index(scn, "utility_objects", item)
     return item.uid
 
 
@@ -363,6 +423,7 @@ def create_collection_slot(scn: bpy.types.Scene, name: str = "Collection") -> st
     item.has_value = False
     item.collection_name = ""
     item.updated_at = 0.0
+    _register_slot_in_index(scn, "utility_collections", item)
     return item.uid
 
 
@@ -422,6 +483,7 @@ def create_action_slot(scn: bpy.types.Scene, name: str = "Action") -> str:
     item.has_value = False
     item.action_name = ""
     item.updated_at = 0.0
+    _register_slot_in_index(scn, "utility_actions", item)
     return item.uid
 
 
@@ -481,6 +543,7 @@ def create_floatvec_slot(scn: bpy.types.Scene, name: str = "Float Vector") -> st
     item.has_value = False
     item.value = (0.0, 0.0, 0.0)
     item.updated_at = 0.0
+    _register_slot_in_index(scn, "utility_float_vectors", item)
     return item.uid
 
 

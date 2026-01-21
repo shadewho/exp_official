@@ -79,6 +79,7 @@ def handle_hitscan_batch(job_data: dict, cached_grid, cached_dynamic_meshes, cac
 
     # Update dynamic transform cache
     from ..math import transform_aabb_by_matrix, invert_matrix_4x4
+
     for obj_id, matrix_4x4 in dynamic_transforms.items():
         cached = cached_dynamic_meshes.get(obj_id)
         if cached is None:
@@ -100,15 +101,13 @@ def handle_hitscan_batch(job_data: dict, cached_grid, cached_dynamic_meshes, cac
             "grid_dims": cached_grid.get("grid_dims", (1, 1, 1)),
         }
 
-    # Build dynamic mesh list for raycast
+    # Build dynamic mesh list from ALL cached transforms
     unified_dynamic_meshes = []
-    transforms_received = len(dynamic_transforms)
-    transforms_matched = 0
+
     for obj_id, (matrix_4x4, world_aabb, inv_matrix) in cached_dynamic_transforms.items():
         cached = cached_dynamic_meshes.get(obj_id)
         if cached is None or inv_matrix is None:
             continue
-        transforms_matched += 1
 
         unified_dynamic_meshes.append({
             "obj_id": obj_id,
@@ -119,10 +118,6 @@ def handle_hitscan_batch(job_data: dict, cached_grid, cached_dynamic_meshes, cac
             "aabb": world_aabb,
             "grid": cached.get("grid"),
         })
-
-    # Debug: log dynamic mesh availability
-    if transforms_received > 0 or len(cached_dynamic_meshes) > 0:
-        logs.append(("HITSCAN", f"DYNAMIC_MESHES transforms_received={transforms_received} cached_meshes={len(cached_dynamic_meshes)} matched={transforms_matched} available={len(unified_dynamic_meshes)}"))
 
     # Process rays
     results = []

@@ -29,6 +29,10 @@ from ..engine.animations.blend import (
     sample_object_animation,
     blend_object_transforms,
 )
+from .bone_groups import BONE_INDEX, INDEX_TO_BONE, TOTAL_BONES
+
+
+import numpy as np
 
 
 def _has_significant_delta(prev: tuple, new: tuple, eps: float = 1e-5) -> bool:
@@ -41,6 +45,13 @@ def _has_significant_delta(prev: tuple, new: tuple, eps: float = 1e-5) -> bool:
         if abs(a - b) > eps:
             return True
     return False
+
+
+# Pre-computed identity pose for standard rig (TOTAL_BONES x 10)
+# quat=(1,0,0,0), loc=(0,0,0), scale=(1,1,1)
+_IDENTITY_POSE = np.zeros((TOTAL_BONES, 10), dtype=np.float32)
+_IDENTITY_POSE[:, 0] = 1.0   # quat w = 1
+_IDENTITY_POSE[:, 7:10] = 1.0  # scale = 1
 
 
 @dataclass
@@ -287,6 +298,10 @@ class AnimationController:
         self._states.clear()
         self._last_bone_transforms.clear()
         self._last_object_transforms.clear()
+        # Clear pose_bone lookup caches
+        for attr in list(vars(self).keys()):
+            if attr.startswith('_pb_cache_'):
+                delattr(self, attr)
 
     def clear_all(self) -> None:
         """Clear both states and cache."""
@@ -294,6 +309,10 @@ class AnimationController:
         self.cache.clear()
         self._last_bone_transforms.clear()
         self._last_object_transforms.clear()
+        # Clear pose_bone lookup caches
+        for attr in list(vars(self).keys()):
+            if attr.startswith('_pb_cache_'):
+                delattr(self, attr)
 
     # =========================================================================
     # FRAME UPDATE & COMPUTE METHODS
@@ -358,11 +377,10 @@ class AnimationController:
         Compute and apply all animation poses locally on main thread.
         Call after update_state(). No worker involvement - pure local compute.
 
-        This is 100-1000x faster than worker offload for animation because:
-        - Animation math is trivial (array lookups + quaternion slerp)
-        - IPC overhead (serialize, queue, deserialize) vastly exceeds compute time
-        - Local numpy operations: ~10-50μs for 50 bones
-        - IPC round-trip: ~1-5ms overhead
+        OPTIMIZED: Uses cached bone mappings and numpy arrays throughout.
+        - No dict/tuple conversions in hot path
+        - Cached standard bone index mappings for fast remapping
+        - Direct numpy array application
 
         Returns:
             Total number of transforms applied
@@ -371,11 +389,11 @@ class AnimationController:
 
         for object_name, state in self._states.items():
             # Collect active animations for this object
-            bone_poses = []
+            # Store poses in STANDARD bone order (TOTAL_BONES, 10)
+            std_poses = []
             bone_weights = []
             object_transforms_list = []
             object_weights = []
-            bone_names = None
 
             for p in state.playing:
                 if p.finished or p.effective_weight < 0.001:
@@ -386,50 +404,55 @@ class AnimationController:
                 if anim is None:
                     continue
 
-                # Build anim_data dict for sampling functions
-                anim_data = {
-                    "bone_transforms": anim.bone_transforms,
-                    "object_transforms": anim.object_transforms,
-                    "duration": anim.duration,
-                    "fps": anim.fps,
-                    "animated_mask": anim.animated_mask,
-                }
-
                 # Sample bone animation
                 if anim.has_bones:
+                    # Ensure standard bone mapping is computed (once per animation)
+                    if not anim._std_mapping_ready:
+                        anim.compute_std_bone_mapping(BONE_INDEX, TOTAL_BONES)
+
+                    # Build anim_data dict for sampling functions
+                    anim_data = {
+                        "bone_transforms": anim.bone_transforms,
+                        "object_transforms": anim.object_transforms,
+                        "duration": anim.duration,
+                        "fps": anim.fps,
+                        "animated_mask": anim.animated_mask,
+                    }
+
                     pose, _ = sample_bone_animation(anim_data, p.time, p.looping)
                     if pose.size > 0:
-                        bone_poses.append(pose)
+                        # FAST: Remap to standard bone order using cached mapping
+                        std_pose = anim.remap_to_standard(pose, _IDENTITY_POSE)
+                        std_poses.append(std_pose)
                         bone_weights.append(p.effective_weight)
-                        if bone_names is None:
-                            bone_names = anim.bone_names
 
                 # Sample object animation
                 if anim.has_object:
+                    anim_data = {
+                        "bone_transforms": anim.bone_transforms,
+                        "object_transforms": anim.object_transforms,
+                        "duration": anim.duration,
+                        "fps": anim.fps,
+                        "animated_mask": anim.animated_mask,
+                    }
                     obj_transform = sample_object_animation(anim_data, p.time, p.looping)
                     if obj_transform is not None:
                         object_transforms_list.append(obj_transform)
                         object_weights.append(p.effective_weight)
 
-            # Blend bone poses if we have any
-            bone_transforms_dict = {}
-            if bone_poses and bone_names:
-                blended_pose = blend_bone_poses(bone_poses, bone_weights)
-                # Convert numpy array to dict of tuples for apply_worker_result
-                for i, bone_name in enumerate(bone_names):
-                    if i < blended_pose.shape[0]:
-                        bone_transforms_dict[bone_name] = tuple(blended_pose[i])
+            # Blend bone poses if we have any (all in standard order now)
+            final_pose = None
+            if std_poses:
+                final_pose = blend_bone_poses(std_poses, bone_weights)
 
             # Blend object transforms if we have any
-            object_transform = None
+            final_obj_transform = None
             if object_transforms_list:
-                blended_obj = blend_object_transforms(object_transforms_list, object_weights)
-                if blended_obj is not None:
-                    object_transform = tuple(blended_obj)
+                final_obj_transform = blend_object_transforms(object_transforms_list, object_weights)
 
-            # Apply to Blender
-            if bone_transforms_dict or object_transform:
-                count = self.apply_worker_result(object_name, bone_transforms_dict, object_transform)
+            # FAST: Apply using numpy arrays directly (no dict/tuple conversion)
+            if final_pose is not None or final_obj_transform is not None:
+                count = self.apply_pose_fast(object_name, final_pose, final_obj_transform)
                 total_applied += count
 
         return total_applied
@@ -548,6 +571,100 @@ class AnimationController:
                 obj.location = (lx, ly, lz)
                 obj.scale = (sx, sy, sz)
                 self._last_object_transforms[object_name] = object_transform
+                count += 1
+
+        return count
+
+    def apply_pose_fast(
+        self,
+        object_name: str,
+        pose: np.ndarray,
+        object_transform: np.ndarray = None
+    ) -> int:
+        """
+        FAST: Apply pose directly from numpy array using indexed access.
+        Avoids dict/tuple conversions. Uses standard BONE_INDEX order.
+
+        Args:
+            object_name: Name of the Blender armature
+            pose: (TOTAL_BONES, 10) numpy array in standard BONE_INDEX order, or None
+            object_transform: Optional (10,) numpy array for object transform
+
+        Returns:
+            Number of bones updated
+        """
+        obj = bpy.data.objects.get(object_name)
+        if obj is None:
+            return 0
+
+        count = 0
+
+        # Apply bone transforms (for armatures)
+        if obj.type == 'ARMATURE' and pose is not None:
+            pose_bones = obj.pose.bones
+            bone_cache = self._last_bone_transforms.setdefault(object_name, {})
+
+            # Get or build pose_bone lookup cache for this armature
+            pb_cache_key = f"_pb_cache_{object_name}"
+            if not hasattr(self, pb_cache_key):
+                # Build pose_bone lookup once per armature
+                pb_lookup = {}
+                for bone_idx in range(TOTAL_BONES):
+                    bone_name = INDEX_TO_BONE.get(bone_idx)
+                    if bone_name:
+                        pb = pose_bones.get(bone_name)
+                        if pb:
+                            pb_lookup[bone_idx] = pb
+                setattr(self, pb_cache_key, pb_lookup)
+
+            pb_lookup = getattr(self, pb_cache_key)
+
+            # Apply bones using cached pose_bone lookup
+            for bone_idx, pose_bone in pb_lookup.items():
+                # Get transform from numpy array
+                transform = pose[bone_idx]
+
+                # Skip if unchanged (vectorized comparison)
+                bone_name = INDEX_TO_BONE[bone_idx]
+                prev = bone_cache.get(bone_name)
+                if prev is not None:
+                    if np.allclose(prev, transform, atol=1e-5):
+                        continue
+
+                # Apply transform (unavoidable individual bpy writes)
+                pose_bone.rotation_quaternion = (
+                    float(transform[0]), float(transform[1]),
+                    float(transform[2]), float(transform[3])
+                )
+                pose_bone.location = (
+                    float(transform[4]), float(transform[5]), float(transform[6])
+                )
+                pose_bone.scale = (
+                    float(transform[7]), float(transform[8]), float(transform[9])
+                )
+
+                # Cache as numpy array
+                bone_cache[bone_name] = transform.copy()
+                count += 1
+
+        # Apply object transform if provided
+        if object_transform is not None:
+            prev_obj = self._last_object_transforms.get(object_name)
+            if prev_obj is None or not np.allclose(prev_obj, object_transform, atol=1e-5):
+                obj.rotation_mode = 'QUATERNION'
+                obj.rotation_quaternion = (
+                    float(object_transform[0]), float(object_transform[1]),
+                    float(object_transform[2]), float(object_transform[3])
+                )
+                obj.location = (
+                    float(object_transform[4]), float(object_transform[5]),
+                    float(object_transform[6])
+                )
+                obj.scale = (
+                    float(object_transform[7]), float(object_transform[8]),
+                    float(object_transform[9])
+                )
+                self._last_object_transforms[object_name] = object_transform.copy()
                 count += 1
 
         return count

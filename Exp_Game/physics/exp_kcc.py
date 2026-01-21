@@ -33,120 +33,104 @@ def clamp(v, lo, hi):
 _UP = Vector((0.0, 0.0, 1.0))
 
 # ---- GPU Visualization (Global Handler) ------------------------------------
-#
-# PERFORMANCE OPTIMIZATIONS:
-# 1. Cached shader (no gpu.shader.from_builtin() every frame)
-# 2. Pre-computed circle lookup tables (no trig in draw loops)
-# 3. Reduced segment counts (8 instead of 12 - still looks good)
-#
-
-from ..developer.gpu_utils import (
-    get_cached_shader,
-    CIRCLE_8,
-    circle_verts_xy, circle_verts_xz,
-    extend_batch_data,
-    crosshair_verts,
-)
 
 _kcc_draw_handler = None
 _kcc_vis_data = None  # Shared visualization data
-_kcc_vis_version = 0  # Incremented when data changes
-_kcc_cached_batch = None  # Cached GPU batch
-_kcc_cached_version = -1  # Version when batch was built
-
-# Pre-computed vertical connector angles (cos, sin) for capsule
-_CONNECTOR_ANGLES = ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0))
-
 
 def _draw_kcc_visual():
-    """GPU draw callback for KCC visualization (optimized with batch caching)."""
-    global _kcc_vis_data, _kcc_cached_batch, _kcc_cached_version, _kcc_vis_version
+    """GPU draw callback for KCC visualization (optimized for single draw call)."""
+    global _kcc_vis_data
 
     if _kcc_vis_data is None:
         return
 
     scene = bpy.context.scene
-    if not scene.dev_debug_kcc_visual:
+    if not getattr(scene, 'dev_debug_kcc_visual', False):
         return
 
-    # Set GPU state
+    # Get toggle states
+    show_capsule = getattr(scene, 'dev_debug_kcc_visual_capsule', True)
+    show_normals = getattr(scene, 'dev_debug_kcc_visual_normals', True)
+    show_ground = getattr(scene, 'dev_debug_kcc_visual_ground', True)
+    show_movement = getattr(scene, 'dev_debug_kcc_visual_movement', True)
+
+    # Enable depth test and blending for 3D objects
     gpu.state.depth_test_set('LESS_EQUAL')
     gpu.state.blend_set('ALPHA')
-    gpu.state.line_width_set(scene.dev_debug_kcc_visual_line_width)
 
-    # CACHED shader (major optimization)
-    shader = get_cached_shader()
+    # IMPORTANT: Set line width for visibility (default is 1 pixel)
+    line_width = getattr(scene, 'dev_debug_kcc_visual_line_width', 2.5)
+    gpu.state.line_width_set(line_width)
 
-    # Check if we can use cached batch (data hasn't changed)
-    if _kcc_cached_batch is not None and _kcc_cached_version == _kcc_vis_version:
-        # Fast path: just redraw cached batch
-        shader.bind()
-        _kcc_cached_batch.draw(shader)
-        gpu.state.line_width_set(1.0)
-        gpu.state.depth_test_set('NONE')
-        gpu.state.blend_set('NONE')
-        return
+    # PERFORMANCE: Use per-vertex color shader for single batched draw call
+    shader = gpu.shader.from_builtin('FLAT_COLOR')
 
-    # Slow path: rebuild batch (only when data changed)
-    # Read toggles once
-    show_capsule = scene.dev_debug_kcc_visual_capsule
-    show_normals = scene.dev_debug_kcc_visual_normals
-    show_ground = scene.dev_debug_kcc_visual_ground
-    show_movement = scene.dev_debug_kcc_visual_movement
-
+    # Collect ALL geometry and colors for single draw call
     all_verts = []
     all_colors = []
 
     # ─────────────────────────────────────────────────────────────────────
     # CAPSULE (Three spheres: feet + mid + head)
-    # Uses pre-computed circle LUT (no trig calls)
     # ─────────────────────────────────────────────────────────────────────
     if show_capsule and 'capsule_spheres' in _kcc_vis_data:
         capsule_color = _kcc_vis_data.get('capsule_color', (0.0, 1.0, 0.0, 0.5))
         spheres = _kcc_vis_data['capsule_spheres']
 
-        for sphere_center, sphere_radius in spheres:
-            # XY circle (horizontal) - uses pre-computed LUT
-            extend_batch_data(
-                all_verts, all_colors,
-                circle_verts_xy(sphere_center, sphere_radius, CIRCLE_8),
-                capsule_color
-            )
-            # XZ circle (vertical front-facing)
-            extend_batch_data(
-                all_verts, all_colors,
-                circle_verts_xz(sphere_center, sphere_radius, CIRCLE_8),
-                capsule_color
-            )
+        segments = 12  # Optimized segment count
 
-        # Vertical connectors between spheres
+        for sphere_center, sphere_radius in spheres:
+            # XY circle (horizontal around character)
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = sphere_center[0] + sphere_radius * math.cos(angle1)
+                y1 = sphere_center[1] + sphere_radius * math.sin(angle1)
+                z1 = sphere_center[2]
+                x2 = sphere_center[0] + sphere_radius * math.cos(angle2)
+                y2 = sphere_center[1] + sphere_radius * math.sin(angle2)
+                z2 = sphere_center[2]
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([capsule_color, capsule_color])
+
+            # XZ circle (front-facing)
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = sphere_center[0] + sphere_radius * math.cos(angle1)
+                y1 = sphere_center[1]
+                z1 = sphere_center[2] + sphere_radius * math.sin(angle1)
+                x2 = sphere_center[0] + sphere_radius * math.cos(angle2)
+                y2 = sphere_center[1]
+                z2 = sphere_center[2] + sphere_radius * math.sin(angle2)
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([capsule_color, capsule_color])
+
+        # Add vertical lines connecting the spheres (feet→mid→head)
         if len(spheres) >= 2:
+            # Connect adjacent spheres
             for i in range(len(spheres) - 1):
                 lower_center, lower_radius = spheres[i]
                 upper_center, upper_radius = spheres[i + 1]
 
-                for cos_a, sin_a in _CONNECTOR_ANGLES:
-                    p1 = (
-                        lower_center[0] + lower_radius * cos_a,
-                        lower_center[1] + lower_radius * sin_a,
-                        lower_center[2]
-                    )
-                    p2 = (
-                        upper_center[0] + upper_radius * cos_a,
-                        upper_center[1] + upper_radius * sin_a,
-                        upper_center[2]
-                    )
-                    all_verts.extend([p1, p2])
+                for angle in [0, math.pi/2, math.pi, 3*math.pi/2]:
+                    x1 = lower_center[0] + lower_radius * math.cos(angle)
+                    y1 = lower_center[1] + lower_radius * math.sin(angle)
+                    z1 = lower_center[2]
+                    x2 = upper_center[0] + upper_radius * math.cos(angle)
+                    y2 = upper_center[1] + upper_radius * math.sin(angle)
+                    z2 = upper_center[2]
+                    all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
                     all_colors.extend([capsule_color, capsule_color])
 
     # ─────────────────────────────────────────────────────────────────────
     # HIT NORMALS (Cyan arrows)
     # ─────────────────────────────────────────────────────────────────────
     if show_normals and 'hit_normals' in _kcc_vis_data:
-        normal_color = (0.0, 1.0, 1.0, 0.9)
+        normal_color = (0.0, 1.0, 1.0, 0.9)  # Cyan
+        normals = _kcc_vis_data['hit_normals']
         arrow_length = 0.4
 
-        for origin, normal in _kcc_vis_data['hit_normals']:
+        for origin, normal in normals:
             end = (
                 origin[0] + normal[0] * arrow_length,
                 origin[1] + normal[1] * arrow_length,
@@ -156,7 +140,7 @@ def _draw_kcc_visual():
             all_colors.extend([normal_color, normal_color])
 
     # ─────────────────────────────────────────────────────────────────────
-    # GROUND RAY (Cyan = static, Orange = dynamic, Purple = miss)
+    # GROUND RAY (UNIFIED: Cyan = static hit, Orange = dynamic hit, Purple = miss)
     # ─────────────────────────────────────────────────────────────────────
     if show_ground and 'ground_ray' in _kcc_vis_data:
         ray_data = _kcc_vis_data['ground_ray']
@@ -165,21 +149,37 @@ def _draw_kcc_visual():
         hit = ray_data['hit']
         is_dynamic = ray_data.get('is_dynamic', False)
 
+        # UNIFIED: Different colors for static vs dynamic ground
         if hit:
-            ray_color = (1.0, 0.5, 0.0, 0.9) if is_dynamic else (0.0, 1.0, 1.0, 0.9)
+            if is_dynamic:
+                ray_color = (1.0, 0.5, 0.0, 0.9)  # Orange = dynamic ground
+            else:
+                ray_color = (0.0, 1.0, 1.0, 0.9)  # Cyan = static ground
         else:
-            ray_color = (0.5, 0.0, 0.5, 0.7)
+            ray_color = (0.5, 0.0, 0.5, 0.7)  # Purple = miss
 
+        # Add ray line
         all_verts.extend([origin, end])
         all_colors.extend([ray_color, ray_color])
 
-        # Hit point circle (uses pre-computed LUT)
+        # Add circle at hit point if hit
         if hit and 'hit_point' in ray_data:
-            extend_batch_data(
-                all_verts, all_colors,
-                circle_verts_xy(ray_data['hit_point'], 0.08, CIRCLE_8),
-                ray_color
-            )
+            hit_point = ray_data['hit_point']
+            segments = 12
+            hit_radius = 0.08
+
+            # Convert circle to LINES format for batching
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = hit_point[0] + hit_radius * math.cos(angle1)
+                y1 = hit_point[1] + hit_radius * math.sin(angle1)
+                z1 = hit_point[2]
+                x2 = hit_point[0] + hit_radius * math.cos(angle2)
+                y2 = hit_point[1] + hit_radius * math.sin(angle2)
+                z2 = hit_point[2]
+                all_verts.extend([(x1, y1, z1), (x2, y2, z2)])
+                all_colors.extend([ray_color, ray_color])
 
     # ─────────────────────────────────────────────────────────────────────
     # MOVEMENT VECTORS (Green = intended, Red = actual)
@@ -187,31 +187,42 @@ def _draw_kcc_visual():
     if show_movement and 'movement_vectors' in _kcc_vis_data:
         vectors = _kcc_vis_data['movement_vectors']
         origin = vectors.get('origin')
-        vector_scale = scene.dev_debug_kcc_visual_vector_scale
+        vector_scale = getattr(scene, 'dev_debug_kcc_visual_vector_scale', 3.0)
 
-        if origin:
-            if 'intended' in vectors:
-                intended = vectors['intended']
-                scaled_end = (
-                    origin[0] + (intended[0] - origin[0]) * vector_scale,
-                    origin[1] + (intended[1] - origin[1]) * vector_scale,
-                    origin[2] + (intended[2] - origin[2]) * vector_scale
-                )
-                all_verts.extend([origin, scaled_end])
-                all_colors.extend([(0.0, 1.0, 0.0, 0.9), (0.0, 1.0, 0.0, 0.9)])
+        if origin and 'intended' in vectors:
+            intended = vectors['intended']
+            direction = (
+                (intended[0] - origin[0]) * vector_scale,
+                (intended[1] - origin[1]) * vector_scale,
+                (intended[2] - origin[2]) * vector_scale
+            )
+            scaled_end = (
+                origin[0] + direction[0],
+                origin[1] + direction[1],
+                origin[2] + direction[2]
+            )
+            intended_color = (0.0, 1.0, 0.0, 0.9)  # Green
+            all_verts.extend([origin, scaled_end])
+            all_colors.extend([intended_color, intended_color])
 
-            if 'actual' in vectors:
-                actual = vectors['actual']
-                scaled_end = (
-                    origin[0] + (actual[0] - origin[0]) * vector_scale,
-                    origin[1] + (actual[1] - origin[1]) * vector_scale,
-                    origin[2] + (actual[2] - origin[2]) * vector_scale
-                )
-                all_verts.extend([origin, scaled_end])
-                all_colors.extend([(1.0, 0.0, 0.0, 0.9), (1.0, 0.0, 0.0, 0.9)])
+        if origin and 'actual' in vectors:
+            actual = vectors['actual']
+            direction = (
+                (actual[0] - origin[0]) * vector_scale,
+                (actual[1] - origin[1]) * vector_scale,
+                (actual[2] - origin[2]) * vector_scale
+            )
+            scaled_end = (
+                origin[0] + direction[0],
+                origin[1] + direction[1],
+                origin[2] + direction[2]
+            )
+            actual_color = (1.0, 0.0, 0.0, 0.9)  # Red
+            all_verts.extend([origin, scaled_end])
+            all_colors.extend([actual_color, actual_color])
 
     # ─────────────────────────────────────────────────────────────────────
-    # VERTICAL BODY INTEGRITY RAY (Orange = clear, Red = EMBEDDED)
+    # VERTICAL BODY INTEGRITY RAY (Orange = clear, Red = EMBEDDED!)
     # ─────────────────────────────────────────────────────────────────────
     if 'vertical_ray' in _kcc_vis_data and _kcc_vis_data['vertical_ray']:
         v_ray = _kcc_vis_data['vertical_ray']
@@ -219,40 +230,62 @@ def _draw_kcc_visual():
         end = v_ray['end']
         blocked = v_ray.get('blocked', False)
 
-        ray_color = (1.0, 0.0, 0.0, 1.0) if blocked else (1.0, 0.6, 0.0, 1.0)
+        # IMPORTANT: Bright red when embedded, bright orange when clear
+        ray_color = (1.0, 0.0, 0.0, 1.0) if blocked else (1.0, 0.6, 0.0, 1.0)  # Red/Orange
 
-        # Thick line (5 parallel lines)
-        thickness = 0.02
-        for ox, oy in ((0, 0), (thickness, 0), (-thickness, 0), (0, thickness), (0, -thickness)):
+        # Draw THICK vertical line (multiple parallel lines for thickness)
+        thickness_offset = 0.02
+        offsets = [
+            (0.0, 0.0),           # Center
+            (thickness_offset, 0.0),   # +X
+            (-thickness_offset, 0.0),  # -X
+            (0.0, thickness_offset),   # +Y
+            (0.0, -thickness_offset),  # -Y
+        ]
+
+        for ox, oy in offsets:
+            origin_offset = (origin[0] + ox, origin[1] + oy, origin[2])
+            end_offset = (end[0] + ox, end[1] + oy, end[2])
+            all_verts.extend([origin_offset, end_offset])
+            all_colors.extend([ray_color, ray_color])
+
+        # Add LARGE visible markers at origin and end (circles)
+        marker_size = 0.15  # Much larger
+        segments = 12  # More segments for smoother circle
+        for marker_pos in [origin, end]:
+            for i in range(segments):
+                angle1 = (i / segments) * 2.0 * math.pi
+                angle2 = ((i + 1) / segments) * 2.0 * math.pi
+                x1 = marker_pos[0] + marker_size * math.cos(angle1)
+                y1 = marker_pos[1] + marker_size * math.sin(angle1)
+                x2 = marker_pos[0] + marker_size * math.cos(angle2)
+                y2 = marker_pos[1] + marker_size * math.sin(angle2)
+                all_verts.extend([(x1, y1, marker_pos[2]), (x2, y2, marker_pos[2])])
+                all_colors.extend([ray_color, ray_color])
+
+        # Add crosshair at both ends for extra visibility
+        cross_size = 0.10
+        for marker_pos in [origin, end]:
+            # Horizontal line
             all_verts.extend([
-                (origin[0] + ox, origin[1] + oy, origin[2]),
-                (end[0] + ox, end[1] + oy, end[2])
+                (marker_pos[0] - cross_size, marker_pos[1], marker_pos[2]),
+                (marker_pos[0] + cross_size, marker_pos[1], marker_pos[2])
+            ])
+            all_colors.extend([ray_color, ray_color])
+            # Vertical line
+            all_verts.extend([
+                (marker_pos[0], marker_pos[1] - cross_size, marker_pos[2]),
+                (marker_pos[0], marker_pos[1] + cross_size, marker_pos[2])
             ])
             all_colors.extend([ray_color, ray_color])
 
-        # Marker circles at endpoints (uses pre-computed LUT)
-        for marker_pos in [origin, end]:
-            extend_batch_data(
-                all_verts, all_colors,
-                circle_verts_xy(marker_pos, 0.15, CIRCLE_8),
-                ray_color
-            )
-            # Crosshair
-            extend_batch_data(
-                all_verts, all_colors,
-                crosshair_verts(marker_pos, 0.10),
-                ray_color
-            )
-
     # ═════════════════════════════════════════════════════════════════════
-    # SINGLE BATCHED DRAW CALL (cached for reuse)
+    # SINGLE BATCHED DRAW CALL (PERFORMANCE OPTIMIZED)
     # ═════════════════════════════════════════════════════════════════════
     if all_verts:
-        from gpu_extras.batch import batch_for_shader
-        _kcc_cached_batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
-        _kcc_cached_version = _kcc_vis_version
+        batch = batch_for_shader(shader, 'LINES', {"pos": all_verts, "color": all_colors})
         shader.bind()
-        _kcc_cached_batch.draw(shader)
+        batch.draw(shader)
 
     # Reset GPU state
     gpu.state.line_width_set(1.0)
@@ -271,7 +304,7 @@ def enable_kcc_visualizer():
 
 def disable_kcc_visualizer():
     """Unregister the KCC visualization draw handler."""
-    global _kcc_draw_handler, _kcc_vis_data, _kcc_cached_batch, _kcc_cached_version
+    global _kcc_draw_handler, _kcc_vis_data
 
     if _kcc_draw_handler is not None:
         try:
@@ -281,8 +314,6 @@ def disable_kcc_visualizer():
         _kcc_draw_handler = None
 
     _kcc_vis_data = None
-    _kcc_cached_batch = None
-    _kcc_cached_version = -1
     _tag_all_view3d_for_redraw()
 
 def _tag_all_view3d_for_redraw():
@@ -353,8 +384,6 @@ class KinematicCharacterController:
         self._pending_platform_yaw_delta = 0.0  # Yaw delta from worker (applied in step)
         self._platform_prev_yaws = {}       # {obj_id: prev_yaw} - MAIN THREAD tracking (not worker!)
         self._prev_dynamic_transforms = {}  # {obj_id: matrix_tuple} - dirty checking for transforms
-        self._transform_warmup_frames = 30  # Send ALL transforms for first 30 frames (1 sec at 30Hz)
-                                            # This ensures worker has transforms after mesh cache is ready
 
         # Cached constants
         self._up = _UP
@@ -568,16 +597,8 @@ class KinematicCharacterController:
         # Serialize dynamic mesh transforms - ONLY send changed transforms (dirty checking)
         # Worker has persistent cache, so unchanged meshes keep using cached transforms
         # This reduces serialization when only 1 of N meshes is moving
-        #
-        # WARMUP FIX: During first 30 frames, always send all transforms.
-        # This ensures stationary meshes get their transforms cached after worker
-        # finishes processing CACHE_DYNAMIC_MESH jobs (race condition fix).
         dynamic_transforms = {}
         dynamic_velocities = {}  # Mesh velocities for proximity diagnostics (12 bytes per mesh)
-        in_warmup = self._transform_warmup_frames > 0
-        if in_warmup:
-            self._transform_warmup_frames -= 1
-
         if dynamic_map:
             for dyn_obj in dynamic_map.keys():
                 try:
@@ -591,10 +612,9 @@ class KinematicCharacterController:
                         matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3],
                     )
 
-                    # During warmup: always send (ensures worker gets transform after mesh cache ready)
-                    # After warmup: only send if transform changed from previous frame
+                    # Only send if transform changed from previous frame
                     prev_transform = self._prev_dynamic_transforms.get(obj_id)
-                    if in_warmup or prev_transform != current_transform:
+                    if prev_transform != current_transform:
                         dynamic_transforms[obj_id] = current_transform
                         self._prev_dynamic_transforms[obj_id] = current_transform
 
@@ -672,7 +692,8 @@ class KinematicCharacterController:
         camera_yaw: float,
         static_bvh,  # Not used - worker has cached grid
         dynamic_map,
-        platform_linear_velocity_map=None,
+        platform_linear_velocity_map=None,  # DEPRECATED - kept for API compat
+        platform_ang_velocity_map=None,     # DEPRECATED - kept for API compat
         engine=None,
         context=None,
         physics_frame=0,
@@ -706,15 +727,9 @@ class KinematicCharacterController:
         _depsgraph = None  # Lazy init - only fetch when needed
 
         if self.on_ground and self.ground_obj:
-            # PERFORMANCE: Only fetch depsgraph if platform is actually animated
-            # Saves 1-5ms/frame when standing on static platforms (common case)
-            # Animation detection: check animation_data or constraints that would move the object
-            platform_is_animated = (
-                self.ground_obj.animation_data is not None or
-                (hasattr(self.ground_obj, 'constraints') and len(self.ground_obj.constraints) > 0)
-            )
-            if platform_is_animated and context:
-                _depsgraph = context.evaluated_depsgraph_get()
+            # VISUAL SYNC: Must use evaluated depsgraph to read current animation state.
+            # Without this, player visually lags behind moving platforms (physics still works).
+            _depsgraph = context.evaluated_depsgraph_get() if context else None
             current_platform_id = id(self.ground_obj)
 
             # Check if we just landed on a NEW platform
@@ -958,17 +973,15 @@ class KinematicCharacterController:
 
         PERFORMANCE: Only updates if position changed significantly.
         """
-        global _kcc_vis_data, _kcc_vis_version
+        global _kcc_vis_data
 
         if not getattr(context.scene, 'dev_debug_kcc_visual', False):
             return
 
         # PERFORMANCE: Skip update if position hasn't changed much
-        # Increased threshold from 1cm to 5cm - reduces GPU batch rebuilds by 40-60%
-        # while still providing smooth visualization (user won't perceive 5cm at normal view distance)
         if hasattr(self, '_last_vis_pos'):
             pos_delta = (self.pos - self._last_vis_pos).length
-            if pos_delta < 0.05:  # Less than 5cm movement, skip update
+            if pos_delta < 0.01:  # Less than 1cm movement, skip update
                 return
         self._last_vis_pos = self.pos.copy()
 
@@ -1058,6 +1071,5 @@ class KinematicCharacterController:
             )
 
         _kcc_vis_data = vis_data
-        _kcc_vis_version += 1  # Increment to trigger batch rebuild
         _tag_all_view3d_for_redraw()
     

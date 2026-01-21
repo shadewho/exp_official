@@ -52,12 +52,18 @@ class BakedAnimation:
         object_transforms: np.ndarray shape (num_frames, 10) or None
 
         looping: Whether this animation loops by default
+
+        # PERFORMANCE: Cached standard bone index mappings (computed once)
+        _std_bone_indices: np.ndarray - standard BONE_INDEX for each anim bone
+        _std_valid_mask: np.ndarray bool - which anim bones have valid std mapping
+        _std_mapping_ready: bool - whether mapping has been computed
     """
 
     __slots__ = (
         'name', 'duration', 'fps', 'frame_count',
         'bone_names', 'bone_index', 'bone_transforms', 'animated_mask',
-        'object_transforms', 'looping'
+        'object_transforms', 'looping',
+        '_std_bone_indices', '_std_valid_mask', '_std_mapping_ready'
     )
 
     def __init__(
@@ -102,6 +108,66 @@ class BakedAnimation:
             self.object_transforms = None
 
         self.looping = looping
+
+        # PERFORMANCE: Cached standard bone mappings (computed lazily)
+        self._std_bone_indices = None
+        self._std_valid_mask = None
+        self._std_mapping_ready = False
+
+    def compute_std_bone_mapping(self, std_bone_index: Dict[str, int], total_std_bones: int) -> None:
+        """
+        Pre-compute mapping from this animation's bone order to standard BONE_INDEX order.
+        Call once after loading animation. Enables fast numpy-based remapping.
+
+        Args:
+            std_bone_index: Dict mapping bone names to standard indices (BONE_INDEX)
+            total_std_bones: Total number of bones in standard rig (TOTAL_BONES)
+        """
+        if self._std_mapping_ready:
+            return
+
+        num_anim_bones = len(self.bone_names)
+        self._std_bone_indices = np.zeros(num_anim_bones, dtype=np.int32)
+        self._std_valid_mask = np.zeros(num_anim_bones, dtype=bool)
+
+        for i, bone_name in enumerate(self.bone_names):
+            std_idx = std_bone_index.get(bone_name, -1)
+            if std_idx >= 0 and std_idx < total_std_bones:
+                self._std_bone_indices[i] = std_idx
+                self._std_valid_mask[i] = True
+
+        self._std_mapping_ready = True
+
+    def remap_to_standard(self, pose: np.ndarray, identity_pose: np.ndarray) -> np.ndarray:
+        """
+        Remap animation pose to standard bone order using cached mapping.
+        FAST: Uses numpy fancy indexing instead of Python loop.
+
+        Args:
+            pose: (num_anim_bones, 10) pose in this animation's bone order
+            identity_pose: (total_std_bones, 10) identity pose to use as base
+
+        Returns:
+            (total_std_bones, 10) pose in standard BONE_INDEX order
+        """
+        if not self._std_mapping_ready:
+            # Fallback: return identity if mapping not ready
+            return identity_pose.copy()
+
+        result = identity_pose.copy()
+
+        # Get indices of valid bones (those that exist in standard rig)
+        valid_anim_indices = np.where(self._std_valid_mask)[0]
+        if len(valid_anim_indices) == 0:
+            return result
+
+        # Get corresponding standard indices
+        valid_std_indices = self._std_bone_indices[valid_anim_indices]
+
+        # Vectorized copy: animation bones -> standard positions
+        result[valid_std_indices] = pose[valid_anim_indices]
+
+        return result
 
     @property
     def num_bones(self) -> int:
@@ -209,7 +275,7 @@ class BakedAnimation:
         if object_transforms is not None:
             object_transforms = np.array(object_transforms, dtype=np.float32)
 
-        return cls(
+        anim = cls(
             name=data["name"],
             duration=data["duration"],
             fps=data["fps"],
@@ -219,6 +285,9 @@ class BakedAnimation:
             object_transforms=object_transforms,
             looping=data.get("looping", True)
         )
+        # Note: std_bone_mapping must be computed separately after loading
+        # by calling anim.compute_std_bone_mapping(BONE_INDEX, TOTAL_BONES)
+        return anim
 
     def __repr__(self) -> str:
         parts = [f"'{self.name}'", f"{self.duration:.2f}s", f"{self.fps}fps"]

@@ -94,6 +94,7 @@ def handle_projectile_update_batch(job_data: dict, cached_grid, cached_dynamic_m
 
     # Update dynamic transform cache
     from ..math import transform_aabb_by_matrix, invert_matrix_4x4
+
     for obj_id, matrix_4x4 in dynamic_transforms.items():
         cached = cached_dynamic_meshes.get(obj_id)
         if cached is None:
@@ -115,8 +116,9 @@ def handle_projectile_update_batch(job_data: dict, cached_grid, cached_dynamic_m
             "grid_dims": cached_grid.get("grid_dims", (1, 1, 1)),
         }
 
-    # Build dynamic mesh list for raycast
+    # Build dynamic mesh list from ALL cached transforms
     unified_dynamic_meshes = []
+
     for obj_id, (matrix_4x4, world_aabb, inv_matrix) in cached_dynamic_transforms.items():
         cached = cached_dynamic_meshes.get(obj_id)
         if cached is None or inv_matrix is None:
