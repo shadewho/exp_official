@@ -16,19 +16,40 @@ import bpy
 # ══════════════════════════════════════════════════════════════════════════════
 # MASTER DEVELOPER MODE TOGGLE
 # ══════════════════════════════════════════════════════════════════════════════
-# Set to False to completely disable all developer features:
-#   - Hides the Developer Tools panel
-#   - Disables all logging (log_game calls become no-ops)
-#   - Disables all debug visualizations
-#   - Zero performance overhead when disabled
-#
-# Set to True to enable developer features (controlled by individual toggles)
+# Controlled at runtime by the dev_production_mode property.
+# When production mode is ON:
+#   - DEV_MODE = False
+#   - Developer Tools panel shows only the toggle
+#   - All logging disabled (log_game calls become no-ops)
+#   - All debug visualizations disabled
+#   - Zero performance overhead
 # ══════════════════════════════════════════════════════════════════════════════
 DEV_MODE = True
 
 
+def _on_production_mode_update(self, context):
+    """Update DEV_MODE when production toggle changes."""
+    import sys
+    mod = sys.modules[__name__]
+    mod.DEV_MODE = not self.dev_production_mode
+
+
 def register_properties():
     """Register all developer debug properties on Scene."""
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PRODUCTION MODE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    bpy.types.Scene.dev_production_mode = bpy.props.BoolProperty(
+        name="Production Mode",
+        description=(
+            "Disable all developer tools for shipping.\n"
+            "Turns off logging, debug visualizations, and all dev UI"
+        ),
+        default=False,
+        update=_on_production_mode_update,
+    )
 
     # ══════════════════════════════════════════════════════════════════════════
     # MASTER FREQUENCY CONTROL
@@ -640,6 +661,9 @@ def unregister_properties():
 
     # All current properties
     props_to_remove = [
+        # Production mode
+        'dev_production_mode',
+
         # Master control
         'dev_debug_master_hz',
 

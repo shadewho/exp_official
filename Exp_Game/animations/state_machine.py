@@ -51,8 +51,14 @@ class CharacterStateMachine:
         # Jump/fall tracking
         self.air_time = 0.0
         self.fall_timer = 0.0
-        self.min_fall_time = 0.9       # Time before JUMP → FALL
-        self.min_fall_for_land = 0.20  # Min fall time to trigger LAND
+        # Read timing from scene properties (fallback to sensible defaults)
+        try:
+            scene = bpy.context.scene
+            self.min_fall_time = getattr(scene, "anim_min_fall_time", 0.9)
+            self.min_fall_for_land = getattr(scene, "anim_min_fall_for_land", 0.20)
+        except Exception:
+            self.min_fall_time = 0.9
+            self.min_fall_for_land = 0.20
 
         # State flags
         self.landing_in_progress = False
@@ -217,59 +223,41 @@ class CharacterStateMachine:
 
     def get_action_name(self) -> Optional[str]:
         """
-        Get the action name for the current state from scene settings.
+        Get the action name for the current state from the animation slots collection.
 
         Returns:
             Action name or None if not configured
         """
+        from ..props_and_utils.exp_properties import get_anim_slot
         scene = bpy.context.scene
-        char = scene.character_actions
-
-        state_to_action = {
-            AnimState.IDLE: char.idle_action,
-            AnimState.WALK: char.walk_action,
-            AnimState.RUN: char.run_action,
-            AnimState.JUMP: char.jump_action,
-            AnimState.FALL: char.fall_action,
-            AnimState.LAND: char.land_action,
-        }
-
-        action = state_to_action.get(self.state)
-        return action.name if action else None
+        slot = get_anim_slot(scene, self.state.name)
+        if slot and slot.action:
+            return slot.action.name
+        return None
 
     def get_state_properties(self) -> dict:
         """
         Get properties for the current state animation.
 
         Returns:
-            Dict with: loop, speed, is_one_shot
+            Dict with: loop, speed, is_one_shot, blend_in
         """
+        from ..props_and_utils.exp_properties import get_anim_slot
         scene = bpy.context.scene
-        char = scene.character_actions
+        slot = get_anim_slot(scene, self.state.name)
 
-        # One-shot states (play once, don't loop)
-        one_shot_states = {AnimState.JUMP, AnimState.LAND}
-
-        action = None
-        if self.state == AnimState.IDLE:
-            action = char.idle_action
-        elif self.state == AnimState.WALK:
-            action = char.walk_action
-        elif self.state == AnimState.RUN:
-            action = char.run_action
-        elif self.state == AnimState.JUMP:
-            action = char.jump_action
-        elif self.state == AnimState.FALL:
-            action = char.fall_action
-        elif self.state == AnimState.LAND:
-            action = char.land_action
-
-        speed = 1.0
-        if action and hasattr(action, 'action_speed'):
-            speed = action.action_speed
+        if slot:
+            is_loop = slot.looping
+            speed = slot.action_speed
+            blend_in = slot.blend_in
+        else:
+            is_loop = self.state not in {AnimState.JUMP, AnimState.LAND}
+            speed = 1.0
+            blend_in = 0.15
 
         return {
-            'loop': self.state not in one_shot_states,
+            'loop': is_loop,
             'speed': speed,
-            'is_one_shot': self.state in one_shot_states,
+            'is_one_shot': not is_loop,
+            'blend_in': blend_in,
         }

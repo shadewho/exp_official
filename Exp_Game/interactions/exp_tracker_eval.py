@@ -72,6 +72,19 @@ def _resolve_object_name(node, socket_name: str, fallback_prop: str) -> str:
     return obj.name if obj else ""
 
 
+def _resolve_object_ref(node, socket_name: str, fallback_prop: str):
+    """
+    Resolve actual bpy.Object reference from socket or inline property.
+    Used for reading bounding box data at serialization time.
+    """
+    socket = node.inputs.get(socket_name)
+    if socket and socket.is_linked:
+        src_node = socket.links[0].from_node
+        if hasattr(src_node, 'export_object'):
+            return src_node.export_object()
+    return getattr(node, fallback_prop, None)
+
+
 def _serialize_node(node, visited: set) -> dict:
     """
     Recursively serialize a tracker/logic node for worker.
@@ -101,13 +114,44 @@ def _serialize_node(node, visited: set) -> dict:
 
     # ─── Contact Tracker ───
     elif node_type == 'ContactTrackerNodeType':
-        result['object'] = _resolve_object_name(node, "Object", "contact_object")
+        obj_name = _resolve_object_name(node, "Object", "contact_object")
+        # Auto-default to player character if Object not connected/set
+        if not obj_name:
+            scn = bpy.context.scene
+            char = getattr(scn, 'target_armature', None)
+            if char:
+                obj_name = char.name
+        result['object'] = obj_name
         result['target'] = _resolve_object_name(node, "Target", "contact_target")
 
         # Threshold with precomputed squared value for fast distance checks
         threshold = getattr(node, 'contact_threshold', 0.5)
         result['threshold_sq'] = threshold * threshold
         result['eval_hz'] = node.eval_hz
+
+        # Pre-compute target AABB for surface-distance contact detection
+        # Transform local bound_box corners to world space, then compute AABB
+        target_obj = _resolve_object_ref(node, "Target", "contact_target")
+        if target_obj and hasattr(target_obj, 'bound_box'):
+            import mathutils
+            bb = target_obj.bound_box
+            mtx = target_obj.matrix_world
+            corners = [mtx @ mathutils.Vector(bb[i]) for i in range(8)]
+            aabb_min = (
+                min(c[0] for c in corners),
+                min(c[1] for c in corners),
+                min(c[2] for c in corners),
+            )
+            aabb_max = (
+                max(c[0] for c in corners),
+                max(c[1] for c in corners),
+                max(c[2] for c in corners),
+            )
+            # Store world-space AABB + initial position for moving-object delta
+            loc = target_obj.matrix_world.translation
+            result['target_aabb_min'] = aabb_min
+            result['target_aabb_max'] = aabb_max
+            result['target_initial_pos'] = (loc.x, loc.y, loc.z)
 
     # ─── Input Tracker ───
     elif node_type == 'InputTrackerNodeType':

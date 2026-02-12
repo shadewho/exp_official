@@ -367,6 +367,10 @@ class ExpModal(bpy.types.Operator):
 
         ensure_timeline_at_zero()
 
+        # A) Clean out old audio temp BEFORE build (skip when slots-lock is ON)
+        if not getattr(context.scene, "character_slots_lock", False):
+            clean_audio_temp()
+
         result = bpy.ops.exploratory.build_character('EXEC_DEFAULT')
         if 'FINISHED' not in result:
             self.report({'ERROR'}, "BuildCharacter operator did not finish. Cannot proceed.")
@@ -376,13 +380,6 @@ class ExpModal(bpy.types.Operator):
         if not context.scene.target_armature:
             self.report({'ERROR'}, "No armature assigned to scene.target_armature! Cancelling game.")
             return {'CANCELLED'}
-
-        # A) Clean out old audio temp (skip when audio-lock is ON)
-        if not context.scene.character_audio_lock:
-            clean_audio_temp()
-
-        # C) Now build audio
-        audio_result = bpy.ops.exploratory.build_audio('EXEC_DEFAULT')
 
         #---CUSTOM_UI---
         clear_all_text()

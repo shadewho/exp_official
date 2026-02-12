@@ -879,13 +879,8 @@ class ReactionTrackingNode(_ReactionNodeKind):
         opts.prop(r, "track_speed", text="Speed (m/s)")
         opts.prop(r, "track_arrive_radius", text="Arrive Radius (m)")
         opts.prop(r, "track_respect_proxy_meshes", text="Respect Proxy Meshes")
-        opts.prop(r, "track_use_gravity", text="Gravity / Ground Snap")
+        opts.prop(r, "track_use_gravity", text="Gravity")
         opts.prop(r, "track_max_runtime", text="Max Runtime (sec)")
-
-        char = layout.box()
-        char.label(text="Character Mover")
-        char.prop(r, "track_exclusive_control", text="Exclusive Control (override WASD)")
-        char.prop(r, "track_allow_run", text="Allow Run")
 
 
 class ReactionParentingNode(_ReactionNodeKind):

@@ -32,6 +32,7 @@ from worker.reactions.transforms import handle_transform_batch
 from worker.reactions.hitscan import handle_hitscan_batch
 from worker.reactions.projectiles import handle_projectile_update_batch
 from worker.reactions.tracking import handle_tracking_batch
+from worker.interactions.trackers import handle_cache_trackers, handle_evaluate_trackers
 
 # Animation imports (worker-safe, no bpy)
 from animations.blend import (
@@ -626,6 +627,14 @@ def process_job(job) -> dict:
                 "cleared_count": cleared_count,
                 "message": "Animation cache cleared"
             }
+
+        elif job.job_type == "CACHE_TRACKERS":
+            # Cache tracker condition trees for EXTERNAL trigger evaluation
+            result_data = handle_cache_trackers(job.data)
+
+        elif job.job_type == "EVALUATE_TRACKERS":
+            # Evaluate all cached tracker conditions against world state
+            result_data = handle_evaluate_trackers(job.data)
 
         else:
             # Unknown job type - still succeed but note it

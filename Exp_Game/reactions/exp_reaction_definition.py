@@ -981,19 +981,9 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         description="Collide/slide/step using scene proxy meshes; if off, mover goes in a straight line"
     )
     track_use_gravity: bpy.props.BoolProperty(
-        name="Gravity / Ground Snap",
+        name="Gravity",
         default=True,
-        description="Snap to ground while moving (object mover). Character mover already uses gravity via KCC"
-    )
-    track_exclusive_control: bpy.props.BoolProperty(
-        name="Exclusive Control (Character)",
-        default=True,
-        description="If mover is the character: temporarily override user WASD/Run during the chase"
-    )
-    track_allow_run: bpy.props.BoolProperty(
-        name="Allow Run (Character)",
-        default=True,
-        description="If speed >= scene.max_run, hold Run during the chase"
+        description="Apply gravity to mover while tracking (accumulates downward velocity, lands on surfaces)"
     )
     track_max_runtime: bpy.props.FloatProperty(
         name="Max Runtime (sec)",

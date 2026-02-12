@@ -244,16 +244,21 @@ def add_scene_properties():
         default=False,
         description="If on, building or removing the character is disabled"
     )
-    bpy.types.Scene.character_actions_lock = bpy.props.BoolProperty(
-        name="Lock Character Actions",
+    bpy.types.Scene.character_slots_lock = bpy.props.BoolProperty(
+        name="Lock Animation Slots",
         default=False,
-        description="If on, building or changing the character’s actions is disabled"
+        description="If on, building or changing the character's animation slots (actions + audio) is disabled"
     )
-    # Lock out automatic audio appending
-    bpy.types.Scene.character_audio_lock = bpy.props.BoolProperty(
-        name="Lock Character Audio",
-        default=False,
-        description="If on, building or changing the character’s audio is disabled"
+    # ── Animation timing controls ──
+    bpy.types.Scene.anim_min_fall_time = bpy.props.FloatProperty(
+        name="Min Fall Time",
+        description="Seconds in JUMP before transitioning to FALL state",
+        default=0.9, min=0.0, max=5.0
+    )
+    bpy.types.Scene.anim_min_fall_for_land = bpy.props.FloatProperty(
+        name="Min Fall for Land",
+        description="Minimum fall duration (seconds) to trigger LAND animation on grounding",
+        default=0.2, min=0.0, max=5.0
     )
     bpy.types.Scene.pitch_angle = bpy.props.FloatProperty(
         name="Pitch Angle",
@@ -350,52 +355,51 @@ def add_scene_properties():
     )
 
 
-class CharacterActionsPG(bpy.types.PropertyGroup):
-    """
-    This property group will hold pointers to Actions instead of storing their names.
-    """
-    # Example for each typical slot:
-    idle_action: bpy.props.PointerProperty(
-        name="Idle Action",
-        type=bpy.types.Action,
-        description="Action to use for the idle state"
-    )
-    walk_action: bpy.props.PointerProperty(
-        name="Walk Action",
-        type=bpy.types.Action,
-        description="Action to use for the walk state"
-    )
-    run_action: bpy.props.PointerProperty(
-        name="Run Action",
-        type=bpy.types.Action,
-        description="Action to use for the run state"
-    )
-    jump_action: bpy.props.PointerProperty(
-        name="Jump Action",
-        type=bpy.types.Action,
-        description="Action to use for the jump state"
-    )
-    fall_action: bpy.props.PointerProperty(
-        name="Fall Action",
-        type=bpy.types.Action,
-        description="Action to use for the fall state"
-    )
-    land_action: bpy.props.PointerProperty(
-        name="Land Action",
-        type=bpy.types.Action,
-        description="Action to use for the land state"
+# ── Single source of truth for default animation state configs ──────────────
+ANIM_STATE_DEFAULTS = {
+    "IDLE": {"action": "exp_idle", "sound": None,            "looping": True,  "blend_in": 0.15, "action_speed": 1.0, "sound_speed": 1.0},
+    "WALK": {"action": "exp_walk", "sound": "exp_walk_sound", "looping": True,  "blend_in": 0.15, "action_speed": 1.0, "sound_speed": 1.0},
+    "RUN":  {"action": "exp_run",  "sound": "exp_run_sound",  "looping": True,  "blend_in": 0.15, "action_speed": 1.0, "sound_speed": 1.0},
+    "JUMP": {"action": "exp_jump", "sound": "exp_jump_sound", "looping": False, "blend_in": 0.10, "action_speed": 1.0, "sound_speed": 1.0},
+    "FALL": {"action": "exp_fall", "sound": "exp_fall_sound", "looping": True,  "blend_in": 0.15, "action_speed": 1.0, "sound_speed": 1.0},
+    "LAND": {"action": "exp_land", "sound": "exp_land_sound", "looping": False, "blend_in": 0.10, "action_speed": 1.0, "sound_speed": 1.0},
+}
+
+
+class CharacterAnimSlotPG(bpy.types.PropertyGroup):
+    """One animation slot: state name + action + sound + per-slot settings."""
+    state_name: bpy.props.StringProperty(name="State", default="")
+    action: bpy.props.PointerProperty(name="Action", type=bpy.types.Action)
+    sound: bpy.props.PointerProperty(name="Sound", type=bpy.types.Sound)
+    action_speed: bpy.props.FloatProperty(name="Action Speed", default=1.0, min=0.1, max=5.0)
+    sound_speed: bpy.props.FloatProperty(name="Sound Speed", default=1.0, min=0.1, max=5.0)
+    looping: bpy.props.BoolProperty(name="Loop", default=True)
+    blend_in: bpy.props.FloatProperty(
+        name="Blend In",
+        description="Crossfade duration when entering this state (seconds)",
+        default=0.15, min=0.0, max=1.0
     )
 
-    blend_time: bpy.props.FloatProperty(
-        name="Blend Time",
-        description="Crossfade duration between animation states (seconds). 0 = instant snap, 0.15 = smooth blend",
-        default=0.15,
-        min=0.0,
-        max=1.0,
-        step=1,
-        precision=2,
-        subtype='TIME'
-    )
+
+def get_anim_slot(scene, state_name):
+    """Look up an animation slot by state name. Returns slot or None."""
+    for slot in scene.character_anim_slots:
+        if slot.state_name == state_name:
+            return slot
+    return None
+
+
+def ensure_default_slots(scene):
+    """Populate the collection with default slots if empty."""
+    if len(scene.character_anim_slots) > 0:
+        return
+    for state_name, cfg in ANIM_STATE_DEFAULTS.items():
+        slot = scene.character_anim_slots.add()
+        slot.state_name = state_name
+        slot.looping = cfg["looping"]
+        slot.blend_in = cfg["blend_in"]
+        slot.action_speed = cfg["action_speed"]
+        slot.sound_speed = cfg["sound_speed"]
 
 def remove_scene_properties():
     # Safe property deletion with hasattr checks
@@ -428,3 +432,11 @@ def remove_scene_properties():
         del bpy.types.Scene.view_projection
     if hasattr(bpy.types.Scene, 'view_locked_move_axis'):
         del bpy.types.Scene.view_locked_move_axis
+    if hasattr(bpy.types.Scene, 'character_anim_slots'):
+        del bpy.types.Scene.character_anim_slots
+    if hasattr(bpy.types.Scene, 'character_slots_lock'):
+        del bpy.types.Scene.character_slots_lock
+    if hasattr(bpy.types.Scene, 'anim_min_fall_time'):
+        del bpy.types.Scene.anim_min_fall_time
+    if hasattr(bpy.types.Scene, 'anim_min_fall_for_land'):
+        del bpy.types.Scene.anim_min_fall_for_land

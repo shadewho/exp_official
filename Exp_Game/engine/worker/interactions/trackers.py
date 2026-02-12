@@ -95,21 +95,55 @@ def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
 
         return is_match if equals else not is_match
 
-    # Contact Tracker - Optimized proximity check between two objects
+    # Contact Tracker - AABB surface-distance contact check
     elif node_type == 'ContactTrackerNodeType':
         obj = tree.get('object', '')
         target = tree.get('target', '')
         threshold_sq = tree.get('threshold_sq', 0.25)
 
         pos_obj = positions.get(obj)
-        pos_target = positions.get(target)
-        if not pos_obj or not pos_target:
+        if not pos_obj:
             return False
 
-        dx = pos_obj[0] - pos_target[0]
-        dy = pos_obj[1] - pos_target[1]
-        dz = pos_obj[2] - pos_target[2]
-        return (dx*dx + dy*dy + dz*dz) < threshold_sq
+        aabb_min = tree.get('target_aabb_min')
+        aabb_max = tree.get('target_aabb_max')
+
+        if aabb_min and aabb_max:
+            # AABB contact: distance from point to nearest surface of bounding box
+            # For moving targets, offset AABB by position delta from serialization
+            pos_target = positions.get(target)
+            init_pos = tree.get('target_initial_pos')
+            if pos_target and init_pos:
+                # Moving object: shift AABB by delta
+                dx = pos_target[0] - init_pos[0]
+                dy = pos_target[1] - init_pos[1]
+                dz = pos_target[2] - init_pos[2]
+                mn0 = aabb_min[0] + dx; mn1 = aabb_min[1] + dy; mn2 = aabb_min[2] + dz
+                mx0 = aabb_max[0] + dx; mx1 = aabb_max[1] + dy; mx2 = aabb_max[2] + dz
+            else:
+                # Static object: use serialized AABB directly
+                mn0 = aabb_min[0]; mn1 = aabb_min[1]; mn2 = aabb_min[2]
+                mx0 = aabb_max[0]; mx1 = aabb_max[1]; mx2 = aabb_max[2]
+
+            # Nearest point on AABB to character position
+            ox, oy, oz = pos_obj
+            nx = mn0 if ox < mn0 else (mx0 if ox > mx0 else ox)
+            ny = mn1 if oy < mn1 else (mx1 if oy > mx1 else oy)
+            nz = mn2 if oz < mn2 else (mx2 if oz > mx2 else oz)
+
+            ddx = ox - nx
+            ddy = oy - ny
+            ddz = oz - nz
+            return (ddx*ddx + ddy*ddy + ddz*ddz) < threshold_sq
+        else:
+            # Fallback: origin-to-origin distance (no AABB data)
+            pos_target = positions.get(target)
+            if not pos_target:
+                return False
+            dx = pos_obj[0] - pos_target[0]
+            dy = pos_obj[1] - pos_target[1]
+            dz = pos_obj[2] - pos_target[2]
+            return (dx*dx + dy*dy + dz*dz) < threshold_sq
 
     # Input Tracker
     elif node_type == 'InputTrackerNodeType':

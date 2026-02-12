@@ -582,17 +582,14 @@ class GameLoop:
             if action_name and ctrl.has_animation(action_name):
                 props = sm.get_state_properties()
 
-                # Get blend time from scene property (default 0.15s)
-                blend_time = bpy.context.scene.character_actions.blend_time
-
-                # Play on armature with crossfade
+                # Play on armature with crossfade (blend_in from slot)
                 ctrl.play(
                     armature.name,
                     action_name,
                     weight=1.0,
                     speed=props['speed'],
                     looping=props['loop'],
-                    fade_in=blend_time,
+                    fade_in=props.get('blend_in', 0.15),
                     replace=True
                 )
 

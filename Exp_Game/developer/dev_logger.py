@@ -23,7 +23,7 @@ Usage:
 import time
 from typing import List, Dict, Optional
 from .dev_debug_gate import should_print_debug
-from .dev_properties import DEV_MODE
+from . import dev_properties as _dev_props
 
 # Global log buffer
 _log_buffer: List[Dict] = []
@@ -158,7 +158,7 @@ def log_game(category: str, message: str):
     each other even when they occur in the same frame.
     """
     # Master DEV_MODE check - instant return if disabled
-    if not DEV_MODE:
+    if not _dev_props.DEV_MODE:
         return
 
     global _log_buffer, _total_logs, _logs_per_category
@@ -197,7 +197,7 @@ def log_worker_messages(worker_logs: list):
     log types from blocking each other.
     """
     # Master DEV_MODE check - instant return if disabled
-    if not DEV_MODE:
+    if not _dev_props.DEV_MODE:
         return
 
     global _log_buffer, _total_logs, _logs_per_category

@@ -49,7 +49,7 @@ if not _IS_WORKER_PROCESS:
     from .props_and_utils.exp_properties import (
         remove_scene_properties,
         add_scene_properties,
-        CharacterActionsPG,
+        CharacterAnimSlotPG,
         ProxyMeshEntry,
         EXPLORATORY_OT_AddProxyMesh,
         EXPLORATORY_OT_RemoveProxyMesh,
@@ -61,7 +61,7 @@ if not _IS_WORKER_PROCESS:
     from .props_and_utils.exp_utilities import EXPLORATORY_OT_SetGameWorld
     from .props_and_utils import exp_demo_scene
     from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
-    from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
+    from .audio.exp_audio import (AUDIO_OT_TestSoundPointer,
                             EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
                             EXP_AUDIO_OT_LoadCharacterAudioFile
     )
@@ -204,15 +204,12 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.register_class(ExpModal)
         bpy.utils.register_class(EXP_GAME_OT_StartGame)
 
-        # --- Audio Operators & Properties ---
+        # --- Audio Operators ---
         bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
         bpy.utils.register_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
-        bpy.utils.register_class(CharacterAudioPG)
-        bpy.utils.register_class(EXPLORATORY_OT_BuildAudio)
         bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
         bpy.utils.register_class(EXP_AUDIO_OT_TestReactionSound)
         bpy.utils.register_class(EXP_AUDIO_OT_PackAllSounds)
-        bpy.types.Scene.character_audio = bpy.props.PointerProperty(type=CharacterAudioPG)
 
         # --- Character Removal ---
         bpy.utils.register_class(EXPLORATORY_OT_RemoveCharacter)
@@ -220,14 +217,14 @@ if not _IS_WORKER_PROCESS:
         # --- Counter & Timer Properties & Operators ---
         register_counter_timer_properties()
 
-        # --- Character Actions & Proxy Mesh Properties ---
-        bpy.utils.register_class(CharacterActionsPG)
+        # --- Animation Slots & Proxy Mesh Properties ---
+        bpy.utils.register_class(CharacterAnimSlotPG)
         bpy.utils.register_class(ProxyMeshEntry)
         bpy.utils.register_class(EXPLORATORY_UL_ProxyMeshList)
         bpy.utils.register_class(CharacterPhysicsConfigPG)
         bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
         bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
-        bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
+        bpy.types.Scene.character_anim_slots = bpy.props.CollectionProperty(type=CharacterAnimSlotPG)
 
         # --- Scene Properties ---
         add_scene_properties()
@@ -274,15 +271,11 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(EXPLORATORY_OT_RemoveCharacter)
 
         # --- Audio ---
-        if hasattr(bpy.types.Scene, 'character_audio'):
-            del bpy.types.Scene.character_audio
         bpy.utils.unregister_class(EXP_AUDIO_OT_PackAllSounds)
         bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
         bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)
         bpy.utils.unregister_class(AUDIO_OT_TestSoundPointer)
         bpy.utils.unregister_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
-        bpy.utils.unregister_class(CharacterAudioPG)
-        bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
 
 
         # --- Modal & Game Start ---
@@ -317,11 +310,11 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
 
 
-        # --- Character Actions & Proxy Mesh ---
-        if hasattr(bpy.types.Scene, 'character_actions'):
-            del bpy.types.Scene.character_actions
+        # --- Animation Slots & Proxy Mesh ---
+        if hasattr(bpy.types.Scene, 'character_anim_slots'):
+            del bpy.types.Scene.character_anim_slots
         bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
-        bpy.utils.unregister_class(CharacterActionsPG)
+        bpy.utils.unregister_class(CharacterAnimSlotPG)
         bpy.utils.unregister_class(CharacterPhysicsConfigPG)
         bpy.utils.unregister_class(ProxyMeshEntry)
         bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
