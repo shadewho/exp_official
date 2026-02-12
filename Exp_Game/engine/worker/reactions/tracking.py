@@ -327,11 +327,41 @@ def handle_tracking_batch(job_data, grid_data, cached_dynamic_meshes, cached_dyn
 
             _tracking_velocities[obj_id] = vel_z
 
-        results.append({
+        result_entry = {
             "obj_id": obj_id,
             "new_pos": (new_x, new_y, new_z),
             "arrived": False,
-        })
+        }
+
+        # Face Object rotation computation
+        face_target_pos = track.get("face_target_pos")
+        if face_target_pos is not None:
+            face_axis = track.get("face_axis", "NEG_Y")
+            ft_x, ft_y, ft_z = face_target_pos
+            fdx = ft_x - new_x
+            fdy = ft_y - new_y
+            fdz = ft_z - new_z
+            dist_xy = math.sqrt(fdx * fdx + fdy * fdy)
+
+            if face_axis == "POS_Z" or face_axis == "NEG_Z":
+                # Z-axis variants: no Z rotation, tilt via X rotation
+                result_entry["face_euler_z"] = 0.0
+                if face_axis == "POS_Z":
+                    result_entry["face_euler_x"] = math.atan2(-fdz, dist_xy) if dist_xy > 0.001 else 0.0
+                else:
+                    result_entry["face_euler_x"] = (math.atan2(fdz, dist_xy) + math.pi) if dist_xy > 0.001 else math.pi
+            elif dist_xy > 0.001:
+                base_angle = math.atan2(fdy, fdx)
+                if face_axis == "POS_X":
+                    result_entry["face_euler_z"] = base_angle
+                elif face_axis == "NEG_X":
+                    result_entry["face_euler_z"] = base_angle + math.pi
+                elif face_axis == "POS_Y":
+                    result_entry["face_euler_z"] = base_angle - (math.pi * 0.5)
+                else:  # NEG_Y
+                    result_entry["face_euler_z"] = base_angle + (math.pi * 0.5)
+
+        results.append(result_entry)
 
     # Clean stale velocity entries (objects no longer tracked)
     if len(_tracking_velocities) > len(batch_obj_ids) * 2:

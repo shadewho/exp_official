@@ -6,7 +6,7 @@ import math
 # ---------------------------
 # Utility / Helper Methods
 # ---------------------------
-def smooth_rotate_towards_camera(self):
+def smooth_rotate_towards_camera(self, override_yaw=None):
     if not self.target_object:
         return
 
@@ -20,16 +20,16 @@ def smooth_rotate_towards_camera(self):
     if not actual_pressed:
         return
 
-    desired_yaw = determine_desired_yaw(self, actual_pressed)
+    desired_yaw = determine_desired_yaw(self, actual_pressed, override_yaw=override_yaw)
     current_yaw = self.target_object.rotation_euler.z
     yaw_diff = shortest_angle_diff(current_yaw, desired_yaw)
     if abs(yaw_diff) > 0.001:
         self.target_object.rotation_euler.z += yaw_diff * self.rotation_smoothness
 
 
-def determine_desired_yaw(self, actual_pressed):
+def determine_desired_yaw(self, actual_pressed, override_yaw=None):
     """Calculate desired yaw based on user-chosen forward/back/left/right keys + camera yaw."""
-    base_yaw = self.yaw
+    base_yaw = override_yaw if override_yaw is not None else self.yaw
 
     # Check combos: forward+right => ~45°, forward+left => -45°, etc.
     # We'll unify the user-chosen keys to match typical movement combos

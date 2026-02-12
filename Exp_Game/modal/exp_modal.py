@@ -346,7 +346,8 @@ class ExpModal(bpy.types.Operator):
             # EXEC_DEFAULT so it doesn't pop up a dialog
             bpy.ops.view3d.remove_package_display('EXEC_DEFAULT')
         except Exception as e:
-            print(f"[WARN] remove_package_display failed: {e}")
+            from ..developer.dev_logger import log_game
+            log_game("MODAL", f"remove_package_display failed: {e}")
 
         addon_prefs = context.preferences.addons["Exploratory"].preferences
 
@@ -614,7 +615,8 @@ class ExpModal(bpy.types.Operator):
         if self._game_state == self.STATE_PAUSED:
             return  # Already paused
 
-        print("[CURSOR_STATE] Pausing game - releasing cursor")
+        from ..developer.dev_logger import log_game
+        log_game("CURSOR_STATE", "Pausing game - releasing cursor")
 
         # Release cursor confinement and show cursor
         release_cursor_clip()
@@ -641,7 +643,8 @@ class ExpModal(bpy.types.Operator):
         if self._game_state == self.STATE_RUNNING:
             return  # Already running
 
-        print("[CURSOR_STATE] Resuming game - re-confining cursor")
+        from ..developer.dev_logger import log_game
+        log_game("CURSOR_STATE", "Resuming game - re-confining cursor")
 
         # Re-confine cursor and hide it
         from ..mouse_and_movement.exp_cursor import confine_cursor_to_window
@@ -682,7 +685,8 @@ class ExpModal(bpy.types.Operator):
                     if is_blender_focused():
                         self._resume_game(context)
                     else:
-                        print("[CURSOR_STATE] Click detected but Blender not focused, waiting...")
+                        from ..developer.dev_logger import log_game
+                        log_game("CURSOR_STATE", "Click detected but Blender not focused, waiting...")
                 # Skip all game logic while paused
                 return {'RUNNING_MODAL'}
             # ==========================================================
@@ -767,6 +771,7 @@ class ExpModal(bpy.types.Operator):
 
         # ========== ENGINE SHUTDOWN ==========
         shutdown_engine(self, context)
+        self._pending_jobs.clear()
         # ====================================
 
         # ========== KCC VISUALIZATION CLEANUP ==========
@@ -787,10 +792,11 @@ class ExpModal(bpy.types.Operator):
         # ====================================
 
         # ========== AUDIO CLEANUP ==========
-        from ..audio.exp_audio import reset_audio_managers
+        from ..audio.exp_audio import reset_audio_managers, clean_audio_temp
         from ..audio.exp_globals import clear_modal_reference
         reset_audio_managers()
         clear_modal_reference()  # Clear ACTIVE_MODAL_OP only on game END (not reset)
+        clean_audio_temp()
         # ====================================
 
         # ========== FONT CACHE CLEANUP ==========
@@ -806,6 +812,16 @@ class ExpModal(bpy.types.Operator):
         # ========== TRACKER CALLBACKS CLEANUP ==========
         from ..props_and_utils.trackers import clear_tracker_callbacks
         clear_tracker_callbacks()
+        # ====================================
+
+        # ========== BLEND SYSTEM CLEANUP ==========
+        from ..animations.blend_system import shutdown_blend_system
+        shutdown_blend_system()
+        # ====================================
+
+        # ========== UTILITY STORE CACHE CLEANUP ==========
+        from ..props_and_utils.exp_utility_store import clear_uid_index_cache
+        clear_uid_index_cache()
         # ====================================
 
         # ========== CROSSHAIRS CLEANUP ==========
@@ -926,7 +942,8 @@ class ExpModal(bpy.types.Operator):
                     with bpy.context.temp_override(**override_ctx):
                         bpy.ops.view3d.popup_social_details('INVOKE_REGION_WIN')
                 else:
-                    print("No valid VIEW3D context found for UI popups.")
+                    from ..developer.dev_logger import log_game
+                    log_game("MODAL", "No valid VIEW3D context found for UI popups.")
                 return None
 
             # Register the timer to delay UI calls.
@@ -1142,9 +1159,18 @@ class ExpModal(bpy.types.Operator):
         # Clean up
         del self._pending_jobs[result.job_id]
 
-        # Optional: Print latency for debugging (can be disabled in production)
+        # Evict orphaned jobs older than 5 seconds (worker crash / lost result)
+        now = time.perf_counter()
+        stale_ids = [
+            jid for jid, info in self._pending_jobs.items()
+            if now - info["timestamp"] > 5.0
+        ]
+        for jid in stale_ids:
+            del self._pending_jobs[jid]
+
         if frame_latency > 2:
-            print(f"[EngineSync] WARNING: Stale result - Frame latency: {frame_latency} frames ({time_latency_ms:.1f}ms)")
+            from ..developer.dev_logger import log_game
+            log_game("ENGINE_SYNC", f"Stale result - Frame latency: {frame_latency} frames ({time_latency_ms:.1f}ms)")
 
         return True
     

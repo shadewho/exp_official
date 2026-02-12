@@ -88,9 +88,11 @@ _pending_projectile_job_id: int | None = None
 # ─────────────────────────────────────────────────────────
 # Schema:
 # _impact_cache[reaction_index] = {
-#     "reaction_chains": [[int, ...], ...],  # Lists of reaction indices to run on impact
-#     "trigger_indices": [int, ...],          # Interaction indices to fire on impact
-#     "location_writers": [node, ...],        # Nodes with write_from_graph method
+#     "trigger_indices": [int, ...],          # Impact → ExternalTriggerNode
+#     "bool_writers":    [node, ...],         # Impact → BoolDataNode
+#     "location_writers": [node, ...],        # Impact Location → FloatVectorDataNode
+#     "object_writers":  [node, ...],         # Hit Object → ObjectDataNode
+#     "normal_writers":  [node, ...],         # Hit Normal → FloatVectorDataNode
 # }
 _impact_cache: dict[int, dict] = {}
 
@@ -109,7 +111,6 @@ def init_impact_cache(scene) -> int:
     cached_count = 0
 
     # First pass: validate node bindings (ensure 1 node per reaction index)
-    # This handles the case where multiple nodes share the same reaction_index
     _validate_node_bindings_at_startup(scene, reactions)
 
     # Build mapping: reaction_index -> node for PROJECTILE/HITSCAN reactions
@@ -133,44 +134,61 @@ def init_impact_cache(scene) -> int:
         if not src_node:
             continue
 
-        # Extract impact event destinations (reaction chains and triggers)
-        reaction_chains = []
         trigger_indices = []
-
-        for sock in getattr(src_node, "outputs", []):
-            if getattr(sock, "bl_idname", "") != "ImpactEventOutputSocketType":
-                continue
-            for lk in getattr(sock, "links", []):
-                dst = getattr(lk, "to_node", None)
-                if not dst:
-                    continue
-
-                # Reaction node -> collect chain
-                if hasattr(dst, "reaction_index"):
-                    chain = _collect_chain_indices_at_startup(dst)
-                    if chain:
-                        reaction_chains.append(chain)
-
-                # External trigger node
-                elif getattr(dst, "bl_idname", "") == "ExternalTriggerNodeType":
-                    iidx = getattr(dst, "interaction_index", -1)
-                    if iidx >= 0:
-                        trigger_indices.append(iidx)
-
-        # Extract impact location destinations (nodes with write_from_graph)
+        bool_writers = []
         location_writers = []
+        object_writers = []
+        normal_writers = []
+
         for sock in getattr(src_node, "outputs", []):
-            if getattr(sock, "bl_idname", "") != "ImpactLocationOutputSocketType":
-                continue
-            for lk in getattr(sock, "links", []):
-                to_node = getattr(lk, "to_node", None)
-                if to_node and callable(getattr(to_node, "write_from_graph", None)):
-                    location_writers.append(to_node)
+            sock_name = getattr(sock, "name", "")
+
+            if sock_name == "Impact":
+                for lk in getattr(sock, "links", []):
+                    dst = getattr(lk, "to_node", None)
+                    if not dst:
+                        continue
+                    # ExternalTriggerNode (direct)
+                    if getattr(dst, "bl_idname", "") == "ExternalTriggerNodeType":
+                        iidx = getattr(dst, "interaction_index", -1)
+                        if iidx >= 0:
+                            trigger_indices.append(iidx)
+                    # BoolDataNode (has write_from_graph)
+                    elif callable(getattr(dst, "write_from_graph", None)):
+                        bool_writers.append(dst)
+                        # Trace through: Bool → ExternalTriggerNode downstream
+                        for out_sock in getattr(dst, "outputs", []):
+                            for lk2 in getattr(out_sock, "links", []):
+                                dst2 = getattr(lk2, "to_node", None)
+                                if dst2 and getattr(dst2, "bl_idname", "") == "ExternalTriggerNodeType":
+                                    iidx2 = getattr(dst2, "interaction_index", -1)
+                                    if iidx2 >= 0:
+                                        trigger_indices.append(iidx2)
+
+            elif sock_name == "Impact Location":
+                for lk in getattr(sock, "links", []):
+                    to_node = getattr(lk, "to_node", None)
+                    if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                        location_writers.append(to_node)
+
+            elif sock_name == "Hit Object":
+                for lk in getattr(sock, "links", []):
+                    to_node = getattr(lk, "to_node", None)
+                    if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                        object_writers.append(to_node)
+
+            elif sock_name == "Hit Normal":
+                for lk in getattr(sock, "links", []):
+                    to_node = getattr(lk, "to_node", None)
+                    if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                        normal_writers.append(to_node)
 
         _impact_cache[r_idx] = {
-            "reaction_chains": reaction_chains,
             "trigger_indices": trigger_indices,
+            "bool_writers": bool_writers,
             "location_writers": location_writers,
+            "object_writers": object_writers,
+            "normal_writers": normal_writers,
         }
         cached_count += 1
 
@@ -212,56 +230,12 @@ def _validate_node_bindings_at_startup(scene, reactions):
                 pass
 
 
-def _collect_chain_indices_at_startup(start_node) -> list[int]:
-    """
-    From a Reaction node, follow its 'Reaction Output' through the graph
-    and return an ordered list of reaction indices.
-    Called at startup to build cache.
-    """
-    res = []
-    visited = set()
-    queue = [start_node]
-
-    while queue:
-        n = queue.pop(0)
-        if not n or n in visited:
-            continue
-        visited.add(n)
-
-        if hasattr(n, "reaction_index"):
-            idx = getattr(n, "reaction_index", -1)
-            if idx >= 0:
-                res.append(idx)
-            out2 = n.outputs.get("Reaction Output") or n.outputs.get("Output")
-            if out2:
-                for lk in out2.links:
-                    if lk.to_node:
-                        queue.append(lk.to_node)
-        else:
-            for s in n.outputs:
-                for lk in s.links:
-                    if lk.to_node:
-                        queue.append(lk.to_node)
-    return res
-
-
 def _emit_impact_event(r, loc: Vector, when: float):
     key = _owner_key(r)
     _impact_events.setdefault(key, []).append({"time": float(when), "loc": loc.copy()})
 
 def pop_impact_events_by_owner_key(owner_key: int) -> list[dict]:
     return _impact_events.pop(int(owner_key), [])
-
-def _reaction_from_owner_key(owner_key: int):
-    """Return (reaction_obj, reaction_index) from the scene by owner_key (now an index), or (None, -1)."""
-    scn = bpy.context.scene
-    reactions = getattr(scn, "reactions", None)
-    if reactions is None:
-        return None, -1
-    idx = int(owner_key)
-    if 0 <= idx < len(reactions):
-        return reactions[idx], idx
-    return None, -1
 
 def _flush_impact_events_to_graph():
     """
@@ -271,10 +245,9 @@ def _flush_impact_events_to_graph():
     if not _impact_events:
         return
 
-    from ..interactions.exp_interactions import run_reactions, _fire_interaction  # lazy import
+    from ..interactions.exp_interactions import _fire_interaction  # lazy import
 
     scn = bpy.context.scene
-    reactions = getattr(scn, "reactions", [])
     interactions = getattr(scn, "custom_interactions", [])
     owners = list(_impact_events.keys())
 
@@ -292,15 +265,7 @@ def _flush_impact_events_to_graph():
             log_game("HITSCAN", f"IMPACT_FLUSH r_idx={r_idx} not in cache (no wiring?)")
             continue
 
-        # A) Run reaction chains
-        for chain in cache_entry["reaction_chains"]:
-            to_run = [reactions[i] for i in chain if 0 <= i < len(reactions)]
-            if to_run:
-                log_game("HITSCAN", f"IMPACT_CHAIN r_idx={r_idx} chain={chain} running={len(to_run)}")
-                for _ev in events:
-                    run_reactions(to_run)
-
-        # B) Fire external triggers
+        # Fire external triggers
         for iidx in cache_entry["trigger_indices"]:
             if 0 <= iidx < len(interactions):
                 inter = interactions[iidx]
@@ -309,39 +274,58 @@ def _flush_impact_events_to_graph():
                     _fire_interaction(inter, ev["time"])
 
 
+# --- Impact data push helpers (use _impact_cache built at startup) -----------
 
-# --- Impact-Location wiring (vector only) ------------------------------------
-
-def _reaction_index_of(r) -> int:
-    """Return the index of ReactionDefinition 'r' in scene.reactions, or -1."""
-    scn = bpy.context.scene
-    for i, rx in enumerate(getattr(scn, "reactions", [])):
-        if rx == r:
-            return i
-    return -1
-
-
-def _push_impact_location_to_links(r, vec):
-    """
-    Send 'vec' (x,y,z) to cached location writer nodes.
-    NO node graph iteration - uses _impact_cache built at startup.
-    """
-    r_idx = _reaction_index_of(r)
-    if r_idx < 0:
-        return
-
+def _push_impact_location_to_links(r_idx, vec):
+    """Send vec (x,y,z) to cached location writer nodes."""
     cache_entry = _impact_cache.get(r_idx)
     if not cache_entry:
         return
-
     timestamp = get_game_time()
     for writer_node in cache_entry["location_writers"]:
-        writer = getattr(writer_node, "write_from_graph", None)
-        if callable(writer):
-            try:
-                writer(vec, timestamp=timestamp)
-            except Exception:
-                pass
+        try:
+            writer_node.write_from_graph(vec, timestamp=timestamp)
+        except Exception:
+            pass
+
+
+def _push_impact_bool_to_links(r_idx):
+    """Write True to cached bool writer nodes."""
+    cache_entry = _impact_cache.get(r_idx)
+    if not cache_entry:
+        return
+    timestamp = get_game_time()
+    for writer_node in cache_entry["bool_writers"]:
+        try:
+            writer_node.write_from_graph(True, timestamp=timestamp)
+        except Exception:
+            pass
+
+
+def _push_impact_normal_to_links(r_idx, vec):
+    """Send normal vec (x,y,z) to cached normal writer nodes."""
+    cache_entry = _impact_cache.get(r_idx)
+    if not cache_entry:
+        return
+    timestamp = get_game_time()
+    for writer_node in cache_entry["normal_writers"]:
+        try:
+            writer_node.write_from_graph(vec, timestamp=timestamp)
+        except Exception:
+            pass
+
+
+def _push_impact_object_to_links(r_idx, obj):
+    """Send hit object to cached object writer nodes."""
+    cache_entry = _impact_cache.get(r_idx)
+    if not cache_entry:
+        return
+    timestamp = get_game_time()
+    for writer_node in cache_entry["object_writers"]:
+        try:
+            writer_node.write_from_graph(obj, timestamp=timestamp)
+        except Exception:
+            pass
 
 
 # ---------- Public helpers ----------
@@ -935,8 +919,8 @@ def update_projectile_tasks(dt: float):
     Advance active projectiles by dt (seconds). O(1) when idle.
     On contact:
       • freeze visual at impact (and parent to dynamic hit object),
-      • push Impact Location vector to linked nodes,
-      • queue Impact (Bool) event,
+      • push impact data to linked nodes (bool, location, normal, object),
+      • fire impact triggers,
       • remove the sim entry (visual remains for FIFO/eviction).
     """
     if not _active_projectiles:
@@ -970,13 +954,15 @@ def update_projectile_tasks(dt: float):
         hit = False
         hit_loc = None
         hit_obj = None
+        hit_normal = None
 
         if seg_len > 1e-7:
-            ok, loc, _n, obj, _d = _raycast_any(op, old_pos, seg / seg_len, seg_len)
+            ok, loc, normal, obj, _d = _raycast_any(op, old_pos, seg / seg_len, seg_len)
             if ok:
                 hit = True
                 hit_loc = loc
                 hit_obj = obj
+                hit_normal = normal
 
         if hit and p['stop_on_contact']:
             # Freeze visual at impact (stick to dynamic if present)
@@ -991,8 +977,14 @@ def update_projectile_tasks(dt: float):
                     except Exception:
                         pass
 
-            # Vector-only ping through Impact Location socket + queue bool event
-            _push_impact_location_to_links(p.get('r_id'), (hit_loc.x, hit_loc.y, hit_loc.z))
+            # Push impact data to linked nodes
+            r_idx = _owner_key(p.get('r_id'))
+            _push_impact_location_to_links(r_idx, (hit_loc.x, hit_loc.y, hit_loc.z))
+            _push_impact_bool_to_links(r_idx)
+            if hit_normal:
+                _push_impact_normal_to_links(r_idx, (hit_normal.x, hit_normal.y, hit_normal.z))
+            if hit_obj:
+                _push_impact_object_to_links(r_idx, hit_obj)
             _emit_impact_event(p.get('r_id'), hit_loc, now)
 
             # Despawn sim entry (visual remains for FIFO/eviction)
@@ -1260,7 +1252,15 @@ def process_hitscan_results(result) -> int:
 
         # Impact events
         if hit:
-            _push_impact_location_to_links(r, (impact.x, impact.y, impact.z))
+            r_idx = int(hs_data["owner_key"])
+            _push_impact_location_to_links(r_idx, (impact.x, impact.y, impact.z))
+            _push_impact_bool_to_links(r_idx)
+            normal = res.get("normal")
+            if normal:
+                _push_impact_normal_to_links(r_idx, normal)
+            hit_obj = dynamic_obj_lookup.get(hit_obj_id) if hit_obj_id else None
+            if hit_obj:
+                _push_impact_object_to_links(r_idx, hit_obj)
             _emit_impact_event(r, impact, now)
             dist = res.get("distance", 0.0)
             log_game("HITSCAN", f"HIT id={hs_id} source={hit_source} pos=({impact.x:.2f},{impact.y:.2f},{impact.z:.2f}) dist={dist:.2f}")
@@ -1481,7 +1481,16 @@ def process_projectile_results(result) -> int:
             # Impact events
             if r and pos:
                 pos_v = Vector(pos)
-                _push_impact_location_to_links(r, (pos_v.x, pos_v.y, pos_v.z))
+                r_idx = int(impact.get("owner_key", -1))
+                _push_impact_location_to_links(r_idx, (pos_v.x, pos_v.y, pos_v.z))
+                _push_impact_bool_to_links(r_idx)
+                normal = impact.get("normal")
+                if normal:
+                    _push_impact_normal_to_links(r_idx, normal)
+                hit_obj_id = impact.get("obj_id")
+                hit_obj = dynamic_obj_lookup.get(hit_obj_id) if hit_obj_id else None
+                if hit_obj:
+                    _push_impact_object_to_links(r_idx, hit_obj)
                 _emit_impact_event(r, pos_v, get_game_time())
                 log_game("PROJECTILE", f"IMPACT cid={client_id} source={hit_source} pos=({pos_v.x:.2f},{pos_v.y:.2f},{pos_v.z:.2f})")
 

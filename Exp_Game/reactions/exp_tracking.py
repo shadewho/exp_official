@@ -45,11 +45,13 @@ class _TrackTask:
         "arrive_radius", "arrive_radius_sq",
         "max_runtime", "start_time",
         "_arrived", "_obj_id",
+        "face_enabled", "face_target_obj", "face_axis",
     )
 
     def __init__(self, r_id, from_obj, to_obj, mode='DIRECT',
                  use_gravity=True, respect_proxy=True, speed=3.5,
-                 arrive_radius=0.3, max_runtime=0.0):
+                 arrive_radius=0.3, max_runtime=0.0,
+                 face_enabled=False, face_target_obj=None, face_axis="NEG_Y"):
         self.r_id = r_id
         self.from_obj = from_obj
         self.to_obj = to_obj
@@ -64,6 +66,9 @@ class _TrackTask:
         self.start_time = get_game_time()
         self._arrived = False
         self._obj_id = id(from_obj) if from_obj else 0
+        self.face_enabled = bool(face_enabled)
+        self.face_target_obj = face_target_obj
+        self.face_axis = face_axis
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +120,7 @@ def submit_tracking_batch(engine, dt: float):
         if obj_id not in lookup:
             lookup[obj_id] = mover
 
-        batch.append({
+        entry = {
             "obj_id": obj_id,
             "current_pos": (loc.x, loc.y, loc.z),
             "goal_pos": (tgt.x, tgt.y, tgt.z),
@@ -125,7 +130,17 @@ def submit_tracking_batch(engine, dt: float):
             "use_gravity": task.use_gravity,
             "use_collision": task.respect_proxy,
             "mode": task.mode,
-        })
+        }
+
+        if task.face_enabled and task.face_target_obj:
+            try:
+                ft = task.face_target_obj.matrix_world.translation
+                entry["face_target_pos"] = (ft.x, ft.y, ft.z)
+                entry["face_axis"] = task.face_axis
+            except Exception:
+                pass
+
+        batch.append(entry)
 
     # Clean stale entries from lookup
     if len(lookup) > len(active_obj_ids):
@@ -177,6 +192,14 @@ def apply_tracking_results(result):
         if obj:
             new_pos = r["new_pos"]
             obj.location = (new_pos[0], new_pos[1], new_pos[2])
+
+            face_z = r.get("face_euler_z")
+            if face_z is not None:
+                obj.rotation_euler.z = face_z
+            face_x = r.get("face_euler_x")
+            if face_x is not None:
+                obj.rotation_euler.x = face_x
+
             applied += 1
             if r.get("arrived", False):
                 arrived_ids.add(obj_id)
@@ -246,6 +269,16 @@ def start(r):
     from_obj = scn.target_armature if getattr(r, "track_from_use_character", True) else getattr(r, "track_from_object", None)
     to_obj = scn.target_armature if getattr(r, "track_to_use_character", False) else getattr(r, "track_to_object", None)
 
+    # Resolve face target
+    face_enabled = getattr(r, "track_face_enabled", False)
+    face_target_obj = None
+    face_axis = getattr(r, "track_face_axis", "NEG_Y")
+    if face_enabled:
+        if getattr(r, "track_face_use_character", False):
+            face_target_obj = scn.target_armature
+        else:
+            face_target_obj = getattr(r, "track_face_object", None)
+
     # Remove existing track for this mover (only one track per object)
     if from_obj:
         mover_id = id(from_obj)
@@ -261,6 +294,9 @@ def start(r):
         speed=getattr(r, "track_speed", 3.5),
         arrive_radius=getattr(r, "track_arrive_radius", 0.3),
         max_runtime=getattr(r, "track_max_runtime", 0.0),
+        face_enabled=face_enabled,
+        face_target_obj=face_target_obj,
+        face_axis=face_axis,
     )
     _ACTIVE_TRACKS.append(task)
 

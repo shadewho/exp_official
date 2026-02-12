@@ -1,7 +1,7 @@
 # File: Exp_Nodes/reaction_nodes.py
 import bpy
 from bpy.types import Node
-from .base_nodes import ReactionNodeBase
+from .base_nodes import ReactionNodeBase, has_invalid_link, INVALID_LINK_COLOR
 
 # ───────────────────────── helpers ─────────────────────────
 
@@ -372,17 +372,15 @@ class ReactionTriggerInputSocket(bpy.types.NodeSocket):
     _MULTI_FROM_TYPES = {
         "TriggerOutputSocketType",
         "ReactionOutputSocketType",
-        "ImpactEventOutputSocketType",
     }
 
     def draw(self, context, layout, node, text):
         layout.label(text=text)
 
     def draw_color(self, context, node):
-        """
-        If any incoming link comes from an output socket that has >1 outgoing links,
-        color this input red so the entire wire is red (no gradient).
-        """
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
+        # Multi-link red: incoming from output with >1 outgoing links
         try:
             for lk in getattr(self, "links", []):
                 fs = getattr(lk, "from_socket", None)
@@ -404,6 +402,8 @@ class ReactionOutputSocket(bpy.types.NodeSocket):
         layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         # solid red if this output has multiple outgoing links
         try:
             if self.is_output and len(self.links) > 1:
@@ -411,32 +411,6 @@ class ReactionOutputSocket(bpy.types.NodeSocket):
         except Exception:
             pass
         return self._BLUE
-
-class ImpactEventOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "ImpactEventOutputSocketType"
-    bl_label  = "Impact (Bool)"
-
-    _IMPACT = (0.85, 0.6, 0.8, 1.0)
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text)
-
-    def draw_color(self, context, node):
-        return self._IMPACT
-
-
-class ImpactLocationOutputSocket(bpy.types.NodeSocket):
-    bl_idname = "ImpactLocationOutputSocketType"
-    bl_label  = "Impact Location (Vector)"
-
-    _PURPLE = (0.65, 0.40, 0.95, 1.0)
-
-    def draw(self, context, layout, node, text):
-        layout.label(text=text)
-
-    def draw_color(self, context, node):
-        return self._PURPLE
-
 
 # ─────────────────────────────────────────────────────────
 # Dynamic Property Sockets - draw reaction properties inline
@@ -470,6 +444,8 @@ class DynamicObjectInputSocket(bpy.types.NodeSocket):
                 layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return self._COLOR
 
 
@@ -492,6 +468,8 @@ class DynamicBoolInputSocket(bpy.types.NodeSocket):
                 layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return self._COLOR
 
 
@@ -514,6 +492,8 @@ class DynamicFloatInputSocket(bpy.types.NodeSocket):
                 layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return self._COLOR
 
 
@@ -536,6 +516,8 @@ class DynamicActionInputSocket(bpy.types.NodeSocket):
                 layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return self._COLOR
 
 
@@ -606,10 +588,11 @@ class ReactionHitscanNode(_ReactionNodeKind):
     KIND = "HITSCAN"
 
     def init(self, context):
-        # Keep base sockets (Reaction Input/Output) + our impact outputs
         super().init(context)
-        self.outputs.new("ImpactEventOutputSocketType",    "Impact")
-        self.outputs.new("ImpactLocationOutputSocketType", "Impact Location")
+        self.outputs.new("ExpBoolSocketType",   "Impact")
+        self.outputs.new("ExpVectorSocketType", "Impact Location")
+        self.outputs.new("ExpObjectSocketType", "Hit Object")
+        self.outputs.new("ExpVectorSocketType", "Hit Normal")
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -657,10 +640,11 @@ class ReactionProjectileNode(_ReactionNodeKind):
     KIND = "PROJECTILE"
 
     def init(self, context):
-        # Keep base sockets (Reaction Input/Output) + our impact outputs
         super().init(context)
-        self.outputs.new("ImpactEventOutputSocketType",    "Impact")
-        self.outputs.new("ImpactLocationOutputSocketType", "Impact Location")
+        self.outputs.new("ExpBoolSocketType",   "Impact")
+        self.outputs.new("ExpVectorSocketType", "Impact Location")
+        self.outputs.new("ExpObjectSocketType", "Hit Object")
+        self.outputs.new("ExpVectorSocketType", "Hit Normal")
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -881,6 +865,15 @@ class ReactionTrackingNode(_ReactionNodeKind):
         opts.prop(r, "track_respect_proxy_meshes", text="Respect Proxy Meshes")
         opts.prop(r, "track_use_gravity", text="Gravity")
         opts.prop(r, "track_max_runtime", text="Max Runtime (sec)")
+
+        face = layout.box()
+        face.label(text="Face Object")
+        face.prop(r, "track_face_enabled", text="Enable")
+        if r.track_face_enabled:
+            face.prop(r, "track_face_use_character", text="Use Character")
+            if not r.track_face_use_character:
+                face.prop_search(r, "track_face_object", bpy.context.scene, "objects", text="Face Object")
+            face.prop(r, "track_face_axis", text="Forward Axis")
 
 
 class ReactionParentingNode(_ReactionNodeKind):

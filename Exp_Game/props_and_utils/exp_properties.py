@@ -286,7 +286,7 @@ def add_scene_properties():
     bpy.types.Scene.view_locked_flip_axis = bpy.props.BoolProperty(
         name="Flip Axis Direction (180°)",
         description="In LOCKED view with Axis Lock, reverse the facing along the selected world axis.",
-        default=False,
+        default=True,
     )
     bpy.types.Scene.view_locked_pitch = bpy.props.FloatProperty(
         name="Pitch (°)", subtype='ANGLE', unit='ROTATION',

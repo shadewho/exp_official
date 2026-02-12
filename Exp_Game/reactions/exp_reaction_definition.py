@@ -991,6 +991,36 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         description="0 = unlimited. Stops automatically after this many seconds"
     )
 
+    # Face Object (rotate mover to face a target while tracking)
+    track_face_enabled: bpy.props.BoolProperty(
+        name="Face Object",
+        default=False,
+        description="Rotate the mover to face a target object while tracking"
+    )
+    track_face_use_character: bpy.props.BoolProperty(
+        name="Use Character",
+        default=False,
+        description="Face the character instead of a specific object"
+    )
+    track_face_object: bpy.props.PointerProperty(
+        name="Face Object",
+        type=bpy.types.Object,
+        description="Object to face while tracking"
+    )
+    track_face_axis: bpy.props.EnumProperty(
+        name="Forward Axis",
+        items=[
+            ("POS_X", "+X", "Positive X axis is forward"),
+            ("NEG_X", "-X", "Negative X axis is forward"),
+            ("POS_Y", "+Y", "Positive Y axis is forward"),
+            ("NEG_Y", "-Y", "Negative Y axis is forward (common for imported models)"),
+            ("POS_Z", "+Z", "Positive Z axis is forward"),
+            ("NEG_Z", "-Z", "Negative Z axis is forward"),
+        ],
+        default="NEG_Y",
+        description="Which local axis of the mover is its 'front'"
+    )
+
 
     # --------------------------------------------------
     # ENABLE_HEALTH REACTION FIELDS

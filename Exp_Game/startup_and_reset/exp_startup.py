@@ -51,10 +51,12 @@ def center_cursor_in_3d_view(context, margin=50):
 
     # Nothing valid? Bail silently.
     if not win or not region:
-        print("[center_cursor_in_3d_view] No VIEW_3D/WINDOW region; skipping cursor warp.")
+        from ..developer.dev_logger import log_game
+        log_game("STARTUP", "No VIEW_3D/WINDOW region; skipping cursor warp.")
         return
     if getattr(region, "width", 0) <= 0 or getattr(region, "height", 0) <= 0:
-        print("[center_cursor_in_3d_view] Region has zero size; skipping cursor warp.")
+        from ..developer.dev_logger import log_game
+        log_game("STARTUP", "Region has zero size; skipping cursor warp.")
         return
 
     # Compute safe center inside region margins
@@ -66,7 +68,8 @@ def center_cursor_in_3d_view(context, margin=50):
     try:
         win.cursor_warp(x, y)
     except Exception as e:
-        print(f"[center_cursor_in_3d_view] Cursor warp failed: {e}")
+        from ..developer.dev_logger import log_game
+        log_game("STARTUP", f"Cursor warp failed: {e}")
 
 
 
@@ -115,7 +118,8 @@ def set_viewport_shading(mode: str = "RENDERED"):
                 try:
                     space.shading.type = mode
                 except Exception as e:
-                    print(f"[WARN] Failed to set shading on {area}: {e}")
+                    from ..developer.dev_logger import log_game
+                    log_game("STARTUP", f"Failed to set shading on {area}: {e}")
 
 
 def ensure_timeline_at_zero():

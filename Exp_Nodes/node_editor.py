@@ -2,6 +2,7 @@
 import bpy
 from bpy.types import NodeTree, NodeSocket, Operator, Panel, Menu
 from bpy.props import StringProperty
+from .base_nodes import has_invalid_link, INVALID_LINK_COLOR
 
 # ─────────────────────────────────────────────────────────
 # Gate: only operate when the active editor is our tree type
@@ -48,6 +49,8 @@ class TriggerOutputSocket(NodeSocket):
         layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         # solid red if this output has multiple outgoing links
         try:
             if self.is_output and len(self.links) > 1:
@@ -67,6 +70,8 @@ class TriggerInputSocket(NodeSocket):
         layout.label(text=text)
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return self._COLOR
 
 

@@ -33,3 +33,69 @@ class ReactionNodeBase(_ExploratoryNodeOnly, bpy.types.Node):
     def execute_reaction(self, context):
         pass
 
+
+# ─────────────────────────────────────────────────────────
+# Socket type-compatibility validation
+# ─────────────────────────────────────────────────────────
+# Sockets within the same group can connect; cross-group = invalid.
+
+_SOCKET_TYPE_GROUP = {
+    # Flow chain (trigger → reaction → reaction)
+    "TriggerOutputSocketType":          "FLOW",
+    "ReactionTriggerInputSocketType":   "FLOW",
+    "ReactionOutputSocketType":         "FLOW",
+
+    # Bool
+    "ExpBoolSocketType":                "BOOL",
+    "DynamicBoolInputSocketType":       "BOOL",
+    "TriggerInputSocketType":           "BOOL",
+
+    # Float
+    "ExpFloatSocketType":               "FLOAT",
+    "DynamicFloatInputSocketType":      "FLOAT",
+
+    # Integer
+    "ExpIntSocketType":                 "INT",
+
+    # Object
+    "ExpObjectSocketType":              "OBJECT",
+    "DynamicObjectInputSocketType":     "OBJECT",
+
+    # Collection
+    "ExpCollectionSocketType":          "COLLECTION",
+
+    # Action
+    "ExpActionSocketType":              "ACTION",
+    "DynamicActionInputSocketType":     "ACTION",
+
+    # Vector
+    "ExpVectorSocketType":              "VECTOR",
+}
+
+INVALID_LINK_COLOR = (0.92, 0.18, 0.18, 1.0)  # Red
+
+
+def has_invalid_link(socket) -> bool:
+    """Return True if any link on *socket* connects to an incompatible type."""
+    try:
+        links = getattr(socket, "links", None)
+        if not links:
+            return False
+
+        my_group = _SOCKET_TYPE_GROUP.get(getattr(socket, "bl_idname", ""))
+        if my_group is None:
+            return False
+
+        for lk in links:
+            other = getattr(lk, "to_socket", None) if socket.is_output \
+                else getattr(lk, "from_socket", None)
+            if other is None:
+                continue
+            other_group = _SOCKET_TYPE_GROUP.get(
+                getattr(other, "bl_idname", ""))
+            if other_group is not None and my_group != other_group:
+                return True
+    except Exception:
+        pass
+    return False
+

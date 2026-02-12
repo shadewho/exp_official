@@ -931,6 +931,7 @@ class EngineCore:
         self._job_queue = None
         self._result_queue = None
         self._shutdown_event = None
+        self._job_type_stats.clear()
 
         if DEBUG_ENGINE:
             print(f"[Engine Core] Shutdown complete (processed {self._jobs_completed} jobs in {time.time() - self._start_time:.1f}s)")

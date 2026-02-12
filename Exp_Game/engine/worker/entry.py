@@ -637,10 +637,16 @@ def process_job(job) -> dict:
             result_data = handle_evaluate_trackers(job.data)
 
         else:
-            # Unknown job type - still succeed but note it
-            result_data = {
-                "message": f"Unknown job type '{job.job_type}' - no handler registered",
-                "data": job.data
+            # Unknown job type - report as failure so it's not silently ignored
+            processing_time = time.perf_counter() - start_time
+            return {
+                "job_id": job.job_id,
+                "job_type": job.job_type,
+                "result": None,
+                "success": False,
+                "error": f"Unknown job type '{job.job_type}' - no handler registered",
+                "timestamp": time.perf_counter(),
+                "processing_time": processing_time
             }
 
         processing_time = time.perf_counter() - start_time

@@ -11,6 +11,7 @@ All physics logs show source (static/dynamic) - there is ONE system.
 import bpy
 
 from . import dev_properties as _dev_props
+from .dev_properties import SHOW_DEV_PANEL
 
 # Animation 2.0 imports
 from ..animations.test_panel import (
@@ -41,6 +42,8 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
+        if not SHOW_DEV_PANEL:
+            return False
         return _is_create_panel_enabled(context.scene, 'DEV')
 
     def draw(self, context):

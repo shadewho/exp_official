@@ -93,6 +93,9 @@ if not _IS_WORKER_PROCESS:
 
     from .reactions.exp_action_keys import ActionKeyItemPG, register_action_key_properties, unregister_action_key_properties
 
+    # --- FPV ---
+    from .physics.exp_view_fpv import EXP_OT_TestFPV
+
     # --- Engine testing ---
     from .engine.testing.test_operator import EXP_ENGINE_OT_StressTest, EXP_ENGINE_OT_QuickTest
 
@@ -237,6 +240,9 @@ if not _IS_WORKER_PROCESS:
 
         register_upload_helper()
 
+        # ─── FPV ──────────────────────────────
+        bpy.utils.register_class(EXP_OT_TestFPV)
+
         # ─── Engine Testing Operators ──────────────────────────────
         bpy.utils.register_class(EXP_ENGINE_OT_QuickTest)
         bpy.utils.register_class(EXP_ENGINE_OT_StressTest)
@@ -324,6 +330,9 @@ if not _IS_WORKER_PROCESS:
 
         # ─── DEMO DEMO ──────────────────────────────────
         exp_demo_scene.unregister()
+
+        # ─── FPV ──────────────────────────────
+        bpy.utils.unregister_class(EXP_OT_TestFPV)
 
         # ─── Engine Testing Operators ──────────────────────────────
         bpy.utils.unregister_class(EXP_ENGINE_OT_StressTest)

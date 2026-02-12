@@ -500,19 +500,22 @@ class GameLoop:
         # D2) Poll engine results (apply non-camera results)
         self._poll_and_apply_engine_results()
 
-        # D3) CRITICAL: Submit camera job AFTER physics so it uses final character position
-        # This prevents one-frame lag where camera clips through walls on collision
-        # Previous approach: submitted early (before physics) → used stale position → one frame of clipping
-        # New approach: submit after physics → use final position → zero-frame latency
-        camera_job_id = submit_camera_occlusion_early(op, context)
-
-        # D4) Explicit camera sync - poll with timeout immediately after submission
-        # Worker completes in ~200µs, 1ms timeout provides 5x safety margin (3% of 33ms budget)
-        if camera_job_id is not None:
-            poll_camera_result_with_timeout(op, context, camera_job_id, timeout=0.001)
-
-        # E) Camera update (uses cached worker result with FINAL physics position)
-        update_camera_for_operator(context, op)
+        # E) Camera update
+        _view_mode = getattr(context.scene, "view_mode", 'THIRD')
+        if _view_mode == 'LOCKED':
+            # LOCKED: fixed camera, no obstruction raycasting needed
+            from ..physics.exp_locked_view import update_locked_camera
+            update_locked_camera(context, op)
+        elif _view_mode == 'FIRST':
+            # FIRST: camera at FPV bone, no obstruction raycasting needed
+            from ..physics.exp_view_fpv import update_first_person_camera
+            update_first_person_camera(context, op)
+        else:
+            # THIRD: full camera pipeline with engine occlusion
+            camera_job_id = submit_camera_occlusion_early(op, context)
+            if camera_job_id is not None:
+                poll_camera_result_with_timeout(op, context, camera_job_id, timeout=0.001)
+            update_camera_for_operator(context, op)
 
         # F) Interactions/UI/SFX (only if sim actually advanced)
         if steps:

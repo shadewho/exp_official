@@ -97,8 +97,6 @@ from .trigger_nodes import (
 from .reaction_nodes import (
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
-    ImpactEventOutputSocket,
-    ImpactLocationOutputSocket,
     # Dynamic property sockets (draw inline with fields)
     DynamicObjectInputSocket,
     DynamicBoolInputSocket,
@@ -180,8 +178,6 @@ classes = [
     # reaction sockets
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
-    ImpactEventOutputSocket,
-    ImpactLocationOutputSocket,
     # dynamic property sockets (draw inline)
     DynamicObjectInputSocket,
     DynamicBoolInputSocket,

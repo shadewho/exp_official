@@ -421,3 +421,4 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
                 row.enabled = False
                 row.label(text="FPV Target Bone: — (set Target Armature)")
             col.prop(scene, "fpv_invert_pitch", text="Invert FPV Pitch")
+            col.operator("exploratory.test_fpv", icon='HIDE_OFF')

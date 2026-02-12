@@ -14,16 +14,17 @@ There is ONE physics system, not two separate ones.
 import bpy
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MASTER DEVELOPER MODE TOGGLE
+# SHIP FLAG — flip to False before distributing the addon
 # ══════════════════════════════════════════════════════════════════════════════
-# Controlled at runtime by the dev_production_mode property.
-# When production mode is ON:
-#   - DEV_MODE = False
-#   - Developer Tools panel shows only the toggle
+# When False:
+#   - Developer Tools panel is completely hidden (poll returns False)
 #   - All logging disabled (log_game calls become no-ops)
 #   - All debug visualizations disabled
 #   - Zero performance overhead
+#   - No dev UI visible to end users
 # ══════════════════════════════════════════════════════════════════════════════
+SHOW_DEV_PANEL = True
+
 DEV_MODE = True
 
 

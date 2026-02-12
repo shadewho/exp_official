@@ -19,7 +19,7 @@ from ..Exp_Game.props_and_utils.exp_utility_store import (
     # Float Vector
     create_floatvec_slot, set_floatvec, get_floatvec, slot_exists,
 )
-from .base_nodes import _ExploratoryNodeOnly
+from .base_nodes import _ExploratoryNodeOnly, has_invalid_link, INVALID_LINK_COLOR
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
 
@@ -96,6 +96,8 @@ class ExpFloatSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Float" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_FLOAT
 
 
@@ -129,6 +131,8 @@ class ExpIntSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Integer" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_INT
 
 
@@ -162,6 +166,8 @@ class ExpBoolSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Result" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_BOOL
 
 
@@ -202,6 +208,8 @@ class ExpObjectSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Object" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_OBJECT
 
 
@@ -235,6 +243,8 @@ class ExpCollectionSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Collection" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_COLLECTION
 
 
@@ -268,6 +278,8 @@ class ExpActionSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Action" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_ACTION
 
 
@@ -309,6 +321,8 @@ class ExpVectorSocket(bpy.types.NodeSocket):
         layout.label(text=text or ("Vector" if self.is_output else "Input"))
 
     def draw_color(self, context, node):
+        if has_invalid_link(self):
+            return INVALID_LINK_COLOR
         return _COLOR_VECTOR
 
 
@@ -627,6 +641,11 @@ class BoolDataNode(_ExploratoryNodeOnly, Node):
         has_val, val, _ = get_bool(self.slot_uid)
         return val if has_val else self.value
 
+    def write_from_graph(self, value, *, timestamp=None):
+        self.value = bool(value)
+        if self.slot_uid:
+            set_bool(self.slot_uid, bool(value))
+
 
 # ─────────────────────────────────────────────────────────
 # Object Data Node
@@ -717,6 +736,19 @@ class ObjectDataNode(_ExploratoryNodeOnly, Node):
             return char.name if char else ""
         obj = self.export_object()
         return obj.name if obj else ""
+
+    def write_from_graph(self, obj_or_name, *, timestamp=None):
+        if isinstance(obj_or_name, str):
+            if self.slot_uid:
+                set_object(self.slot_uid, obj_or_name)
+        elif obj_or_name is not None:
+            self.target_object = obj_or_name
+            if self.slot_uid:
+                set_object(self.slot_uid, obj_or_name)
+        else:
+            self.target_object = None
+            if self.slot_uid:
+                set_object(self.slot_uid, None)
 
 
 # ─────────────────────────────────────────────────────────
@@ -853,6 +885,12 @@ class FloatVectorDataNode(_ExploratoryNodeOnly, Node):
             return upstream
         has_val, vec, _ = get_floatvec(self.slot_uid)
         return vec if has_val else tuple(self.value)
+
+    def write_from_graph(self, vec, *, timestamp=None):
+        v = (float(vec[0]), float(vec[1]), float(vec[2]))
+        self.value = v
+        if self.slot_uid:
+            set_floatvec(self.slot_uid, v)
 
 
 # ─────────────────────────────────────────────────────────
