@@ -2,9 +2,7 @@
 import bpy
 import math
 import time
-import random
 import sys
-import io
 
 from ..physics.exp_raycastutils import create_bvh_tree
 from ..startup_and_reset.exp_spawn import spawn_user
@@ -24,7 +22,6 @@ from ..systems.exp_counters_timers import reset_all_counters, reset_all_timers
 from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
 from ..audio import exp_globals
-from ..audio.exp_globals import stop_all_sounds
 from ..mouse_and_movement.exp_cursor import (
     setup_cursor_region,
     handle_mouse_move,

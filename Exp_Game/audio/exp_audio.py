@@ -48,9 +48,6 @@ def clear_temp_sounds(temp_sounds_dir: str):
     os.makedirs(temp_sounds_dir, exist_ok=True)
 
 
-##############################################################################
-# OPTIONAL: If you no longer want a "play_sound(filepath)" approach, remove this
-##############################################################################
 class ExpAudioManager:
     """
     Minimal manager if you ever want to manually play an in-memory `bpy.types.Sound`.

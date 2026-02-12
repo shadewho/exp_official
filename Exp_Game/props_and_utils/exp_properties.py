@@ -3,13 +3,7 @@
 import bpy
 import math
 
-bpy.types.Action.action_speed = bpy.props.FloatProperty(
-    name="Action Speed",
-    description="Speed multiplier for this action",
-    default=1.0,
-    min=0.1,
-    max=5.0
-)
+# Sound.sound_speed is used by the reactions system (EXP_AUDIO_OT_TestReactionSound)
 bpy.types.Sound.sound_speed = bpy.props.FloatProperty(
     name="Sound Speed",
     description="Speed multiplier for this sound",
@@ -17,14 +11,6 @@ bpy.types.Sound.sound_speed = bpy.props.FloatProperty(
     min=0.1,
     max=5.0
 )
-
-def list_actions(self, context):
-    items = []
-    for act in bpy.data.actions:
-        items.append((act.name, act.name, ""))
-    if not items:
-        items.append(("None","No Actions Found",""))
-    return items
 
 
 class CharacterPhysicsConfigPG(bpy.types.PropertyGroup):
@@ -402,41 +388,19 @@ def ensure_default_slots(scene):
         slot.sound_speed = cfg["sound_speed"]
 
 def remove_scene_properties():
-    # Safe property deletion with hasattr checks
-    if hasattr(bpy.types.Scene, 'target_armature'):
-        del bpy.types.Scene.target_armature
-    if hasattr(bpy.types.Scene, 'spawn_object'):
-        del bpy.types.Scene.spawn_object
-    if hasattr(bpy.types.Scene, 'orbit_distance'):
-        del bpy.types.Scene.orbit_distance
-    if hasattr(bpy.types.Scene, 'zoom_factor'):
-        del bpy.types.Scene.zoom_factor
-    if hasattr(bpy.types.Scene, 'pitch_angle'):
-        del bpy.types.Scene.pitch_angle
-
-    if hasattr(bpy.types.Scene, 'proxy_meshes'):
-        del bpy.types.Scene.proxy_meshes
-    if hasattr(bpy.types.Scene, 'proxy_meshes_index'):
-        del bpy.types.Scene.proxy_meshes_index
-    if hasattr(bpy.types.Scene, 'create_panels_filter'):
-        del bpy.types.Scene.create_panels_filter
-    if hasattr(bpy.types.Scene, 'view_mode'):
-        del bpy.types.Scene.view_mode
-    if hasattr(bpy.types.Scene, 'view_locked_pitch'):
-        del bpy.types.Scene.view_locked_pitch
-    if hasattr(bpy.types.Scene, 'view_locked_yaw'):
-        del bpy.types.Scene.view_locked_yaw
-    if hasattr(bpy.types.Scene, 'view_locked_distance'):
-        del bpy.types.Scene.view_locked_distance
-    if hasattr(bpy.types.Scene, 'view_projection'):
-        del bpy.types.Scene.view_projection
-    if hasattr(bpy.types.Scene, 'view_locked_move_axis'):
-        del bpy.types.Scene.view_locked_move_axis
-    if hasattr(bpy.types.Scene, 'character_anim_slots'):
-        del bpy.types.Scene.character_anim_slots
-    if hasattr(bpy.types.Scene, 'character_slots_lock'):
-        del bpy.types.Scene.character_slots_lock
-    if hasattr(bpy.types.Scene, 'anim_min_fall_time'):
-        del bpy.types.Scene.anim_min_fall_time
-    if hasattr(bpy.types.Scene, 'anim_min_fall_for_land'):
-        del bpy.types.Scene.anim_min_fall_for_land
+    _props = [
+        'main_category', 'char_physics', 'create_panels_filter',
+        'proxy_meshes', 'proxy_meshes_index',
+        'spawn_object', 'spawn_use_nearest_z_surface', 'target_armature',
+        'character_spawn_lock', 'character_slots_lock',
+        'anim_min_fall_time', 'anim_min_fall_for_land',
+        'pitch_angle', 'view_obstruction_enabled',
+        'view_mode', 'view_locked_move_axis', 'view_locked_flip_axis',
+        'view_locked_pitch', 'view_locked_yaw', 'view_locked_distance',
+        'view_projection', 'orbit_distance', 'zoom_factor',
+        'viewport_lens_mm', 'fpv_view_bone', 'fpv_invert_pitch',
+        'character_anim_slots',
+    ]
+    for p in _props:
+        if hasattr(bpy.types.Scene, p):
+            delattr(bpy.types.Scene, p)
