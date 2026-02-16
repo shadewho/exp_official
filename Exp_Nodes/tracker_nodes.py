@@ -49,6 +49,7 @@ class _ExploratoryNodeOnly:
 
 BOOL_SOCKET = "ExpBoolSocketType"
 FLOAT_SOCKET = "ExpFloatSocketType"
+INT_SOCKET = "ExpIntSocketType"
 OBJECT_SOCKET = "ExpObjectSocketType"
 VECTOR_SOCKET = "ExpVectorSocketType"
 
@@ -98,16 +99,16 @@ class DistanceTrackerNode(_ExploratoryNodeOnly, Node):
         sock_a.prop_name = "object_a"
         sock_b = self.inputs.new(OBJECT_SOCKET, "Object B")
         sock_b.prop_name = "object_b"
+        # Inline data sockets
+        s = self.inputs.new(FLOAT_SOCKET, "Distance")
+        s.prop_name = "distance"
+        s = self.inputs.new(INT_SOCKET, "Eval Rate")
+        s.prop_name = "eval_hz"
         # Bool output
         self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
-        # Operator and distance on same row
-        row = layout.row(align=True)
-        row.prop(self, "operator", text="")
-        row.prop(self, "distance", text="")
-
-        layout.prop(self, "eval_hz", text="Hz")
+        layout.prop(self, "operator", text="")
 
     def export_condition(self):
         """Export condition data for worker serialization."""
@@ -150,15 +151,14 @@ class StateTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
+        s = self.inputs.new(BOOL_SOCKET, "Is Active")
+        s.prop_name = "equals"
+        s = self.inputs.new(INT_SOCKET, "Eval Rate")
+        s.prop_name = "eval_hz"
         self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "state", text="")
-
-        row = layout.row()
-        row.prop(self, "equals", text="Is" if self.equals else "Is NOT")
-
-        layout.prop(self, "eval_hz", text="Hz")
 
     def export_condition(self):
         """Export condition data for worker serialization."""
@@ -211,12 +211,14 @@ class ContactTrackerNode(_ExploratoryNodeOnly, Node):
         sock_obj.prop_name = "contact_object"
         sock_tgt = self.inputs.new(OBJECT_SOCKET, "Target")
         sock_tgt.prop_name = "contact_target"
+        s = self.inputs.new(FLOAT_SOCKET, "Threshold")
+        s.prop_name = "contact_threshold"
+        s = self.inputs.new(INT_SOCKET, "Eval Rate")
+        s.prop_name = "eval_hz"
         self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
-        row = layout.row(align=True)
-        row.prop(self, "contact_threshold", text="Dist")
-        row.prop(self, "eval_hz", text="Hz")
+        pass
 
     def export_condition(self):
         """Export condition data for worker serialization."""
@@ -258,15 +260,14 @@ class InputTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
+        s = self.inputs.new(BOOL_SOCKET, "Pressed")
+        s.prop_name = "is_pressed"
+        s = self.inputs.new(INT_SOCKET, "Eval Rate")
+        s.prop_name = "eval_hz"
         self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "input_action", text="")
-
-        row = layout.row()
-        row.prop(self, "is_pressed", text="Pressed" if self.is_pressed else "Not Pressed")
-
-        layout.prop(self, "eval_hz", text="Hz")
 
     def export_condition(self):
         """Export condition data for worker serialization."""
@@ -313,19 +314,19 @@ class GameTimeTrackerNode(_ExploratoryNodeOnly, Node):
 
     def init(self, context):
         self.width = 180
+        s = self.inputs.new(BOOL_SOCKET, "Compare")
+        s.prop_name = "compare_enabled"
+        s = self.inputs.new(FLOAT_SOCKET, "Time")
+        s.prop_name = "time_threshold"
+        s = self.inputs.new(INT_SOCKET, "Eval Rate")
+        s.prop_name = "eval_hz"
         # Float output for raw time value
         self.outputs.new(FLOAT_SOCKET, "Time")
         # Bool output for comparison result
         self.outputs.new(BOOL_SOCKET, "Result")
 
     def draw_buttons(self, context, layout):
-        layout.prop(self, "compare_enabled")
-        if self.compare_enabled:
-            row = layout.row(align=True)
-            row.prop(self, "operator", text="")
-            row.prop(self, "time_threshold", text="")
-
-        layout.prop(self, "eval_hz", text="Hz")
+        layout.prop(self, "operator", text="")
 
     def export_condition(self):
         """Export condition data for worker serialization."""

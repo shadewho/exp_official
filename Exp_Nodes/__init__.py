@@ -42,6 +42,17 @@ from .utility_nodes import (
     CollectionDataNode,
     ActionDataNode,
     FloatVectorDataNode,
+    # Compare Node
+    CompareNode,
+    # Vector utility nodes
+    SplitVectorNode,
+    CombineVectorNode,
+    # Math nodes
+    FloatMathNode,
+    IntMathNode,
+    # Random nodes
+    RandomFloatNode,
+    RandomIntNode,
 )
 
 from .node_editor import (
@@ -122,6 +133,7 @@ from .reaction_nodes import (
     ReactionTrackingNode,
     ReactionEnableHealthNode,
     ReactionDisplayHealthUINode,
+    ReactionAdjustHealthNode,
 )
 
 from .trig_react_obj_lists import(
@@ -174,7 +186,18 @@ classes = [
     FloatVectorDataNode,
     # utilities - delay
     UtilityDelayNode,
-    
+    # utilities - compare
+    CompareNode,
+    # utilities - vector split/combine
+    SplitVectorNode,
+    CombineVectorNode,
+    # utilities - math
+    FloatMathNode,
+    IntMathNode,
+    # utilities - random
+    RandomFloatNode,
+    RandomIntNode,
+
     # reaction sockets
     ReactionTriggerInputSocket,
     ReactionOutputSocket,
@@ -203,6 +226,7 @@ classes = [
     ReactionTrackingNode,
     ReactionEnableHealthNode,
     ReactionDisplayHealthUINode,
+    ReactionAdjustHealthNode,
 
     # counters & timers
     CounterNode,
@@ -248,6 +272,7 @@ classes = [
 ]
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
+
 
 def _sanitize_open_node_editors_before_unload():
     """Switch any open Node Editor that is currently showing our custom tree

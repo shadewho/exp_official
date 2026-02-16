@@ -265,19 +265,17 @@ def update_tracking_tasks(dt: float):
 
 def start(r):
     """Build and queue a tracking task from a ReactionDefinition instance."""
-    scn = bpy.context.scene
-    from_obj = scn.target_armature if getattr(r, "track_from_use_character", True) else getattr(r, "track_from_object", None)
-    to_obj = scn.target_armature if getattr(r, "track_to_use_character", False) else getattr(r, "track_to_object", None)
+    from .exp_bindings import resolve_object, resolve_bool
+
+    from_obj = resolve_object(r, "track_from_object", r.track_from_object)
+    to_obj = resolve_object(r, "track_to_object", r.track_to_object)
 
     # Resolve face target
-    face_enabled = getattr(r, "track_face_enabled", False)
+    face_enabled = resolve_bool(r, "track_face_enabled", getattr(r, "track_face_enabled", False))
     face_target_obj = None
     face_axis = getattr(r, "track_face_axis", "NEG_Y")
     if face_enabled:
-        if getattr(r, "track_face_use_character", False):
-            face_target_obj = scn.target_armature
-        else:
-            face_target_obj = getattr(r, "track_face_object", None)
+        face_target_obj = resolve_object(r, "track_face_object", r.track_face_object)
 
     # Remove existing track for this mover (only one track per object)
     if from_obj:

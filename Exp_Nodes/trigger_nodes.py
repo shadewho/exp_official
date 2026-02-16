@@ -229,6 +229,12 @@ class _TriggerNodeKind(TriggerNodeBase):
         self.outputs.new('TriggerOutputSocketType', "Trigger Output")
         self.width = 300
 
+        # Common inline sockets for all triggers
+        s = self.inputs.new('ExpFloatSocketType', "Cooldown")
+        s.interaction_prop = "trigger_cooldown"
+        s = self.inputs.new('ExpFloatSocketType', "Delay")
+        s.interaction_prop = "trigger_delay"
+
         self._tint()
         self.interaction_index = _ensure_interaction(self.KIND or "PROXIMITY")
 
@@ -366,35 +372,21 @@ class _TriggerNodeKind(TriggerNodeBase):
 
     # ── Per-kind drawers (edit the backed Interaction by index) ──
     def _draw_proximity(self, layout, scn, inter):
-        layout.prop(inter, "use_character", text="Use Character as A")
-        if inter.use_character:
+        if getattr(inter, "use_character", False):
             char = getattr(scn, "target_armature", None)
-            layout.label(text=f"Object A: {char.name if char else '—'}", icon='ARMATURE_DATA')
-        else:
-            layout.prop(inter, "proximity_object_a", text="Object A")
-        layout.prop(inter, "proximity_object_b", text="Object B")
-        layout.prop(inter, "proximity_distance", text="Distance")
+            layout.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
 
     def _draw_collision(self, layout, scn, inter):
-        layout.prop(inter, "use_character", text="Use Character as A")
-        if inter.use_character:
+        if getattr(inter, "use_character", False):
             char = getattr(scn, "target_armature", None)
-            layout.label(text=f"Object A: {char.name if char else '—'}", icon='ARMATURE_DATA')
-        else:
-            layout.prop(inter, "collision_object_a", text="Object A")
-        layout.prop(inter, "collision_object_b", text="Object B")
-        layout.prop(inter, "collision_margin", text="Margin")
+            layout.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
 
     def _draw_interact(self, layout, _scn, inter):
-        layout.prop(inter, "interact_object", text="Object")
-        layout.prop(inter, "interact_distance", text="Distance")
-        
+        pass
 
     def _draw_counter_update(self, layout, _scn, inter):
         layout.prop(self, "node_counter_index", text="Counter")
         layout.prop(inter, "counter_condition", text="Condition")
-        if getattr(inter, "counter_condition", "") in {"EQUALS", "AT_LEAST"}:
-            layout.prop(inter, "counter_condition_value", text="Value")
 
     def _draw_timer_complete(self, layout, _scn, inter):
         layout.prop(self, "node_timer_index", text="Timer")
@@ -436,11 +428,7 @@ class _TriggerNodeKind(TriggerNodeBase):
             self._draw_timer_complete(layout, scn, inter)
 
         layout.separator()
-        layout.label(text="Options:")
         layout.prop(inter, "trigger_mode", text="Mode")
-        if getattr(inter, "trigger_mode", "") == "COOLDOWN":
-            layout.prop(inter, "trigger_cooldown", text="Cooldown")
-        layout.prop(inter, "trigger_delay", text="Delay (sec)")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -452,25 +440,60 @@ class ProximityTriggerNode(_TriggerNodeKind):
     bl_label  = 'Proximity'
     KIND = "PROXIMITY"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new('ExpBoolSocketType', "Use Character")
+        s.interaction_prop = "use_character"
+        s = self.inputs.new('ExpObjectSocketType', "Object A")
+        s.interaction_prop = "proximity_object_a"
+        s = self.inputs.new('ExpObjectSocketType', "Object B")
+        s.interaction_prop = "proximity_object_b"
+        s = self.inputs.new('ExpFloatSocketType', "Distance")
+        s.interaction_prop = "proximity_distance"
+
 class CollisionTriggerNode(_TriggerNodeKind):
     bl_idname = 'CollisionTriggerNodeType'
     bl_label  = 'Collision'
     KIND = "COLLISION"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new('ExpBoolSocketType', "Use Character")
+        s.interaction_prop = "use_character"
+        s = self.inputs.new('ExpObjectSocketType', "Object A")
+        s.interaction_prop = "collision_object_a"
+        s = self.inputs.new('ExpObjectSocketType', "Object B")
+        s.interaction_prop = "collision_object_b"
+        s = self.inputs.new('ExpFloatSocketType', "Margin")
+        s.interaction_prop = "collision_margin"
 
 class InteractTriggerNode(_TriggerNodeKind):
     bl_idname = 'InteractTriggerNodeType'
     bl_label  = 'Interact Key'
     KIND = "INTERACT"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new('ExpObjectSocketType', "Object")
+        s.interaction_prop = "interact_object"
+        s = self.inputs.new('ExpFloatSocketType', "Distance")
+        s.interaction_prop = "interact_distance"
+
 class CounterUpdateTriggerNode(_TriggerNodeKind):
     bl_idname = 'CounterUpdateTriggerNodeType'
     bl_label  = 'Counter Update'
     KIND = "COUNTER_UPDATE"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new('ExpIntSocketType', "Condition Value")
+        s.interaction_prop = "counter_condition_value"
+
 class TimerCompleteTriggerNode(_TriggerNodeKind):
     bl_idname = 'TimerCompleteTriggerNodeType'
     bl_label  = 'Timer Complete'
     KIND = "TIMER_COMPLETE"
+
 class OnGameStartTriggerNode(_TriggerNodeKind):
     bl_idname = 'OnGameStartTriggerNodeType'
     bl_label  = 'On Game Start'
@@ -486,6 +509,13 @@ class ExternalTriggerNode(_TriggerNodeKind):
         self.inputs.new('ExpBoolSocketType', "Condition")
         self.outputs.new('TriggerOutputSocketType', "Trigger Output")
         self.width = 300
+
+        # Common inline sockets
+        s = self.inputs.new('ExpFloatSocketType', "Cooldown")
+        s.interaction_prop = "trigger_cooldown"
+        s = self.inputs.new('ExpFloatSocketType', "Delay")
+        s.interaction_prop = "trigger_delay"
+
         self._tint()
         self.interaction_index = _ensure_interaction(self.KIND)
         

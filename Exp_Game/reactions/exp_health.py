@@ -5,7 +5,8 @@ Health System - Track health for any object in the scene.
 Consolidated module containing:
 - Core health cache and operations
 - Reaction executors (ENABLE_HEALTH, DISPLAY_HEALTH_UI)
-- GPU-rendered health bar UI overlay
+- GPU-rendered health bar UI overlay (HUD sprite bar for character)
+- World-space health display (floating bar/numbers for non-character objects)
 
 Architecture:
     1. ENABLE_HEALTH reaction fires -> enable_health() adds object to cache
@@ -17,10 +18,12 @@ The cache uses object names (strings) as keys for worker-serializable data.
 """
 
 import bpy
+import blf
 import gpu
 import os
 import math
 from gpu_extras.batch import batch_for_shader
+from bpy_extras.view3d_utils import location_3d_to_region_2d
 from ..developer.dev_logger import log_game
 
 
@@ -147,41 +150,9 @@ def clear_all_health():
     """
     count = len(_health_cache)
     _health_cache.clear()
+    _world_configs.clear()
     _invalidate_batches()  # Clear batch cache
     log_game("HEALTH", f"CLEAR cache emptied (was tracking {count} objects)")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# UTILITY / STATS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_health_stats() -> dict:
-    """Get summary statistics for debugging."""
-    return {
-        "count": len(_health_cache),
-        "objects": list(_health_cache.keys()),
-    }
-
-
-def get_all_health() -> dict:
-    """Get a copy of the entire health cache (for debugging/serialization)."""
-    return dict(_health_cache)
-
-
-def serialize_for_worker() -> dict:
-    """
-    Serialize health data for worker process.
-    Future: Used when offloading damage calculations to worker.
-    """
-    return {
-        name: {
-            "current": data["current"],
-            "start": data["start"],
-            "min": data["min"],
-            "max": data["max"],
-        }
-        for name, data in _health_cache.items()
-    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -210,12 +181,31 @@ def execute_enable_health_reaction(r):
     enable_health(obj.name, start_val, min_val, max_val)
 
 
+def execute_adjust_health_reaction(r):
+    """
+    Execute ADJUST_HEALTH reaction.
+    Adds or subtracts from an object's current health.
+    Silently does nothing if the object has no health enabled.
+    """
+    from .exp_bindings import resolve_object, resolve_float
+
+    obj = resolve_object(r, "adjust_health_target_object", r.adjust_health_target_object)
+    if not obj:
+        return
+
+    if not is_health_enabled(obj.name):
+        return
+
+    amount = resolve_float(r, "adjust_health_amount", r.adjust_health_amount)
+    modify_health(obj.name, amount)
+
+
 def execute_display_health_ui_reaction(r):
     """
     Execute DISPLAY_HEALTH_UI reaction.
-    Shows health bar overlay on screen for target object.
+    Routes to HUD (character) or world-space (non-character) display.
     """
-    from .exp_bindings import resolve_object, resolve_int
+    from .exp_bindings import resolve_object, resolve_int, resolve_raw_binding
 
     # Resolve object from binding (node connection) or fallback to direct property
     obj = resolve_object(r, "health_ui_target_object", r.health_ui_target_object)
@@ -223,18 +213,36 @@ def execute_display_health_ui_reaction(r):
         log_game("HEALTH", "UI_SKIP no target object specified")
         return
 
-    # Resolve integer values from bindings or use direct properties
-    scale = resolve_int(r, "health_ui_scale", r.health_ui_scale)
-    offset_x = resolve_int(r, "health_ui_offset_x", r.health_ui_offset_x)
-    offset_y = resolve_int(r, "health_ui_offset_y", r.health_ui_offset_y)
+    # Check if target is the character via raw binding value
+    raw_value = resolve_raw_binding(r, "health_ui_target_object")
 
-    enable_health_ui(
-        obj.name,
-        position=r.health_ui_position,
-        scale=scale,
-        offset_x=offset_x,
-        offset_y=offset_y
-    )
+    if raw_value == "__CHARACTER__":
+        # HUD path — character target
+        scale = resolve_int(r, "health_ui_scale", r.health_ui_scale)
+        offset_x = resolve_int(r, "health_ui_offset_x", r.health_ui_offset_x)
+        offset_y = resolve_int(r, "health_ui_offset_y", r.health_ui_offset_y)
+
+        enable_health_ui(
+            obj.name,
+            position=r.health_ui_position,
+            scale=scale,
+            offset_x=offset_x,
+            offset_y=offset_y
+        )
+    else:
+        # World-space path — non-character target
+        world_scale = resolve_int(r, "health_ui_world_scale", r.health_ui_world_scale)
+        world_offset_h = resolve_int(r, "health_ui_world_offset_h", r.health_ui_world_offset_h)
+        world_offset_v = resolve_int(r, "health_ui_world_offset_v", r.health_ui_world_offset_v)
+
+        enable_world_health_ui(
+            obj.name,
+            style=r.health_ui_world_style,
+            scale=world_scale,
+            offset_h=world_offset_h,
+            offset_v=world_offset_v,
+            show_through=r.health_ui_world_show_through
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -242,8 +250,11 @@ def execute_display_health_ui_reaction(r):
 # ══════════════════════════════════════════════════════════════════════════════
 
 _draw_handle = None
-_ui_config = None
+_hud_config = None
 _images = {}  # {"container": bpy.types.Image, "full": Image, "half": Image, "empty": Image, "cross": Image}
+
+# World-space configs: {obj_name: {"style": str, "scale": float, "offset_x": float, "offset_y": float}}
+_world_configs: dict = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEALTH UI - CACHED GPU RESOURCES (Performance Optimization)
@@ -375,9 +386,9 @@ def _invalidate_batches():
 
 def _get_config_hash():
     """Generate hash of current config for cache invalidation."""
-    if not _ui_config:
+    if not _hud_config:
         return ""
-    return f"{_ui_config['position']}_{_ui_config['scale']}_{_ui_config['offset_x']}_{_ui_config['offset_y']}"
+    return f"{_hud_config['position']}_{_hud_config['scale']}_{_hud_config['offset_x']}_{_hud_config['offset_y']}"
 
 
 def _build_batches(region, filled_units: int):
@@ -388,10 +399,10 @@ def _build_batches(region, filled_units: int):
     """
     global _cached_batches, _cache_state
 
-    position = _ui_config["position"]
-    user_scale = _ui_config["scale"]
-    offset_x = _ui_config["offset_x"]
-    offset_y = _ui_config["offset_y"]
+    position = _hud_config["position"]
+    user_scale = _hud_config["scale"]
+    offset_x = _hud_config["offset_x"]
+    offset_y = _hud_config["offset_y"]
 
     # Compute scaling
     screen_scale_w = region.width / REF_WIDTH
@@ -545,13 +556,13 @@ def _make_quad_data(x, y, width, height, rotation):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HEALTH UI - ENABLE / DISABLE
+# HEALTH UI - ENABLE / DISABLE (HUD)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def enable_health_ui(target_obj_name: str, position: str = "BOTTOM",
                      scale: int = 10, offset_x: int = 0, offset_y: int = 1):
     """
-    Enable health bar display for an object with health.
+    Enable HUD health bar display for an object with health (character).
 
     Args:
         target_obj_name: Name of object to track health for
@@ -560,7 +571,7 @@ def enable_health_ui(target_obj_name: str, position: str = "BOTTOM",
         offset_x: Horizontal grid offset (-20 to 20)
         offset_y: Vertical grid offset (-20 to 20)
     """
-    global _ui_config, _draw_handle
+    global _hud_config, _draw_handle
 
     # Load images if not already loaded
     if not _images:
@@ -568,7 +579,7 @@ def enable_health_ui(target_obj_name: str, position: str = "BOTTOM",
             log_game("HEALTH", "UI_ENABLE_FAILED missing images")
             return
 
-    _ui_config = {
+    _hud_config = {
         "target": target_obj_name,
         "position": position.upper(),
         "scale": max(1, min(20, scale)),
@@ -585,8 +596,11 @@ def enable_health_ui(target_obj_name: str, position: str = "BOTTOM",
 
 
 def disable_health_ui():
-    """Remove health bar overlay and cleanup all GPU resources."""
-    global _draw_handle, _ui_config
+    """Remove HUD health bar overlay and cleanup all GPU resources."""
+    global _draw_handle, _hud_config
+
+    _hud_config = None
+    _world_configs.clear()
 
     if _draw_handle is not None:
         try:
@@ -595,19 +609,86 @@ def disable_health_ui():
             pass
         _draw_handle = None
 
-    _ui_config = None
     _clear_gpu_cache()  # Clear cached shader, textures, batches
     _unload_health_images()
     log_game("HEALTH", "UI_DISABLE")
 
 
-def is_health_ui_enabled() -> bool:
-    """Check if health UI is currently enabled."""
-    return _draw_handle is not None
+# ══════════════════════════════════════════════════════════════════════════════
+# WORLD-SPACE HEALTH UI - ENABLE / DISABLE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def enable_world_health_ui(obj_name: str, style: str = "BAR",
+                           scale: int = 10, offset_h: int = 0,
+                           offset_v: int = 2, show_through: bool = False):
+    """
+    Enable world-space health display for a non-character object.
+
+    Args:
+        obj_name: Name of the object to display health for
+        style: "BAR" or "NUMBERS"
+        scale: Size (1-20, where 10 is default/normal size)
+        offset_h: Horizontal offset in grid units (-20 to 20)
+        offset_v: Vertical offset in grid units (-20 to 20)
+        show_through: If True, display through meshes (ignore occlusion)
+    """
+    global _draw_handle
+
+    _world_configs[obj_name] = {
+        "style": style.upper(),
+        "scale": max(1, min(20, scale)),
+        "offset_h": max(-20, min(20, offset_h)),
+        "offset_v": max(-20, min(20, offset_v)),
+        "show_through": bool(show_through),
+    }
+
+    # Ensure draw handler is registered
+    if _draw_handle is None:
+        _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            _draw, (), 'WINDOW', 'POST_PIXEL'
+        )
+
+    log_game("HEALTH", f"WORLD_UI_ENABLE obj={obj_name} style={style} scale={scale} offset=({offset_h},{offset_v})")
+
+
+def disable_world_health_ui(obj_name: str):
+    """Remove world-space health display for one object."""
+    global _draw_handle
+
+    if obj_name in _world_configs:
+        del _world_configs[obj_name]
+        log_game("HEALTH", f"WORLD_UI_DISABLE obj={obj_name}")
+
+    # Remove draw handler if nothing left to draw
+    if not _hud_config and not _world_configs and _draw_handle is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
+        except Exception:
+            pass
+        _draw_handle = None
+
+
+def disable_all_world_health_ui():
+    """Remove all world-space health displays."""
+    global _draw_handle
+
+    count = len(_world_configs)
+    _world_configs.clear()
+
+    # Remove draw handler if nothing left to draw
+    if not _hud_config and _draw_handle is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
+        except Exception:
+            pass
+        _draw_handle = None
+
+    if count > 0:
+        log_game("HEALTH", f"WORLD_UI_DISABLE_ALL cleared {count} entries")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HEALTH UI - DRAWING
+# HEALTH UI - DRAWING (Dispatch)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _find_window_region():
@@ -628,67 +709,276 @@ def _find_window_region():
 
 
 def _draw():
-    """GPU draw callback - render health bar using cached batches."""
+    """GPU draw callback - dispatches to HUD and world-space drawing."""
     try:
-        if not _ui_config or not _images:
-            return
-
-        # Get health data
-        health_data = get_health(_ui_config["target"])
-        if not health_data:
-            return
-
-        # Normalize health to 0-20 units
-        current = health_data["current"]
-        min_val = health_data["min"]
-        max_val = health_data["max"]
-        range_val = max_val - min_val
-
-        if range_val <= 0:
-            filled_units = 20
-        else:
-            filled_units = round((current - min_val) / range_val * 20)
-        filled_units = max(0, min(20, filled_units))
-
-        # Get screen region
-        region, _ = _find_window_region()
-        if not region:
-            return
-
-        # Check if cache is valid
-        needs_rebuild = (
-            _cache_state is None or
-            _cache_state["filled_units"] != filled_units or
-            _cache_state["config_hash"] != _get_config_hash() or
-            _cache_state["screen"] != (region.width, region.height)
-        )
-
-        # Get or rebuild batches
-        if needs_rebuild:
-            batches = _build_batches(region, filled_units)
-        else:
-            batches = _cached_batches
-
-        if not batches:
-            return
-
-        # Draw all batches (grouped by texture for fewer texture binds)
-        shader = _get_shader()
-        if not shader:
-            return
-
-        gpu.state.blend_set('ALPHA')
-        try:
-            shader.bind()
-            for tex_key, (quad_batches, texture) in batches.items():
-                shader.uniform_sampler("image", texture)
-                for batch in quad_batches:
-                    batch.draw(shader)
-        finally:
-            gpu.state.blend_set('NONE')
-
+        _draw_hud()
+        _draw_all_world_health()
     except Exception:
         # Silently skip draw if context is unavailable (editor transitions)
         pass
 
 
+def _draw_hud():
+    """Render HUD sprite-based health bar (character)."""
+    if not _hud_config or not _images:
+        return
+
+    # Get health data
+    health_data = get_health(_hud_config["target"])
+    if not health_data:
+        return
+
+    # Normalize health to 0-20 units
+    current = health_data["current"]
+    min_val = health_data["min"]
+    max_val = health_data["max"]
+    range_val = max_val - min_val
+
+    if range_val <= 0:
+        filled_units = 20
+    else:
+        filled_units = round((current - min_val) / range_val * 20)
+    filled_units = max(0, min(20, filled_units))
+
+    # Get screen region
+    region, _ = _find_window_region()
+    if not region:
+        return
+
+    # Check if cache is valid
+    needs_rebuild = (
+        _cache_state is None or
+        _cache_state["filled_units"] != filled_units or
+        _cache_state["config_hash"] != _get_config_hash() or
+        _cache_state["screen"] != (region.width, region.height)
+    )
+
+    # Get or rebuild batches
+    if needs_rebuild:
+        batches = _build_batches(region, filled_units)
+    else:
+        batches = _cached_batches
+
+    if not batches:
+        return
+
+    # Draw all batches (grouped by texture for fewer texture binds)
+    shader = _get_shader()
+    if not shader:
+        return
+
+    gpu.state.blend_set('ALPHA')
+    try:
+        shader.bind()
+        for tex_key, (quad_batches, texture) in batches.items():
+            shader.uniform_sampler("image", texture)
+            for batch in quad_batches:
+                batch.draw(shader)
+    finally:
+        gpu.state.blend_set('NONE')
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WORLD-SPACE HEALTH - DRAWING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _health_fraction(obj_name: str) -> float | None:
+    """Get health as 0.0-1.0 fraction. Returns None if not tracked."""
+    data = _health_cache.get(obj_name)
+    if not data:
+        return None
+    range_val = data["max"] - data["min"]
+    if range_val <= 0:
+        return 1.0
+    return max(0.0, min(1.0, (data["current"] - data["min"]) / range_val))
+
+
+def _health_color(fraction: float) -> tuple:
+    """Interpolate green (1.0) -> red (0.0) based on health fraction."""
+    r = 0.2 + (1.0 - fraction) * 0.6
+    g = 0.2 + fraction * 0.6
+    return (r, g, 0.2, 1.0)
+
+
+def _draw_all_world_health():
+    """Iterate world configs and draw each object's health display."""
+    if not _world_configs:
+        return
+
+    region, area = _find_window_region()
+    if not region or not area:
+        return
+
+    # Get the 3D region data for projection
+    rv3d = None
+    for space in area.spaces:
+        if space.type == 'VIEW_3D':
+            rv3d = space.region_3d
+            break
+    if not rv3d:
+        return
+
+    for obj_name, config in _world_configs.items():
+        if config["style"] == "BAR":
+            _draw_world_health_bar(region, rv3d, obj_name, config)
+        else:
+            _draw_world_health_numbers(region, rv3d, obj_name, config)
+
+
+def _is_point_occluded(region, rv3d, world_pos) -> bool:
+    """Check if a world-space point is hidden behind scene geometry using the depth buffer."""
+    from mathutils import Vector
+
+    screen_pos = location_3d_to_region_2d(region, rv3d, world_pos)
+    if not screen_pos:
+        return True
+
+    sx = int(max(0, min(screen_pos.x, region.width - 1)))
+    sy = int(max(0, min(screen_pos.y, region.height - 1)))
+
+    try:
+        fb = gpu.state.active_framebuffer_get()
+        depth_buf = fb.read_depth(sx, sy, 1, 1)
+        scene_depth = depth_buf.to_list()[0][0]
+    except Exception:
+        return False  # Can't read depth — assume visible
+
+    # Calculate the point's depth in normalized device coordinates
+    p = rv3d.perspective_matrix @ Vector((world_pos.x, world_pos.y, world_pos.z, 1.0))
+    if abs(p.w) < 1e-6:
+        return True
+    point_depth = (p.z / p.w) * 0.5 + 0.5
+
+    # Scene depth < point depth means something closer is in front
+    return scene_depth < (point_depth - 0.0001)
+
+
+def _world_offset_from_grid(offset_units: int) -> float:
+    """Convert grid units to Blender world units (0.1 BU per grid unit)."""
+    return offset_units * 0.1
+
+
+def _world_scale_mult(scale: int) -> float:
+    """Convert scale (1-20) to a multiplier. 1 = 0.5x, 10 = 2.5x, 20 = 5.0x."""
+    return 0.5 + (scale - 1) * (4.5 / 19.0)
+
+
+def _draw_world_health_bar(region, rv3d, obj_name: str, config: dict):
+    """Draw a floating health bar above an object in world space."""
+    obj = bpy.data.objects.get(obj_name)
+    if not obj:
+        return
+
+    fraction = _health_fraction(obj_name)
+    if fraction is None:
+        return
+
+    # Calculate world position with grid-unit offset
+    world_pos = obj.matrix_world.translation.copy()
+    world_pos.x += _world_offset_from_grid(config["offset_h"])
+    world_pos.z += _world_offset_from_grid(config["offset_v"])
+
+    # Occlusion check — skip if behind geometry
+    if not config.get("show_through", False):
+        if _is_point_occluded(region, rv3d, world_pos):
+            return
+
+    # Project to 2D screen space
+    screen_pos = location_3d_to_region_2d(region, rv3d, world_pos)
+    if not screen_pos:
+        return
+
+    sx, sy = screen_pos
+    scale_mult = _world_scale_mult(config["scale"])
+
+    # Bar dimensions (pixels)
+    bar_w = 80.0 * scale_mult
+    bar_h = 10.0 * scale_mult
+
+    # Background rect (dark gray)
+    bg_x = sx - bar_w / 2
+    bg_y = sy - bar_h / 2
+
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+
+    try:
+        # Background
+        bg_verts = [
+            (bg_x, bg_y),
+            (bg_x + bar_w, bg_y),
+            (bg_x + bar_w, bg_y + bar_h),
+            (bg_x, bg_y + bar_h),
+        ]
+        bg_batch = batch_for_shader(shader, 'TRI_FAN', {"pos": bg_verts})
+        shader.bind()
+        shader.uniform_float('color', (0.2, 0.2, 0.2, 0.7))
+        bg_batch.draw(shader)
+
+        # Fill rect (green->red based on health)
+        if fraction > 0:
+            fill_w = bar_w * fraction
+            fill_verts = [
+                (bg_x, bg_y),
+                (bg_x + fill_w, bg_y),
+                (bg_x + fill_w, bg_y + bar_h),
+                (bg_x, bg_y + bar_h),
+            ]
+            fill_batch = batch_for_shader(shader, 'TRI_FAN', {"pos": fill_verts})
+            shader.bind()
+            shader.uniform_float('color', _health_color(fraction))
+            fill_batch.draw(shader)
+    finally:
+        gpu.state.blend_set('NONE')
+
+
+def _draw_world_health_numbers(region, rv3d, obj_name: str, config: dict):
+    """Draw floating current health number above an object in world space."""
+    obj = bpy.data.objects.get(obj_name)
+    if not obj:
+        return
+
+    data = _health_cache.get(obj_name)
+    if not data:
+        return
+
+    fraction = _health_fraction(obj_name)
+    if fraction is None:
+        return
+
+    # Calculate world position with grid-unit offset
+    world_pos = obj.matrix_world.translation.copy()
+    world_pos.x += _world_offset_from_grid(config["offset_h"])
+    world_pos.z += _world_offset_from_grid(config["offset_v"])
+
+    # Occlusion check — skip if behind geometry
+    if not config.get("show_through", False):
+        if _is_point_occluded(region, rv3d, world_pos):
+            return
+
+    # Project to 2D screen space
+    screen_pos = location_3d_to_region_2d(region, rv3d, world_pos)
+    if not screen_pos:
+        return
+
+    sx, sy = screen_pos
+    scale_mult = _world_scale_mult(config["scale"])
+
+    # Draw text using BLF
+    font_id = 0
+    font_size = int(16 * scale_mult)
+    text = f"{int(data['current'])}"
+
+    color = _health_color(fraction)
+    blf.size(font_id, font_size)
+    blf.color(font_id, color[0], color[1], color[2], color[3])
+
+    # Center text horizontally
+    text_w, text_h = blf.dimensions(font_id, text)
+    blf.position(font_id, sx - text_w / 2, sy - text_h / 2, 0)
+
+    gpu.state.blend_set('ALPHA')
+    try:
+        blf.draw(font_id, text)
+    finally:
+        gpu.state.blend_set('NONE')

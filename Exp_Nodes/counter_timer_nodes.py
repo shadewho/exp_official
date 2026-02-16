@@ -213,6 +213,17 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
         self.width = 300
         self._tint()
         self.counter_index = _create_counter()
+        # Inline data sockets
+        s = self.inputs.new("ExpIntSocketType", "Default Value")
+        s.counter_prop = "default_value"
+        s = self.inputs.new("ExpBoolSocketType", "Enable Min")
+        s.counter_prop = "use_min_limit"
+        s = self.inputs.new("ExpIntSocketType", "Min Value")
+        s.counter_prop = "min_value"
+        s = self.inputs.new("ExpBoolSocketType", "Enable Max")
+        s.counter_prop = "use_max_limit"
+        s = self.inputs.new("ExpIntSocketType", "Max Value")
+        s.counter_prop = "max_value"
 
     def copy(self, node):
         src_idx = getattr(node, "counter_index", -1)
@@ -237,24 +248,9 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
 
         counter = scn.counters[idx]
 
-        # Basic Info
         info_box = layout.box()
         info_box.prop(counter, "name", text="Name")
         info_box.prop(counter, "description", text="Description")
-
-        # Counter Settings
-        settings_box = layout.box()
-        settings_box.label(text="Counter Settings")
-        settings_box.prop(counter, "default_value", text="Default Value")
-        settings_box.label(text="(Value at start/reset)")
-
-        settings_box.prop(counter, "use_min_limit", text="Enable Min")
-        if counter.use_min_limit:
-            settings_box.prop(counter, "min_value", text="Min Value")
-
-        settings_box.prop(counter, "use_max_limit", text="Enable Max")
-        if counter.use_max_limit:
-            settings_box.prop(counter, "max_value", text="Max Value")
 
     def draw_label(self):
         scn = _scene()
@@ -294,6 +290,11 @@ class TimerNode(_ExploratoryNodeOnly, bpy.types.Node):
         self.width = 300
         self._tint()
         self.timer_index = _create_timer()
+        # Inline data sockets
+        s = self.inputs.new("ExpFloatSocketType", "Start Value")
+        s.timer_prop = "start_value"
+        s = self.inputs.new("ExpFloatSocketType", "End Value")
+        s.timer_prop = "end_value"
 
     def copy(self, node):
         src_idx = getattr(node, "timer_index", -1)
@@ -318,17 +319,12 @@ class TimerNode(_ExploratoryNodeOnly, bpy.types.Node):
 
         timer = scn.timers[idx]
 
-        # Basic Info
         info_box = layout.box()
         info_box.prop(timer, "name", text="Name")
         info_box.prop(timer, "description", text="Description")
 
-        # Timer Settings
         settings_box = layout.box()
-        settings_box.label(text="Timer Settings")
         settings_box.prop(timer, "timer_mode", text="Mode")
-        settings_box.prop(timer, "start_value", text="Start Value (sec)")
-        settings_box.prop(timer, "end_value", text="End Value (sec)")
 
     def draw_label(self):
         scn = _scene()

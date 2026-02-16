@@ -36,11 +36,108 @@ _tracked_object_refs: dict = {}  # {name: bpy.types.Object}
 # Results with old generation are discarded to prevent false triggers after reset
 _tracker_generation: int = 0
 
+# Main-thread Compare evaluation (trees containing CompareNode can't serialize to worker)
+_compare_chains: list = []         # [{interaction_index, condition_node, trigger_node_name, tree_name}]
+_compare_last_values: dict = {}    # {interaction_index: last_bool_value}
+_compare_primed: set = set()       # Interaction indices evaluated at least once
+
 
 def set_current_operator(op):
     """Set the current operator reference for input state access."""
     global _current_operator
     _current_operator = op
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPARE NODE DETECTION & MAIN-THREAD EVALUATION
+# Trees containing CompareNode can't be serialized to the worker because
+# CompareNode reads live bpy objects (PointerProperty). These trees are
+# evaluated on the main thread each frame instead.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _tree_has_compare_node(node, visited=None):
+    """
+    Walk the bpy node graph upstream from 'node' and return True if any
+    node in the tree is a CompareNode.  Used at game start to decide
+    whether to send a condition tree to the worker or keep it main-thread.
+    """
+    if visited is None:
+        visited = set()
+    node_id = id(node)
+    if node_id in visited:
+        return False
+    visited.add(node_id)
+
+    if getattr(node, 'bl_idname', '') == 'CompareNodeType':
+        return True
+
+    for inp in node.inputs:
+        if inp.is_linked:
+            src = inp.links[0].from_node
+            if _tree_has_compare_node(src, visited):
+                return True
+    return False
+
+
+def _evaluate_bool_tree(node, visited=None):
+    """
+    Evaluate a boolean condition tree on the MAIN THREAD by walking live
+    bpy node objects.  Handles CompareNode, Logic gates, BoolDataNode,
+    and any node with export_bool().
+
+    This is intentionally lightweight — typical trees are 1-5 nodes.
+    Called at 30 Hz so must stay fast.
+    """
+    if visited is None:
+        visited = set()
+    node_id = id(node)
+    if node_id in visited:
+        return False
+    visited.add(node_id)
+
+    bl_id = getattr(node, 'bl_idname', '')
+
+    # CompareNode — the primary reason this evaluator exists
+    if bl_id == 'CompareNodeType':
+        return node.export_bool()
+
+    # Logic AND — all connected inputs must be True
+    if bl_id == 'LogicAndNodeType':
+        for inp in node.inputs:
+            if inp.is_linked:
+                src = inp.links[0].from_node
+                if not _evaluate_bool_tree(src, visited):
+                    return False
+        return True
+
+    # Logic OR — any connected input must be True
+    if bl_id == 'LogicOrNodeType':
+        for inp in node.inputs:
+            if inp.is_linked:
+                src = inp.links[0].from_node
+                if _evaluate_bool_tree(src, visited):
+                    return True
+        return False
+
+    # Logic NOT — invert first connected input
+    if bl_id == 'LogicNotNodeType':
+        for inp in node.inputs:
+            if inp.is_linked:
+                src = inp.links[0].from_node
+                return not _evaluate_bool_tree(src, visited)
+        return False
+
+    # BoolDataNode — read live store value
+    if bl_id == 'BoolDataNodeType':
+        if hasattr(node, 'export_bool'):
+            return node.export_bool()
+        return False
+
+    # Generic fallback — any node that exposes export_bool
+    if hasattr(node, 'export_bool'):
+        return node.export_bool()
+
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -177,6 +274,12 @@ def _serialize_node(node, visited: set) -> dict:
                 if child:
                     result['inputs'].append(child)
 
+    # ─── Compare Node ───
+    # Compare nodes connected to hitscan/projectile outputs are evaluated
+    # at impact time by the impact cache system, not by the tracker worker.
+    elif node_type == 'CompareNodeType':
+        return None
+
     # ─── Data Node Passthrough ───
     # Data nodes (Boolean, Float, etc.) act as passthrough - follow their input
     # This allows chaining: Tracker → Boolean → Boolean → Trigger
@@ -232,8 +335,14 @@ def serialize_tracker_graph(scene) -> list:
                 log_game("TRACKERS", f"SERIALIZE_SKIP {node.name} no Condition connected")
                 continue
 
-            # Serialize the condition tree
+            # Check condition tree for CompareNode — those are evaluated
+            # on the main thread, not serialized to the worker.
             src_node = condition_socket.links[0].from_node
+            if _tree_has_compare_node(src_node):
+                log_game("TRACKERS", f"SERIALIZE_SKIP {node.name} contains CompareNode (main-thread eval)")
+                continue
+
+            # Serialize the condition tree
             visited = set()
             try:
                 condition_tree = _serialize_node(src_node, visited)
@@ -330,6 +439,109 @@ def _extract_referenced_objects(tracker_data: list) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# MAIN-THREAD COMPARE CHAIN BUILD / EVALUATE / RESET
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_compare_chains(scene):
+    """
+    Scan ExternalTriggerNodes for condition trees that contain a CompareNode.
+    Those trees are kept for per-frame main-thread evaluation instead of
+    being sent to the worker.  Called once at game start.
+    """
+    global _compare_chains, _compare_last_values, _compare_primed
+    _compare_chains = []
+    _compare_last_values.clear()
+    _compare_primed.clear()
+
+    for ng in bpy.data.node_groups:
+        if getattr(ng, 'bl_idname', '') != EXPL_TREE_ID:
+            continue
+        tree_scene = getattr(ng, 'scene', None)
+        if tree_scene and tree_scene != scene:
+            continue
+
+        for node in ng.nodes:
+            if getattr(node, 'bl_idname', '') != 'ExternalTriggerNodeType':
+                continue
+
+            inter_idx = getattr(node, 'interaction_index', -1)
+            if inter_idx < 0:
+                continue
+
+            condition_socket = node.inputs.get("Condition")
+            if not condition_socket or not condition_socket.is_linked:
+                continue
+
+            src_node = condition_socket.links[0].from_node
+            if _tree_has_compare_node(src_node):
+                _compare_chains.append({
+                    'interaction_index': inter_idx,
+                    'condition_node': src_node,
+                    'trigger_node_name': node.name,
+                    'tree_name': ng.name,
+                })
+                log_game("TRACKERS",
+                         f"COMPARE_CHAIN inter={inter_idx} trigger={node.name} tree={ng.name}")
+
+    if _compare_chains:
+        log_game("TRACKERS",
+                 f"BUILT {len(_compare_chains)} compare chain(s) for main-thread evaluation")
+
+
+def evaluate_compare_chains():
+    """
+    Per-frame main-thread evaluation of Compare condition trees.
+    Uses edge detection + priming (mirrors the worker pattern) so
+    external_signal only changes on actual state transitions.
+    """
+    global _compare_chains, _compare_last_values, _compare_primed
+
+    if not _compare_chains:
+        return
+
+    scn = bpy.context.scene
+    interactions = getattr(scn, 'custom_interactions', None)
+    if not interactions:
+        return
+
+    for chain in _compare_chains:
+        inter_idx = chain['interaction_index']
+        condition_node = chain['condition_node']
+
+        # Evaluate the boolean tree on main thread
+        try:
+            new_value = _evaluate_bool_tree(condition_node)
+        except Exception:
+            continue
+
+        # Priming: store initial state WITHOUT firing to avoid false triggers
+        if inter_idx not in _compare_primed:
+            _compare_primed.add(inter_idx)
+            _compare_last_values[inter_idx] = new_value
+            log_game("TRACKERS",
+                     f"COMPARE_PRIME inter={inter_idx} initial={'TRUE' if new_value else 'FALSE'}")
+            continue
+
+        old_value = _compare_last_values.get(inter_idx, False)
+
+        # Edge detection: only update external_signal on state change
+        if new_value != old_value:
+            _compare_last_values[inter_idx] = new_value
+            if 0 <= inter_idx < len(interactions):
+                interactions[inter_idx].external_signal = new_value
+                log_game("TRACKERS",
+                         f"COMPARE_SIGNAL inter={inter_idx} -> {'TRUE' if new_value else 'FALSE'}")
+
+
+def reset_compare_chains():
+    """Reset Compare chain state. Called on game end / reset."""
+    global _compare_chains, _compare_last_values, _compare_primed
+    _compare_chains = []
+    _compare_last_values.clear()
+    _compare_primed.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # WORLD STATE COLLECTION (Main Thread → Worker each frame)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -389,33 +601,37 @@ def collect_world_state(context) -> dict:
 
 
 def _get_character_state(context) -> str:
-    """Get current character state for StateTrackerNode evaluation."""
-    scn = context.scene
+    """Get current character state for StateTrackerNode evaluation.
 
-    is_grounded = getattr(scn, 'exp_physics_grounded', True)
-    is_sprinting = getattr(scn, 'exp_physics_sprinting', False)
-    is_crouching = getattr(scn, 'exp_physics_crouching', False)
+    Reads live physics state from the modal operator (set each frame
+    after the KCC physics step).
+    """
+    global _current_operator
+    op = _current_operator
+    if not op:
+        return 'IDLE'
+
+    is_grounded = getattr(op, 'is_grounded', True)
 
     if not is_grounded:
-        vel_z = getattr(scn, 'exp_physics_velocity_z', 0.0)
+        vel_z = getattr(op, 'z_velocity', 0.0)
         if vel_z > 0.5:
             return 'JUMPING'
         elif vel_z < -0.5:
             return 'FALLING'
         return 'AIRBORNE'
 
-    if is_crouching:
-        return 'CROUCHING'
-    if is_sprinting:
-        return 'SPRINTING'
-
-    vel_xz = getattr(scn, 'exp_physics_velocity_xz', 0.0)
+    # Grounded — determine locomotion state from speed and sprint key
+    vel_xz = getattr(op, 'horizontal_speed', 0.0)
     if vel_xz < 0.1:
         return 'IDLE'
-    elif vel_xz < 2.0:
-        return 'WALKING'
-    else:
+
+    keys = getattr(op, 'keys_pressed', set())
+    run_key = getattr(op, 'pref_run_key', 'LEFT_SHIFT')
+    if run_key in keys:
         return 'RUNNING'
+
+    return 'WALKING'
 
 
 def _get_input_states() -> dict:
@@ -457,7 +673,10 @@ def cache_trackers_in_worker(modal, context) -> bool:
         log_game("TRACKERS", "CACHE_SKIP engine not available")
         return False
 
-    # Serialize tracker graph
+    # Build main-thread Compare chains BEFORE serializing (so serialize can skip them)
+    build_compare_chains(context.scene)
+
+    # Serialize tracker graph (skips trees containing CompareNode)
     tracker_data = serialize_tracker_graph(context.scene)
 
     # Phase 1.1: Extract referenced object names for world state filtering
@@ -478,11 +697,15 @@ def cache_trackers_in_worker(modal, context) -> bool:
 def submit_tracker_evaluation(modal, context) -> int:
     """
     Submit EVALUATE_TRACKERS job to worker with current world state.
+    Also evaluates main-thread Compare chains each frame.
     Called each frame.
 
     Returns job_id or -1 if not submitted.
     """
     global _tracker_generation
+
+    # Evaluate main-thread Compare chains (trees containing CompareNode)
+    evaluate_compare_chains()
 
     # PERFORMANCE: Direct access - class-level default is None
     if not modal.engine:
@@ -573,7 +796,8 @@ def reset_tracker_state():
     _current_operator = None
     _tracked_object_names.clear()
     _tracked_object_refs.clear()
-    log_game("TRACKERS", "STATE_RESET (filter and refs cleared)")
+    reset_compare_chains()
+    log_game("TRACKERS", "STATE_RESET (filter, refs, and compare chains cleared)")
 
 
 def reset_worker_trackers(modal, context) -> bool:

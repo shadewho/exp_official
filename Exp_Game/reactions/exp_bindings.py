@@ -212,6 +212,23 @@ def has_binding(reaction_or_idx, param_name: str) -> bool:
     return param_name in bindings
 
 
+def resolve_raw_binding(reaction_or_idx, param_name: str) -> str | None:
+    """
+    Return the raw binding value string without resolving markers like __CHARACTER__.
+    Useful for checking whether a binding targets the character or a specific object.
+
+    Returns the raw string value, or None if no binding exists.
+    """
+    reaction_idx = _get_reaction_idx(reaction_or_idx)
+    bindings = _reaction_bindings.get(reaction_idx, {})
+    binding = bindings.get(param_name)
+
+    if binding and binding["type"] == "STATIC":
+        return str(binding["value"])
+
+    return None
+
+
 def resolve_vector(reaction_or_idx, param_name: str, default) -> Vector:
     """
     Resolve a vector parameter for a reaction.

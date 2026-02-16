@@ -1,5 +1,7 @@
 # Exploratory/Exp_Nodes/utility_nodes.py
 import bpy
+import math
+import random
 from bpy.types import Node
 
 # Store API (central registry)
@@ -20,6 +22,7 @@ from ..Exp_Game.props_and_utils.exp_utility_store import (
     create_floatvec_slot, set_floatvec, get_floatvec, slot_exists,
 )
 from .base_nodes import _ExploratoryNodeOnly, has_invalid_link, INVALID_LINK_COLOR
+from ..Exp_Game.props_and_utils.trackers import EQUALITY_ONLY_OPERATORS
 
 EXPL_TREE_ID = "ExploratoryNodesTreeType"
 
@@ -39,7 +42,7 @@ EXPL_TREE_ID = "ExploratoryNodesTreeType"
 
 # Colors for socket types (consistent visual language)
 _COLOR_FLOAT      = (0.63, 0.63, 0.63, 1.0)  # Gray
-_COLOR_INT        = (0.35, 0.55, 0.80, 1.0)  # Blue
+_COLOR_INT        = (0.37, 0.56, 0.36, 1.0)  # Dark green (Blender standard)
 _COLOR_BOOL       = (0.78, 0.55, 0.78, 1.0)  # Light pink (Blender standard)
 _COLOR_OBJECT     = (0.90, 0.50, 0.20, 1.0)  # Orange
 _COLOR_COLLECTION = (0.95, 0.95, 0.30, 1.0)  # Yellow
@@ -64,6 +67,48 @@ def _get_reaction_for_socket(node):
     return None
 
 
+def _get_interaction_for_socket(node):
+    """Returns InteractionDefinition if node has interaction_index."""
+    if not hasattr(node, 'interaction_index'):
+        return None
+    idx = getattr(node, 'interaction_index', -1)
+    if idx < 0:
+        return None
+    scn = bpy.context.scene
+    interactions = getattr(scn, 'custom_interactions', None)
+    if interactions and 0 <= idx < len(interactions):
+        return interactions[idx]
+    return None
+
+
+def _get_counter_for_socket(node):
+    """Returns CounterDefinition if node has counter_index."""
+    if not hasattr(node, 'counter_index'):
+        return None
+    idx = getattr(node, 'counter_index', -1)
+    if idx < 0:
+        return None
+    scn = bpy.context.scene
+    counters = getattr(scn, 'counters', None)
+    if counters and 0 <= idx < len(counters):
+        return counters[idx]
+    return None
+
+
+def _get_timer_for_socket(node):
+    """Returns TimerDefinition if node has timer_index."""
+    if not hasattr(node, 'timer_index'):
+        return None
+    idx = getattr(node, 'timer_index', -1)
+    if idx < 0:
+        return None
+    scn = bpy.context.scene
+    timers = getattr(scn, 'timers', None)
+    if timers and 0 <= idx < len(timers):
+        return timers[idx]
+    return None
+
+
 # ─────────────────────────────────────────────────────────
 # Float Socket (unified)
 # ─────────────────────────────────────────────────────────
@@ -80,16 +125,41 @@ class ExpFloatSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
 
     def draw(self, context, layout, node, text):
         if not self.is_output and not self.is_linked:
-            # Try reaction property first (for reaction nodes)
             if self.reaction_prop:
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
                     layout.prop(r, self.reaction_prop, text=text or "")
                     return
-            # Then try node property
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    layout.prop(inter, self.interaction_prop, text=text or "")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    layout.prop(c, self.counter_prop, text=text or "")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    layout.prop(t, self.timer_prop, text=text or "")
+                    return
             if self.prop_name and hasattr(node, self.prop_name):
                 layout.prop(node, self.prop_name, text=text or "")
                 return
@@ -117,6 +187,18 @@ class ExpIntSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
 
     def draw(self, context, layout, node, text):
         if not self.is_output and not self.is_linked:
@@ -124,6 +206,21 @@ class ExpIntSocket(bpy.types.NodeSocket):
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
                     layout.prop(r, self.reaction_prop, text=text or "")
+                    return
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    layout.prop(inter, self.interaction_prop, text=text or "")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    layout.prop(c, self.counter_prop, text=text or "")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    layout.prop(t, self.timer_prop, text=text or "")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
                 layout.prop(node, self.prop_name, text=text or "")
@@ -152,6 +249,18 @@ class ExpBoolSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
 
     def draw(self, context, layout, node, text):
         if not self.is_output and not self.is_linked:
@@ -159,6 +268,21 @@ class ExpBoolSocket(bpy.types.NodeSocket):
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
                     layout.prop(r, self.reaction_prop, text=text or "")
+                    return
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    layout.prop(inter, self.interaction_prop, text=text or "")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    layout.prop(c, self.counter_prop, text=text or "")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    layout.prop(t, self.timer_prop, text=text or "")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
                 layout.prop(node, self.prop_name, text=text or "")
@@ -187,6 +311,18 @@ class ExpObjectSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
     use_prop_search: bpy.props.BoolProperty(
         default=False,
         description="Use prop_search for objects instead of direct prop"
@@ -201,6 +337,30 @@ class ExpObjectSocket(bpy.types.NodeSocket):
                         layout.prop_search(r, self.reaction_prop, bpy.context.scene, "objects", text=text or "")
                     else:
                         layout.prop(r, self.reaction_prop, text="")
+                    return
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    if self.use_prop_search:
+                        layout.prop_search(inter, self.interaction_prop, bpy.context.scene, "objects", text=text or "")
+                    else:
+                        layout.prop(inter, self.interaction_prop, text="")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    if self.use_prop_search:
+                        layout.prop_search(c, self.counter_prop, bpy.context.scene, "objects", text=text or "")
+                    else:
+                        layout.prop(c, self.counter_prop, text="")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    if self.use_prop_search:
+                        layout.prop_search(t, self.timer_prop, bpy.context.scene, "objects", text=text or "")
+                    else:
+                        layout.prop(t, self.timer_prop, text="")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
                 layout.prop(node, self.prop_name, text="")
@@ -229,6 +389,18 @@ class ExpCollectionSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
 
     def draw(self, context, layout, node, text):
         if not self.is_output and not self.is_linked:
@@ -236,6 +408,21 @@ class ExpCollectionSocket(bpy.types.NodeSocket):
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
                     layout.prop(r, self.reaction_prop, text="")
+                    return
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    layout.prop(inter, self.interaction_prop, text="")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    layout.prop(c, self.counter_prop, text="")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    layout.prop(t, self.timer_prop, text="")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
                 layout.prop(node, self.prop_name, text="")
@@ -264,6 +451,18 @@ class ExpActionSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
 
     def draw(self, context, layout, node, text):
         if not self.is_output and not self.is_linked:
@@ -271,6 +470,21 @@ class ExpActionSocket(bpy.types.NodeSocket):
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
                     layout.prop_search(r, self.reaction_prop, bpy.data, "actions", text=text or "")
+                    return
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    layout.prop_search(inter, self.interaction_prop, bpy.data, "actions", text=text or "")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    layout.prop_search(c, self.counter_prop, bpy.data, "actions", text=text or "")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    layout.prop_search(t, self.timer_prop, bpy.data, "actions", text=text or "")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
                 layout.prop_search(node, self.prop_name, bpy.data, "actions", text=text or "")
@@ -299,20 +513,54 @@ class ExpVectorSocket(bpy.types.NodeSocket):
         default="",
         description="Reaction property to draw inline (for reaction nodes)"
     )
+    interaction_prop: bpy.props.StringProperty(
+        default="",
+        description="Interaction property to draw inline (for trigger nodes)"
+    )
+    counter_prop: bpy.props.StringProperty(
+        default="",
+        description="Counter property to draw inline (for counter nodes)"
+    )
+    timer_prop: bpy.props.StringProperty(
+        default="",
+        description="Timer property to draw inline (for timer nodes)"
+    )
 
     def draw(self, context, layout, node, text):
         if not self.is_output and not self.is_linked:
             if self.reaction_prop:
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
-                    # Draw with X, Y, Z labels in a column
                     col = layout.column(align=True)
                     col.prop(r, self.reaction_prop, index=0, text="X")
                     col.prop(r, self.reaction_prop, index=1, text="Y")
                     col.prop(r, self.reaction_prop, index=2, text="Z")
                     return
+            if self.interaction_prop:
+                inter = _get_interaction_for_socket(node)
+                if inter and hasattr(inter, self.interaction_prop):
+                    col = layout.column(align=True)
+                    col.prop(inter, self.interaction_prop, index=0, text="X")
+                    col.prop(inter, self.interaction_prop, index=1, text="Y")
+                    col.prop(inter, self.interaction_prop, index=2, text="Z")
+                    return
+            if self.counter_prop:
+                c = _get_counter_for_socket(node)
+                if c and hasattr(c, self.counter_prop):
+                    col = layout.column(align=True)
+                    col.prop(c, self.counter_prop, index=0, text="X")
+                    col.prop(c, self.counter_prop, index=1, text="Y")
+                    col.prop(c, self.counter_prop, index=2, text="Z")
+                    return
+            if self.timer_prop:
+                t = _get_timer_for_socket(node)
+                if t and hasattr(t, self.timer_prop):
+                    col = layout.column(align=True)
+                    col.prop(t, self.timer_prop, index=0, text="X")
+                    col.prop(t, self.timer_prop, index=1, text="Y")
+                    col.prop(t, self.timer_prop, index=2, text="Z")
+                    return
             if self.prop_name and hasattr(node, self.prop_name):
-                # Draw with X, Y, Z labels in a column
                 col = layout.column(align=True)
                 col.prop(node, self.prop_name, index=0, text="X")
                 col.prop(node, self.prop_name, index=1, text="Y")
@@ -325,28 +573,6 @@ class ExpVectorSocket(bpy.types.NodeSocket):
             return INVALID_LINK_COLOR
         return _COLOR_VECTOR
 
-
-# ═══════════════════════════════════════════════════════════
-# LEGACY SOCKET ALIASES (for backwards compatibility)
-# These just reference the unified types
-# ═══════════════════════════════════════════════════════════
-# Note: Old nodes using these will need updating, but the
-# bl_idname aliases help with transition
-
-FloatInputSocket = ExpFloatSocket
-FloatOutputSocket = ExpFloatSocket
-IntInputSocket = ExpIntSocket
-IntOutputSocket = ExpIntSocket
-BoolInputSocket = ExpBoolSocket
-BoolOutputSocket = ExpBoolSocket
-ObjectInputSocket = ExpObjectSocket
-ObjectOutputSocket = ExpObjectSocket
-CollectionInputSocket = ExpCollectionSocket
-CollectionOutputSocket = ExpCollectionSocket
-ActionInputSocket = ExpActionSocket
-ActionOutputSocket = ExpActionSocket
-FloatVectorInputSocket = ExpVectorSocket
-FloatVectorOutputSocket = ExpVectorSocket
 
 
 # ═══════════════════════════════════════════════════════════
@@ -369,7 +595,9 @@ def _resolve_upstream_float(node, socket_name):
         return None
     link = inp.links[0]
     src_node = link.from_node
-    # Check for export method
+    # Multi-output support: check for socket-specific export first
+    if hasattr(src_node, "export_float_by_socket"):
+        return src_node.export_float_by_socket(link.from_socket.name)
     if hasattr(src_node, "export_float"):
         return src_node.export_float()
     return None
@@ -960,3 +1188,526 @@ class ActionDataNode(_ExploratoryNodeOnly, Node):
         """API for engine worker (string-based)."""
         action = self.export_action()
         return action.name if action else ""
+
+
+# ─────────────────────────────────────────────────────────
+# Compare Node
+# ─────────────────────────────────────────────────────────
+
+_NUMERIC_TYPES = {'FLOAT', 'INT'}
+
+_COMPARE_NUMERIC_OPS = [
+    ('EQ', "==", "Equal"),
+    ('NE', "!=", "Not equal"),
+    ('LT', "<", "Less than"),
+    ('LE', "<=", "Less than or equal"),
+    ('GE', ">=", "Greater than or equal"),
+    ('GT', ">", "Greater than"),
+]
+
+def _get_operation_items(self, context):
+    if self.data_type in _NUMERIC_TYPES:
+        return _COMPARE_NUMERIC_OPS
+    return EQUALITY_ONLY_OPERATORS
+
+class CompareNode(_ExploratoryNodeOnly, Node):
+    """Compare two values and output a boolean result."""
+    bl_idname = "CompareNodeType"
+    bl_label  = "Compare"
+    bl_icon   = 'NONE'
+
+    data_type: bpy.props.EnumProperty(
+        name="Data Type",
+        items=[
+            ('FLOAT',      "Float",      ""),
+            ('INT',        "Integer",    ""),
+            ('BOOL',       "Boolean",    ""),
+            ('OBJECT',     "Object",     ""),
+            ('COLLECTION', "Collection", ""),
+            ('ACTION',     "Action",     ""),
+        ],
+        default='FLOAT',
+        update=lambda self, ctx: self._on_data_type_changed(ctx),
+    )
+
+    operation: bpy.props.EnumProperty(
+        name="Operation",
+        items=_get_operation_items,
+    )
+
+    epsilon: bpy.props.FloatProperty(
+        name="Epsilon",
+        description="Tolerance for float comparison",
+        default=0.0001,
+        min=0.0,
+        soft_max=1.0,
+        precision=6,
+    )
+
+    # Manual fallback properties (used when input sockets are not connected)
+    value_a_float: bpy.props.FloatProperty(name="A")
+    value_b_float: bpy.props.FloatProperty(name="B")
+    value_a_int: bpy.props.IntProperty(name="A")
+    value_b_int: bpy.props.IntProperty(name="B")
+    value_a_bool: bpy.props.BoolProperty(name="A")
+    value_b_bool: bpy.props.BoolProperty(name="B")
+    value_a_object: bpy.props.PointerProperty(type=bpy.types.Object, name="A")
+    value_b_object: bpy.props.PointerProperty(type=bpy.types.Object, name="B")
+    value_a_collection: bpy.props.PointerProperty(type=bpy.types.Collection, name="A")
+    value_b_collection: bpy.props.PointerProperty(type=bpy.types.Collection, name="B")
+    value_a_action: bpy.props.PointerProperty(type=bpy.types.Action, name="A")
+    value_b_action: bpy.props.PointerProperty(type=bpy.types.Action, name="B")
+
+    def _on_data_type_changed(self, context):
+        self._rebuild_inputs(context)
+        if self.data_type not in _NUMERIC_TYPES:
+            if self.operation not in ('EQ', 'NE'):
+                self.operation = 'EQ'
+
+    def _rebuild_inputs(self, context):
+        type_to_socket = {
+            'FLOAT':      "ExpFloatSocketType",
+            'INT':        "ExpIntSocketType",
+            'BOOL':       "ExpBoolSocketType",
+            'OBJECT':     "ExpObjectSocketType",
+            'COLLECTION': "ExpCollectionSocketType",
+            'ACTION':     "ExpActionSocketType",
+        }
+        self.inputs.clear()
+        socket_type = type_to_socket[self.data_type]
+        dt_lower = self.data_type.lower()
+
+        sock_a = self.inputs.new(socket_type, "A")
+        sock_b = self.inputs.new(socket_type, "B")
+
+        sock_a.prop_name = f"value_a_{dt_lower}"
+        sock_b.prop_name = f"value_b_{dt_lower}"
+
+        if self.data_type == 'OBJECT':
+            sock_a.use_prop_search = True
+            sock_b.use_prop_search = True
+
+    def init(self, context):
+        self.width = 160
+        self._rebuild_inputs(context)
+        self.outputs.new("ExpBoolSocketType", "Result")
+
+    def draw_buttons(self, context, layout):
+        layout.prop(self, "data_type", text="")
+        layout.prop(self, "operation", text="")
+        if self.data_type == 'FLOAT':
+            layout.prop(self, "epsilon")
+
+    def _compare_float(self, a, b, op):
+        eps = self.epsilon
+        if op == 'EQ': return abs(a - b) <= eps
+        if op == 'NE': return abs(a - b) > eps
+        if op == 'LT': return a < b
+        if op == 'LE': return a <= b
+        if op == 'GE': return a >= b
+        if op == 'GT': return a > b
+        return False
+
+    @staticmethod
+    def _compare_numeric(a, b, op):
+        if op == 'EQ': return a == b
+        if op == 'NE': return a != b
+        if op == 'LT': return a < b
+        if op == 'LE': return a <= b
+        if op == 'GE': return a >= b
+        if op == 'GT': return a > b
+        return False
+
+    def export_bool(self):
+        dt = self.data_type
+        op = self.operation
+
+        if dt == 'FLOAT':
+            a = _resolve_upstream_float(self, "A")
+            if a is None:
+                a = self.value_a_float
+            b = _resolve_upstream_float(self, "B")
+            if b is None:
+                b = self.value_b_float
+            return self._compare_float(a, b, op)
+
+        elif dt == 'INT':
+            a = _resolve_upstream_int(self, "A")
+            if a is None:
+                a = self.value_a_int
+            b = _resolve_upstream_int(self, "B")
+            if b is None:
+                b = self.value_b_int
+            return self._compare_numeric(a, b, op)
+
+        elif dt == 'BOOL':
+            a = _resolve_upstream_bool(self, "A")
+            if a is None:
+                a = self.value_a_bool
+            b = _resolve_upstream_bool(self, "B")
+            if b is None:
+                b = self.value_b_bool
+            return (a == b) if op == 'EQ' else (a != b)
+
+        elif dt == 'OBJECT':
+            a = _resolve_upstream_object(self, "A")
+            if a is None:
+                a = self.value_a_object
+            b = _resolve_upstream_object(self, "B")
+            if b is None:
+                b = self.value_b_object
+            return (a is b) if op == 'EQ' else (a is not b)
+
+        elif dt == 'COLLECTION':
+            a = _resolve_upstream_collection(self, "A")
+            if a is None:
+                a = self.value_a_collection
+            b = _resolve_upstream_collection(self, "B")
+            if b is None:
+                b = self.value_b_collection
+            return (a is b) if op == 'EQ' else (a is not b)
+
+        elif dt == 'ACTION':
+            a = _resolve_upstream_action(self, "A")
+            if a is None:
+                a = self.value_a_action
+            b = _resolve_upstream_action(self, "B")
+            if b is None:
+                b = self.value_b_action
+            return (a is b) if op == 'EQ' else (a is not b)
+
+        return False
+
+
+# ─────────────────────────────────────────────────────────
+# Split Vector Node
+# ─────────────────────────────────────────────────────────
+class SplitVectorNode(_ExploratoryNodeOnly, Node):
+    """Split a vector into its X, Y, Z float components."""
+    bl_idname = "SplitVectorNodeType"
+    bl_label  = "Split Vector"
+    bl_icon   = 'NONE'
+
+    value_vector: bpy.props.FloatVectorProperty(name="Vector", size=3)
+
+    def init(self, context):
+        self.width = 150
+        sock = self.inputs.new("ExpVectorSocketType", "Vector")
+        sock.prop_name = "value_vector"
+        self.outputs.new("ExpFloatSocketType", "X")
+        self.outputs.new("ExpFloatSocketType", "Y")
+        self.outputs.new("ExpFloatSocketType", "Z")
+
+    def _get_vector(self):
+        upstream = _resolve_upstream_vector(self, "Vector")
+        if upstream is not None:
+            return upstream
+        return tuple(self.value_vector)
+
+    def export_float_by_socket(self, socket_name):
+        """Multi-output export: returns the component matching the output socket."""
+        vec = self._get_vector()
+        if socket_name == "X": return vec[0]
+        if socket_name == "Y": return vec[1]
+        if socket_name == "Z": return vec[2]
+        return 0.0
+
+    def export_float(self):
+        """Fallback: returns X component."""
+        return self._get_vector()[0]
+
+
+# ─────────────────────────────────────────────────────────
+# Combine Vector Node
+# ─────────────────────────────────────────────────────────
+class CombineVectorNode(_ExploratoryNodeOnly, Node):
+    """Combine X, Y, Z float values into a vector."""
+    bl_idname = "CombineVectorNodeType"
+    bl_label  = "Combine Vector"
+    bl_icon   = 'NONE'
+
+    value_x: bpy.props.FloatProperty(name="X", default=0.0)
+    value_y: bpy.props.FloatProperty(name="Y", default=0.0)
+    value_z: bpy.props.FloatProperty(name="Z", default=0.0)
+
+    def init(self, context):
+        self.width = 150
+        sx = self.inputs.new("ExpFloatSocketType", "X")
+        sx.prop_name = "value_x"
+        sy = self.inputs.new("ExpFloatSocketType", "Y")
+        sy.prop_name = "value_y"
+        sz = self.inputs.new("ExpFloatSocketType", "Z")
+        sz.prop_name = "value_z"
+        self.outputs.new("ExpVectorSocketType", "Vector")
+
+    def export_vector(self):
+        x = _resolve_upstream_float(self, "X")
+        if x is None:
+            x = self.value_x
+        y = _resolve_upstream_float(self, "Y")
+        if y is None:
+            y = self.value_y
+        z = _resolve_upstream_float(self, "Z")
+        if z is None:
+            z = self.value_z
+        return (x, y, z)
+
+
+# ─────────────────────────────────────────────────────────
+# Float Math Node
+# ─────────────────────────────────────────────────────────
+
+_UNARY_FLOAT_OPS = {'ABS', 'NEGATE', 'SQRT', 'FLOOR', 'CEIL', 'ROUND'}
+
+class FloatMathNode(_ExploratoryNodeOnly, Node):
+    """Perform a math operation on one or two float values."""
+    bl_idname = "FloatMathNodeType"
+    bl_label  = "Float Math"
+    bl_icon   = 'NONE'
+
+    operation: bpy.props.EnumProperty(
+        name="Operation",
+        items=[
+            ('ADD',      "Add",         "A + B"),
+            ('SUBTRACT', "Subtract",    "A − B"),
+            ('MULTIPLY', "Multiply",    "A × B"),
+            ('DIVIDE',   "Divide",      "A / B (safe)"),
+            ('POWER',    "Power",       "A ^ B"),
+            ('MODULO',   "Modulo",      "A mod B"),
+            ('MIN',      "Minimum",     "min(A, B)"),
+            ('MAX',      "Maximum",     "max(A, B)"),
+            ('ABS',      "Absolute",    "|A|"),
+            ('NEGATE',   "Negate",      "−A"),
+            ('SQRT',     "Square Root", "√A"),
+            ('FLOOR',    "Floor",       "Round A down"),
+            ('CEIL',     "Ceiling",     "Round A up"),
+            ('ROUND',    "Round",       "Round A"),
+        ],
+        default='ADD',
+        update=lambda self, ctx: self._rebuild_inputs(ctx),
+    )
+
+    value_a: bpy.props.FloatProperty(name="A", default=0.0)
+    value_b: bpy.props.FloatProperty(name="B", default=0.0)
+
+    def _rebuild_inputs(self, context):
+        self.inputs.clear()
+        sock_a = self.inputs.new("ExpFloatSocketType", "A")
+        sock_a.prop_name = "value_a"
+        if self.operation not in _UNARY_FLOAT_OPS:
+            sock_b = self.inputs.new("ExpFloatSocketType", "B")
+            sock_b.prop_name = "value_b"
+
+    def init(self, context):
+        self.width = 160
+        self._rebuild_inputs(context)
+        self.outputs.new("ExpFloatSocketType", "Result")
+
+    def draw_buttons(self, context, layout):
+        layout.prop(self, "operation", text="")
+
+    def export_float(self):
+        a = _resolve_upstream_float(self, "A")
+        if a is None:
+            a = self.value_a
+
+        op = self.operation
+
+        # Unary operations
+        if op == 'ABS':    return abs(a)
+        if op == 'NEGATE': return -a
+        if op == 'SQRT':   return math.sqrt(a) if a >= 0.0 else 0.0
+        if op == 'FLOOR':  return math.floor(a)
+        if op == 'CEIL':   return math.ceil(a)
+        if op == 'ROUND':  return round(a)
+
+        # Binary operations
+        b = _resolve_upstream_float(self, "B")
+        if b is None:
+            b = self.value_b
+
+        if op == 'ADD':      return a + b
+        if op == 'SUBTRACT': return a - b
+        if op == 'MULTIPLY': return a * b
+        if op == 'DIVIDE':   return a / b if b != 0.0 else 0.0
+        if op == 'POWER':    return a ** b
+        if op == 'MODULO':   return a % b if b != 0.0 else 0.0
+        if op == 'MIN':      return min(a, b)
+        if op == 'MAX':      return max(a, b)
+        return 0.0
+
+
+# ─────────────────────────────────────────────────────────
+# Integer Math Node
+# ─────────────────────────────────────────────────────────
+
+_UNARY_INT_OPS = {'ABS', 'NEGATE'}
+
+class IntMathNode(_ExploratoryNodeOnly, Node):
+    """Perform a math operation on one or two integer values."""
+    bl_idname = "IntMathNodeType"
+    bl_label  = "Int Math"
+    bl_icon   = 'NONE'
+
+    operation: bpy.props.EnumProperty(
+        name="Operation",
+        items=[
+            ('ADD',      "Add",      "A + B"),
+            ('SUBTRACT', "Subtract", "A − B"),
+            ('MULTIPLY', "Multiply", "A × B"),
+            ('DIVIDE',   "Divide",   "A / B (integer)"),
+            ('POWER',    "Power",    "A ^ B"),
+            ('MODULO',   "Modulo",   "A mod B"),
+            ('MIN',      "Minimum",  "min(A, B)"),
+            ('MAX',      "Maximum",  "max(A, B)"),
+            ('ABS',      "Absolute", "|A|"),
+            ('NEGATE',   "Negate",   "−A"),
+        ],
+        default='ADD',
+        update=lambda self, ctx: self._rebuild_inputs(ctx),
+    )
+
+    value_a: bpy.props.IntProperty(name="A", default=0)
+    value_b: bpy.props.IntProperty(name="B", default=0)
+
+    def _rebuild_inputs(self, context):
+        self.inputs.clear()
+        sock_a = self.inputs.new("ExpIntSocketType", "A")
+        sock_a.prop_name = "value_a"
+        if self.operation not in _UNARY_INT_OPS:
+            sock_b = self.inputs.new("ExpIntSocketType", "B")
+            sock_b.prop_name = "value_b"
+
+    def init(self, context):
+        self.width = 160
+        self._rebuild_inputs(context)
+        self.outputs.new("ExpIntSocketType", "Result")
+
+    def draw_buttons(self, context, layout):
+        layout.prop(self, "operation", text="")
+
+    def export_int(self):
+        a = _resolve_upstream_int(self, "A")
+        if a is None:
+            a = self.value_a
+
+        op = self.operation
+
+        # Unary operations
+        if op == 'ABS':    return abs(a)
+        if op == 'NEGATE': return -a
+
+        # Binary operations
+        b = _resolve_upstream_int(self, "B")
+        if b is None:
+            b = self.value_b
+
+        if op == 'ADD':      return a + b
+        if op == 'SUBTRACT': return a - b
+        if op == 'MULTIPLY': return a * b
+        if op == 'DIVIDE':   return a // b if b != 0 else 0
+        if op == 'POWER':    return int(a ** b)
+        if op == 'MODULO':   return a % b if b != 0 else 0
+        if op == 'MIN':      return min(a, b)
+        if op == 'MAX':      return max(a, b)
+        return 0
+
+
+# ─────────────────────────────────────────────────────────
+# Random Float Node
+# ─────────────────────────────────────────────────────────
+class RandomFloatNode(_ExploratoryNodeOnly, Node):
+    """Generate a random float between Min and Max each evaluation."""
+    bl_idname = "RandomFloatNodeType"
+    bl_label  = "Random Float"
+    bl_icon   = 'NONE'
+
+    value_min: bpy.props.FloatProperty(name="Min", default=0.0)
+    value_max: bpy.props.FloatProperty(name="Max", default=1.0)
+    use_seed: bpy.props.BoolProperty(
+        name="Use Seed",
+        description="Use a fixed seed for repeatable results",
+        default=False,
+    )
+    seed: bpy.props.IntProperty(
+        name="Seed",
+        default=0,
+        min=0,
+    )
+
+    def init(self, context):
+        self.width = 160
+        s_min = self.inputs.new("ExpFloatSocketType", "Min")
+        s_min.prop_name = "value_min"
+        s_max = self.inputs.new("ExpFloatSocketType", "Max")
+        s_max.prop_name = "value_max"
+        self.outputs.new("ExpFloatSocketType", "Value")
+
+    def draw_buttons(self, context, layout):
+        layout.prop(self, "use_seed")
+        if self.use_seed:
+            layout.prop(self, "seed")
+
+    def export_float(self):
+        lo = _resolve_upstream_float(self, "Min")
+        if lo is None:
+            lo = self.value_min
+        hi = _resolve_upstream_float(self, "Max")
+        if hi is None:
+            hi = self.value_max
+        if lo > hi:
+            lo, hi = hi, lo
+        if self.use_seed:
+            rng = random.Random(self.seed)
+            return rng.uniform(lo, hi)
+        return random.uniform(lo, hi)
+
+
+# ─────────────────────────────────────────────────────────
+# Random Integer Node
+# ─────────────────────────────────────────────────────────
+class RandomIntNode(_ExploratoryNodeOnly, Node):
+    """Generate a random integer between Min and Max (inclusive) each evaluation."""
+    bl_idname = "RandomIntNodeType"
+    bl_label  = "Random Int"
+    bl_icon   = 'NONE'
+
+    value_min: bpy.props.IntProperty(name="Min", default=0)
+    value_max: bpy.props.IntProperty(name="Max", default=10)
+    use_seed: bpy.props.BoolProperty(
+        name="Use Seed",
+        description="Use a fixed seed for repeatable results",
+        default=False,
+    )
+    seed: bpy.props.IntProperty(
+        name="Seed",
+        default=0,
+        min=0,
+    )
+
+    def init(self, context):
+        self.width = 160
+        s_min = self.inputs.new("ExpIntSocketType", "Min")
+        s_min.prop_name = "value_min"
+        s_max = self.inputs.new("ExpIntSocketType", "Max")
+        s_max.prop_name = "value_max"
+        self.outputs.new("ExpIntSocketType", "Value")
+
+    def draw_buttons(self, context, layout):
+        layout.prop(self, "use_seed")
+        if self.use_seed:
+            layout.prop(self, "seed")
+
+    def export_int(self):
+        lo = _resolve_upstream_int(self, "Min")
+        if lo is None:
+            lo = self.value_min
+        hi = _resolve_upstream_int(self, "Max")
+        if hi is None:
+            hi = self.value_max
+        if lo > hi:
+            lo, hi = hi, lo
+        if self.use_seed:
+            rng = random.Random(self.seed)
+            return rng.randint(lo, hi)
+        return random.randint(lo, hi)

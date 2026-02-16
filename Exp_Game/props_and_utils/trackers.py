@@ -24,16 +24,19 @@ COMPARE_OPERATORS = [
     ('GT', ">", "Greater than"),
 ]
 
+EQUALITY_ONLY_OPERATORS = [
+    ('EQ', "==", "Equal"),
+    ('NE', "!=", "Not equal"),
+]
+
 CHAR_STATES = [
     ('GROUNDED', "Grounded", "Character is on ground"),
     ('AIRBORNE', "Airborne", "Character is in air"),
-    ('SPRINTING', "Sprinting", "Character is sprinting"),
+    ('IDLE', "Idle", "Character is idle"),
     ('WALKING', "Walking", "Character is walking"),
     ('RUNNING', "Running", "Character is running"),
     ('JUMPING', "Jumping", "Character is jumping"),
     ('FALLING', "Falling", "Character is falling"),
-    ('CROUCHING', "Crouching", "Character is crouching"),
-    ('IDLE', "Idle", "Character is idle"),
 ]
 
 INPUT_ACTIONS = [

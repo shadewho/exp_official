@@ -33,6 +33,7 @@ if not _IS_WORKER_PROCESS:
         ExploratoryCharacterPanel,
         ExploratoryProxyMeshPanel,
         VIEW3D_PT_Exploratory_PhysicsTuning,
+        VIEW3D_PT_Exploratory_View,
         EXP_OT_FilterCreatePanels,
     )
 
@@ -193,6 +194,7 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.register_class(DEV_PT_DeveloperTools)
 
         bpy.utils.register_class(VIEW3D_PT_Exploratory_PhysicsTuning)
+        bpy.utils.register_class(VIEW3D_PT_Exploratory_View)
 
         bpy.utils.register_class(EXP_OT_FilterCreatePanels)
 
@@ -325,6 +327,7 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(ProxyMeshEntry)
         bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
         bpy.utils.unregister_class(EXPLORATORY_OT_AddProxyMesh)
+        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_View)
         bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
 
 

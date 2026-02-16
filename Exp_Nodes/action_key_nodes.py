@@ -288,6 +288,10 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
         except Exception:
             pass
 
+        # Inline Bool socket for enabled_default
+        s = self.inputs.new("ExpBoolSocketType", "Enabled by Default")
+        s.prop_name = "enabled_default"
+
     def copy(self, node):
         """
         Called when node is duplicated. MUST create a NEW unique action key.
@@ -400,6 +404,5 @@ class CreateActionKeyNode(_ExploratoryNodeOnly, Node):
     def draw_buttons(self, context, layout):
         box = layout.box()
         box.prop(self, "action_key_name", text="Name")
-        box.prop(self, "enabled_default", text="Enabled by Default")
         info = layout.box()
         info.label(text="This node defines the key. No links needed.", icon='INFO')

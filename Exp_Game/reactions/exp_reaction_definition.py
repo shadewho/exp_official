@@ -237,6 +237,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
             ("ENABLE_HEALTH",     "Enable Health",        "Attach health component to an object"),
             ("DISPLAY_HEALTH_UI", "Display Health UI",    "Show health bar on screen"),
+            ("ADJUST_HEALTH",     "Adjust Health",        "Add or subtract health from an object"),
         ],
         default="CUSTOM_ACTION"
     )
@@ -713,7 +714,27 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         type=MeshVisibilityReactionsPG
     )
 
-
+    # ── Flat proxy properties for socket binding ──────────────
+    # Forward to nested PropertyGroups so unified sockets can
+    # reference them via reaction_prop directly.
+    mob_allow_movement: bpy.props.BoolProperty(
+        name="Allow Movement", default=True,
+        get=lambda s: s.mobility_settings.allow_movement,
+        set=lambda s, v: setattr(s.mobility_settings, "allow_movement", v),
+    )
+    mob_allow_jump: bpy.props.BoolProperty(
+        name="Allow Jump", default=True,
+        get=lambda s: s.mobility_settings.allow_jump,
+        set=lambda s, v: setattr(s.mobility_settings, "allow_jump", v),
+    )
+    mob_allow_sprint: bpy.props.BoolProperty(
+        name="Allow Sprint", default=True,
+        get=lambda s: s.mobility_settings.allow_sprint,
+        set=lambda s, v: setattr(s.mobility_settings, "allow_sprint", v),
+    )
+    mesh_vis_object: bpy.props.PointerProperty(
+        name="Mesh Object", type=bpy.types.Object,
+    )
 
     # --------------------------------------------------
     # CROSSHAIRS REACTION FIELDS
@@ -943,26 +964,15 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         description="How the mover navigates toward the target"
     )
 
-    track_from_use_character: bpy.props.BoolProperty(
-        name="From: Use Character",
-        default=False,
-        description="If True, the mover is scene.target_armature; else use 'From Object'"
-    )
     track_from_object: bpy.props.PointerProperty(
         name="From Object",
         type=bpy.types.Object,
-        description="Mover when 'From: Use Character' is False"
-    )
-
-    track_to_use_character: bpy.props.BoolProperty(
-        name="To: Use Character",
-        default=False,
-        description="If True, target is scene.target_armature; else use 'To Object'"
+        description="Object that moves toward the target"
     )
     track_to_object: bpy.props.PointerProperty(
         name="To Object",
         type=bpy.types.Object,
-        description="Target to move toward when 'To: Use Character' is False"
+        description="Target to move toward"
     )
 
     track_speed: bpy.props.FloatProperty(
@@ -996,11 +1006,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Face Object",
         default=False,
         description="Rotate the mover to face a target object while tracking"
-    )
-    track_face_use_character: bpy.props.BoolProperty(
-        name="Use Character",
-        default=False,
-        description="Face the character instead of a specific object"
     )
     track_face_object: bpy.props.PointerProperty(
         name="Face Object",
@@ -1087,6 +1092,56 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         name="Target Object",
         type=bpy.types.Object,
         description="Object whose health to display"
+    )
+
+    # World-space health display options (used when target is non-character)
+    health_ui_world_style: bpy.props.EnumProperty(
+        name="Style",
+        items=[
+            ("BAR", "Bar", "Floating health bar above object"),
+            ("NUMBERS", "Numbers", "Floating current/max text above object"),
+        ],
+        default="BAR"
+    )
+    health_ui_world_scale: bpy.props.IntProperty(
+        name="World Scale",
+        default=10,
+        min=1,
+        max=20,
+        description="Size of world-space health display (1=smallest, 20=largest)"
+    )
+    health_ui_world_offset_h: bpy.props.IntProperty(
+        name="World Offset Horizontal",
+        default=0,
+        min=-20,
+        max=20,
+        description="Horizontal offset in grid units (negative=left, positive=right)"
+    )
+    health_ui_world_offset_v: bpy.props.IntProperty(
+        name="World Offset Vertical",
+        default=2,
+        min=-20,
+        max=20,
+        description="Vertical offset in grid units (negative=down, positive=up)"
+    )
+    health_ui_world_show_through: bpy.props.BoolProperty(
+        name="Show Through Meshes",
+        default=False,
+        description="Display health through objects (ignores occlusion)"
+    )
+
+    # --------------------------------------------------
+    # ADJUST_HEALTH REACTION FIELDS
+    # --------------------------------------------------
+    adjust_health_target_object: bpy.props.PointerProperty(
+        name="Target Object",
+        type=bpy.types.Object,
+        description="Object whose health to adjust"
+    )
+    adjust_health_amount: bpy.props.FloatProperty(
+        name="Amount",
+        default=-10.0,
+        description="Health change amount (positive=heal, negative=damage)"
     )
 
 

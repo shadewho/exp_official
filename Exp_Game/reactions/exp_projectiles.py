@@ -97,6 +97,55 @@ _pending_projectile_job_id: int | None = None
 _impact_cache: dict[int, dict] = {}
 
 
+def _trace_compare_result_downstream(compare_node):
+    """Trace CompareNode's Result output for ExternalTriggerNodes and BoolDataNode writers."""
+    trigger_indices = []
+    bool_writers = []
+    result_sock = compare_node.outputs.get("Result")
+    if not result_sock:
+        return trigger_indices, bool_writers
+    for lk in getattr(result_sock, "links", []):
+        dst = getattr(lk, "to_node", None)
+        if not dst:
+            continue
+        if getattr(dst, "bl_idname", "") == "ExternalTriggerNodeType":
+            iidx = getattr(dst, "interaction_index", -1)
+            if iidx >= 0:
+                trigger_indices.append(iidx)
+        elif callable(getattr(dst, "write_from_graph", None)):
+            bool_writers.append(dst)
+            # Also trace writer → ExternalTriggerNode downstream
+            for out_sock in getattr(dst, "outputs", []):
+                for lk2 in getattr(out_sock, "links", []):
+                    dst2 = getattr(lk2, "to_node", None)
+                    if dst2 and getattr(dst2, "bl_idname", "") == "ExternalTriggerNodeType":
+                        iidx2 = getattr(dst2, "interaction_index", -1)
+                        if iidx2 >= 0:
+                            trigger_indices.append(iidx2)
+    return trigger_indices, bool_writers
+
+
+def _build_compare_chain_entry(compare_node, link, data_type_suffix, source_output):
+    """Build an impact-cache compare-chain entry for a CompareNode connected to a hitscan output."""
+    to_sock = getattr(link, "to_socket", None)
+    sock_label = getattr(to_sock, "name", "").lower() if to_sock else ""
+    if sock_label not in ("a", "b"):
+        return None
+    write_prop = f"value_{sock_label}_{data_type_suffix}"
+    if not hasattr(compare_node, write_prop):
+        return None
+    trig_idx, bw = _trace_compare_result_downstream(compare_node)
+    if not trig_idx and not bw:
+        return None  # No downstream consumers
+    return {
+        "node": compare_node,
+        "write_prop": write_prop,
+        "source_output": source_output,
+        "trigger_indices": trig_idx,
+        "bool_writers": bw,
+    }
+
+
 def init_impact_cache(scene) -> int:
     """
     Build the impact cache at game start.
@@ -139,6 +188,7 @@ def init_impact_cache(scene) -> int:
         location_writers = []
         object_writers = []
         normal_writers = []
+        compare_chains = []
 
         for sock in getattr(src_node, "outputs", []):
             sock_name = getattr(sock, "name", "")
@@ -164,24 +214,47 @@ def init_impact_cache(scene) -> int:
                                     iidx2 = getattr(dst2, "interaction_index", -1)
                                     if iidx2 >= 0:
                                         trigger_indices.append(iidx2)
+                    # CompareNode
+                    elif getattr(dst, "bl_idname", "") == "CompareNodeType":
+                        entry = _build_compare_chain_entry(dst, lk, "bool", "Impact")
+                        if entry:
+                            compare_chains.append(entry)
 
             elif sock_name == "Impact Location":
                 for lk in getattr(sock, "links", []):
                     to_node = getattr(lk, "to_node", None)
-                    if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                    if not to_node:
+                        continue
+                    if callable(getattr(to_node, "write_from_graph", None)):
                         location_writers.append(to_node)
+                    elif getattr(to_node, "bl_idname", "") == "CompareNodeType":
+                        entry = _build_compare_chain_entry(to_node, lk, "vector", "Impact Location")
+                        if entry:
+                            compare_chains.append(entry)
 
             elif sock_name == "Hit Object":
                 for lk in getattr(sock, "links", []):
                     to_node = getattr(lk, "to_node", None)
-                    if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                    if not to_node:
+                        continue
+                    if callable(getattr(to_node, "write_from_graph", None)):
                         object_writers.append(to_node)
+                    elif getattr(to_node, "bl_idname", "") == "CompareNodeType":
+                        entry = _build_compare_chain_entry(to_node, lk, "object", "Hit Object")
+                        if entry:
+                            compare_chains.append(entry)
 
             elif sock_name == "Hit Normal":
                 for lk in getattr(sock, "links", []):
                     to_node = getattr(lk, "to_node", None)
-                    if to_node and callable(getattr(to_node, "write_from_graph", None)):
+                    if not to_node:
+                        continue
+                    if callable(getattr(to_node, "write_from_graph", None)):
                         normal_writers.append(to_node)
+                    elif getattr(to_node, "bl_idname", "") == "CompareNodeType":
+                        entry = _build_compare_chain_entry(to_node, lk, "vector", "Hit Normal")
+                        if entry:
+                            compare_chains.append(entry)
 
         _impact_cache[r_idx] = {
             "trigger_indices": trigger_indices,
@@ -189,8 +262,11 @@ def init_impact_cache(scene) -> int:
             "location_writers": location_writers,
             "object_writers": object_writers,
             "normal_writers": normal_writers,
+            "compare_chains": compare_chains,
         }
         cached_count += 1
+        if compare_chains:
+            log_game("PROJECTILE", f"IMPACT_CACHE r_idx={r_idx} compare_chains={len(compare_chains)}")
 
     log_game("PROJECTILE", f"IMPACT_CACHE built for {cached_count} reactions")
     return cached_count
@@ -326,6 +402,61 @@ def _push_impact_object_to_links(r_idx, obj):
             writer_node.write_from_graph(obj, timestamp=timestamp)
         except Exception:
             pass
+
+
+def _evaluate_single_compare_chain(chain, value):
+    """Write a runtime value to a CompareNode's fallback property, evaluate, and fire downstream."""
+    node = chain["node"]
+    write_prop = chain["write_prop"]
+
+    try:
+        setattr(node, write_prop, value)
+    except Exception:
+        return
+
+    try:
+        result = node.export_bool()
+    except Exception:
+        return
+
+    if not result:
+        return
+
+    from ..interactions.exp_interactions import _fire_interaction
+    scn = bpy.context.scene
+    interactions = getattr(scn, "custom_interactions", [])
+    timestamp = get_game_time()
+
+    for iidx in chain["trigger_indices"]:
+        if 0 <= iidx < len(interactions):
+            _fire_interaction(interactions[iidx], timestamp)
+
+    for writer in chain["bool_writers"]:
+        try:
+            writer.write_from_graph(True, timestamp=timestamp)
+        except Exception:
+            pass
+
+
+def _push_impact_to_compare_chains(r_idx, hit_obj=None, hit_loc=None, hit_normal=None):
+    """Evaluate CompareNode chains for an impact event."""
+    cache_entry = _impact_cache.get(r_idx)
+    if not cache_entry:
+        return
+    chains = cache_entry.get("compare_chains")
+    if not chains:
+        return
+
+    for chain in chains:
+        src = chain["source_output"]
+        if src == "Hit Object" and hit_obj is not None:
+            _evaluate_single_compare_chain(chain, hit_obj)
+        elif src == "Impact":
+            _evaluate_single_compare_chain(chain, True)
+        elif src == "Impact Location" and hit_loc is not None:
+            _evaluate_single_compare_chain(chain, hit_loc)
+        elif src == "Hit Normal" and hit_normal is not None:
+            _evaluate_single_compare_chain(chain, hit_normal)
 
 
 # ---------- Public helpers ----------
@@ -985,6 +1116,11 @@ def update_projectile_tasks(dt: float):
                 _push_impact_normal_to_links(r_idx, (hit_normal.x, hit_normal.y, hit_normal.z))
             if hit_obj:
                 _push_impact_object_to_links(r_idx, hit_obj)
+            _push_impact_to_compare_chains(
+                r_idx, hit_obj=hit_obj,
+                hit_loc=(hit_loc.x, hit_loc.y, hit_loc.z),
+                hit_normal=(hit_normal.x, hit_normal.y, hit_normal.z) if hit_normal else None,
+            )
             _emit_impact_event(p.get('r_id'), hit_loc, now)
 
             # Despawn sim entry (visual remains for FIFO/eviction)
@@ -1261,6 +1397,11 @@ def process_hitscan_results(result) -> int:
             hit_obj = dynamic_obj_lookup.get(hit_obj_id) if hit_obj_id else None
             if hit_obj:
                 _push_impact_object_to_links(r_idx, hit_obj)
+            _push_impact_to_compare_chains(
+                r_idx, hit_obj=hit_obj,
+                hit_loc=(impact.x, impact.y, impact.z),
+                hit_normal=normal,
+            )
             _emit_impact_event(r, impact, now)
             dist = res.get("distance", 0.0)
             log_game("HITSCAN", f"HIT id={hs_id} source={hit_source} pos=({impact.x:.2f},{impact.y:.2f},{impact.z:.2f}) dist={dist:.2f}")
@@ -1491,6 +1632,11 @@ def process_projectile_results(result) -> int:
                 hit_obj = dynamic_obj_lookup.get(hit_obj_id) if hit_obj_id else None
                 if hit_obj:
                     _push_impact_object_to_links(r_idx, hit_obj)
+                _push_impact_to_compare_chains(
+                    r_idx, hit_obj=hit_obj,
+                    hit_loc=(pos_v.x, pos_v.y, pos_v.z),
+                    hit_normal=normal,
+                )
                 _emit_impact_event(r, pos_v, get_game_time())
                 log_game("PROJECTILE", f"IMPACT cid={client_id} source={hit_source} pos=({pos_v.x:.2f},{pos_v.y:.2f},{pos_v.z:.2f})")
 

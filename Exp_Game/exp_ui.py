@@ -24,7 +24,8 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
     _ITEMS = [
         ("CHAR",   "Character / Actions / Audio"),
         ("PROXY",  "Proxy Mesh & Spawn"),
-        ("PHYS",   "Character Physics & View"),
+        ("PHYS",   "Physics"),
+        ("VIEW",   "View"),
         ("DEV",    "Developer Tools"),
     ]
 
@@ -97,12 +98,15 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene  = context.scene
+        ca     = scene.character_actions
+        audio  = scene.character_audio
         prefs  = context.preferences.addons["Exploratory"].preferences
 
         # ─── Character ───
         box = layout.box()
         box.label(text="Character", icon='SETTINGS')
 
+        # Target Armature picker
         split = box.split(factor=0.4, align=True)
         colL  = split.column()
         colR  = split.column()
@@ -111,6 +115,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
 
         box.separator()
 
+        # Lock + description
         row = box.row(align=True)
         icon = 'LOCKED' if scene.character_spawn_lock else 'UNLOCKED'
         row.prop(
@@ -129,7 +134,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
         char_col.label(text="• If OFF the character will be built automatically")
         char_col.label(text="• If OFF the character will be removed then re-appended on game start.")
         char_col.label(text="• Uses the character defined in preferences.")
-
+        # ─── Build Character Button ───
         box.separator()
         row = box.row(align=True)
         row.scale_y = 1.0
@@ -138,6 +143,7 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             text="Build Character",
             icon='ARMATURE_DATA'
         )
+        #Build Armature (append only the armature from Armature.blend)
         row = box.row(align=True)
         row.operator(
             "exploratory.build_armature",
@@ -145,72 +151,74 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             icon='ARMATURE_DATA'
         )
 
-        # ─── Animation Slots ───
+        # ─── Animations & Speeds ───
         box = layout.box()
-        box.label(text="Animation Slots", icon='ACTION')
+        box.label(text="Animations", icon='ACTION')
 
+        # ─── Actions Lock ───
         row = box.row(align=True)
-        icon = 'LOCKED' if getattr(scene, "character_slots_lock", False) else 'UNLOCKED'
+        icon = 'LOCKED' if scene.character_actions_lock else 'UNLOCKED'
         row.prop(
             scene,
-            "character_slots_lock",
-            text="Slots Lock",
+            "character_actions_lock",
+            text="Actions Lock",
             icon=icon,
             toggle=True
         )
-        lock_col = box.column(align=True)
-        lock_col.label(text="• If ON actions and sounds must be set manually.")
-        lock_col.label(text="• Useful for custom scene assignments or testing.")
-        lock_col.separator()
-        lock_col.label(text="• If OFF actions and sounds are loaded from defaults.")
+        action_col = box.column(align=True)
+        action_col.label(text="• If ON the actions must be set manually.")
+        action_col.label(text="• Useful for custom scene action assignments or testing.")
+        action_col.label(text="• Useful for creating a world with custom actions.")
+        action_col.separator()
+        action_col.label(text="• If OFF audio will be appended from preferences.")
+        action_col.label(text="• Uses the actions defined in preferences.")
         box.separator()
 
-        # Timing controls
-        row = box.row(align=True)
-        row.prop(scene, "anim_min_fall_time", text="Min Fall Time")
-        row.prop(scene, "anim_min_fall_for_land", text="Min Fall→Land")
+        def anim_row(action_attr, label):
+            split = box.split(factor=0.75, align=True)
+            colA  = split.column()
+            colB  = split.column()
+            act = getattr(ca, action_attr)
+            colA.prop(ca, action_attr, text=label)
+            if act:
+                colB.prop(act, "action_speed", text="Speed")
+            else:
+                colB.label(text="—")
+
+        anim_row("idle_action", "Idle")
+        anim_row("walk_action", "Walk")
+        anim_row("run_action",  "Run")
+        anim_row("jump_action", "Jump")
+        anim_row("fall_action", "Fall")
+        anim_row("land_action", "Land")
+
+        # ─── Blend Time ───
         box.separator()
+        row = box.row()
+        row.prop(ca, "blend_time", text="Blend")
 
-        # Draw each slot
-        for slot in scene.character_anim_slots:
-            slot_box = box.box()
-            # Header row: state name
-            slot_box.label(text=slot.state_name, icon='ANIM')
-
-            # Action row
-            row = slot_box.row(align=True)
-            row.prop(slot, "action", text="Action")
-            row.prop(slot, "action_speed", text="Speed")
-
-            # Sound row
-            row = slot_box.row(align=True)
-            row.prop(slot, "sound", text="Sound")
-            row.prop(slot, "sound_speed", text="Speed")
-
-            # Load + test buttons for sound
-            row = slot_box.row(align=True)
-            load_op = row.operator(
-                "exp_audio.load_character_audio_file",
-                text="Load Sound",
-                icon='FILE_FOLDER'
-            )
-            load_op.state_name = slot.state_name
-            if slot.sound:
-                test_op = row.operator(
-                    "exp_audio.test_sound_pointer",
-                    text="Test",
-                    icon='PLAY'
-                )
-                test_op.state_name = slot.state_name
-
-            # Looping + blend_in
-            row = slot_box.row(align=True)
-            row.prop(slot, "looping", text="Loop")
-            row.prop(slot, "blend_in", text="Blend In")
-
-        # ─── Master Audio ───
+        # ─── Audio ───
         box = layout.box()
         box.label(text="Audio", icon='SOUND')
+
+        # ─── Audio Lock ───
+        row = box.row(align=True)
+        icon = 'LOCKED' if scene.character_audio_lock else 'UNLOCKED'
+        row.prop(
+            scene,
+            "character_audio_lock",
+            text="Audio Lock",
+            icon=icon,
+            toggle=True
+        )
+        audio_col = box.column(align=True)
+        audio_col.label(text="• If ON the audio must be set manually.")
+        audio_col.label(text="• Useful for custom scene audio assignments or testing.")
+        audio_col.label(text="• Useful for creating a world with custom audio.")
+        audio_col.separator()
+        audio_col.label(text="• If OFF audio will be appended from preferences.")
+        audio_col.label(text="• Uses the audio defined in preferences.")
+        box.separator()
 
         split = box.split(factor=0.5, align=True)
         col = split.column(align=True)
@@ -227,6 +235,38 @@ class ExploratoryCharacterPanel(bpy.types.Panel):
             text="Volume",
             slider=True
         )
+
+        def sound_row(prop_name, label):
+            row = box.row(align=True)
+            snd = getattr(audio, prop_name)
+
+            # the pointer field
+            row.prop(audio, prop_name, text=label)
+            # new Load button
+            load_op = row.operator(
+                "exp_audio.load_character_audio_file",
+                text="",
+                icon='FILE_FOLDER'
+            )
+            load_op.sound_slot = prop_name
+
+            if snd:
+                sub = box.row(align=True)
+                sub.prop(snd, "sound_speed", text="Speed")
+                test = sub.operator(
+                    "exp_audio.test_sound_pointer",
+                    text="Test",
+                    icon='PLAY'
+                )
+                test.sound_slot = prop_name
+            else:
+                box.label(text=f"{label}: (none)")
+
+        sound_row("walk_sound", "Walk")
+        sound_row("run_sound",  "Run")
+        sound_row("jump_sound", "Jump")
+        sound_row("fall_sound", "Fall")
+        sound_row("land_sound", "Land")
 
         box.separator()
         box.operator(
@@ -302,7 +342,7 @@ class ExploratoryProxyMeshPanel(bpy.types.Panel):
 # UI: Character Physics (grouped)
 # -----------------------------
 class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
-    bl_label = "Character Physics and View"
+    bl_label = "Physics"
     bl_idname = "VIEW3D_PT_exploratory_physics"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -376,17 +416,35 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
         row.prop(p, "steep_slide_gain", text="Slide Acceleration")
         col.prop(p, "steep_min_speed", text="Minimum Slide Speed")
 
-        # --- View / Camera ---
-        box = layout.box()
-        col = box.column(align=True)
-        col.label(text="View / Camera", icon='HIDE_OFF')
+
+# -----------------------------
+# UI: View
+# -----------------------------
+class VIEW3D_PT_Exploratory_View(bpy.types.Panel):
+    bl_label = "View"
+    bl_idname = "VIEW3D_PT_exploratory_view"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _is_create_panel_enabled(context.scene, 'VIEW')
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        col = layout.column(align=True)
         col.prop(scene, "view_projection", text="Projection")
         col.prop(scene, "view_mode", text="View Mode")
 
         # Always-visible view controls
         col.prop(scene, "viewport_lens_mm", text="Viewport Lens (mm)")
-        col.prop(scene, "orbit_distance", text="Orbit Distance")
-        col.prop(scene, "zoom_factor", text="Zoom Factor")
+        if scene.view_mode != 'FIRST':
+            col.prop(scene, "orbit_distance", text="Orbit Distance")
+            col.prop(scene, "zoom_factor", text="Zoom Factor")
 
         # LOCKED mode settings
         if scene.view_mode == 'LOCKED':
@@ -411,6 +469,15 @@ class VIEW3D_PT_Exploratory_PhysicsTuning(bpy.types.Panel):
 
         # FIRST PERSON mode settings
         if scene.view_mode == 'FIRST':
+            col.separator()
+            box_info = col.box()
+            ic = box_info.column(align=True)
+            ic.label(text="FPV Tips:", icon='INFO')
+            ic.label(text="Assign a character armature")
+            ic.label(text="Set the FPV target bone")
+            ic.label(text="The view is from the target bone")
+            ic.label(text="Parent handheld objects to it")
+            ic.label(text="Animate and assign to actions/nodes")
             col.separator()
             col.label(text="First Person Settings:")
             arm = getattr(scene, "target_armature", None)

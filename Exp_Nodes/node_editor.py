@@ -132,6 +132,7 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Track To",           "ReactionTrackingNodeType")
         add("Enable Health",      "ReactionEnableHealthNodeType")
         add("Display Health UI",  "ReactionDisplayHealthUINodeType")
+        add("Adjust Health",      "ReactionAdjustHealthNodeType")
 
 
 class NODE_MT_exploratory_add_counter_timer(Menu):
@@ -185,6 +186,23 @@ class NODE_MT_exploratory_add_utilities(Menu):
         # Utility Nodes
         layout.label(text="Utility")
         add("Delay", "UtilityDelayNodeType")
+        add("Compare", "CompareNodeType")
+
+        layout.separator()
+
+        # Vector Nodes
+        layout.label(text="Vector")
+        add("Split Vector", "SplitVectorNodeType")
+        add("Combine Vector", "CombineVectorNodeType")
+
+        layout.separator()
+
+        # Math Nodes
+        layout.label(text="Math")
+        add("Float Math", "FloatMathNodeType")
+        add("Int Math", "IntMathNodeType")
+        add("Random Float", "RandomFloatNodeType")
+        add("Random Int", "RandomIntNodeType")
 
 
 class NODE_MT_exploratory_add_trackers(Menu):

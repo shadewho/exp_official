@@ -73,11 +73,17 @@ def execute_mesh_visibility_reaction(reaction):
     """
     Perform only mesh visibility operations.
     """
+    from .exp_bindings import resolve_object
+
     vs = getattr(reaction, "mesh_visibility", None)
-    if not vs or not vs.mesh_object:
+    if not vs:
         return
 
-    obj = vs.mesh_object
+    # Resolve from binding (socket connection) or fall back to nested property
+    obj = resolve_object(reaction, "mesh_vis_object", vs.mesh_object)
+    if not obj:
+        return
+
     act = vs.mesh_action
 
     if act == "HIDE":

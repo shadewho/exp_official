@@ -125,239 +125,12 @@ def _force_kind(r, kind: str):
 
 
 def _draw_common_fields(layout, r, kind: str):
-    """Draw reaction fields without showing 'Type' or any identifier."""
-    # keep Name editable
+    """DEPRECATED: Legacy fallback - all nodes now have custom draw_buttons().
+    Kept only for safety if somehow called from old code."""
+    _force_kind(r, kind)
     header = layout.box()
     header.prop(r, "name", text="Name")
-
-    # ensure type stays pinned to node KIND silently
-    _force_kind(r, kind)
-
-    t = kind  # use pinned kind instead of reading the enum back
-
-    if t == "CUSTOM_ACTION":
-        header.prop(r, "custom_action_message", text="Notes")
-        header.prop_search(r, "custom_action_target", bpy.context.scene, "objects", text="Object")
-        header.prop_search(r, "custom_action_action", bpy.data, "actions", text="Action")
-        header.prop(r, "custom_action_loop", text="Loop?")
-        if getattr(r, "custom_action_loop", False):
-            header.prop(r, "custom_action_loop_duration", text="Loop Duration")
-        # NEW: per-reaction speed
-        header.prop(r, "custom_action_speed", text="Speed Multiplier")
-
-    elif t == "CHAR_ACTION":
-        header.prop_search(r, "char_action_ref", bpy.data, "actions", text="Action")
-        header.prop(r, "char_action_bone_group", text="Body Part")
-        header.prop(r, "char_action_mode", text="Mode")
-        if getattr(r, "char_action_mode", "") == "LOOP":
-            header.prop(r, "char_action_loop_duration", text="Loop Duration")
-        header.prop(r, "char_action_speed", text="Speed Multiplier")
-        header.prop(r, "char_action_blend_time", text="Blend Time")
-
-    elif t == "SOUND":
-        # Sound pointer
-        header.prop(r, "sound_pointer", text="Sound")
-
-        # Parameters
-        params = header.box()
-        params.label(text="Parameters")
-        params.prop(r, "sound_volume", text="Relative Volume")
-        params.prop(r, "sound_use_distance", text="Use Distance?")
-        if getattr(r, "sound_use_distance", False):
-            dist_box = params.box()
-            dist_box.prop(r, "sound_distance_object", text="Distance Object")
-            dist_box.prop(r, "sound_max_distance", text="Max Distance")
-        params.prop(r, "sound_play_mode", text="Mode")
-        if getattr(r, "sound_play_mode", "") == "DURATION":
-            params.prop(r, "sound_duration", text="Duration")
-
-        # Pack helper (message + button in ONE box at bottom)
-        pack = header.box()
-        pack.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
-        row = pack.row(align=True)
-        row.operator("exp_audio.pack_all_sounds", text="Pack All Sounds", icon='PACKAGE')
-        
-
-        # ---- Test button (preview playback) ----
-        scn = bpy.context.scene
-        ridx = -1
-        for i, rx in enumerate(getattr(scn, "reactions", [])):
-            if rx == r:
-                ridx = i
-                break
-        test_box = header.box()
-        row = test_box.row(align=True)
-        op  = row.operator("exp_audio.test_reaction_sound", text="Test Sound", icon='PLAY')
-        op.reaction_index = ridx
-
-
-    elif t == "PROPERTY":
-        header.label(text="Paste a Blender full data path (Right-Click → Copy Full Data Path).", icon='INFO')
-        header.prop(r, "property_data_path", text="Full Data Path")
-        row = header.row(); row.label(text=f"Detected Type: {getattr(r, 'property_type', 'NONE')}")
-        header.prop(r, "property_transition_duration", text="Duration")
-        header.prop(r, "property_reset", text="Reset after")
-        if getattr(r, "property_reset", False):
-            header.prop(r, "property_reset_delay", text="Reset delay")
-
-        pt = getattr(r, "property_type", "NONE")
-        if pt == "BOOL":
-            header.prop(r, "bool_value", text="Target Bool")
-            header.prop(r, "default_bool_value", text="Default Bool")
-        elif pt == "INT":
-            header.prop(r, "int_value", text="Target Int")
-            header.prop(r, "default_int_value", text="Default Int")
-        elif pt == "FLOAT":
-            header.prop(r, "float_value", text="Target Float")
-            header.prop(r, "default_float_value", text="Default Float")
-        elif pt == "STRING":
-            header.prop(r, "string_value", text="Target String")
-            header.prop(r, "default_string_value", text="Default String")
-        elif pt == "VECTOR":
-            header.label(text=f"Vector length: {getattr(r, 'vector_length', 3)}")
-            header.prop(r, "vector_value", text="Target Vector")
-            header.prop(r, "default_vector_value", text="Default Vector")
-
-    elif t == "TRANSFORM":
-        header.prop(r, "use_character", text="Use Character as Target")
-        if getattr(r, "use_character", False):
-            char = getattr(bpy.context.scene, "target_armature", None)
-            header.label(text=f"Target: {char.name if char else '—'}", icon='ARMATURE_DATA')
-        else:
-            header.prop_search(r, "transform_object", bpy.context.scene, "objects", text="Target Object")
-
-        header.prop(r, "transform_mode", text="Mode")
-        mode = getattr(r, "transform_mode", "OFFSET")
-
-        if mode in {"OFFSET", "LOCAL_OFFSET", "TO_LOCATION"}:
-            header.prop(r, "transform_location", text="Location")
-            header.prop(r, "transform_rotation", text="Rotation")
-            header.prop(r, "transform_scale",    text="Scale")
-
-        elif mode == "TO_OBJECT":
-            row = header.row(align=True)
-            row.prop(r, "transform_to_use_character", text="Use Character as 'To Object'")
-            if getattr(r, "transform_to_use_character", False):
-                c = getattr(bpy.context.scene, "target_armature", None)
-                header.label(text=f"To Object: {c.name if c else '—'}", icon='ARMATURE_DATA')
-            else:
-                header.prop_search(r, "transform_to_object", bpy.context.scene, "objects", text="To Object")
-
-            col = header.column(align=True)
-            col.label(text="Copy Channels:")
-            col.prop(r, "transform_use_location", text="Location")
-            col.prop(r, "transform_use_rotation", text="Rotation")
-            col.prop(r, "transform_use_scale",    text="Scale")
-
-        elif mode == "TO_BONE":
-            header.prop(r, "transform_to_bone_use_character", text="Use Character Armature")
-            if not getattr(r, "transform_to_bone_use_character", True):
-                header.prop_search(r, "transform_to_armature", bpy.context.scene, "objects", text="Armature")
-            header.prop(r, "transform_bone_name", text="Bone (name)")
-
-            col = header.column(align=True)
-            col.label(text="Copy Channels:")
-            col.prop(r, "transform_use_location", text="Location")
-            col.prop(r, "transform_use_rotation", text="Rotation")
-            col.prop(r, "transform_use_scale",    text="Scale")
-
-        header.prop(r, "transform_duration", text="Duration")
-
-
-    elif t == "CUSTOM_UI_TEXT":
-        header.prop(r, "custom_text_subtype", text="Subtype")
-        subtype = getattr(r, "custom_text_subtype", "STATIC")
-
-        # Text content
-        content = header.box()
-        content.label(text="Text Content")
-        if subtype == "STATIC":
-            content.prop(r, "custom_text_value", text="Text")
-        elif subtype == "COUNTER_DISPLAY":
-            content.prop(r, "text_counter_index", text="Counter")
-            fmt = content.box()
-            fmt.label(text="Counter Formatting")
-            fmt.prop(r, "custom_text_prefix", text="Prefix")
-            fmt.prop(r, "custom_text_include_counter", text="Show Counter")
-            fmt.prop(r, "custom_text_suffix", text="Suffix")
-        elif subtype == "TIMER_DISPLAY":
-            content.prop(r, "text_timer_index", text="Timer")
-
-        # Timing
-        timing = header.box()
-        timing.label(text="Display Timing")
-        timing.prop(r, "custom_text_indefinite", text="Indefinite")
-        if not getattr(r, "custom_text_indefinite", False):
-            timing.prop(r, "custom_text_duration", text="Duration (sec)")
-
-        # Position & Size
-        layout_box = header.box()
-        layout_box.label(text="Position & Size")
-        layout_box.prop(r, "custom_text_anchor", text="Anchor")
-        layout_box.prop(r, "custom_text_scale", text="Scale")
-        margins = layout_box.column(align=True)
-        margins.prop(r, "custom_text_margin_x", text="Margin X")
-        margins.prop(r, "custom_text_margin_y", text="Margin Y")
-
-        # Appearance
-        style = header.box()
-        style.label(text="Appearance")
-        style.prop(r, "custom_text_font",  text="Font")
-        style.prop(r, "custom_text_color", text="Color")
-
-        # Preview (same structure as N-panel)
-        preview_box = header.box()
-        preview_box.label(text="Note: preview in fullscreen for best results.", icon='INFO')
-        row = preview_box.row(align=True)
-        op  = row.operator("exploratory.preview_custom_text", text="Preview Custom Text", icon='HIDE_OFF')
-        op.duration = 5.0
-
-    elif t == "ENABLE_CROSSHAIRS":
-        header.prop(r, "crosshair_style", text="Style")
-
-        dims = header.box()
-        dims.label(text="Dimensions (pixels)")
-        dims.prop(r, "crosshair_length_px",    text="Arm Length")
-        dims.prop(r, "crosshair_gap_px",       text="Gap")
-        dims.prop(r, "crosshair_thickness_px", text="Thickness")
-        dims.prop(r, "crosshair_dot_radius_px", text="Dot Radius")
-
-        header.prop(r, "crosshair_color", text="Color")
-
-        timing = header.box()
-        timing.label(text="Timing")
-        timing.prop(r, "crosshair_indefinite", text="Indefinite")
-        if not getattr(r, "crosshair_indefinite", True):
-            timing.prop(r, "crosshair_duration", text="Duration (sec)")
-
-    elif t == "COUNTER_UPDATE":
-        header.prop(r, "counter_index", text="Counter")
-        header.prop(r, "counter_op", text="Operation")
-        if getattr(r, "counter_op", "") in {"ADD", "SUBTRACT"}:
-            header.prop(r, "counter_amount", text="Amount")
-
-    elif t == "TIMER_CONTROL":
-        header.prop(r, "timer_index", text="Timer")
-        header.prop(r, "timer_op", text="Timer Operation")
-        header.prop(r, "interruptible", text="Interruptible")
-
-    elif t == "MOBILITY":
-        ms = getattr(r, "mobility_settings", None)
-        if ms:
-            header.label(text="Mobility")
-            header.prop(ms, "allow_movement", text="Allow Movement")
-            header.prop(ms, "allow_jump",     text="Allow Jump")
-            header.prop(ms, "allow_sprint",   text="Allow Sprint")
-
-    elif t == "MESH_VISIBILITY":
-        vs = getattr(r, "mesh_visibility", None)
-        if vs:
-            header.label(text="Mesh Visibility")
-            header.prop(vs, "mesh_object", text="Mesh Object")
-            header.prop(vs, "mesh_action", text="Action")
-
-    elif t == "RESET_GAME":
-        header.label(text="Reset Game on trigger", icon='FILE_REFRESH')
+    header.label(text=f"({kind})")
 
 
 
@@ -426,7 +199,8 @@ def _get_reaction_for_node(node):
 
 
 class DynamicObjectInputSocket(bpy.types.NodeSocket):
-    """Object input that draws prop_search inline when not connected."""
+    """DEPRECATED: Use ExpObjectSocketType with reaction_prop instead.
+    Kept registered for backwards compatibility with old .blend files."""
     bl_idname = "DynamicObjectInputSocketType"
     bl_label = "Object (Dynamic)"
 
@@ -450,7 +224,8 @@ class DynamicObjectInputSocket(bpy.types.NodeSocket):
 
 
 class DynamicBoolInputSocket(bpy.types.NodeSocket):
-    """Bool input that draws checkbox inline when not connected."""
+    """DEPRECATED: Use ExpBoolSocketType with reaction_prop instead.
+    Kept registered for backwards compatibility with old .blend files."""
     bl_idname = "DynamicBoolInputSocketType"
     bl_label = "Bool (Dynamic)"
 
@@ -474,7 +249,8 @@ class DynamicBoolInputSocket(bpy.types.NodeSocket):
 
 
 class DynamicFloatInputSocket(bpy.types.NodeSocket):
-    """Float input that draws float field inline when not connected."""
+    """DEPRECATED: Use ExpFloatSocketType with reaction_prop instead.
+    Kept registered for backwards compatibility with old .blend files."""
     bl_idname = "DynamicFloatInputSocketType"
     bl_label = "Float (Dynamic)"
 
@@ -498,7 +274,8 @@ class DynamicFloatInputSocket(bpy.types.NodeSocket):
 
 
 class DynamicActionInputSocket(bpy.types.NodeSocket):
-    """Action input that draws action picker inline when not connected."""
+    """DEPRECATED: Use ExpActionSocketType with reaction_prop instead.
+    Kept registered for backwards compatibility with old .blend files."""
     bl_idname = "DynamicActionInputSocketType"
     bl_label = "Action (Dynamic)"
 
@@ -573,11 +350,12 @@ class _ReactionNodeKind(ReactionNodeBase):
     def draw_buttons(self, context, layout):
         scn = _scene()
         idx = self.reaction_index
-        if not scn or not (0 <= idx < len(scn.reactions)):
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
-        _draw_common_fields(layout, r, self.KIND or "CUSTOM_ACTION")
+        _force_kind(r, self.KIND or "CUSTOM_ACTION")
+        layout.box().prop(r, "name", text="Name")
 
     def execute_reaction(self, context):
         pass
@@ -589,10 +367,32 @@ class ReactionHitscanNode(_ReactionNodeKind):
 
     def init(self, context):
         super().init(context)
+        # Outputs
         self.outputs.new("ExpBoolSocketType",   "Impact")
         self.outputs.new("ExpVectorSocketType", "Impact Location")
         self.outputs.new("ExpObjectSocketType", "Hit Object")
         self.outputs.new("ExpVectorSocketType", "Hit Normal")
+        # Inputs
+        s = self.inputs.new("ExpBoolSocketType", "Use Char Origin")
+        s.reaction_prop = "proj_use_character_origin"
+        s = self.inputs.new("ExpObjectSocketType", "Origin Object")
+        s.reaction_prop = "proj_origin_object"
+        s.use_prop_search = True
+        s = self.inputs.new("ExpVectorSocketType", "Offset")
+        s.reaction_prop = "proj_origin_offset"
+        s = self.inputs.new("ExpObjectSocketType", "Place Object")
+        s.reaction_prop = "proj_object"
+        s.use_prop_search = True
+        s = self.inputs.new("ExpFloatSocketType", "Max Range")
+        s.reaction_prop = "proj_max_range"
+        s = self.inputs.new("ExpBoolSocketType", "Align to Direction")
+        s.reaction_prop = "proj_align_object_to_velocity"
+        s = self.inputs.new("ExpBoolSocketType", "Place at Impact")
+        s.reaction_prop = "proj_place_hitscan_object"
+        s = self.inputs.new("ExpFloatSocketType", "Lifetime")
+        s.reaction_prop = "proj_lifetime"
+        s = self.inputs.new("ExpIntSocketType", "Max Active")
+        s.reaction_prop = "proj_pool_limit"
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -601,37 +401,10 @@ class ReactionHitscanNode(_ReactionNodeKind):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
-
+        _force_kind(r, self.KIND)
         box = layout.box()
         box.prop(r, "name", text="Name")
-
-        org = layout.box()
-        org.label(text="Origin")
-        org.prop(r, "proj_use_character_origin", text="Use Character Origin")
-        if not r.proj_use_character_origin:
-            org.prop_search(r, "proj_origin_object", bpy.context.scene, "objects", text="Origin Object")
-        org.prop(r, "proj_origin_offset", text="Offset")
-
-        aim = layout.box()
-        aim.label(text="Aim")
-        aim.prop(r, "proj_aim_source", text="Aim Source")
-
-        vis = layout.box()
-        vis.label(text="Visual (Optional)")
-        vis.prop_search(r, "proj_object", bpy.context.scene, "objects", text="Place Object")
-        vis.prop(r, "proj_align_object_to_velocity", text="Align to Direction")
-
-        hs = layout.box()
-        hs.label(text="Hitscan")
-        hs.prop(r, "proj_max_range", text="Max Range")
-        hs.prop(r, "proj_place_hitscan_object", text="Place Object at Impact")
-
-        #Lifetime & Max Active for hitscan visuals
-        if getattr(r, "proj_object", None) and getattr(r, "proj_place_hitscan_object", True):
-            hs.prop(r, "proj_lifetime", text="Lifetime (sec)")     # reused field
-            hs.prop(r, "proj_pool_limit", text="Max Active")       # reused field
-            info = hs.box()
-            info.label(text="Lifetime/Max Active apply when a visual is set. Lifetime=0 uses legacy behavior (no clone).", icon='INFO')
+        box.prop(r, "proj_aim_source", text="Aim Source")
 
 
 class ReactionProjectileNode(_ReactionNodeKind):
@@ -641,10 +414,34 @@ class ReactionProjectileNode(_ReactionNodeKind):
 
     def init(self, context):
         super().init(context)
+        # Outputs
         self.outputs.new("ExpBoolSocketType",   "Impact")
         self.outputs.new("ExpVectorSocketType", "Impact Location")
         self.outputs.new("ExpObjectSocketType", "Hit Object")
         self.outputs.new("ExpVectorSocketType", "Hit Normal")
+        # Inputs
+        s = self.inputs.new("ExpBoolSocketType", "Use Char Origin")
+        s.reaction_prop = "proj_use_character_origin"
+        s = self.inputs.new("ExpObjectSocketType", "Origin Object")
+        s.reaction_prop = "proj_origin_object"
+        s.use_prop_search = True
+        s = self.inputs.new("ExpVectorSocketType", "Offset")
+        s.reaction_prop = "proj_origin_offset"
+        s = self.inputs.new("ExpObjectSocketType", "Projectile Object")
+        s.reaction_prop = "proj_object"
+        s.use_prop_search = True
+        s = self.inputs.new("ExpFloatSocketType", "Speed")
+        s.reaction_prop = "proj_speed"
+        s = self.inputs.new("ExpFloatSocketType", "Gravity")
+        s.reaction_prop = "proj_gravity"
+        s = self.inputs.new("ExpFloatSocketType", "Lifetime")
+        s.reaction_prop = "proj_lifetime"
+        s = self.inputs.new("ExpBoolSocketType", "Stop on Contact")
+        s.reaction_prop = "proj_on_contact_stop"
+        s = self.inputs.new("ExpIntSocketType", "Max Active")
+        s.reaction_prop = "proj_pool_limit"
+        s = self.inputs.new("ExpBoolSocketType", "Align to Velocity")
+        s.reaction_prop = "proj_align_object_to_velocity"
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -653,33 +450,10 @@ class ReactionProjectileNode(_ReactionNodeKind):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
-
+        _force_kind(r, self.KIND)
         box = layout.box()
         box.prop(r, "name", text="Name")
-
-        org = layout.box()
-        org.label(text="Origin")
-        org.prop(r, "proj_use_character_origin", text="Use Character Origin")
-        if not r.proj_use_character_origin:
-            org.prop_search(r, "proj_origin_object", bpy.context.scene, "objects", text="Origin Object")
-        org.prop(r, "proj_origin_offset", text="Offset")
-
-        aim = layout.box()
-        aim.label(text="Aim")
-        aim.prop(r, "proj_aim_source", text="Aim Source")
-
-        vis = layout.box()
-        vis.label(text="Visual (Optional)")
-        vis.prop_search(r, "proj_object", bpy.context.scene, "objects", text="Projectile Object")
-        vis.prop(r, "proj_align_object_to_velocity", text="Align to Velocity")
-
-        pj = layout.box()
-        pj.label(text="Projectile")
-        pj.prop(r, "proj_speed", text="Speed")
-        pj.prop(r, "proj_gravity", text="Gravity")
-        pj.prop(r, "proj_lifetime", text="Lifetime")
-        pj.prop(r, "proj_on_contact_stop", text="Stop on Contact")
-        pj.prop(r, "proj_pool_limit", text="Max Active")
+        box.prop(r, "proj_aim_source", text="Aim Source")
 
 
 
@@ -811,6 +585,11 @@ class UtilityDelayNode(_ReactionNodeKind):
         except Exception:
             pass
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpFloatSocketType", "Delay (sec)")
+        s.reaction_prop = "utility_delay_seconds"
+
     def draw_buttons(self, context, layout):
         scn = _scene()
         idx = self.reaction_index
@@ -821,7 +600,6 @@ class UtilityDelayNode(_ReactionNodeKind):
 
         box = layout.box()
         box.prop(r, "name", text="Name")
-        box.prop(r, "utility_delay_seconds", text="Delay (sec)")
 
         info = layout.box()
         info.label(text="Delays all reactions AFTER this node by the amount above.", icon='TIME')
@@ -831,6 +609,34 @@ class ReactionTrackingNode(_ReactionNodeKind):
     bl_label  = "Track To"
     KIND = "TRACK_TO"
 
+    def init(self, context):
+        super().init(context)
+        # From (Mover)
+        s = self.inputs.new("ExpObjectSocketType", "From Object")
+        s.reaction_prop = "track_from_object"
+        s.use_prop_search = True
+        # To (Target)
+        s = self.inputs.new("ExpObjectSocketType", "To Object")
+        s.reaction_prop = "track_to_object"
+        s.use_prop_search = True
+        # Options
+        s = self.inputs.new("ExpFloatSocketType", "Speed")
+        s.reaction_prop = "track_speed"
+        s = self.inputs.new("ExpFloatSocketType", "Arrive Radius")
+        s.reaction_prop = "track_arrive_radius"
+        s = self.inputs.new("ExpBoolSocketType", "Respect Proxy Meshes")
+        s.reaction_prop = "track_respect_proxy_meshes"
+        s = self.inputs.new("ExpBoolSocketType", "Gravity")
+        s.reaction_prop = "track_use_gravity"
+        s = self.inputs.new("ExpFloatSocketType", "Max Runtime")
+        s.reaction_prop = "track_max_runtime"
+        # Face Object
+        s = self.inputs.new("ExpBoolSocketType", "Face Enable")
+        s.reaction_prop = "track_face_enabled"
+        s = self.inputs.new("ExpObjectSocketType", "Face Object")
+        s.reaction_prop = "track_face_object"
+        s.use_prop_search = True
+
     def draw_buttons(self, context, layout):
         scn = _scene()
         idx = self.reaction_index
@@ -838,42 +644,13 @@ class ReactionTrackingNode(_ReactionNodeKind):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
 
         box = layout.box()
         box.prop(r, "name", text="Name")
-
-        src = layout.box()
-        src.label(text="From (Mover)")
-        src.prop(r, "track_from_use_character", text="Use Character")
-        if not r.track_from_use_character:
-            src.prop_search(r, "track_from_object", bpy.context.scene, "objects", text="From Object")
-
-        dst = layout.box()
-        dst.label(text="To (Target)")
-        dst.prop(r, "track_to_use_character", text="Use Character")
-        if not r.track_to_use_character:
-            dst.prop_search(r, "track_to_object", bpy.context.scene, "objects", text="To Object")
-
-        mode = layout.box()
-        mode.label(text="Navigation Mode")
-        mode.prop(r, "track_mode", text="")
-
-        opts = layout.box()
-        opts.label(text="Options")
-        opts.prop(r, "track_speed", text="Speed (m/s)")
-        opts.prop(r, "track_arrive_radius", text="Arrive Radius (m)")
-        opts.prop(r, "track_respect_proxy_meshes", text="Respect Proxy Meshes")
-        opts.prop(r, "track_use_gravity", text="Gravity")
-        opts.prop(r, "track_max_runtime", text="Max Runtime (sec)")
-
-        face = layout.box()
-        face.label(text="Face Object")
-        face.prop(r, "track_face_enabled", text="Enable")
-        if r.track_face_enabled:
-            face.prop(r, "track_face_use_character", text="Use Character")
-            if not r.track_face_use_character:
-                face.prop_search(r, "track_face_object", bpy.context.scene, "objects", text="Face Object")
-            face.prop(r, "track_face_axis", text="Forward Axis")
+        box.prop(r, "track_mode", text="Nav Mode")
+        if getattr(r, "track_face_enabled", False):
+            box.prop(r, "track_face_axis", text="Face Axis")
 
 
 class ReactionParentingNode(_ReactionNodeKind):
@@ -884,7 +661,19 @@ class ReactionParentingNode(_ReactionNodeKind):
     def init(self, context):
         super().init(context)
 
-        # Vector input for local offset (can connect Float data nodes)
+        # Target (child)
+        s = self.inputs.new("ExpBoolSocketType", "Target Use Character")
+        s.reaction_prop = "parenting_target_use_character"
+        s = self.inputs.new("ExpObjectSocketType", "Target Object")
+        s.reaction_prop = "parenting_target_object"
+        s.use_prop_search = True
+        # Parent
+        s = self.inputs.new("ExpBoolSocketType", "Use Armature")
+        s.reaction_prop = "parenting_parent_use_armature"
+        s = self.inputs.new("ExpObjectSocketType", "Parent Object")
+        s.reaction_prop = "parenting_parent_object"
+        s.use_prop_search = True
+        # Vector input for local offset
         s_offset = self.inputs.new("ExpVectorSocketType", "Local Offset")
         s_offset.reaction_prop = "parenting_local_offset"
 
@@ -900,28 +689,8 @@ class ReactionParentingNode(_ReactionNodeKind):
         box.prop(r, "name", text="Name")
         box.prop(r, "parenting_op", text="Operation")
 
-        # Target (child)
-        tgt = layout.box()
-        tgt.label(text="Target (Child)")
-        tgt.prop(r, "parenting_target_use_character", text="Use Character")
-        if not r.parenting_target_use_character:
-            tgt.prop_search(r, "parenting_target_object", scn, "objects", text="Object")
-        else:
-            char = scn.target_armature
-            tgt.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
-
-        # Parent (only for PARENT_TO)
-        if r.parenting_op == "PARENT_TO":
-            par = layout.box()
-            par.label(text="Parent")
-            par.prop(r, "parenting_parent_use_armature", text="Use Character Armature")
-            if r.parenting_parent_use_armature:
-                char = scn.target_armature
-                par.label(text=f"Armature: {char.name if char else '—'}", icon='ARMATURE_DATA')
-                par.prop(r, "parenting_bone_name", text="Bone")
-            else:
-                par.prop_search(r, "parenting_parent_object", scn, "objects", text="Object")
-        # NOTE: Local Offset is drawn by the socket (inline with XYZ inputs)
+        if getattr(r, "parenting_parent_use_armature", False):
+            box.prop(r, "parenting_bone_name", text="Bone")
 
 
 
@@ -934,21 +703,17 @@ class ReactionCustomActionNode(_ReactionNodeKind):
 
     def init(self, context):
         super().init(context)
-        # Dynamic property sockets - draw inline with fields
-        s_action = self.inputs.new("DynamicActionInputSocketType", "Action")
-        s_action.prop_name = "custom_action_action"
-
-        s_obj = self.inputs.new("DynamicObjectInputSocketType", "Object")
-        s_obj.prop_name = "custom_action_target"
-
-        s_loop = self.inputs.new("DynamicBoolInputSocketType", "Loop?")
-        s_loop.prop_name = "custom_action_loop"
-
-        s_dur = self.inputs.new("DynamicFloatInputSocketType", "Loop Duration")
-        s_dur.prop_name = "custom_action_loop_duration"
-
-        s_speed = self.inputs.new("DynamicFloatInputSocketType", "Speed")
-        s_speed.prop_name = "custom_action_speed"
+        s = self.inputs.new("ExpActionSocketType", "Action")
+        s.reaction_prop = "custom_action_action"
+        s = self.inputs.new("ExpObjectSocketType", "Object")
+        s.reaction_prop = "custom_action_target"
+        s.use_prop_search = True
+        s = self.inputs.new("ExpBoolSocketType", "Loop?")
+        s.reaction_prop = "custom_action_loop"
+        s = self.inputs.new("ExpFloatSocketType", "Loop Duration")
+        s.reaction_prop = "custom_action_loop_duration"
+        s = self.inputs.new("ExpFloatSocketType", "Speed")
+        s.reaction_prop = "custom_action_speed"
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -958,11 +723,9 @@ class ReactionCustomActionNode(_ReactionNodeKind):
             return
         r = scn.reactions[idx]
         _force_kind(r, self.KIND)
-
         header = layout.box()
         header.prop(r, "name", text="Name")
         header.prop(r, "custom_action_message", text="Notes")
-        # Action, Object, Loop, Loop Duration, Speed are drawn by sockets
 
 
 class ReactionCharActionNode(_ReactionNodeKind):
@@ -970,15 +733,122 @@ class ReactionCharActionNode(_ReactionNodeKind):
     bl_label  = "Character Action"
     KIND = "CHAR_ACTION"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpActionSocketType", "Action")
+        s.reaction_prop = "char_action_ref"
+        s = self.inputs.new("ExpFloatSocketType", "Speed")
+        s.reaction_prop = "char_action_speed"
+        s = self.inputs.new("ExpFloatSocketType", "Blend Time")
+        s.reaction_prop = "char_action_blend_time"
+        s = self.inputs.new("ExpFloatSocketType", "Loop Duration")
+        s.reaction_prop = "char_action_loop_duration"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "char_action_bone_group", text="Body Part")
+        header.prop(r, "char_action_mode", text="Mode")
+
+
 class ReactionSoundNode(_ReactionNodeKind):
     bl_idname = "ReactionSoundNodeType"
     bl_label  = "Play Sound"
     KIND = "SOUND"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpFloatSocketType", "Volume")
+        s.reaction_prop = "sound_volume"
+        s = self.inputs.new("ExpBoolSocketType", "Use Distance?")
+        s.reaction_prop = "sound_use_distance"
+        s = self.inputs.new("ExpObjectSocketType", "Distance Object")
+        s.reaction_prop = "sound_distance_object"
+        s.use_prop_search = True
+        s = self.inputs.new("ExpFloatSocketType", "Max Distance")
+        s.reaction_prop = "sound_max_distance"
+        s = self.inputs.new("ExpFloatSocketType", "Duration")
+        s.reaction_prop = "sound_duration"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "sound_pointer", text="Sound")
+        header.prop(r, "sound_play_mode", text="Mode")
+        pack = layout.box()
+        pack.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
+        row = pack.row(align=True)
+        row.operator("exp_audio.pack_all_sounds", text="Pack All Sounds", icon='PACKAGE')
+        ridx = -1
+        for i, rx in enumerate(getattr(scn, "reactions", [])):
+            if rx == r:
+                ridx = i
+                break
+        test_box = layout.box()
+        row = test_box.row(align=True)
+        op = row.operator("exp_audio.test_reaction_sound", text="Test Sound", icon='PLAY')
+        op.reaction_index = ridx
+
+
 class ReactionPropertyNode(_ReactionNodeKind):
     bl_idname = "ReactionPropertyNodeType"
     bl_label  = "Property Value"
     KIND = "PROPERTY"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpFloatSocketType", "Duration")
+        s.reaction_prop = "property_transition_duration"
+        s = self.inputs.new("ExpBoolSocketType", "Reset After")
+        s.reaction_prop = "property_reset"
+        s = self.inputs.new("ExpFloatSocketType", "Reset Delay")
+        s.reaction_prop = "property_reset_delay"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.label(text="Paste a Blender full data path (Right-Click > Copy Full Data Path).", icon='INFO')
+        header.prop(r, "property_data_path", text="Full Data Path")
+        row = header.row()
+        row.label(text=f"Detected Type: {getattr(r, 'property_type', 'NONE')}")
+        pt = getattr(r, "property_type", "NONE")
+        if pt == "BOOL":
+            header.prop(r, "bool_value", text="Target Bool")
+            header.prop(r, "default_bool_value", text="Default Bool")
+        elif pt == "INT":
+            header.prop(r, "int_value", text="Target Int")
+            header.prop(r, "default_int_value", text="Default Int")
+        elif pt == "FLOAT":
+            header.prop(r, "float_value", text="Target Float")
+            header.prop(r, "default_float_value", text="Default Float")
+        elif pt == "STRING":
+            header.prop(r, "string_value", text="Target String")
+            header.prop(r, "default_string_value", text="Default String")
+        elif pt == "VECTOR":
+            header.label(text=f"Vector length: {getattr(r, 'vector_length', 3)}")
+            header.prop(r, "vector_value", text="Target Vector")
+            header.prop(r, "default_vector_value", text="Default Vector")
 
 class ReactionTransformNode(_ReactionNodeKind):
     bl_idname = "ReactionTransformNodeType"
@@ -989,8 +859,14 @@ class ReactionTransformNode(_ReactionNodeKind):
         # Keep base Reaction Input/Output
         super().init(context)
 
+        # Use Character and Target Object as sockets
+        s = self.inputs.new("ExpBoolSocketType", "Use Character")
+        s.reaction_prop = "use_character"
+        s = self.inputs.new("ExpObjectSocketType", "Target Object")
+        s.reaction_prop = "transform_object"
+        s.use_prop_search = True
+
         # Vector inputs with inline property drawing (unified socket type)
-        # When not connected, draws the reaction property inline
         s_loc = self.inputs.new("ExpVectorSocketType", "Location")
         s_loc.reaction_prop = "transform_location"
 
@@ -1016,14 +892,6 @@ class ReactionTransformNode(_ReactionNodeKind):
         # Name
         header = layout.box()
         header.prop(r, "name", text="Name")
-
-        # Use Character toggle
-        header.prop(r, "use_character", text="Use Character as Target")
-        if getattr(r, "use_character", False):
-            char = getattr(bpy.context.scene, "target_armature", None)
-            header.label(text=f"Target: {char.name if char else '—'}", icon='ARMATURE_DATA')
-        else:
-            header.prop_search(r, "transform_object", bpy.context.scene, "objects", text="Target Object")
 
         # Mode
         header.prop(r, "transform_mode", text="Mode")
@@ -1058,43 +926,210 @@ class ReactionTransformNode(_ReactionNodeKind):
             col.prop(r, "transform_use_rotation", text="Rotation")
             col.prop(r, "transform_use_scale", text="Scale")
 
-        # NOTE: Location, Rotation, Scale, Duration are drawn by sockets (inline)
-        # Don't draw them here to avoid duplication
-
 class ReactionCustomTextNode(_ReactionNodeKind):
     bl_idname = "ReactionCustomTextNodeType"
     bl_label  = "Custom UI Text"
     KIND = "CUSTOM_UI_TEXT"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpIntSocketType", "Scale")
+        s.reaction_prop = "custom_text_scale"
+        s = self.inputs.new("ExpIntSocketType", "Margin X")
+        s.reaction_prop = "custom_text_margin_x"
+        s = self.inputs.new("ExpIntSocketType", "Margin Y")
+        s.reaction_prop = "custom_text_margin_y"
+        s = self.inputs.new("ExpFloatSocketType", "Duration")
+        s.reaction_prop = "custom_text_duration"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "custom_text_subtype", text="Subtype")
+        subtype = getattr(r, "custom_text_subtype", "STATIC")
+        content = header.box()
+        content.label(text="Text Content")
+        if subtype == "STATIC":
+            content.prop(r, "custom_text_value", text="Text")
+        elif subtype == "COUNTER_DISPLAY":
+            content.prop(r, "text_counter_index", text="Counter")
+            fmt = content.box()
+            fmt.label(text="Counter Formatting")
+            fmt.prop(r, "custom_text_prefix", text="Prefix")
+            fmt.prop(r, "custom_text_include_counter", text="Show Counter")
+            fmt.prop(r, "custom_text_suffix", text="Suffix")
+        elif subtype == "TIMER_DISPLAY":
+            content.prop(r, "text_timer_index", text="Timer")
+        timing = header.box()
+        timing.label(text="Display Timing")
+        timing.prop(r, "custom_text_indefinite", text="Indefinite")
+        header.prop(r, "custom_text_anchor", text="Anchor")
+        header.prop(r, "custom_text_font", text="Font")
+        header.prop(r, "custom_text_color", text="Color")
+        preview_box = layout.box()
+        preview_box.label(text="Note: preview in fullscreen for best results.", icon='INFO')
+        row = preview_box.row(align=True)
+        op = row.operator("exploratory.preview_custom_text", text="Preview Custom Text", icon='HIDE_OFF')
+        op.duration = 5.0
+
 
 class ReactionCounterUpdateNode(_ReactionNodeKind):
     bl_idname = "ReactionCounterUpdateNodeType"
     bl_label  = "Counter Update"
     KIND = "COUNTER_UPDATE"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpIntSocketType", "Amount")
+        s.reaction_prop = "counter_amount"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "counter_index", text="Counter")
+        header.prop(r, "counter_op", text="Operation")
+
+
 class ReactionTimerControlNode(_ReactionNodeKind):
     bl_idname = "ReactionTimerControlNodeType"
     bl_label  = "Timer Control"
     KIND = "TIMER_CONTROL"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpBoolSocketType", "Interruptible")
+        s.reaction_prop = "interruptible"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "timer_index", text="Timer")
+        header.prop(r, "timer_op", text="Timer Operation")
+
 
 class ReactionMobilityNode(_ReactionNodeKind):
     bl_idname = "ReactionMobilityNodeType"
     bl_label  = "Mobility"
     KIND = "MOBILITY"
 
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpBoolSocketType", "Allow Movement")
+        s.reaction_prop = "mob_allow_movement"
+        s = self.inputs.new("ExpBoolSocketType", "Allow Jump")
+        s.reaction_prop = "mob_allow_jump"
+        s = self.inputs.new("ExpBoolSocketType", "Allow Sprint")
+        s.reaction_prop = "mob_allow_sprint"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+
+
 class ReactionMeshVisibilityNode(_ReactionNodeKind):
     bl_idname = "ReactionMeshVisibilityNodeType"
     bl_label  = "Mesh Visibility"
     KIND = "MESH_VISIBILITY"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpObjectSocketType", "Mesh Object")
+        s.reaction_prop = "mesh_vis_object"
+        s.use_prop_search = True
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        vs = getattr(r, "mesh_visibility", None)
+        if vs:
+            header.prop(vs, "mesh_action", text="Action")
+
 
 class ReactionResetGameNode(_ReactionNodeKind):
     bl_idname = "ReactionResetGameNodeType"
     bl_label  = "Reset Game"
     KIND = "RESET_GAME"
 
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.label(text="Reset Game on trigger", icon='FILE_REFRESH')
+
+
 class ReactionCrosshairsNode(_ReactionNodeKind):
     bl_idname = "ReactionCrosshairsNodeType"
     bl_label  = "Enable Crosshairs"
     KIND = "ENABLE_CROSSHAIRS"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpIntSocketType", "Arm Length")
+        s.reaction_prop = "crosshair_length_px"
+        s = self.inputs.new("ExpIntSocketType", "Gap")
+        s.reaction_prop = "crosshair_gap_px"
+        s = self.inputs.new("ExpIntSocketType", "Thickness")
+        s.reaction_prop = "crosshair_thickness_px"
+        s = self.inputs.new("ExpIntSocketType", "Dot Radius")
+        s.reaction_prop = "crosshair_dot_radius_px"
+        s = self.inputs.new("ExpBoolSocketType", "Indefinite")
+        s.reaction_prop = "crosshair_indefinite"
+        s = self.inputs.new("ExpFloatSocketType", "Duration")
+        s.reaction_prop = "crosshair_duration"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+        header = layout.box()
+        header.prop(r, "name", text="Name")
+        header.prop(r, "crosshair_style", text="Style")
+        header.prop(r, "crosshair_color", text="Color")
 
 
 class ReactionEnableHealthNode(_ReactionNodeKind):
@@ -1127,6 +1162,7 @@ class ReactionEnableHealthNode(_ReactionNodeKind):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
 
         box = layout.box()
         box.prop(r, "name", text="Name")
@@ -1141,6 +1177,32 @@ class ReactionDisplayHealthUINode(_ReactionNodeKind):
     bl_label  = "Display Health UI"
     KIND = "DISPLAY_HEALTH_UI"
 
+    def _is_target_character(self):
+        """Check if the Target Object socket is linked to an ObjectDataNode with use_character=True."""
+        sock = self.inputs.get("Target Object")
+        if not sock or not sock.is_linked:
+            return False
+        src_node = sock.links[0].from_node
+        return (getattr(src_node, 'bl_idname', '') == 'ObjectDataNodeType'
+                and getattr(src_node, 'use_character', False))
+
+    def _update_socket_visibility(self):
+        """Toggle HUD vs world-space sockets based on target type."""
+        is_char = self._is_target_character()
+
+        hud_names = ("Scale", "Offset X", "Offset Y")
+        world_names = ("World Scale", "World Offset Horizontal", "World Offset Vertical")
+
+        for name in hud_names:
+            sock = self.inputs.get(name)
+            if sock:
+                sock.hide = not is_char
+
+        for name in world_names:
+            sock = self.inputs.get(name)
+            if sock:
+                sock.hide = is_char
+
     def init(self, context):
         super().init(context)
 
@@ -1149,7 +1211,7 @@ class ReactionDisplayHealthUINode(_ReactionNodeKind):
         s_obj.reaction_prop = "health_ui_target_object"
         s_obj.use_prop_search = True
 
-        # Integer sockets for scale and offsets (inline with properties)
+        # HUD sockets (for character target)
         s_scale = self.inputs.new("ExpIntSocketType", "Scale")
         s_scale.reaction_prop = "health_ui_scale"
 
@@ -1159,6 +1221,26 @@ class ReactionDisplayHealthUINode(_ReactionNodeKind):
         s_offset_y = self.inputs.new("ExpIntSocketType", "Offset Y")
         s_offset_y.reaction_prop = "health_ui_offset_y"
 
+        # World-space sockets (for non-character targets)
+        s_wscale = self.inputs.new("ExpIntSocketType", "World Scale")
+        s_wscale.reaction_prop = "health_ui_world_scale"
+
+        s_woffh = self.inputs.new("ExpIntSocketType", "World Offset Horizontal")
+        s_woffh.reaction_prop = "health_ui_world_offset_h"
+
+        s_woffv = self.inputs.new("ExpIntSocketType", "World Offset Vertical")
+        s_woffv.reaction_prop = "health_ui_world_offset_v"
+
+        # Default: hide HUD sockets (no target connected = non-character)
+        for name in ("Scale", "Offset X", "Offset Y"):
+            sock = self.inputs.get(name)
+            if sock:
+                sock.hide = True
+
+    def update(self):
+        """Called when links change - update socket visibility."""
+        self._update_socket_visibility()
+
     def draw_buttons(self, context, layout):
         scn = _scene()
         idx = self.reaction_index
@@ -1166,15 +1248,52 @@ class ReactionDisplayHealthUINode(_ReactionNodeKind):
             layout.label(text="(Missing Reaction)", icon='ERROR')
             return
         r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
 
         box = layout.box()
         box.prop(r, "name", text="Name")
 
-        # Position (enum - no socket needed)
-        layout.prop(r, "health_ui_position")
+        is_char = self._is_target_character()
 
-        # Scale and Offset are drawn by their sockets inline (not here)
+        if is_char:
+            # Character target - show HUD options
+            layout.prop(r, "health_ui_position")
+            info = layout.box()
+            info.label(text="HUD health bar overlay.", icon='HEART')
+        else:
+            # Non-character target - show world-space options
+            layout.prop(r, "health_ui_world_style")
+            layout.prop(r, "health_ui_world_show_through")
+            info = layout.box()
+            info.label(text="World-space health display above object.", icon='HEART')
 
-        # Info box
+
+class ReactionAdjustHealthNode(_ReactionNodeKind):
+    bl_idname = "ReactionAdjustHealthNodeType"
+    bl_label  = "Adjust Health"
+    KIND = "ADJUST_HEALTH"
+
+    def init(self, context):
+        super().init(context)
+
+        s_obj = self.inputs.new("ExpObjectSocketType", "Target Object")
+        s_obj.reaction_prop = "adjust_health_target_object"
+        s_obj.use_prop_search = True
+
+        s_amount = self.inputs.new("ExpFloatSocketType", "Amount")
+        s_amount.reaction_prop = "adjust_health_amount"
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
         info = layout.box()
-        info.label(text="Show health bar overlay.", icon='HEART')
+        info.label(text="Positive = heal, negative = damage.", icon='HEART')

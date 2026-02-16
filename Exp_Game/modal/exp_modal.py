@@ -245,6 +245,8 @@ class ExpModal(bpy.types.Operator):
             self.moving_meshes = []
         if not hasattr(self, "grounded_platform"):
             self.grounded_platform = None
+        if not hasattr(self, "horizontal_speed"):
+            self.horizontal_speed = 0.0
 
     _initial_game_state = {}
 
@@ -835,9 +837,10 @@ class ExpModal(bpy.types.Operator):
         # ====================================
 
         # ========== HEALTH CLEANUP ==========
-        from ..reactions.exp_health import clear_all_health, disable_health_ui
+        from ..reactions.exp_health import clear_all_health, disable_health_ui, disable_all_world_health_ui
         clear_all_health()
         disable_health_ui()
+        disable_all_world_health_ui()
         # ====================================
 
         # NOTE: Do NOT call reset_fullscreen_state() here!
@@ -1029,6 +1032,7 @@ class ExpModal(bpy.types.Operator):
             self.z_velocity        = pc.vel.z
             self.is_grounded       = pc.on_ground
             self.grounded_platform = pc.ground_obj
+            self.horizontal_speed  = (pc.vel.x * pc.vel.x + pc.vel.y * pc.vel.y) ** 0.5
 
         # THIRD-PERSON ONLY:
         # Rotate character toward camera once per frame *only* in third person.

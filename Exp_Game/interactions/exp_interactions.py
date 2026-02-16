@@ -10,7 +10,7 @@ from ..reactions.exp_reactions import ( execute_property_reaction,
                              execute_timer_control_reaction, execute_sound_reaction,
                              execute_custom_action_reaction,
 )
-from ..reactions.exp_health import execute_enable_health_reaction, execute_display_health_ui_reaction
+from ..reactions.exp_health import execute_enable_health_reaction, execute_display_health_ui_reaction, execute_adjust_health_reaction
 from ..reactions.exp_transforms import execute_transform_reaction
 from ..reactions.exp_projectiles import execute_projectile_reaction, execute_hitscan_reaction
 from ..props_and_utils.exp_time import get_game_time
@@ -197,27 +197,50 @@ def log_aabb_stats():
 def init_reaction_node_cache(scene) -> int:
     """
     Build reaction_index -> node mapping at game start.
-    Also syncs all dynamic inputs to reaction properties.
-    ZERO node graph access during runtime after this.
-    Returns number of cached nodes.
+    Also syncs ALL dynamic inputs (reactions, interactions, counters, timers)
+    to their backing properties. ZERO node graph access during runtime after this.
+    Returns number of cached reaction nodes.
     """
     global _reaction_node_cache
     _reaction_node_cache.clear()
 
     reactions = getattr(scene, "reactions", [])
+    interactions = getattr(scene, "custom_interactions", [])
+    counters = getattr(scene, "counters", [])
+    timers = getattr(scene, "timers", [])
 
     for ng in bpy.data.node_groups:
         if getattr(ng, "bl_idname", "") != EXPL_TREE_ID:
             continue
         for node in ng.nodes:
+            # Reaction nodes
             r_idx = getattr(node, "reaction_index", -1)
             if r_idx >= 0:
                 _reaction_node_cache[r_idx] = node
-                # Sync dynamic inputs NOW at game start, not at runtime
                 if 0 <= r_idx < len(reactions):
-                    _sync_dynamic_inputs_at_start(reactions[r_idx], node)
+                    _sync_node_inputs_at_start(reactions[r_idx], node, "reaction_prop")
 
-    log_game("REACTION-CACHE", f"INIT cached={len(_reaction_node_cache)} reaction nodes (inputs synced)")
+            # Trigger (interaction) nodes
+            i_idx = getattr(node, "interaction_index", -1)
+            if i_idx >= 0 and 0 <= i_idx < len(interactions):
+                _sync_node_inputs_at_start(interactions[i_idx], node, "interaction_prop")
+
+            # Counter nodes
+            c_idx = getattr(node, "counter_index", -1)
+            if c_idx >= 0 and 0 <= c_idx < len(counters):
+                _sync_node_inputs_at_start(counters[c_idx], node, "counter_prop")
+
+            # Timer nodes
+            t_idx = getattr(node, "timer_index", -1)
+            if t_idx >= 0 and 0 <= t_idx < len(timers):
+                _sync_node_inputs_at_start(timers[t_idx], node, "timer_prop")
+
+            # Nodes using prop_name (trackers, action keys, etc.)
+            # These store properties directly on the node, so resolve
+            # linked sockets and write back to the node's own properties.
+            _sync_prop_name_inputs_at_start(node)
+
+    log_game("REACTION-CACHE", f"INIT cached={len(_reaction_node_cache)} reaction nodes (all inputs synced)")
     return len(_reaction_node_cache)
 
 
@@ -227,39 +250,103 @@ def reset_reaction_node_cache():
     _reaction_node_cache.clear()
 
 
-def _sync_dynamic_inputs_at_start(r, node):
+# ── Socket type → export method mapping ──────────────────────────────
+_SOCKET_EXPORT_MAP = {
+    "ExpFloatSocketType":      ("export_float",      float),
+    "ExpIntSocketType":        ("export_int",        int),
+    "ExpBoolSocketType":       ("export_bool",       bool),
+    "ExpObjectSocketType":     ("export_object",     None),
+    "ExpCollectionSocketType": ("export_collection", None),
+    "ExpActionSocketType":     ("export_action",     None),
+    "ExpVectorSocketType":     ("export_vector",     None),
+}
+
+
+def _resolve_socket_value(inp):
     """
-    Sync dynamic node inputs to reaction properties AT GAME START.
-    Called once per reaction node during init_reaction_node_cache.
-    NEVER called during runtime - all node graph access happens here.
+    Given a linked input socket, resolve the upstream data node value.
+    Returns (value, True) on success, (None, False) on failure.
+    """
+    if not inp.is_linked or not inp.links:
+        return None, False
+
+    src_node = inp.links[0].from_node
+    bl_id = getattr(inp, "bl_idname", "")
+
+    entry = _SOCKET_EXPORT_MAP.get(bl_id)
+    if not entry:
+        return None, False
+
+    export_method, cast_fn = entry
+    if not hasattr(src_node, export_method):
+        return None, False
+
+    val = getattr(src_node, export_method)()
+    if val is None:
+        return None, False
+
+    if cast_fn:
+        try:
+            val = cast_fn(val)
+        except (TypeError, ValueError):
+            return None, False
+
+    return val, True
+
+
+def _sync_node_inputs_at_start(target_obj, node, prop_attr):
+    """
+    Generic sync: for every linked input socket on `node` that has
+    `prop_attr` set (e.g. "reaction_prop", "interaction_prop"),
+    resolve the upstream data node value and write it to `target_obj`.
+
+    Called once per node at game start. NEVER at runtime.
     """
     for inp in getattr(node, "inputs", []):
         if not getattr(inp, "is_linked", False):
             continue
 
-        socket_name = inp.name
-        link = inp.links[0]
-        src_node = link.from_node
+        prop_name = getattr(inp, prop_attr, "")
+        if not prop_name:
+            continue
 
-        # Resolve based on socket name and node type
-        if socket_name == "Action" and hasattr(src_node, "export_action"):
-            action = src_node.export_action()
-            if action:
-                r.custom_action_action = action
+        if not hasattr(target_obj, prop_name):
+            continue
 
-        elif socket_name == "Object" and hasattr(src_node, "export_object"):
-            obj = src_node.export_object()
-            if obj:
-                r.custom_action_target = obj
+        val, ok = _resolve_socket_value(inp)
+        if not ok:
+            continue
 
-        elif socket_name == "Loop?" and hasattr(src_node, "export_bool"):
-            r.custom_action_loop = src_node.export_bool()
+        try:
+            setattr(target_obj, prop_name, val)
+        except Exception:
+            pass
 
-        elif socket_name == "Loop Duration" and hasattr(src_node, "export_float"):
-            r.custom_action_loop_duration = src_node.export_float()
 
-        elif socket_name == "Speed" and hasattr(src_node, "export_float"):
-            r.custom_action_speed = src_node.export_float()
+def _sync_prop_name_inputs_at_start(node):
+    """
+    For nodes that use prop_name (trackers, action keys, etc.),
+    resolve linked sockets and write back to the node's own properties.
+    """
+    for inp in getattr(node, "inputs", []):
+        if not getattr(inp, "is_linked", False):
+            continue
+
+        prop_name = getattr(inp, "prop_name", "")
+        if not prop_name:
+            continue
+
+        if not hasattr(node, prop_name):
+            continue
+
+        val, ok = _resolve_socket_value(inp)
+        if not ok:
+            continue
+
+        try:
+            setattr(node, prop_name, val)
+        except Exception:
+            pass
 
 
 def _execute_reaction_now(r):
@@ -312,6 +399,8 @@ def _execute_reaction_now(r):
         execute_enable_health_reaction(r)
     elif t == "DISPLAY_HEALTH_UI":
         execute_display_health_ui_reaction(r)
+    elif t == "ADJUST_HEALTH":
+        execute_adjust_health_reaction(r)
 
 
 def _execute_reaction_list_now(reactions):

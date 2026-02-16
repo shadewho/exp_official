@@ -89,7 +89,9 @@ def _eval_condition_tree(tree: dict, world_state: dict) -> bool:
         equals = tree.get('equals', True)
 
         if target_state == 'GROUNDED':
-            is_match = char_state in ('IDLE', 'WALKING', 'RUNNING', 'SPRINTING', 'CROUCHING')
+            is_match = char_state in ('IDLE', 'WALKING', 'RUNNING')
+        elif target_state == 'AIRBORNE':
+            is_match = char_state in ('JUMPING', 'FALLING', 'AIRBORNE')
         else:
             is_match = (char_state == target_state)
 

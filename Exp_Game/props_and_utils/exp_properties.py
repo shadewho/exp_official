@@ -193,11 +193,12 @@ def add_scene_properties():
             ("PROXY",  "Proxy Mesh & Spawn",          "Proxy mesh list and spawn settings"),
             ("UPLOAD", "Upload Helper",               "Six-step upload helper"),
             ("PERF",   "Performance",                 "Live performance + culling tools"),
-            ("PHYS",   "Character Physics & View",    "Kinematic controller & view tuning"),
+            ("PHYS",   "Physics",                     "Kinematic controller tuning"),
+            ("VIEW",   "View",                        "Camera and view settings"),
             ("DEV",    "Developer Tools",             "Debug toggles and diagnostic tools"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'DEV'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'VIEW', 'DEV'}
     )
 
     #---proxy mesh --#
@@ -365,6 +366,7 @@ class CharacterAnimSlotPG(bpy.types.PropertyGroup):
         description="Crossfade duration when entering this state (seconds)",
         default=0.15, min=0.0, max=1.0
     )
+
 
 
 def get_anim_slot(scene, state_name):

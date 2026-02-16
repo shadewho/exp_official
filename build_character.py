@@ -1,23 +1,17 @@
 #Exploratory/build_character.py
 from .exp_preferences import get_addon_path
-from .Exp_Game.props_and_utils.exp_properties import (
-    ANIM_STATE_DEFAULTS,
-    get_anim_slot,
-    ensure_default_slots,
-)
-from .Exp_Game.audio.exp_audio import extract_packed_sound
 import bpy
 import os
 
 # ------------------------------------------------------------------------
-# 4) The operator that appends skin + actions + sounds via collection slots
+# 4) The operator that appends skin + actions
 # ------------------------------------------------------------------------
 class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     """
     One operator that:
       1) Appends the skin (default or custom)
-      2) Ensures animation slot collection exists with defaults
-      3) For each slot: loads default action/sound if not already set
+      2) Appends each action (default or custom)
+      3) Assigns appended actions to scene.character_actions pointers
     """
     bl_idname = "exploratory.build_character"
     bl_label = "Build Character (Skin + Actions)"
@@ -26,10 +20,17 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         get_addon_path(),
         "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend"
     )
-    DEFAULT_ASSETS_BLEND = os.path.join(
+    DEFAULT_ANIMS_BLEND = os.path.join(
         get_addon_path(),
         "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend"
     )
+
+    DEFAULT_IDLE_NAME = "exp_idle"
+    DEFAULT_WALK_NAME = "exp_walk"
+    DEFAULT_RUN_NAME  = "exp_run"
+    DEFAULT_JUMP_NAME = "exp_jump"
+    DEFAULT_FALL_NAME = "exp_fall"
+    DEFAULT_LAND_NAME = "exp_land"
 
     def execute(self, context):
         prefs = context.preferences.addons["Exploratory"].preferences
@@ -47,6 +48,7 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 "Character spawn is locked; skipping skin append."
             )
         else:
+            # If the armature already exists in that blend, remove it first
             try:
                 with bpy.data.libraries.load(skin_blend, link=False) as (df, _):
                     lib_names = set(df.objects)
@@ -58,51 +60,94 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
             if existing_arm and existing_arm.name in lib_names:
                 bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
 
+            # Append skin objects
             self.append_all_skin_objects(
                 use_default  = prefs.skin_use_default,
                 custom_blend = prefs.skin_custom_blend
             )
 
-        # ─── 2) Animation Slots (actions + sounds) ────────────────────────────
-        if getattr(scene, "character_slots_lock", False):
-            self.report({'INFO'}, "Animation slots lock is ON; skipping slot assignment.")
+        # ─── 2) Actions ───────────────────────────────────────────────────────
+        if scene.character_actions_lock:
+            self.report({'INFO'}, "Character actions lock is ON; skipping action assignment.")
         else:
-            ensure_default_slots(scene)
-            blend_path = self.DEFAULT_ASSETS_BLEND
-            addon_root = get_addon_path()
-            temp_sounds_dir = os.path.join(addon_root, "exp_assets", "Sounds", "temp_sounds")
+            char_actions = scene.character_actions
 
-            for state_name, cfg in ANIM_STATE_DEFAULTS.items():
-                slot = get_anim_slot(scene, state_name)
-                if not slot:
-                    continue
+            def process_action(state_label, use_default, custom_blend,
+                               enum_prop_name, default_name, target_attr):
+                # 1) pick the .blend file
+                blend = self.DEFAULT_ANIMS_BLEND if use_default else custom_blend
+                # 2) defer reading the enum until we know we need it
+                if use_default:
+                    action_name = default_name
+                else:
+                    action_name = getattr(prefs, enum_prop_name)
+                if not action_name:
+                    return
 
-                # Load default action if slot has none
-                action_name = cfg["action"]
-                if not slot.action and action_name:
-                    if not bpy.data.actions.get(action_name) and os.path.isfile(blend_path):
-                        with bpy.data.libraries.load(blend_path, link=False) as (df, dt):
-                            if action_name in df.actions:
-                                dt.actions = [action_name]
-                    act = bpy.data.actions.get(action_name)
-                    if act:
-                        slot.action = act
+                # 3) load it if it isn’t already present
+                if not bpy.data.actions.get(action_name) and os.path.isfile(blend):
+                    with bpy.data.libraries.load(blend, link=False) as (df, dt):
+                        if action_name in df.actions:
+                            dt.actions = [action_name]
 
-                # Load default sound if slot has none
-                sound_name = cfg["sound"]
-                if not slot.sound and sound_name:
-                    if not bpy.data.sounds.get(sound_name) and os.path.isfile(blend_path):
-                        with bpy.data.libraries.load(blend_path, link=False) as (df, dt):
-                            if sound_name in df.sounds:
-                                dt.sounds = [sound_name]
-                    snd = bpy.data.sounds.get(sound_name)
-                    if snd:
-                        slot.sound = snd
-                        temp_path = extract_packed_sound(snd, temp_sounds_dir)
-                        if temp_path:
-                            snd.filepath = temp_path
+                # 4) assign it to your scene pointers
+                act = bpy.data.actions.get(action_name)
+                if act:
+                    setattr(char_actions, target_attr, act)
+                else:
+                    print(f"[{state_label}] not found in {blend!r}")
 
+            # call it, passing the *name* of the enum prop (string), not its value
+            process_action(
+                "Idle",
+                prefs.idle_use_default_action,
+                prefs.idle_custom_blend_action,
+                "idle_action_enum_prop",
+                self.DEFAULT_IDLE_NAME,
+                "idle_action"
+            )
+            process_action(
+                "Walk",
+                prefs.walk_use_default_action,
+                prefs.walk_custom_blend_action,
+                "walk_action_enum_prop",
+                self.DEFAULT_WALK_NAME,
+                "walk_action"
+            )
+            process_action(
+                "Run",
+                prefs.run_use_default_action,
+                prefs.run_custom_blend_action,
+                "run_action_enum_prop",
+                self.DEFAULT_RUN_NAME,
+                "run_action"
+            )
+            process_action(
+                "Jump",
+                prefs.jump_use_default_action,
+                prefs.jump_custom_blend_action,
+                "jump_action_enum_prop",
+                self.DEFAULT_JUMP_NAME,
+                "jump_action"
+            )
+            process_action(
+                "Fall",
+                prefs.fall_use_default_action,
+                prefs.fall_custom_blend_action,
+                "fall_action_enum_prop",
+                self.DEFAULT_FALL_NAME,
+                "fall_action"
+            )
+            process_action(
+                "Land",
+                prefs.land_use_default_action,
+                prefs.land_custom_blend_action,
+                "land_action_enum_prop",
+                self.DEFAULT_LAND_NAME,
+                "land_action"
+            )
         # ─── Deselect everything so the character has no outline ────────────────
+        # (clears both the selection and the active object)
         for obj in context.view_layer.objects:
             obj.select_set(False)
         context.view_layer.objects.active = None
@@ -172,6 +217,25 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 scene.collection.objects.link(data_obj)
             else:
                 print(f"Object '{name}' not found in bpy.data.objects.")
+
+    # ----------------------------------------------------------------
+    # Helper: ensures an action is in bpy.data.actions
+    # ----------------------------------------------------------------
+    def ensure_action_in_file(self, blend_path, action_name, state_label):
+        if not blend_path or not os.path.isfile(blend_path):
+            return None
+
+        existing = bpy.data.actions.get(action_name)
+        if existing:
+            return existing
+
+        with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
+            if action_name in data_from.actions:
+                data_to.actions = [action_name]
+            else:
+                return None
+
+        return bpy.data.actions.get(action_name)
 
 
 

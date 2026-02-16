@@ -120,8 +120,8 @@ def spawn_user():
         cam_dir = dir_from_pitch_yaw(pitch, yaw)
 
     elif vm == 'FIRST':
-        # FIRST: head-height, tiny distance, oriented by current character yaw + UI pitch
-        pitch = math.radians(float(getattr(scene, "pitch_angle", 15.0)))
+        # FIRST: head-height, tiny distance, oriented by current character yaw (level horizon)
+        pitch = 0.0
         yaw   = arm_yaw
         # Very small non-zero distance to keep Blender happy
         dist  = 0.0006
