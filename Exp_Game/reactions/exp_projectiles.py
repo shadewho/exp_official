@@ -92,7 +92,8 @@ _pending_projectile_job_id: int | None = None
 #     "bool_writers":    [node, ...],         # Impact → BoolDataNode
 #     "location_writers": [node, ...],        # Impact Location → FloatVectorDataNode
 #     "object_writers":  [node, ...],         # Hit Object → ObjectDataNode
-#     "normal_writers":  [node, ...],         # Hit Normal → FloatVectorDataNode
+#     "location_prop_writers": [(r_idx, prop), ...],  # Impact Location → reaction prop
+#     "object_prop_writers":  [(r_idx, prop), ...],   # Hit Object → reaction prop
 # }
 _impact_cache: dict[int, dict] = {}
 
@@ -146,6 +147,21 @@ def _build_compare_chain_entry(compare_node, link, data_type_suffix, source_outp
     }
 
 
+def _try_reaction_prop_writer(to_node, link) -> tuple | None:
+    """
+    Check if a link target is a reaction node input socket.
+    Returns (target_reaction_index, prop_name) or None.
+    """
+    target_r_idx = getattr(to_node, "reaction_index", -1)
+    if target_r_idx < 0:
+        return None
+    to_socket = getattr(link, "to_socket", None)
+    prop_name = getattr(to_socket, "reaction_prop", "") if to_socket else ""
+    if not prop_name:
+        return None
+    return (target_r_idx, prop_name)
+
+
 def init_impact_cache(scene) -> int:
     """
     Build the impact cache at game start.
@@ -187,8 +203,10 @@ def init_impact_cache(scene) -> int:
         bool_writers = []
         location_writers = []
         object_writers = []
-        normal_writers = []
         compare_chains = []
+        # Reaction property writers: impact data → reaction backing props
+        location_prop_writers = []  # [(target_reaction_idx, prop_name), ...]
+        object_prop_writers = []
 
         for sock in getattr(src_node, "outputs", []):
             sock_name = getattr(sock, "name", "")
@@ -231,6 +249,11 @@ def init_impact_cache(scene) -> int:
                         entry = _build_compare_chain_entry(to_node, lk, "vector", "Impact Location")
                         if entry:
                             compare_chains.append(entry)
+                    else:
+                        # Reaction node input: write impact location to backing prop
+                        pw = _try_reaction_prop_writer(to_node, lk)
+                        if pw:
+                            location_prop_writers.append(pw)
 
             elif sock_name == "Hit Object":
                 for lk in getattr(sock, "links", []):
@@ -243,33 +266,51 @@ def init_impact_cache(scene) -> int:
                         entry = _build_compare_chain_entry(to_node, lk, "object", "Hit Object")
                         if entry:
                             compare_chains.append(entry)
-
-            elif sock_name == "Hit Normal":
-                for lk in getattr(sock, "links", []):
-                    to_node = getattr(lk, "to_node", None)
-                    if not to_node:
-                        continue
-                    if callable(getattr(to_node, "write_from_graph", None)):
-                        normal_writers.append(to_node)
-                    elif getattr(to_node, "bl_idname", "") == "CompareNodeType":
-                        entry = _build_compare_chain_entry(to_node, lk, "vector", "Hit Normal")
-                        if entry:
-                            compare_chains.append(entry)
+                    else:
+                        pw = _try_reaction_prop_writer(to_node, lk)
+                        if pw:
+                            object_prop_writers.append(pw)
 
         _impact_cache[r_idx] = {
             "trigger_indices": trigger_indices,
             "bool_writers": bool_writers,
             "location_writers": location_writers,
             "object_writers": object_writers,
-            "normal_writers": normal_writers,
             "compare_chains": compare_chains,
+            "location_prop_writers": location_prop_writers,
+            "object_prop_writers": object_prop_writers,
         }
         cached_count += 1
         if compare_chains:
             log_game("PROJECTILE", f"IMPACT_CACHE r_idx={r_idx} compare_chains={len(compare_chains)}")
+        prop_total = len(location_prop_writers) + len(object_prop_writers)
+        if prop_total:
+            log_game("PROJECTILE", f"IMPACT_CACHE r_idx={r_idx} prop_writers loc={len(location_prop_writers)} obj={len(object_prop_writers)}")
 
     log_game("PROJECTILE", f"IMPACT_CACHE built for {cached_count} reactions")
     return cached_count
+
+
+def reset_impact_prop_writers():
+    """
+    Clear reaction properties that receive dynamic impact data.
+    Called at game start and reset so no stale values carry over.
+    """
+    scn = bpy.context.scene
+    reactions = getattr(scn, "reactions", [])
+    for cache_entry in _impact_cache.values():
+        for target_r_idx, prop_name in cache_entry.get("location_prop_writers", []):
+            try:
+                if 0 <= target_r_idx < len(reactions):
+                    setattr(reactions[target_r_idx], prop_name, (0.0, 0.0, 0.0))
+            except Exception:
+                pass
+        for target_r_idx, prop_name in cache_entry.get("object_prop_writers", []):
+            try:
+                if 0 <= target_r_idx < len(reactions):
+                    setattr(reactions[target_r_idx], prop_name, None)
+            except Exception:
+                pass
 
 
 def _validate_node_bindings_at_startup(scene, reactions):
@@ -353,7 +394,7 @@ def _flush_impact_events_to_graph():
 # --- Impact data push helpers (use _impact_cache built at startup) -----------
 
 def _push_impact_location_to_links(r_idx, vec):
-    """Send vec (x,y,z) to cached location writer nodes."""
+    """Send vec (x,y,z) to cached location writer nodes and reaction properties."""
     cache_entry = _impact_cache.get(r_idx)
     if not cache_entry:
         return
@@ -363,6 +404,17 @@ def _push_impact_location_to_links(r_idx, vec):
             writer_node.write_from_graph(vec, timestamp=timestamp)
         except Exception:
             pass
+    # Write to reaction backing properties (e.g. Transform Location)
+    prop_writers = cache_entry.get("location_prop_writers")
+    if prop_writers:
+        scn = bpy.context.scene
+        reactions = getattr(scn, "reactions", [])
+        for target_r_idx, prop_name in prop_writers:
+            try:
+                if 0 <= target_r_idx < len(reactions):
+                    setattr(reactions[target_r_idx], prop_name, vec)
+            except Exception:
+                pass
 
 
 def _push_impact_bool_to_links(r_idx):
@@ -378,21 +430,8 @@ def _push_impact_bool_to_links(r_idx):
             pass
 
 
-def _push_impact_normal_to_links(r_idx, vec):
-    """Send normal vec (x,y,z) to cached normal writer nodes."""
-    cache_entry = _impact_cache.get(r_idx)
-    if not cache_entry:
-        return
-    timestamp = get_game_time()
-    for writer_node in cache_entry["normal_writers"]:
-        try:
-            writer_node.write_from_graph(vec, timestamp=timestamp)
-        except Exception:
-            pass
-
-
 def _push_impact_object_to_links(r_idx, obj):
-    """Send hit object to cached object writer nodes."""
+    """Send hit object to cached object writer nodes and reaction properties."""
     cache_entry = _impact_cache.get(r_idx)
     if not cache_entry:
         return
@@ -402,6 +441,17 @@ def _push_impact_object_to_links(r_idx, obj):
             writer_node.write_from_graph(obj, timestamp=timestamp)
         except Exception:
             pass
+    # Write to reaction backing properties (e.g. Transform target object)
+    prop_writers = cache_entry.get("object_prop_writers")
+    if prop_writers:
+        scn = bpy.context.scene
+        reactions = getattr(scn, "reactions", [])
+        for target_r_idx, prop_name in prop_writers:
+            try:
+                if 0 <= target_r_idx < len(reactions):
+                    setattr(reactions[target_r_idx], prop_name, obj)
+            except Exception:
+                pass
 
 
 def _evaluate_single_compare_chain(chain, value):
@@ -438,7 +488,7 @@ def _evaluate_single_compare_chain(chain, value):
             pass
 
 
-def _push_impact_to_compare_chains(r_idx, hit_obj=None, hit_loc=None, hit_normal=None):
+def _push_impact_to_compare_chains(r_idx, hit_obj=None, hit_loc=None):
     """Evaluate CompareNode chains for an impact event."""
     cache_entry = _impact_cache.get(r_idx)
     if not cache_entry:
@@ -455,8 +505,6 @@ def _push_impact_to_compare_chains(r_idx, hit_obj=None, hit_loc=None, hit_normal
             _evaluate_single_compare_chain(chain, True)
         elif src == "Impact Location" and hit_loc is not None:
             _evaluate_single_compare_chain(chain, hit_loc)
-        elif src == "Hit Normal" and hit_normal is not None:
-            _evaluate_single_compare_chain(chain, hit_normal)
 
 
 # ---------- Public helpers ----------
@@ -1050,7 +1098,7 @@ def update_projectile_tasks(dt: float):
     Advance active projectiles by dt (seconds). O(1) when idle.
     On contact:
       • freeze visual at impact (and parent to dynamic hit object),
-      • push impact data to linked nodes (bool, location, normal, object),
+      • push impact data to linked nodes (bool, location, object),
       • fire impact triggers,
       • remove the sim entry (visual remains for FIFO/eviction).
     """
@@ -1085,7 +1133,6 @@ def update_projectile_tasks(dt: float):
         hit = False
         hit_loc = None
         hit_obj = None
-        hit_normal = None
 
         if seg_len > 1e-7:
             ok, loc, normal, obj, _d = _raycast_any(op, old_pos, seg / seg_len, seg_len)
@@ -1093,7 +1140,6 @@ def update_projectile_tasks(dt: float):
                 hit = True
                 hit_loc = loc
                 hit_obj = obj
-                hit_normal = normal
 
         if hit and p['stop_on_contact']:
             # Freeze visual at impact (stick to dynamic if present)
@@ -1112,14 +1158,11 @@ def update_projectile_tasks(dt: float):
             r_idx = _owner_key(p.get('r_id'))
             _push_impact_location_to_links(r_idx, (hit_loc.x, hit_loc.y, hit_loc.z))
             _push_impact_bool_to_links(r_idx)
-            if hit_normal:
-                _push_impact_normal_to_links(r_idx, (hit_normal.x, hit_normal.y, hit_normal.z))
             if hit_obj:
                 _push_impact_object_to_links(r_idx, hit_obj)
             _push_impact_to_compare_chains(
                 r_idx, hit_obj=hit_obj,
                 hit_loc=(hit_loc.x, hit_loc.y, hit_loc.z),
-                hit_normal=(hit_normal.x, hit_normal.y, hit_normal.z) if hit_normal else None,
             )
             _emit_impact_event(p.get('r_id'), hit_loc, now)
 
@@ -1391,16 +1434,12 @@ def process_hitscan_results(result) -> int:
             r_idx = int(hs_data["owner_key"])
             _push_impact_location_to_links(r_idx, (impact.x, impact.y, impact.z))
             _push_impact_bool_to_links(r_idx)
-            normal = res.get("normal")
-            if normal:
-                _push_impact_normal_to_links(r_idx, normal)
             hit_obj = dynamic_obj_lookup.get(hit_obj_id) if hit_obj_id else None
             if hit_obj:
                 _push_impact_object_to_links(r_idx, hit_obj)
             _push_impact_to_compare_chains(
                 r_idx, hit_obj=hit_obj,
                 hit_loc=(impact.x, impact.y, impact.z),
-                hit_normal=normal,
             )
             _emit_impact_event(r, impact, now)
             dist = res.get("distance", 0.0)
@@ -1625,9 +1664,6 @@ def process_projectile_results(result) -> int:
                 r_idx = int(impact.get("owner_key", -1))
                 _push_impact_location_to_links(r_idx, (pos_v.x, pos_v.y, pos_v.z))
                 _push_impact_bool_to_links(r_idx)
-                normal = impact.get("normal")
-                if normal:
-                    _push_impact_normal_to_links(r_idx, normal)
                 hit_obj_id = impact.get("obj_id")
                 hit_obj = dynamic_obj_lookup.get(hit_obj_id) if hit_obj_id else None
                 if hit_obj:
@@ -1635,7 +1671,6 @@ def process_projectile_results(result) -> int:
                 _push_impact_to_compare_chains(
                     r_idx, hit_obj=hit_obj,
                     hit_loc=(pos_v.x, pos_v.y, pos_v.z),
-                    hit_normal=normal,
                 )
                 _emit_impact_event(r, pos_v, get_game_time())
                 log_game("PROJECTILE", f"IMPACT cid={client_id} source={hit_source} pos=({pos_v.x:.2f},{pos_v.y:.2f},{pos_v.z:.2f})")

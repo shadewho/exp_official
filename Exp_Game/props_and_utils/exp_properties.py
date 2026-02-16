@@ -209,11 +209,10 @@ def add_scene_properties():
             ("PERF",   "Performance",                 "Live performance + culling tools"),
             ("PHYS",   "Physics",                     "Kinematic controller tuning"),
             ("VIEW",   "View",                        "Camera and view settings"),
-            ("DEV",    "Developer Tools",             "Debug toggles and diagnostic tools"),
             ("ASSETS", "Assets",                      "Mark datablocks as game assets"),
         ],
         options={'ENUM_FLAG'},
-        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'VIEW', 'DEV', 'ASSETS'}
+        default={'CHAR', 'PROXY', 'UPLOAD', 'PERF', 'PHYS', 'VIEW', 'ASSETS'}
     )
 
     #---proxy mesh --#

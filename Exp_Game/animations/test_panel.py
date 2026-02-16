@@ -139,11 +139,13 @@ def get_test_controller() -> AnimationController:
 def reset_test_controller():
     global _test_controller, _test_engine
     if _test_engine is not None:
-        import os
-        log_path = "C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt"
-        log_dir = os.path.dirname(log_path)
-        if os.path.exists(log_dir):
-            export_game_log(log_path)
+        try:
+            import os
+            log_dir = os.path.join(os.path.expanduser("~"), "Desktop", "engine_output_files")
+            os.makedirs(log_dir, exist_ok=True)
+            export_game_log(os.path.join(log_dir, "diagnostics_latest.txt"))
+        except Exception:
+            pass
         clear_log()
         _test_engine.shutdown()
         _test_engine = None

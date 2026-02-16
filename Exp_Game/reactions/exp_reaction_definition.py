@@ -204,6 +204,48 @@ class EXPLORATORY_OT_DuplicateGlobalReaction(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _update_custom_action_loop(self, context):
+    """Hide/show Loop Duration socket on Custom Action node."""
+    scn = context.scene
+    idx = -1
+    for i, r in enumerate(scn.reactions):
+        if r == self:
+            idx = i
+            break
+    if idx < 0:
+        return
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            if getattr(node, "reaction_index", -1) == idx:
+                sock = node.inputs.get("Loop Duration")
+                if sock:
+                    sock.hide = not self.custom_action_loop
+                return
+
+
+def _update_char_action_mode(self, context):
+    """Hide/show Loop Duration socket on Character Action node."""
+    scn = context.scene
+    idx = -1
+    for i, r in enumerate(scn.reactions):
+        if r == self:
+            idx = i
+            break
+    if idx < 0:
+        return
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            if getattr(node, "reaction_index", -1) == idx:
+                sock = node.inputs.get("Loop Duration")
+                if sock:
+                    sock.hide = (self.char_action_mode != "LOOP")
+                return
+
+
 def _update_transform_mode(self, context):
     """Update socket visibility on the Transform node when mode changes."""
     scn = context.scene
@@ -228,6 +270,54 @@ def _update_transform_mode(self, context):
                 if arm:
                     arm.hide = (self.transform_mode != "TO_BONE")
                 return
+
+
+def _update_bone_group_toggle(self, context):
+    """Hide/show Bone Group Armature socket when bone group toggle changes (Custom Action only)."""
+    scn = context.scene
+    idx = -1
+    for i, r in enumerate(scn.reactions):
+        if r == self:
+            idx = i
+            break
+    if idx < 0:
+        return
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            if getattr(node, "reaction_index", -1) == idx:
+                node_type = getattr(node, "bl_idname", "")
+                # Character Action has no armature socket (uses scene.target_armature)
+                if node_type == "ReactionCustomActionNodeType":
+                    sock = node.inputs.get("Bone Group Armature")
+                    if sock:
+                        sock.hide = not self.custom_action_use_bone_group
+                return
+
+
+def _update_crosshair_indefinite(self, context):
+    """Hide/show Duration socket on the owning crosshairs node (runs outside draw context)."""
+    scn = context.scene if context else None
+    if not scn or not hasattr(scn, "reactions"):
+        return
+    r_idx = -1
+    for i, r in enumerate(scn.reactions):
+        if r == self:
+            r_idx = i
+            break
+    if r_idx < 0:
+        return
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            if getattr(node, "bl_idname", "") == "ReactionCrosshairsNodeType":
+                if getattr(node, "reaction_index", -1) == r_idx:
+                    dur_sock = node.inputs.get("Duration")
+                    if dur_sock:
+                        dur_sock.hide = bool(self.crosshair_indefinite)
+                    return
 
 
 class ReactionDefinition(bpy.types.PropertyGroup):
@@ -261,6 +351,7 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("DELAY",             "Delay (Utility)",      "Pause before continuing to next reactions"),
             ("PARENTING",         "Parent / Unparent",    "Parent to an object/armature bone, or restore original parent"),
             ("TRACK_TO",          "Track To",             "Move/chase from A to B with reroute & ground snap"),
+            ("TRACK_TO_STOP",     "Track To Stop",        "Stop a specific object's active tracking"),
             ("ENABLE_HEALTH",     "Enable Health",        "Attach health component to an object"),
             ("DISPLAY_HEALTH_UI", "Display Health UI",    "Show health bar on screen"),
             ("ADJUST_HEALTH",     "Adjust Health",        "Add or subtract health from an object"),
@@ -298,7 +389,8 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("PLAY_ONCE", "Play Once", "Play the action once and return to default"),
             ("LOOP", "Loop", "Loop the action for up to loop_duration")
         ],
-        default="PLAY_ONCE"
+        default="PLAY_ONCE",
+        update=_update_char_action_mode,
     )
     char_action_blend_time: bpy.props.FloatProperty(
         name="Blend Time",
@@ -307,23 +399,17 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         max=2.0,
         description="Fade/transition time in seconds when starting this animation"
     )
-    char_action_bone_group: bpy.props.EnumProperty(
-        name="Bone Group",
-        items=[
-            ("ALL", "Full Body", "Apply to entire body"),
-            ("UPPER_BODY", "Upper Body", "Spine, arms, head, neck"),
-            ("LOWER_BODY", "Lower Body", "Hips, legs"),
-            ("ARM_L", "Left Arm", "Left arm only"),
-            ("ARM_R", "Right Arm", "Right arm only"),
-            ("ARMS", "Both Arms", "Both arms"),
-            ("LEG_L", "Left Leg", "Left leg only"),
-            ("LEG_R", "Right Leg", "Right leg only"),
-            ("LEGS", "Both Legs", "Both legs"),
-            ("HEAD_NECK", "Head & Neck", "Head and neck only"),
-            ("SPINE", "Spine Only", "Spine bones only"),
-        ],
-        default="ALL",
-        description="Which body part to affect with this animation"
+    # -- Bone group properties (Character Action) --
+    # No armature pointer needed — always resolves from scene.target_armature
+    char_action_use_bone_group: bpy.props.BoolProperty(
+        name="Use Bone Group",
+        default=False,
+        description="Enable to filter animation to a specific bone collection on the character armature",
+    )
+    char_action_bone_group_name: bpy.props.StringProperty(
+        name="Bone Collection",
+        default="",
+        description="Name of the bone collection to use as the body part mask",
     )
 
     #--------------------------------------------------------
@@ -594,7 +680,8 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     custom_action_loop: bpy.props.BoolProperty(
         name="Loop?",
         default=False,
-        description="If True, the custom action loops until loop_duration is reached"
+        description="If True, the custom action loops until loop_duration is reached",
+        update=_update_custom_action_loop,
     )
 
     custom_action_loop_duration: bpy.props.FloatProperty(
@@ -607,6 +694,24 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     custom_action_message: bpy.props.StringProperty(
         name="Details about your custom action",
         default=""
+    )
+
+    # -- Bone group properties (Custom Action) --
+    custom_action_use_bone_group: bpy.props.BoolProperty(
+        name="Use Bone Group",
+        default=False,
+        description="Enable to filter animation to a specific bone collection",
+        update=_update_bone_group_toggle,
+    )
+    custom_action_bone_group_armature: bpy.props.PointerProperty(
+        name="Bone Group Armature",
+        type=bpy.types.Object,
+        description="Armature whose bone collection defines the body part mask",
+    )
+    custom_action_bone_group_name: bpy.props.StringProperty(
+        name="Bone Collection",
+        default="",
+        description="Name of the bone collection to use as the body part mask",
     )
 
     ###########################################
@@ -779,7 +884,8 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     )
     crosshair_indefinite: bpy.props.BoolProperty(
         name="Indefinite?", default=True,
-        description="If True, stays until reset or disabled"
+        description="If True, stays until reset or disabled",
+        update=lambda self, ctx: _update_crosshair_indefinite(self, ctx),
     )
     crosshair_duration: bpy.props.FloatProperty(
         name="Duration (sec)", default=5.0, min=0.0,
@@ -1009,6 +1115,15 @@ class ReactionDefinition(bpy.types.PropertyGroup):
         type=bpy.types.Object,
         description="Object to face while tracking"
     )
+    # --------------------------------------------------
+    # TRACK TO STOP
+    # --------------------------------------------------
+    track_stop_object: bpy.props.PointerProperty(
+        name="Target Object",
+        type=bpy.types.Object,
+        description="Object whose active tracking should be stopped"
+    )
+
     track_face_axis: bpy.props.EnumProperty(
         name="Forward Axis",
         items=[

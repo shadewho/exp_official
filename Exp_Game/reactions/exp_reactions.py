@@ -396,12 +396,28 @@ def reset_all_tasks():
         pass
 
 
+def _resolve_bone_group_mask(r, prefix):
+    """Resolve bone collection to numpy mask. Returns None if invalid."""
+    arm = getattr(r, f"{prefix}_bone_group_armature", None)
+    name = getattr(r, f"{prefix}_bone_group_name", "")
+    if not arm or not name or arm.type != 'ARMATURE' or not arm.data:
+        return None
+    coll = arm.data.collections_all.get(name)
+    if not coll:
+        return None
+    bone_names = [b.name for b in coll.bones]
+    if not bone_names:
+        return None
+    from ..animations.bone_groups import create_blend_mask_from_bone_names
+    return create_blend_mask_from_bone_names(bone_names)
+
+
 def execute_char_action_reaction(r):
     """
     Execute a character action reaction.
 
-    If bone_group is ALL: uses AnimationController for full body
-    If bone_group is partial: uses BlendSystem to overlay on specific body part
+    If use_bone_group is off: uses AnimationController for full body
+    If use_bone_group is on: uses BlendSystem to overlay on the selected bone collection
     """
     from ..modal.exp_modal import get_active_modal_operator
     from ..animations.blend_system import get_blend_system
@@ -431,11 +447,11 @@ def execute_char_action_reaction(r):
     loop = (mode == "LOOP")
     speed = max(0.05, float(getattr(r, "char_action_speed", 1.0) or 1.0))
     blend_time = float(getattr(r, "char_action_blend_time", 0.15) or 0.15)
-    bone_group = getattr(r, "char_action_bone_group", "ALL")
+    use_bone_group = getattr(r, "char_action_use_bone_group", False)
     loop_duration = float(getattr(r, "char_action_loop_duration", 10.0) or 10.0)
 
-    # If full body, use AnimationController directly
-    if bone_group == "ALL":
+    # If no bone group, use AnimationController for full body
+    if not use_bone_group:
         ctrl.play(
             armature.name,
             action_name,
@@ -447,22 +463,36 @@ def execute_char_action_reaction(r):
         )
         log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} body=ALL speed={speed:.2f}")
     else:
-        # Partial body - use BlendSystem overlay
-        # Locomotion continues normally, overlay plays on specific bones
+        # Partial body via bone collection on target_armature
+        coll_name = getattr(r, "char_action_bone_group_name", "")
+        if not coll_name or not armature.data:
+            log_game("ANIMATIONS", f"CHAR_ACTION_SKIP invalid_bone_group anim={action_name}")
+            return
+        coll = armature.data.collections_all.get(coll_name)
+        if not coll:
+            log_game("ANIMATIONS", f"CHAR_ACTION_SKIP collection_not_found anim={action_name} collection={coll_name}")
+            return
+        bone_names = [b.name for b in coll.bones]
+        if not bone_names:
+            log_game("ANIMATIONS", f"CHAR_ACTION_SKIP empty_collection anim={action_name} collection={coll_name}")
+            return
+        from ..animations.bone_groups import create_blend_mask_from_bone_names
+        mask_weights = create_blend_mask_from_bone_names(bone_names)
+        if mask_weights is None:
+            log_game("ANIMATIONS", f"CHAR_ACTION_SKIP invalid_bone_group anim={action_name}")
+            return
+
         blend_sys = get_blend_system()
         if not blend_sys:
             log_game("ANIMATIONS", f"CHAR_ACTION_SKIP no_blend_system anim={action_name}")
             return
 
         priority = 0
-
-        # For looping, use loop_duration as the total duration
-        # For play once, use -1.0 to play full animation once
         override_duration = loop_duration if loop else -1.0
 
         blend_sys.play_override(
             action_name,
-            mask=bone_group,
+            mask_weights=mask_weights,
             weight=1.0,
             speed=speed,
             duration=override_duration,
@@ -471,15 +501,17 @@ def execute_char_action_reaction(r):
             looping=loop,
             priority=priority
         )
-        log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} body={bone_group} speed={speed:.2f} priority={priority} duration={override_duration:.2f}")
+        log_game("ANIMATIONS", f"CHAR_ACTION_PLAY anim={action_name} bone_collection={coll_name} speed={speed:.2f} priority={priority} duration={override_duration:.2f}")
 
 
 def execute_custom_action_reaction(r):
     """
     Execute a custom action reaction on an arbitrary object.
     Plays an action on the specified target object via the animation controller.
+    Supports optional bone group filtering via BoneCollection.
     """
     from ..modal.exp_modal import get_active_modal_operator
+    from ..animations.blend_system import get_blend_system
 
     op = get_active_modal_operator()
     if not op or not hasattr(op, 'anim_controller') or not op.anim_controller:
@@ -506,17 +538,52 @@ def execute_custom_action_reaction(r):
     # Get playback settings (property: custom_action_loop is a bool)
     loop = bool(getattr(r, "custom_action_loop", False))
     speed = max(0.05, float(getattr(r, "custom_action_speed", 1.0) or 1.0))
+    use_bone_group = getattr(r, "custom_action_use_bone_group", False)
+    loop_duration = float(getattr(r, "custom_action_loop_duration", 10.0) or 10.0)
 
-    # Play the animation on the target object
-    ctrl.play(
-        target_obj.name,
-        action_name,
-        weight=1.0,
-        speed=speed,
-        looping=loop,
-        fade_in=0.1,
-        replace=True
-    )
+    if not use_bone_group:
+        # Full body - play via AnimationController
+        ctrl.play(
+            target_obj.name,
+            action_name,
+            weight=1.0,
+            speed=speed,
+            looping=loop,
+            fade_in=0.1,
+            replace=True
+        )
+    else:
+        # Partial body via bone collection - use BlendSystem overlay
+        # The target must be an armature for blend system to work
+        if target_obj.type != 'ARMATURE':
+            log_game("ANIMATIONS", f"CUSTOM_ACTION_SKIP bone_group_requires_armature obj={target_obj.name}")
+            return
+
+        mask_weights = _resolve_bone_group_mask(r, "custom_action")
+        if mask_weights is None:
+            log_game("ANIMATIONS", f"CUSTOM_ACTION_SKIP invalid_bone_group anim={action_name}")
+            return
+
+        blend_sys = get_blend_system()
+        if not blend_sys:
+            log_game("ANIMATIONS", f"CUSTOM_ACTION_SKIP no_blend_system anim={action_name}")
+            return
+
+        override_duration = loop_duration if loop else -1.0
+
+        blend_sys.play_override(
+            action_name,
+            mask_weights=mask_weights,
+            weight=1.0,
+            speed=speed,
+            duration=override_duration,
+            fade_in=0.1,
+            fade_out=0.1,
+            looping=loop,
+            priority=0
+        )
+        coll_name = getattr(r, "custom_action_bone_group_name", "")
+        log_game("ANIMATIONS", f"CUSTOM_ACTION_PLAY anim={action_name} bone_collection={coll_name} speed={speed:.2f}")
 
 
 def execute_custom_ui_text_reaction(r):

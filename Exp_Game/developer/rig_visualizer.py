@@ -35,7 +35,6 @@ from .gpu_utils import (
     layered_sphere_verts,
     extend_batch_data,
     crosshair_verts,
-    arrow_head_verts,
     circle_verts_xy,
 )
 
@@ -95,8 +94,6 @@ LAYER_COLORS = {
     "ADDITIVE": (0.2, 0.6, 1.0, 0.9),       # Blue
     "OVERRIDE": (1.0, 0.4, 0.2, 0.9),       # Orange-red
 }
-
-# NOTE: IK_COLORS and FBIK_COLORS removed (2025) - IK system not used
 
 
 # =============================================================================

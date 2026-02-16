@@ -370,12 +370,16 @@ class ExpModal(bpy.types.Operator):
 
         result = bpy.ops.exploratory.build_character('EXEC_DEFAULT')
         if 'FINISHED' not in result:
+            restore_user_settings(scene)
+            exit_fullscreen_once()
             self.report({'ERROR'}, "BuildCharacter operator did not finish. Cannot proceed.")
             return {'CANCELLED'}
 
-        # --- CRITICAL CHECK ---
+        # --- ARMATURE CHECK (graceful) ---
         if not context.scene.target_armature:
-            self.report({'ERROR'}, "No armature assigned to scene.target_armature! Cancelling game.")
+            restore_user_settings(scene)
+            exit_fullscreen_once()
+            self.report({'WARNING'}, "No armature found. Game requires a character with an armature.")
             return {'CANCELLED'}
 
         # A) Clean out old audio temp (skip when audio-lock is ON)
@@ -861,11 +865,13 @@ class ExpModal(bpy.types.Operator):
         # Export fast buffer logger diagnostics if enabled
         from ..developer.dev_logger import export_game_log, clear_log, get_buffer_size
         if context.scene.dev_export_session_log and get_buffer_size() > 0:
-            import os
-            log_path = "C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt"
-            log_dir = os.path.dirname(log_path)
-            if os.path.exists(log_dir):
-                export_game_log(log_path)
+            try:
+                import os
+                log_dir = os.path.join(os.path.expanduser("~"), "Desktop", "engine_output_files")
+                os.makedirs(log_dir, exist_ok=True)
+                export_game_log(os.path.join(log_dir, "diagnostics_latest.txt"))
+            except Exception:
+                pass
             clear_log()
         # ====================================
 

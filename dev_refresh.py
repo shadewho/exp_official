@@ -1,7 +1,7 @@
 """
 Development Refresh Panel
 Allows quick reload of addon during development without restarting Blender.
-Set ENABLED = False before shipping to hide this panel.
+Follows SHOW_DEV_PANEL from dev_properties.py — disabled automatically when shipping.
 """
 
 import bpy
@@ -11,16 +11,19 @@ import stat
 import sys
 import importlib
 
+from .Exp_Game.developer.dev_properties import SHOW_DEV_PANEL
+
 
 # ============================================================================
-# ENABLE/DISABLE TOGGLE - Set to False before shipping!
+# ENABLE/DISABLE - Follows SHOW_DEV_PANEL (dev_properties.py)
 # ============================================================================
-ENABLED = True
+ENABLED = SHOW_DEV_PANEL
 
 
 # ============================================================================
 # PATHS CONFIGURATION
 # ============================================================================
+# SRC = development source (only exists on dev machine, gracefully fails otherwise)
 SRC = r"C:\Users\spenc\Desktop\Exploratory\addons\Exploratory"
 DEST = os.path.expandvars(r"%APPDATA%\Blender Foundation\Blender\5.0\scripts\addons\Exploratory")
 

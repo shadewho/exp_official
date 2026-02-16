@@ -4,7 +4,7 @@ import bpy
 from ..props_and_utils.exp_time import init_time
 from ..systems.exp_counters_timers import reset_all_counters, reset_all_timers
 from ..reactions.exp_reactions import reset_all_tasks, _assign_safely
-from ..interactions.exp_interactions import reset_all_interactions
+from ..interactions.exp_interactions import reset_all_interactions, init_reaction_node_cache
 from ..interactions.exp_tracker_eval import reset_worker_trackers
 from ..reactions.exp_bindings import reset_bindings, serialize_reaction_bindings
 from ..startup_and_reset.exp_spawn import spawn_user
@@ -12,7 +12,7 @@ from ..audio import exp_globals
 from ..reactions.exp_custom_ui import clear_all_text
 from ..reactions.exp_crosshairs import disable_crosshairs
 from ..reactions.exp_tracking import clear as clear_tracking_tasks
-from ..reactions.exp_projectiles import clear as clear_projectiles
+from ..reactions.exp_projectiles import clear as clear_projectiles, init_impact_cache, reset_impact_prop_writers
 
 def capture_scene_state(self, context):
     """
@@ -28,11 +28,12 @@ def capture_scene_state(self, context):
     self._initial_game_state["object_transforms"] = {}
     for obj in scene.objects:
         self._initial_game_state["object_transforms"][obj.name] = {
-            "location":      obj.location.copy(),
-            "rotation":      obj.rotation_euler.copy(),
-            "scale":         obj.scale.copy(),
-            "hide_viewport": obj.hide_viewport,
-            "parent_inv":    obj.matrix_parent_inverse.copy(),  # ← NEW
+            "location":       obj.location.copy(),
+            "rotation":       obj.rotation_euler.copy(),
+            "rotation_mode":  obj.rotation_mode,
+            "scale":          obj.scale.copy(),
+            "hide_viewport":  obj.hide_viewport,
+            "parent_inv":     obj.matrix_parent_inverse.copy(),
         }
         
 
@@ -76,6 +77,8 @@ def restore_scene_state(modal_op, context):
         if not obj:
             continue
         try:
+            if "rotation_mode" in xform_data:
+                obj.rotation_mode = xform_data["rotation_mode"]
             obj.location       = xform_data["location"]
             obj.rotation_euler = xform_data["rotation"]
             obj.scale          = xform_data["scale"]
@@ -192,11 +195,11 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
             modal_op.char_state_machine.jump_played_in_air = False
             modal_op.char_state_machine.one_shot_playing = False
 
-        # Stop all animations on the character
+        # Stop ALL animations (character + custom action targets like meshes/empties)
+        # clear() wipes _states for every object and resets the transform cache,
+        # so the controller won't skip bpy writes after restore_scene_state.
         if hasattr(modal_op, 'anim_controller') and modal_op.anim_controller:
-            armature = context.scene.target_armature
-            if armature:
-                modal_op.anim_controller.stop(armature.name, fade_out=0.0)
+            modal_op.anim_controller.clear()
 
         # ─── 0.6) Stop all playing sounds ─────────────────────────────────
         try:
@@ -269,6 +272,16 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         reset_bindings()
         serialize_reaction_bindings(context.scene)
 
+        # ─── 2.8) Rebuild runtime caches cleared by reset ─────────────────
+        #    impact_cache was cleared by clear_projectiles() - rebuild so
+        #    hitscan/projectile Impact→ExternalTrigger chains work after reset.
+        #    reaction_node_cache re-syncs dynamic node inputs to backing props.
+        #    reset_impact_prop_writers clears stale impact locations/objects from
+        #    the previous session so no stale data carries over.
+        init_impact_cache(context.scene)
+        reset_impact_prop_writers()
+        init_reaction_node_cache(context.scene)
+
         # ─── 3) Clear any on-screen text and crpsshair and respawn the user ───────
         clear_all_text()
         try:
@@ -289,19 +302,6 @@ class EXPLORATORY_OT_ResetGame(bpy.types.Operator):
         return {'FINISHED'}
 
 
-
-def setattr_recursive(scene, dotted_path, value):
-    """
-    scene property keys might be dotted like "mobility_game.allow_movement",
-    we can parse them. If you just store them as "allow_movement" that belongs 
-    directly to the mobility_game pointer, you could manually do 
-    scene.mobility_game.allow_movement = ...
-    """
-    parts = dotted_path.split('.')
-    target = scene
-    for p in parts[:-1]:
-        target = getattr(target, p)
-    setattr(target, parts[-1], value)
 
 
 

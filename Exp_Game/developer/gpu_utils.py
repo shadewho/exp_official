@@ -68,7 +68,6 @@ def _build_circle_lut(segments: int) -> tuple:
 # Pre-computed at module load (zero cost during gameplay)
 CIRCLE_8 = _build_circle_lut(8)    # Low quality (fast)
 CIRCLE_12 = _build_circle_lut(12)  # Medium quality
-CIRCLE_16 = _build_circle_lut(16)  # High quality (slower)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -85,7 +84,7 @@ def circle_verts_xy(center: tuple, radius: float, lut: tuple = CIRCLE_8) -> list
     Args:
         center: (x, y, z) center position
         radius: Circle radius
-        lut: Circle lookup table (CIRCLE_8, CIRCLE_12, or CIRCLE_16)
+        lut: Circle lookup table (CIRCLE_8 or CIRCLE_12)
 
     Returns:
         List of (start_point, end_point) tuples for LINES drawing
@@ -217,82 +216,6 @@ def extend_batch_data(
         all_colors.append(color)
 
 
-def build_and_draw_batch(shader, all_verts: list, all_colors: list):
-    """
-    Build batch and draw in one call.
-
-    Args:
-        shader: The cached shader from get_cached_shader()
-        all_verts: List of vertex positions
-        all_colors: List of RGBA colors (same length as all_verts)
-    """
-    if not all_verts:
-        return
-
-    batch = batch_for_shader(shader, 'LINES', {
-        "pos": all_verts,
-        "color": all_colors
-    })
-    shader.bind()
-    batch.draw(shader)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BATCH CACHING (For static or slowly-changing visualizations)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class CachedBatch:
-    """
-    Cached GPU batch that only rebuilds when data changes.
-
-    Usage:
-        _batch_cache = CachedBatch()
-
-        def draw():
-            if data_changed:
-                verts, colors = build_geometry()
-                _batch_cache.update(verts, colors)
-
-            _batch_cache.draw()
-    """
-
-    __slots__ = ('_batch', '_shader', '_version')
-
-    def __init__(self):
-        self._batch = None
-        self._shader = None
-        self._version = 0
-
-    def update(self, verts: list, colors: list):
-        """Rebuild the batch with new geometry."""
-        if not verts:
-            self._batch = None
-            return
-
-        self._shader = get_cached_shader()
-        self._batch = batch_for_shader(
-            self._shader, 'LINES',
-            {"pos": verts, "color": colors}
-        )
-        self._version += 1
-
-    def draw(self):
-        """Draw the cached batch (fast - no geometry rebuild)."""
-        if self._batch is None:
-            return
-
-        self._shader.bind()
-        self._batch.draw(self._shader)
-
-    def invalidate(self):
-        """Force rebuild on next update."""
-        self._batch = None
-
-    @property
-    def is_valid(self) -> bool:
-        return self._batch is not None
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # CROSSHAIR / MARKER HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -307,43 +230,3 @@ def crosshair_verts(center: tuple, size: float = 0.03) -> list:
     ]
 
 
-def arrow_head_verts(tip: tuple, direction: tuple, size: float = 0.08) -> list:
-    """
-    Generate arrow head vertex pairs.
-
-    Args:
-        tip: Arrow tip position
-        direction: Normalized direction vector (pointing toward tip)
-        size: Arrow head size
-
-    Returns:
-        List of 2 vertex pairs for the arrow head lines
-    """
-    dx, dy, dz = direction
-
-    # Find perpendicular vector
-    if abs(dz) < 0.9:
-        perp = (-dy, dx, 0.0)
-    else:
-        perp = (1.0, 0.0, 0.0)
-
-    # Normalize perpendicular
-    perp_len = math.sqrt(perp[0]**2 + perp[1]**2 + perp[2]**2)
-    if perp_len < 0.001:
-        return []
-
-    px, py, pz = perp[0]/perp_len, perp[1]/perp_len, perp[2]/perp_len
-
-    # Back point
-    back = (
-        tip[0] - dx * size,
-        tip[1] - dy * size,
-        tip[2] - dz * size
-    )
-
-    # Wing points
-    wing_size = size * 0.5
-    head1 = (back[0] + px * wing_size, back[1] + py * wing_size, back[2] + pz * wing_size)
-    head2 = (back[0] - px * wing_size, back[1] - py * wing_size, back[2] - pz * wing_size)
-
-    return [(tip, head1), (tip, head2)]

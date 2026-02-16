@@ -10,6 +10,49 @@ from ..props_and_utils.exp_time import get_game_time
 # Counter Definition
 # ─────────────────────────────────────────────────────────────
 
+def _find_counter_node(scn, counter_self):
+    """Find the CounterNode owning this counter definition."""
+    c_idx = -1
+    for i, c in enumerate(scn.counters):
+        if c == counter_self:
+            c_idx = i
+            break
+    if c_idx < 0:
+        return None, -1
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            if getattr(node, "bl_idname", "") == "CounterNodeType":
+                if getattr(node, "counter_index", -1) == c_idx:
+                    return node, c_idx
+    return None, c_idx
+
+
+def _update_counter_min_limit(self, context):
+    """Hide/show Min Value socket on the owning counter node (runs outside draw context)."""
+    scn = context.scene if context else None
+    if not scn or not hasattr(scn, "counters"):
+        return
+    node, _ = _find_counter_node(scn, self)
+    if node:
+        min_sock = node.inputs.get("Min Value")
+        if min_sock:
+            min_sock.hide = not bool(self.use_min_limit)
+
+
+def _update_counter_max_limit(self, context):
+    """Hide/show Max Value socket on the owning counter node (runs outside draw context)."""
+    scn = context.scene if context else None
+    if not scn or not hasattr(scn, "counters"):
+        return
+    node, _ = _find_counter_node(scn, self)
+    if node:
+        max_sock = node.inputs.get("Max Value")
+        if max_sock:
+            max_sock.hide = not bool(self.use_max_limit)
+
+
 class CounterDefinition(bpy.types.PropertyGroup):
     """A named integer counter with optional min/max clamping."""
 
@@ -32,7 +75,8 @@ class CounterDefinition(bpy.types.PropertyGroup):
     use_min_limit: bpy.props.BoolProperty(
         name="Enable Minimum",
         default=False,
-        description="Clamp current_value to min_value if enabled"
+        description="Clamp current_value to min_value if enabled",
+        update=lambda self, ctx: _update_counter_min_limit(self, ctx),
     )
     min_value: bpy.props.IntProperty(
         name="Minimum Value",
@@ -43,7 +87,8 @@ class CounterDefinition(bpy.types.PropertyGroup):
     use_max_limit: bpy.props.BoolProperty(
         name="Enable Maximum",
         default=False,
-        description="Clamp current_value to max_value if enabled"
+        description="Clamp current_value to max_value if enabled",
+        update=lambda self, ctx: _update_counter_max_limit(self, ctx),
     )
     max_value: bpy.props.IntProperty(
         name="Maximum Value",

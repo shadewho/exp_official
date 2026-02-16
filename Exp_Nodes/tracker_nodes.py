@@ -340,6 +340,51 @@ class GameTimeTrackerNode(_ExploratoryNodeOnly, Node):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# HEALTH TRACKER NODE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class HealthTrackerNode(_ExploratoryNodeOnly, Node):
+    """Outputs current health of target object as Float."""
+    bl_idname = "HealthTrackerNodeType"
+    bl_label = "Health Tracker"
+
+    target_object: bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        name="Target Object",
+        description="Object to read health from"
+    )
+
+    def init(self, context):
+        self.width = 180
+        sock = self.inputs.new(OBJECT_SOCKET, "Target Object")
+        sock.prop_name = "target_object"
+        self.outputs.new(FLOAT_SOCKET, "Health")
+
+    def draw_buttons(self, context, layout):
+        pass
+
+    def _get_target_name(self):
+        """Resolve target object name from connected socket or inline property."""
+        inp = self.inputs.get("Target Object")
+        if inp and inp.is_linked:
+            link = inp.links[0]
+            src_node = link.from_node
+            if hasattr(src_node, "export_object"):
+                obj = src_node.export_object()
+                return obj.name if obj else ""
+        return self.target_object.name if self.target_object else ""
+
+    def export_float(self):
+        """Return current health of target object, or 0.0 if not enabled."""
+        from ..Exp_Game.reactions.exp_health import get_current_health
+        obj_name = self._get_target_name()
+        if not obj_name:
+            return 0.0
+        val = get_current_health(obj_name)
+        return val if val is not None else 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LOGIC GATE NODES (Dynamic inputs)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -439,6 +484,7 @@ classes = [
     ContactTrackerNode,
     InputTrackerNode,
     GameTimeTrackerNode,
+    HealthTrackerNode,
     # Logic gates
     LogicAndNode,
     LogicOrNode,

@@ -130,6 +130,7 @@ class NODE_MT_exploratory_add_reactions(Menu):
         add("Action Keys",           "ReactionActionKeysNodeType")
         add("Parent / Unparent", "ReactionParentingNodeType")
         add("Track To",           "ReactionTrackingNodeType")
+        add("Track To Stop",      "ReactionTrackingStopNodeType")
         add("Enable Health",      "ReactionEnableHealthNodeType")
         add("Display Health UI",  "ReactionDisplayHealthUINodeType")
         add("Adjust Health",      "ReactionAdjustHealthNodeType")
@@ -224,6 +225,12 @@ class NODE_MT_exploratory_add_trackers(Menu):
         add("Contact Tracker", "ContactTrackerNodeType")
         add("Input Tracker", "InputTrackerNodeType")
         add("Game Time", "GameTimeTrackerNodeType")
+
+        layout.separator()
+
+        # Value Trackers (output Float)
+        layout.label(text="Values")
+        add("Health Tracker", "HealthTrackerNodeType")
 
         layout.separator()
 

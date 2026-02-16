@@ -10,25 +10,10 @@ All physics logs show source (static/dynamic) - there is ONE system.
 
 import bpy
 
-from . import dev_properties as _dev_props
 from .dev_properties import SHOW_DEV_PANEL
 
 # Animation 2.0 imports
-from ..animations.test_panel import (
-    get_test_controller,
-    reset_test_controller,
-    is_test_modal_active,
-)
-
-
-def _is_create_panel_enabled(scene, key: str) -> bool:
-    """Check if a specific Create panel is enabled in the filter."""
-    flags = getattr(scene, "create_panels_filter", None)
-    if flags is None:
-        return True
-    if hasattr(flags, "__len__") and len(flags) == 0:
-        return False
-    return (key in flags)
+from ..animations.test_panel import get_test_controller
 
 
 class DEV_PT_DeveloperTools(bpy.types.Panel):
@@ -42,25 +27,11 @@ class DEV_PT_DeveloperTools(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        if not SHOW_DEV_PANEL:
-            return False
-        return _is_create_panel_enabled(context.scene, 'DEV')
+        return SHOW_DEV_PANEL
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-
-        # ═══════════════════════════════════════════════════════════════
-        # Production Mode Toggle (always visible)
-        # ═══════════════════════════════════════════════════════════════
-        box = layout.box()
-        row = box.row()
-        row.prop(scene, "dev_production_mode", text="Production Mode", icon='LOCKED' if scene.dev_production_mode else 'UNLOCKED')
-
-        if scene.dev_production_mode:
-            return
-
-        layout.separator()
 
         # ═══════════════════════════════════════════════════════════════
         # Dev Refresh Button

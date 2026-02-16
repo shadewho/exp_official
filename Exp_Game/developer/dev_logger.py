@@ -15,8 +15,8 @@ Usage:
     log_game("GROUND", "source=static z=5.0 normal=(0,0,1)")
     log_game("GROUND", "source=dynamic_12345 z=5.5 normal=(0,0,1)")
 
-    # When game stops
-    export_game_log("C:/Users/spenc/Desktop/engine_output_files/diagnostics_latest.txt")
+    # When game stops (exports to ~/Desktop/engine_output_files/)
+    export_game_log(os.path.join(os.path.expanduser("~"), "Desktop", "engine_output_files", "diagnostics_latest.txt"))
     clear_log()
 """
 
@@ -275,20 +275,3 @@ def clear_log():
 def get_buffer_size() -> int:
     """Get current number of entries in buffer."""
     return len(_log_buffer)
-
-
-def get_memory_usage_mb() -> float:
-    """Estimate memory usage of buffer in MB."""
-    import sys
-    return sys.getsizeof(_log_buffer) / (1024 * 1024)
-
-
-def get_stats() -> Dict:
-    """Get current session statistics."""
-    return {
-        'total_logs': _total_logs,
-        'buffer_size': len(_log_buffer),
-        'current_frame': _current_frame,
-        'categories': dict(_logs_per_category),
-        'memory_mb': get_memory_usage_mb()
-    }

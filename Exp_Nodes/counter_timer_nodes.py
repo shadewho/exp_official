@@ -198,7 +198,7 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
     bl_idname = "CounterNodeType"
     bl_label = "Counter"
 
-    _EXPL_TINT_COUNTER = (0.28, 0.38, 0.52)
+    _EXPL_TINT_COUNTER = (0.18, 0.25, 0.38)
 
     counter_index: bpy.props.IntProperty(name="Counter Index", default=-1, min=-1)
 
@@ -208,6 +208,20 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
             self.color = self._EXPL_TINT_COUNTER
         except Exception:
             pass
+
+    def _sync_limit_socket_visibility(self):
+        """Sync Min/Max Value socket visibility to the counter's limit flags."""
+        scn = _scene()
+        idx = self.counter_index
+        if not scn or not hasattr(scn, "counters") or not (0 <= idx < len(scn.counters)):
+            return
+        counter = scn.counters[idx]
+        min_sock = self.inputs.get("Min Value")
+        if min_sock:
+            min_sock.hide = not getattr(counter, "use_min_limit", False)
+        max_sock = self.inputs.get("Max Value")
+        if max_sock:
+            max_sock.hide = not getattr(counter, "use_max_limit", False)
 
     def init(self, context):
         self.width = 300
@@ -220,10 +234,12 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
         s.counter_prop = "use_min_limit"
         s = self.inputs.new("ExpIntSocketType", "Min Value")
         s.counter_prop = "min_value"
+        s.hide = True  # use_min_limit defaults to False → hide Min Value
         s = self.inputs.new("ExpBoolSocketType", "Enable Max")
         s.counter_prop = "use_max_limit"
         s = self.inputs.new("ExpIntSocketType", "Max Value")
         s.counter_prop = "max_value"
+        s.hide = True  # use_max_limit defaults to False → hide Max Value
 
     def copy(self, node):
         src_idx = getattr(node, "counter_index", -1)
@@ -232,6 +248,8 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
         else:
             self.counter_index = _duplicate_counter(src_idx)
         self.width = getattr(node, "width", 300)
+        # Sync socket visibility to the duplicated counter's limits
+        self._sync_limit_socket_visibility()
 
     def free(self):
         idx = getattr(self, "counter_index", -1)
@@ -251,6 +269,7 @@ class CounterNode(_ExploratoryNodeOnly, bpy.types.Node):
         info_box = layout.box()
         info_box.prop(counter, "name", text="Name")
         info_box.prop(counter, "description", text="Description")
+
 
     def draw_label(self):
         scn = _scene()
@@ -275,7 +294,7 @@ class TimerNode(_ExploratoryNodeOnly, bpy.types.Node):
     bl_idname = "TimerNodeType"
     bl_label = "Timer"
 
-    _EXPL_TINT_TIMER = (0.28, 0.38, 0.52)
+    _EXPL_TINT_TIMER = (0.18, 0.25, 0.38)
 
     timer_index: bpy.props.IntProperty(name="Timer Index", default=-1, min=-1)
 
@@ -333,4 +352,3 @@ class TimerNode(_ExploratoryNodeOnly, bpy.types.Node):
             nm = getattr(scn.timers[idx], "name", "")
             return nm if nm else "Timer"
         return "Timer"
-#test

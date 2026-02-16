@@ -277,6 +277,7 @@ class BlendSystem:
         self,
         animation_name: str,
         mask: str = "ALL",
+        mask_weights: np.ndarray = None,
         weight: float = 1.0,
         speed: float = 1.0,
         duration: float = -1.0,
@@ -289,6 +290,10 @@ class BlendSystem:
         Play an override animation layer (replaces bones completely).
 
         Use for reactions like trips, hits, etc.
+
+        Args:
+            mask_weights: Pre-computed numpy mask array. When provided,
+                          skips BONE_GROUPS lookup in AnimationLayer.__post_init__.
         """
         # Use counter for fast unique naming
         self._layer_counter += 1
@@ -302,6 +307,7 @@ class BlendSystem:
             layer_type=LayerType.OVERRIDE,
             animation_name=animation_name,
             mask_name=mask,
+            mask_weights=mask_weights,
             weight=0.0 if fade_in > 0 else weight,
             target_weight=weight,
             speed=speed,

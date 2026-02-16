@@ -375,7 +375,7 @@ class _TriggerNodeKind(TriggerNodeBase):
         pass
 
     def _draw_collision(self, layout, scn, inter):
-        pass
+        layout.label(text="Objects must be 3D (have volume)", icon='INFO')
 
     def _draw_interact(self, layout, _scn, inter):
         pass

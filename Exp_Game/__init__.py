@@ -71,7 +71,7 @@ if not _IS_WORKER_PROCESS:
     from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
     from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
                             EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
-                            EXP_AUDIO_OT_LoadCharacterAudioFile
+                            EXP_AUDIO_OT_LoadCharacterAudioFile, EXP_AUDIO_OT_ImportSoundToBlend
     )
 
     from .interactions.exp_interaction_definition import (InteractionDefinition, register_interaction_properties,
@@ -231,6 +231,7 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
         bpy.utils.register_class(EXP_AUDIO_OT_TestReactionSound)
         bpy.utils.register_class(EXP_AUDIO_OT_PackAllSounds)
+        bpy.utils.register_class(EXP_AUDIO_OT_ImportSoundToBlend)
         bpy.types.Scene.character_audio = bpy.props.PointerProperty(type=CharacterAudioPG)
 
         # --- Character Removal ---
@@ -298,6 +299,7 @@ if not _IS_WORKER_PROCESS:
         # --- Audio ---
         if hasattr(bpy.types.Scene, 'character_audio'):
             del bpy.types.Scene.character_audio
+        bpy.utils.unregister_class(EXP_AUDIO_OT_ImportSoundToBlend)
         bpy.utils.unregister_class(EXP_AUDIO_OT_PackAllSounds)
         bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
         bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)

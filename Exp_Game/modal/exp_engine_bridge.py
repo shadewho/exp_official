@@ -13,11 +13,12 @@ Keeps engine concerns separate from modal game logic.
 """
 
 import time
-import pickle
+import numpy as np
 import bpy
 from ..engine import EngineCore
 from ..engine.animations.baker import bake_action
 from ..animations.controller import AnimationController
+from ..animations.bone_groups import BONE_INDEX, TOTAL_BONES
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -204,6 +205,33 @@ def init_animations(modal, context) -> tuple[bool, str]:
         try:
             action_start = time.perf_counter()
             anim = bake_action(action)
+
+            # Standardize bone order to BONE_INDEX (54 bones) so ALL
+            # animations share the same array shape and bone ordering.
+            # Without this, the worker blends mismatched bone arrays
+            # when crossfading between actions with different FCurve orderings.
+            if anim.has_bones:
+                anim.compute_std_bone_mapping(BONE_INDEX, TOTAL_BONES)
+                num_frames = anim.bone_transforms.shape[0]
+                std_bt = np.zeros((num_frames, TOTAL_BONES, 10), dtype=np.float32)
+                std_bt[:, :, 0] = 1.0    # identity quat w
+                std_bt[:, :, 7:10] = 1.0 # identity scale
+                valid = np.where(anim._std_valid_mask)[0]
+                if len(valid) > 0:
+                    std_indices = anim._std_bone_indices[valid]
+                    std_bt[:, std_indices, :] = anim.bone_transforms[:, valid, :]
+                # Rebuild animated_mask in standard order
+                std_mask = np.zeros(TOTAL_BONES, dtype=bool)
+                if anim.animated_mask is not None and len(anim.animated_mask) > 0:
+                    for anim_idx in valid:
+                        std_mask[anim._std_bone_indices[anim_idx]] = anim.animated_mask[anim_idx]
+                # Replace with standardized data
+                anim.bone_transforms = std_bt
+                anim.bone_names = [name for name, _ in sorted(BONE_INDEX.items(), key=lambda x: x[1])]
+                anim.bone_index = dict(BONE_INDEX)
+                anim.animated_mask = std_mask
+                anim._std_mapping_ready = False  # reset so main-thread remap becomes identity
+
             action_elapsed = (time.perf_counter() - action_start) * 1000
 
             modal.anim_controller.add_animation(anim)

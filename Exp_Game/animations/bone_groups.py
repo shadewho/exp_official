@@ -210,6 +210,25 @@ def create_blend_mask(group_name: str, weight: float = 1.0) -> np.ndarray:
     return mask
 
 
+def create_blend_mask_from_bone_names(bone_names, weight: float = 1.0) -> np.ndarray:
+    """
+    Create a blend mask from arbitrary bone names (e.g. from a BoneCollection).
+
+    Args:
+        bone_names: Iterable of bone name strings
+        weight: Weight to apply to matched bones (0.0 - 1.0)
+
+    Returns:
+        numpy array of shape (54,) with weights per bone
+    """
+    mask = np.zeros(TOTAL_BONES, dtype=np.float32)
+    for name in bone_names:
+        idx = BONE_INDEX.get(name)
+        if idx is not None:
+            mask[idx] = weight
+    return mask
+
+
 def create_combined_mask(groups_weights: Dict[str, float]) -> np.ndarray:
     """
     Create a blend mask combining multiple groups with different weights.

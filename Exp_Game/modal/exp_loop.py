@@ -20,6 +20,7 @@ from ..reactions.exp_projectiles import (
     process_projectile_results,
     interpolate_projectile_visuals,
     init_impact_cache,
+    reset_impact_prop_writers,
 )
 from ..reactions.exp_transforms import (
     update_transform_tasks,
@@ -330,6 +331,7 @@ class GameLoop:
 
         # Initialize impact cache for projectiles/hitscans (eliminates node graph iteration)
         init_impact_cache(bpy.context.scene)
+        reset_impact_prop_writers()  # Clear stale impact data from previous session
 
         # Initialize reaction node cache (eliminates node graph iteration for dynamic inputs)
         init_reaction_node_cache(bpy.context.scene)

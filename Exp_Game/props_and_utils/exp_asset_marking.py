@@ -148,15 +148,27 @@ import random
 def scan_packs_for_roles(pack_paths, roles, datablock_type):
     """Scan enabled .blend packs and collect role-marked datablocks.
 
-    For each pack path: append all datablocks of *datablock_type* (e.g.
-    ``"actions"`` or ``"sounds"``), inspect ``exp_asset_role`` marks, keep
-    candidates that match *roles*, and remove non-marked datablocks.
+    First checks if role-marked datablocks already exist in bpy.data
+    (from a previous game start). Only appends from .blend files for
+    roles that still have no candidates.
 
     Returns ``{role: [list_of_datablocks]}``.
     """
     candidates = {role: [] for role in roles}
     collection = getattr(bpy.data, datablock_type)
 
+    # 1) Collect already-loaded datablocks that carry a valid role mark
+    for db in collection:
+        role = db.get(_ROLE_KEY)
+        if role in candidates:
+            candidates[role].append(db)
+
+    # 2) Determine which roles still need loading
+    needed_roles = {r for r in roles if not candidates[r]}
+    if not needed_roles:
+        return candidates
+
+    # 3) Only append from packs when there are unfilled roles
     for path in pack_paths:
         if not os.path.isfile(path):
             continue
@@ -166,7 +178,8 @@ def scan_packs_for_roles(pack_paths, roles, datablock_type):
         try:
             with bpy.data.libraries.load(path, link=False) as (data_from, data_to):
                 names = list(getattr(data_from, datablock_type))
-                setattr(data_to, datablock_type, names)
+                if names:
+                    setattr(data_to, datablock_type, names)
         except Exception:
             continue
 
@@ -179,15 +192,19 @@ def scan_packs_for_roles(pack_paths, roles, datablock_type):
             if db is None:
                 continue
             role = db.get(_ROLE_KEY)
-            if role in candidates:
+            if role in needed_roles:
                 candidates[role].append(db)
                 marked.add(name)
+                needed_roles.discard(role)
 
         # Remove non-marked datablocks appended from this pack
         for name in new_names - marked:
             db = collection.get(name)
             if db is not None:
                 collection.remove(db)
+
+        if not needed_roles:
+            break
 
     return candidates
 
@@ -233,16 +250,37 @@ def resolve_candidates(candidates, default_blend, default_names, datablock_type)
 def _scan_packs_for_skin(pack_paths):
     """Scan packs for SKIN-marked objects and their hierarchies.
 
+    First checks if a SKIN-marked object already exists in bpy.data
+    (from a previous game start). Only appends from .blend files if not.
+
     Returns a list of ``(skin_object, [hierarchy_objects])`` tuples.
     Non-marked objects from each pack are removed from ``bpy.data``.
     """
     candidates = []
 
+    # 1) Check for already-loaded SKIN-marked objects
+    for obj in bpy.data.objects:
+        if obj.get(_ROLE_KEY) == "SKIN":
+            hierarchy = []
+            p = obj.parent
+            while p:
+                hierarchy.append(p)
+                p = p.parent
+            for child in obj.children_recursive:
+                hierarchy.append(child)
+            candidates.append((obj, hierarchy))
+
+    if candidates:
+        return candidates
+
+    # 2) No existing skin found — append from packs
     for path in pack_paths:
         if not os.path.isfile(path):
             continue
 
         before = set(bpy.data.objects.keys())
+        acts_before = set(bpy.data.actions.keys())
+        snds_before = set(bpy.data.sounds.keys())
 
         try:
             with bpy.data.libraries.load(path, link=False) as (data_from, data_to):
@@ -252,6 +290,17 @@ def _scan_packs_for_skin(pack_paths):
 
         after = set(bpy.data.objects.keys())
         new_names = after - before
+
+        # Clean up actions/sounds that came in as object dependencies —
+        # the action scan handles those properly on its own.
+        for name in set(bpy.data.actions.keys()) - acts_before:
+            act = bpy.data.actions.get(name)
+            if act:
+                bpy.data.actions.remove(act)
+        for name in set(bpy.data.sounds.keys()) - snds_before:
+            snd = bpy.data.sounds.get(name)
+            if snd:
+                bpy.data.sounds.remove(snd)
 
         # Find SKIN-marked object among newly appended
         marked_obj = None
@@ -291,3 +340,82 @@ def _scan_packs_for_skin(pack_paths):
                     bpy.data.objects.remove(obj)
 
     return candidates
+
+
+def preview_scan_packs(pack_paths):
+    """Non-destructive scan: open each .blend, check marks, clean up everything.
+
+    Returns ``{role: {"count": int, "sources": [basename, ...]}}``.
+    Used by the preferences UI to show what each pack contributes.
+    """
+    ALL_ROLES = ["SKIN"] + ACTION_ROLES + SOUND_ROLES
+    summary = {role: {"count": 0, "sources": []} for role in ALL_ROLES}
+
+    for path in pack_paths:
+        if not os.path.isfile(path):
+            continue
+
+        basename = os.path.basename(path)
+
+        # Snapshot before
+        obj_before = set(bpy.data.objects.keys())
+        act_before = set(bpy.data.actions.keys())
+        snd_before = set(bpy.data.sounds.keys())
+
+        # Append everything from this pack
+        try:
+            with bpy.data.libraries.load(path, link=False) as (data_from, data_to):
+                data_to.objects = list(data_from.objects)
+                data_to.actions = list(data_from.actions)
+                data_to.sounds = list(data_from.sounds)
+        except Exception:
+            continue
+
+        # Determine what was added
+        new_objs = set(bpy.data.objects.keys()) - obj_before
+        new_acts = set(bpy.data.actions.keys()) - act_before
+        new_snds = set(bpy.data.sounds.keys()) - snd_before
+
+        # Check SKIN marks on objects
+        for name in new_objs:
+            obj = bpy.data.objects.get(name)
+            if obj and obj.get(_ROLE_KEY) == "SKIN":
+                summary["SKIN"]["count"] += 1
+                summary["SKIN"]["sources"].append(basename)
+                break  # one SKIN per pack
+
+        # Check action marks
+        for name in new_acts:
+            act = bpy.data.actions.get(name)
+            if not act:
+                continue
+            role = act.get(_ROLE_KEY)
+            if role in summary:
+                summary[role]["count"] += 1
+                summary[role]["sources"].append(basename)
+
+        # Check sound marks
+        for name in new_snds:
+            snd = bpy.data.sounds.get(name)
+            if not snd:
+                continue
+            role = snd.get(_ROLE_KEY)
+            if role in summary:
+                summary[role]["count"] += 1
+                summary[role]["sources"].append(basename)
+
+        # Clean up ALL appended datablocks (preview only, no side effects)
+        for name in new_snds:
+            snd = bpy.data.sounds.get(name)
+            if snd:
+                bpy.data.sounds.remove(snd)
+        for name in new_acts:
+            act = bpy.data.actions.get(name)
+            if act:
+                bpy.data.actions.remove(act)
+        for name in new_objs:
+            obj = bpy.data.objects.get(name)
+            if obj:
+                bpy.data.objects.remove(obj)
+
+    return summary

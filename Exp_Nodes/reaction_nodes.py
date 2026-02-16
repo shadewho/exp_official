@@ -124,14 +124,6 @@ def _force_kind(r, kind: str):
             pass
 
 
-def _draw_common_fields(layout, r, kind: str):
-    """DEPRECATED: Legacy fallback - all nodes now have custom draw_buttons().
-    Kept only for safety if somehow called from old code."""
-    _force_kind(r, kind)
-    header = layout.box()
-    header.prop(r, "name", text="Name")
-    header.label(text=f"({kind})")
-
 
 
 # ───────────────────────── sockets ─────────────────────────
@@ -371,7 +363,6 @@ class ReactionHitscanNode(_ReactionNodeKind):
         self.outputs.new("ExpBoolSocketType",   "Impact")
         self.outputs.new("ExpVectorSocketType", "Impact Location")
         self.outputs.new("ExpObjectSocketType", "Hit Object")
-        self.outputs.new("ExpVectorSocketType", "Hit Normal")
         # Inputs
         s = self.inputs.new("ExpObjectSocketType", "Origin Object")
         s.reaction_prop = "proj_origin_object"
@@ -416,7 +407,6 @@ class ReactionProjectileNode(_ReactionNodeKind):
         self.outputs.new("ExpBoolSocketType",   "Impact")
         self.outputs.new("ExpVectorSocketType", "Impact Location")
         self.outputs.new("ExpObjectSocketType", "Hit Object")
-        self.outputs.new("ExpVectorSocketType", "Hit Normal")
         # Inputs
         s = self.inputs.new("ExpObjectSocketType", "Origin Object")
         s.reaction_prop = "proj_origin_object"
@@ -649,6 +639,33 @@ class ReactionTrackingNode(_ReactionNodeKind):
             box.prop(r, "track_face_axis", text="Face Axis")
 
 
+class ReactionTrackingStopNode(_ReactionNodeKind):
+    bl_idname = "ReactionTrackingStopNodeType"
+    bl_label  = "Track To Stop"
+    KIND = "TRACK_TO_STOP"
+
+    def init(self, context):
+        super().init(context)
+        s = self.inputs.new("ExpObjectSocketType", "Target Object")
+        s.reaction_prop = "track_stop_object"
+        s.use_prop_search = True
+
+    def draw_buttons(self, context, layout):
+        scn = _scene()
+        idx = self.reaction_index
+        if not scn or not (0 <= idx < len(getattr(scn, "reactions", []))):
+            layout.label(text="(Missing Reaction)", icon='ERROR')
+            return
+        r = scn.reactions[idx]
+        _force_kind(r, self.KIND)
+
+        box = layout.box()
+        box.prop(r, "name", text="Name")
+
+        info = layout.box()
+        info.label(text="Stops active tracking for the target object.", icon='CANCEL')
+
+
 class ReactionParentingNode(_ReactionNodeKind):
     bl_idname = "ReactionParentingNodeType"
     bl_label  = "Parent / Unparent"
@@ -702,8 +719,24 @@ class ReactionCustomActionNode(_ReactionNodeKind):
         s.reaction_prop = "custom_action_loop"
         s = self.inputs.new("ExpFloatSocketType", "Loop Duration")
         s.reaction_prop = "custom_action_loop_duration"
+        s.hide = True  # Hidden until Loop? is checked
         s = self.inputs.new("ExpFloatSocketType", "Speed")
         s.reaction_prop = "custom_action_speed"
+        s = self.inputs.new("ExpObjectSocketType", "Bone Group Armature")
+        s.reaction_prop = "custom_action_bone_group_armature"
+        s.use_prop_search = True
+        s.hide = True  # Hidden until Bone Group is checked
+
+    def update(self):
+        """Sync Loop Duration and Bone Group Armature visibility."""
+        r = _get_reaction_for_node(self)
+        if r:
+            sock = self.inputs.get("Loop Duration")
+            if sock:
+                sock.hide = not getattr(r, "custom_action_loop", False)
+            sock_bg = self.inputs.get("Bone Group Armature")
+            if sock_bg:
+                sock_bg.hide = not getattr(r, "custom_action_use_bone_group", False)
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -716,6 +749,15 @@ class ReactionCustomActionNode(_ReactionNodeKind):
         header = layout.box()
         header.prop(r, "name", text="Name")
         header.prop(r, "custom_action_message", text="Notes")
+        header.prop(r, "custom_action_use_bone_group", text="Bone Group")
+        if getattr(r, "custom_action_use_bone_group", False):
+            arm = getattr(r, "custom_action_bone_group_armature", None)
+            if arm and arm.type == 'ARMATURE' and arm.data:
+                header.prop_search(r, "custom_action_bone_group_name",
+                                   arm.data, "collections_all",
+                                   text="Collection")
+            else:
+                header.label(text="Pick armature in socket below", icon='INFO')
 
 
 class ReactionCharActionNode(_ReactionNodeKind):
@@ -733,6 +775,15 @@ class ReactionCharActionNode(_ReactionNodeKind):
         s.reaction_prop = "char_action_blend_time"
         s = self.inputs.new("ExpFloatSocketType", "Loop Duration")
         s.reaction_prop = "char_action_loop_duration"
+        s.hide = True  # Hidden until Mode is set to Loop
+
+    def update(self):
+        """Sync Loop Duration visibility with the backing property."""
+        r = _get_reaction_for_node(self)
+        if r:
+            sock = self.inputs.get("Loop Duration")
+            if sock:
+                sock.hide = (getattr(r, "char_action_mode", "PLAY_ONCE") != "LOOP")
 
     def draw_buttons(self, context, layout):
         scn = _scene()
@@ -744,7 +795,20 @@ class ReactionCharActionNode(_ReactionNodeKind):
         _force_kind(r, self.KIND)
         header = layout.box()
         header.prop(r, "name", text="Name")
-        header.prop(r, "char_action_bone_group", text="Body Part")
+        header.prop(r, "char_action_use_bone_group", text="Bone Group")
+        if getattr(r, "char_action_use_bone_group", False):
+            arm = getattr(scn, "target_armature", None)
+            if arm and arm.type == 'ARMATURE' and arm.data:
+                header.prop_search(r, "char_action_bone_group_name",
+                                   arm.data, "collections_all",
+                                   text="Collection")
+            else:
+                header.label(text="Set a Target Armature in scene", icon='INFO')
+            info = header.column(align=True)
+            info.scale_y = 0.7
+            info.label(text="Create bone collections in Armature Data", icon='BONE_DATA')
+            info.label(text="Lock character in N-Panel to persist", icon='LOCKED')
+            info.label(text="Characters are removed on game start unless locked", icon='ERROR')
         header.prop(r, "char_action_mode", text="Mode")
 
 
@@ -780,9 +844,8 @@ class ReactionSoundNode(_ReactionNodeKind):
         header.prop(r, "sound_pointer", text="Sound")
         header.prop(r, "sound_play_mode", text="Mode")
         pack = layout.box()
-        pack.label(text="Custom sounds must be packed into the .blend.", icon='INFO')
-        row = pack.row(align=True)
-        row.operator("exp_audio.pack_all_sounds", text="Pack All Sounds", icon='PACKAGE')
+        pack.operator("exp_audio.import_sound_to_blend", text="Import Sound to File", icon='IMPORT')
+        pack.operator("exp_audio.pack_all_sounds", text="Pack All Sounds", icon='PACKAGE')
         ridx = -1
         for i, rx in enumerate(getattr(scn, "reactions", [])):
             if rx == r:
@@ -1100,6 +1163,7 @@ class ReactionCrosshairsNode(_ReactionNodeKind):
         s.reaction_prop = "crosshair_indefinite"
         s = self.inputs.new("ExpFloatSocketType", "Duration")
         s.reaction_prop = "crosshair_duration"
+        s.hide = True  # crosshair_indefinite defaults to True → hide Duration
 
     def draw_buttons(self, context, layout):
         scn = _scene()

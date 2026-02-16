@@ -105,7 +105,6 @@ _PREFS_CACHE_INTERVAL = 1.0  # Re-check preferences every 1 second
 def _get_cached_audio_prefs():
     """Get cached audio preferences. Re-fetches every 1 second to catch changes."""
     global _cached_prefs, _cached_prefs_time
-    import time
     now = time.perf_counter()
     if _cached_prefs is None or (now - _cached_prefs_time) > _PREFS_CACHE_INTERVAL:
         try:
@@ -405,8 +404,8 @@ class EXPLORATORY_OT_BuildAudio(bpy.types.Operator):
 
         # 3) Scan asset packs for sound candidates
         pack_paths = [
-            e.filepath for e in prefs.asset_packs
-            if e.enabled and os.path.isfile(e.filepath)
+            bpy.path.abspath(e.filepath) for e in prefs.asset_packs
+            if e.enabled and e.filepath and os.path.isfile(bpy.path.abspath(e.filepath))
         ]
 
         sound_candidates = scan_packs_for_roles(
@@ -629,4 +628,25 @@ class EXP_AUDIO_OT_LoadCharacterAudioFile(bpy.types.Operator, ImportHelper):
             {'INFO'},
             f"Loaded '{sound.name}' into character_audio.{self.sound_slot}"
         )
+        return {'FINISHED'}
+
+
+# ------------------------------------------------------------------------
+# Import a sound file into the .blend (no slot assignment)
+# ------------------------------------------------------------------------
+class EXP_AUDIO_OT_ImportSoundToBlend(bpy.types.Operator, ImportHelper):
+    """Import an audio file into this .blend so it can be marked as an asset"""
+    bl_idname = "exp_audio.import_sound_to_blend"
+    bl_label = "Import Sound to File"
+    filename_ext = ".wav;.mp3;.ogg"
+
+    filter_glob: StringProperty(
+        default="*.wav;*.mp3;*.ogg",
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        sound = bpy.data.sounds.load(self.filepath, check_existing=True)
+        sound.pack()
+        self.report({'INFO'}, f"Imported and packed '{sound.name}'")
         return {'FINISHED'}

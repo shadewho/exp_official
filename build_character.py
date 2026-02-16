@@ -55,8 +55,8 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         scene = context.scene
 
         pack_paths = [
-            e.filepath for e in prefs.asset_packs
-            if e.enabled and os.path.isfile(e.filepath)
+            bpy.path.abspath(e.filepath) for e in prefs.asset_packs
+            if e.enabled and e.filepath and os.path.isfile(bpy.path.abspath(e.filepath))
         ]
 
         # ─── 1) Skin ───────────────────────────────────────────────────────────
@@ -195,25 +195,6 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
                 scene.collection.objects.link(data_obj)
             else:
                 print(f"Object '{name}' not found in bpy.data.objects.")
-
-    # ----------------------------------------------------------------
-    # Helper: ensures an action is in bpy.data.actions
-    # ----------------------------------------------------------------
-    def ensure_action_in_file(self, blend_path, action_name, state_label):
-        if not blend_path or not os.path.isfile(blend_path):
-            return None
-
-        existing = bpy.data.actions.get(action_name)
-        if existing:
-            return existing
-
-        with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
-            if action_name in data_from.actions:
-                data_to.actions = [action_name]
-            else:
-                return None
-
-        return bpy.data.actions.get(action_name)
 
 
 

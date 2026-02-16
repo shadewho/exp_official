@@ -304,6 +304,23 @@ def execute_tracking_reaction(r):
     start(r)
 
 
+def stop_for_object(obj):
+    """Remove all active tracks where from_obj matches the given object."""
+    if not obj:
+        return
+    obj_id = id(obj)
+    _ACTIVE_TRACKS[:] = [t for t in _ACTIVE_TRACKS if t._obj_id != obj_id]
+    _tracking_obj_lookup.pop(obj_id, None)
+
+
+def execute_tracking_stop_reaction(r):
+    """Stop tracking for a specific object."""
+    from .exp_bindings import resolve_object
+
+    obj = resolve_object(r, "track_stop_object", r.track_stop_object)
+    stop_for_object(obj)
+
+
 def get_active_count() -> int:
     """Return number of active tracking tasks (for diagnostics)."""
     return len(_ACTIVE_TRACKS)

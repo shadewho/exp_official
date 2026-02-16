@@ -23,34 +23,15 @@ import bpy
 #   - Zero performance overhead
 #   - No dev UI visible to end users
 # ══════════════════════════════════════════════════════════════════════════════
-SHOW_DEV_PANEL = True
+SHOW_DEV_PANEL = False
 
-DEV_MODE = True
-
-
-def _on_production_mode_update(self, context):
-    """Update DEV_MODE when production toggle changes."""
-    import sys
-    mod = sys.modules[__name__]
-    mod.DEV_MODE = not self.dev_production_mode
+# DEV_MODE mirrors SHOW_DEV_PANEL — single source of truth.
+# Flip SHOW_DEV_PANEL to False before shipping; everything else follows.
+DEV_MODE = SHOW_DEV_PANEL
 
 
 def register_properties():
     """Register all developer debug properties on Scene."""
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PRODUCTION MODE
-    # ══════════════════════════════════════════════════════════════════════════
-
-    bpy.types.Scene.dev_production_mode = bpy.props.BoolProperty(
-        name="Production Mode",
-        description=(
-            "Disable all developer tools for shipping.\n"
-            "Turns off logging, debug visualizations, and all dev UI"
-        ),
-        default=False,
-        update=_on_production_mode_update,
-    )
 
     # ══════════════════════════════════════════════════════════════════════════
     # MASTER FREQUENCY CONTROL
@@ -650,8 +631,7 @@ def register_properties():
         name="Export Diagnostics Log",
         description=(
             "Export game diagnostics to text file when game ends:\n"
-            "• Location: Desktop/engine_output_files/\n"
-            "• File: diagnostics_latest.txt"
+            "• Location: ~/Desktop/engine_output_files/diagnostics_latest.txt"
         ),
         default=False
     )
@@ -662,9 +642,6 @@ def unregister_properties():
 
     # All current properties
     props_to_remove = [
-        # Production mode
-        'dev_production_mode',
-
         # Master control
         'dev_debug_master_hz',
 
@@ -735,7 +712,6 @@ def unregister_properties():
         'dev_debug_aabb_cache',
         'dev_debug_animations',
         'dev_debug_anim_cache',
-        'dev_debug_anim_worker',
         'dev_debug_startup_diag',
         'dev_debug_projectiles',
         'dev_debug_hitscans',

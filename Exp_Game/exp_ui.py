@@ -29,7 +29,6 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
         ("PROXY",  "Proxy Mesh & Spawn"),
         ("PHYS",   "Physics"),
         ("VIEW",   "View"),
-        ("DEV",    "Developer Tools"),
         ("ASSETS", "Assets"),
     ]
 
@@ -499,7 +498,7 @@ class VIEW3D_PT_Exploratory_View(bpy.types.Panel):
 # Assets — mark datablocks for game use
 # --------------------------------------------------------------------
 class VIEW3D_PT_Exploratory_Assets(bpy.types.Panel):
-    bl_label = "Assets"
+    bl_label = "Asset Pack"
     bl_idname = "VIEW3D_PT_exploratory_assets"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -540,6 +539,10 @@ class VIEW3D_PT_Exploratory_Assets(bpy.types.Panel):
         marked_skin = find_marked("SKIN")
         if marked_skin is not None:
             box.label(text=f"Marked: {marked_skin.name}", icon='CHECKMARK')
+        col = box.column(align=True)
+        col.scale_y = 0.7
+        col.label(text="Mark only the armature.", icon='INFO')
+        col.label(text="Children objects are automatically included.")
 
         # ─── Actions ───
         box = layout.box()
@@ -550,6 +553,9 @@ class VIEW3D_PT_Exploratory_Assets(bpy.types.Panel):
             row.label(text=role.capitalize())
             row.prop(pg, attr, text="")
             self._mark_btn(row, role, getattr(pg, attr))
+            act = getattr(pg, attr)
+            if act is not None:
+                box.prop(act, "action_speed", text="    Speed")
         marked_actions = [
             find_marked(r) for r in ACTION_ROLES if find_marked(r) is not None
         ]
@@ -568,6 +574,9 @@ class VIEW3D_PT_Exploratory_Assets(bpy.types.Panel):
             row.label(text=label)
             row.prop(pg, attr, text="")
             self._mark_btn(row, role, getattr(pg, attr))
+            snd = getattr(pg, attr)
+            if snd is not None:
+                box.prop(snd, "sound_speed", text="    Speed")
         marked_sounds = [
             find_marked(r) for r in SOUND_ROLES if find_marked(r) is not None
         ]
@@ -575,3 +584,11 @@ class VIEW3D_PT_Exploratory_Assets(bpy.types.Panel):
             col = box.column(align=True)
             for db in marked_sounds:
                 col.label(text=f"  {db.get('exp_asset_role')}: {db.name}")
+
+        box.separator()
+        box.operator("exp_audio.import_sound_to_blend", icon='IMPORT', text="Import Sound to File")
+        box.operator("exp_audio.pack_all_sounds", icon='UGLYPACKAGE', text="Pack All Sounds")
+        col = box.column(align=True)
+        col.scale_y = 0.7
+        col.label(text="Pack all sounds before distributing", icon='INFO')
+        col.label(text="this file as an asset pack.")

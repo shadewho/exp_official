@@ -29,6 +29,54 @@ def _tag_prefs_redraw(context):
         pass
 
 # ------------------------------------------------------------------------
+# Asset Pack Scan Cache
+# ------------------------------------------------------------------------
+_asset_scan_cache = None
+_scan_generation = 0
+
+def _invalidate_asset_scan():
+    """Mark the scan cache as stale and schedule a deferred rescan."""
+    global _asset_scan_cache, _scan_generation
+    _asset_scan_cache = None
+    _scan_generation += 1
+    gen = _scan_generation
+
+    def _deferred():
+        if _scan_generation != gen:
+            return None  # superseded by a newer invalidation
+        _run_preview_scan()
+        return None
+
+    try:
+        bpy.app.timers.register(_deferred, first_interval=0.3)
+    except Exception:
+        pass
+
+def _on_asset_pack_changed(self, context):
+    """Update callback fired when an AssetPackEntry filepath or enabled changes."""
+    _invalidate_asset_scan()
+    _tag_prefs_redraw(context)
+
+def _run_preview_scan():
+    """Execute the preview scan and cache results."""
+    global _asset_scan_cache
+    try:
+        prefs = bpy.context.preferences.addons["Exploratory"].preferences
+        pack_paths = []
+        for e in prefs.asset_packs:
+            if not e.enabled or not e.filepath:
+                continue
+            resolved = bpy.path.abspath(e.filepath)
+            if os.path.isfile(resolved):
+                pack_paths.append(resolved)
+        from .Exp_Game.props_and_utils.exp_asset_marking import preview_scan_packs
+        _asset_scan_cache = preview_scan_packs(pack_paths)
+    except Exception as ex:
+        print(f"[Exploratory] Preview scan error: {ex}")
+        _asset_scan_cache = {}
+    _tag_prefs_redraw(bpy.context)
+
+# ------------------------------------------------------------------------
 # Update Callback: Start Game Keymap
 # ------------------------------------------------------------------------
 def _update_start_game_keymap(self, context):
@@ -46,8 +94,8 @@ def _update_start_game_keymap(self, context):
 # Asset Pack Entry PropertyGroup
 # ------------------------------------------------------------------------
 class AssetPackEntry(bpy.types.PropertyGroup):
-    filepath: StringProperty(subtype='FILE_PATH')
-    enabled: BoolProperty(default=True)
+    filepath: StringProperty(subtype='FILE_PATH', update=_on_asset_pack_changed)
+    enabled: BoolProperty(default=True, update=_on_asset_pack_changed)
 
 # ------------------------------------------------------------------------
 # Asset Pack UIList
@@ -56,7 +104,8 @@ class EXPLORATORY_UL_AssetPackList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_property, index):
         row = layout.row(align=True)
         row.prop(item, "enabled", text="")
-        row.prop(item, "filepath", text="")
+        filename = os.path.basename(item.filepath) if item.filepath else "(no file set)"
+        row.label(text=filename)
 
 # ------------------------------------------------------------------------
 # Add / Remove operators
@@ -64,12 +113,21 @@ class EXPLORATORY_UL_AssetPackList(bpy.types.UIList):
 class EXPLORATORY_OT_AddAssetPack(bpy.types.Operator):
     bl_idname = "exploratory.add_asset_pack"
     bl_label = "Add Asset Pack"
-    bl_description = "Add a new .blend file entry to the asset pack list"
+    bl_description = "Browse for a .blend file to add as an asset pack"
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.blend", options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
 
     def execute(self, context):
         prefs = context.preferences.addons["Exploratory"].preferences
-        prefs.asset_packs.add()
+        entry = prefs.asset_packs.add()
+        entry.filepath = self.filepath
         prefs.asset_packs_index = len(prefs.asset_packs) - 1
+        _invalidate_asset_scan()
         return {'FINISHED'}
 
 class EXPLORATORY_OT_RemoveAssetPack(bpy.types.Operator):
@@ -83,6 +141,7 @@ class EXPLORATORY_OT_RemoveAssetPack(bpy.types.Operator):
         if 0 <= idx < len(prefs.asset_packs):
             prefs.asset_packs.remove(idx)
             prefs.asset_packs_index = min(idx, len(prefs.asset_packs) - 1)
+        _invalidate_asset_scan()
         return {'FINISHED'}
 
 # ------------------------------------------------------------------------
@@ -312,10 +371,39 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         col.operator("exploratory.add_asset_pack", icon='ADD', text="")
         col.operator("exploratory.remove_asset_pack", icon='REMOVE', text="")
 
-        if self.asset_packs and 0 <= self.asset_packs_index < len(self.asset_packs):
-            entry = self.asset_packs[self.asset_packs_index]
-            sub = box.box()
-            sub.prop(entry, "filepath", text="Blend File")
-            sub.prop(entry, "enabled", text="Enabled")
+        # ── Asset Summary ──────────────────────────────────────────
+        if _asset_scan_cache is not None and self.asset_packs:
+            _ROLE_LABELS = {
+                "SKIN": "Skin",
+                "IDLE": "Idle", "WALK": "Walk", "RUN": "Run",
+                "JUMP": "Jump", "FALL": "Fall", "LAND": "Land",
+                "WALK_SOUND": "Walk Sound", "RUN_SOUND": "Run Sound",
+                "JUMP_SOUND": "Jump Sound", "FALL_SOUND": "Fall Sound",
+                "LAND_SOUND": "Land Sound",
+            }
+            _DISPLAY_ORDER = [
+                "SKIN",
+                "IDLE", "WALK", "RUN", "JUMP", "FALL", "LAND",
+                "WALK_SOUND", "RUN_SOUND", "JUMP_SOUND", "FALL_SOUND", "LAND_SOUND",
+            ]
+
+            summary_box = box.box()
+            summary_box.label(text="Detected Assets", icon='VIEWZOOM')
+
+            for role in _DISPLAY_ORDER:
+                info = _asset_scan_cache.get(role, {"count": 0, "sources": []})
+                count = info["count"]
+                sources = info["sources"]
+
+                row = summary_box.row()
+                if count == 0:
+                    row.label(text=_ROLE_LABELS[role], icon='RADIOBUT_OFF')
+                    row.label(text="Default")
+                elif count == 1:
+                    row.label(text=_ROLE_LABELS[role], icon='RADIOBUT_ON')
+                    row.label(text=sources[0])
+                else:
+                    row.label(text=_ROLE_LABELS[role], icon='RADIOBUT_ON')
+                    row.label(text=f"{count} packs (random)")
 
         box.label(text="Add .blend files with marked assets.", icon='INFO')
