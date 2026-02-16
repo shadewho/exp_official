@@ -1,5 +1,8 @@
 # File: exp_ui.py
 import bpy
+from .props_and_utils.exp_asset_marking import (
+    ACTION_ROLES, SOUND_ROLES, find_marked, _pg_attr_for_role,
+)
 
 
 def _is_create_panel_enabled(scene, key: str) -> bool:
@@ -27,6 +30,7 @@ class EXP_OT_FilterCreatePanels(bpy.types.Operator):
         ("PHYS",   "Physics"),
         ("VIEW",   "View"),
         ("DEV",    "Developer Tools"),
+        ("ASSETS", "Assets"),
     ]
 
     def invoke(self, context, event):
@@ -489,3 +493,85 @@ class VIEW3D_PT_Exploratory_View(bpy.types.Panel):
                 row.label(text="FPV Target Bone: — (set Target Armature)")
             col.prop(scene, "fpv_invert_pitch", text="Invert FPV Pitch")
             col.operator("exploratory.test_fpv", icon='HIDE_OFF')
+
+
+# --------------------------------------------------------------------
+# Assets — mark datablocks for game use
+# --------------------------------------------------------------------
+class VIEW3D_PT_Exploratory_Assets(bpy.types.Panel):
+    bl_label = "Assets"
+    bl_idname = "VIEW3D_PT_exploratory_assets"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Exploratory"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _is_create_panel_enabled(context.scene, 'ASSETS')
+
+    # ── helpers used by draw() ──────────────────────────────────
+    @staticmethod
+    def _mark_btn(layout, role, db):
+        """Draw a Mark or Unmark button for *role* depending on state."""
+        marked = find_marked(role)
+        if marked is not None and db is not None and marked == db:
+            op = layout.operator(
+                "exploratory.unmark_asset", text="", icon='CHECKMARK',
+            )
+            op.role = role
+        else:
+            op = layout.operator(
+                "exploratory.mark_asset", text="", icon='ADD',
+            )
+            op.role = role
+
+    # ── main draw ───────────────────────────────────────────────
+    def draw(self, context):
+        layout = self.layout
+        pg = context.scene.asset_marking
+
+        # ─── Character (Skin) ───
+        box = layout.box()
+        box.label(text="Character", icon='ARMATURE_DATA')
+        row = box.row(align=True)
+        row.prop(pg, "skin", text="")
+        self._mark_btn(row, "SKIN", pg.skin)
+        marked_skin = find_marked("SKIN")
+        if marked_skin is not None:
+            box.label(text=f"Marked: {marked_skin.name}", icon='CHECKMARK')
+
+        # ─── Actions ───
+        box = layout.box()
+        box.label(text="Actions", icon='ACTION')
+        for role in ACTION_ROLES:
+            attr = _pg_attr_for_role(role)
+            row = box.row(align=True)
+            row.label(text=role.capitalize())
+            row.prop(pg, attr, text="")
+            self._mark_btn(row, role, getattr(pg, attr))
+        marked_actions = [
+            find_marked(r) for r in ACTION_ROLES if find_marked(r) is not None
+        ]
+        if marked_actions:
+            col = box.column(align=True)
+            for db in marked_actions:
+                col.label(text=f"  {db.get('exp_asset_role')}: {db.name}")
+
+        # ─── Audio ───
+        box = layout.box()
+        box.label(text="Audio", icon='SOUND')
+        for role in SOUND_ROLES:
+            attr = _pg_attr_for_role(role)
+            label = role.replace("_SOUND", "").capitalize()
+            row = box.row(align=True)
+            row.label(text=label)
+            row.prop(pg, attr, text="")
+            self._mark_btn(row, role, getattr(pg, attr))
+        marked_sounds = [
+            find_marked(r) for r in SOUND_ROLES if find_marked(r) is not None
+        ]
+        if marked_sounds:
+            col = box.column(align=True)
+            for db in marked_sounds:
+                col.label(text=f"  {db.get('exp_asset_role')}: {db.name}")

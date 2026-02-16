@@ -373,8 +373,6 @@ class ReactionHitscanNode(_ReactionNodeKind):
         self.outputs.new("ExpObjectSocketType", "Hit Object")
         self.outputs.new("ExpVectorSocketType", "Hit Normal")
         # Inputs
-        s = self.inputs.new("ExpBoolSocketType", "Use Char Origin")
-        s.reaction_prop = "proj_use_character_origin"
         s = self.inputs.new("ExpObjectSocketType", "Origin Object")
         s.reaction_prop = "proj_origin_object"
         s.use_prop_search = True
@@ -420,8 +418,6 @@ class ReactionProjectileNode(_ReactionNodeKind):
         self.outputs.new("ExpObjectSocketType", "Hit Object")
         self.outputs.new("ExpVectorSocketType", "Hit Normal")
         # Inputs
-        s = self.inputs.new("ExpBoolSocketType", "Use Char Origin")
-        s.reaction_prop = "proj_use_character_origin"
         s = self.inputs.new("ExpObjectSocketType", "Origin Object")
         s.reaction_prop = "proj_origin_object"
         s.use_prop_search = True
@@ -662,14 +658,10 @@ class ReactionParentingNode(_ReactionNodeKind):
         super().init(context)
 
         # Target (child)
-        s = self.inputs.new("ExpBoolSocketType", "Target Use Character")
-        s.reaction_prop = "parenting_target_use_character"
         s = self.inputs.new("ExpObjectSocketType", "Target Object")
         s.reaction_prop = "parenting_target_object"
         s.use_prop_search = True
         # Parent
-        s = self.inputs.new("ExpBoolSocketType", "Use Armature")
-        s.reaction_prop = "parenting_parent_use_armature"
         s = self.inputs.new("ExpObjectSocketType", "Parent Object")
         s.reaction_prop = "parenting_parent_object"
         s.use_prop_search = True
@@ -688,9 +680,7 @@ class ReactionParentingNode(_ReactionNodeKind):
         box = layout.box()
         box.prop(r, "name", text="Name")
         box.prop(r, "parenting_op", text="Operation")
-
-        if getattr(r, "parenting_parent_use_armature", False):
-            box.prop(r, "parenting_bone_name", text="Bone")
+        box.prop(r, "parenting_bone_name", text="Bone")
 
 
 
@@ -859,12 +849,22 @@ class ReactionTransformNode(_ReactionNodeKind):
         # Keep base Reaction Input/Output
         super().init(context)
 
-        # Use Character and Target Object as sockets
-        s = self.inputs.new("ExpBoolSocketType", "Use Character")
-        s.reaction_prop = "use_character"
+        # Target Object socket
         s = self.inputs.new("ExpObjectSocketType", "Target Object")
         s.reaction_prop = "transform_object"
         s.use_prop_search = True
+
+        # TO_OBJECT source object (hidden until mode is TO_OBJECT)
+        s = self.inputs.new("ExpObjectSocketType", "To Object")
+        s.reaction_prop = "transform_to_object"
+        s.use_prop_search = True
+        s.hide = True
+
+        # TO_BONE armature (hidden until mode is TO_BONE)
+        s = self.inputs.new("ExpObjectSocketType", "Armature")
+        s.reaction_prop = "transform_to_armature"
+        s.use_prop_search = True
+        s.hide = True
 
         # Vector inputs with inline property drawing (unified socket type)
         s_loc = self.inputs.new("ExpVectorSocketType", "Location")
@@ -899,14 +899,6 @@ class ReactionTransformNode(_ReactionNodeKind):
 
         # TO_OBJECT mode specific fields
         if mode == "TO_OBJECT":
-            row = header.row(align=True)
-            row.prop(r, "transform_to_use_character", text="Use Character as 'To Object'")
-            if getattr(r, "transform_to_use_character", False):
-                c = getattr(bpy.context.scene, "target_armature", None)
-                header.label(text=f"To Object: {c.name if c else '—'}", icon='ARMATURE_DATA')
-            else:
-                header.prop_search(r, "transform_to_object", bpy.context.scene, "objects", text="To Object")
-
             col = header.column(align=True)
             col.label(text="Copy Channels:")
             col.prop(r, "transform_use_location", text="Location")
@@ -915,16 +907,7 @@ class ReactionTransformNode(_ReactionNodeKind):
 
         # TO_BONE mode specific fields
         elif mode == "TO_BONE":
-            header.prop(r, "transform_to_bone_use_character", text="Use Character Armature")
-            if not getattr(r, "transform_to_bone_use_character", True):
-                header.prop_search(r, "transform_to_armature", bpy.context.scene, "objects", text="Armature")
             header.prop(r, "transform_bone_name", text="Bone (name)")
-
-            col = header.column(align=True)
-            col.label(text="Copy Channels:")
-            col.prop(r, "transform_use_location", text="Location")
-            col.prop(r, "transform_use_rotation", text="Rotation")
-            col.prop(r, "transform_use_scale", text="Scale")
 
 class ReactionCustomTextNode(_ReactionNodeKind):
     bl_idname = "ReactionCustomTextNodeType"

@@ -347,20 +347,15 @@ def clear_transform_tasks():
 
 def execute_transform_reaction(reaction):
     """
-    Applies a transform reaction to either:
-      - the scene's target_armature (if use_character=True), or
-      - the specified transform_object.
+    Applies a transform reaction to the specified transform_object.
 
     Supports binding resolution for: transform_location, transform_rotation,
     transform_scale, transform_duration (connected data nodes override properties).
     """
     scene = bpy.context.scene
 
-    # 1) Pick target: character vs. user-picked object
-    if getattr(reaction, "use_character", False):
-        target_obj = scene.target_armature
-    else:
-        target_obj = reaction.transform_object
+    # 1) Pick target object
+    target_obj = reaction.transform_object
 
     # 2) Bail if nothing to move
     if not target_obj:
@@ -384,11 +379,7 @@ def execute_transform_reaction(reaction):
         apply_to_location_transform(reaction, target_obj, duration)
 
     elif mode == "TO_OBJECT":
-        to_obj = (
-            scene.target_armature
-            if getattr(reaction, "transform_to_use_character", False)
-            else reaction.transform_to_object
-        )
+        to_obj = reaction.transform_to_object
         if not to_obj:
             return
 
@@ -464,8 +455,7 @@ def apply_to_bone_transform(reaction, target_obj, duration):
     """
     scn = bpy.context.scene
 
-    use_char = bool(getattr(reaction, "transform_to_bone_use_character", True))
-    arm_obj = scn.target_armature if use_char else getattr(reaction, "transform_to_armature", None)
+    arm_obj = reaction.transform_to_armature
     if not arm_obj or getattr(arm_obj, "type", "") != 'ARMATURE':
         return
 

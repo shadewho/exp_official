@@ -22,6 +22,7 @@ from ..systems.exp_counters_timers import reset_all_counters, reset_all_timers
 from ..startup_and_reset.exp_game_reset import (capture_scene_state, reset_property_reactions, capture_initial_cam_state,
                               restore_initial_session_state, capture_initial_character_state, restore_scene_state)
 from ..audio import exp_globals
+from ..audio.exp_globals import stop_all_sounds
 from ..mouse_and_movement.exp_cursor import (
     setup_cursor_region,
     handle_mouse_move,
@@ -367,10 +368,6 @@ class ExpModal(bpy.types.Operator):
 
         ensure_timeline_at_zero()
 
-        # A) Clean out old audio temp BEFORE build (skip when slots-lock is ON)
-        if not getattr(context.scene, "character_slots_lock", False):
-            clean_audio_temp()
-
         result = bpy.ops.exploratory.build_character('EXEC_DEFAULT')
         if 'FINISHED' not in result:
             self.report({'ERROR'}, "BuildCharacter operator did not finish. Cannot proceed.")
@@ -380,6 +377,13 @@ class ExpModal(bpy.types.Operator):
         if not context.scene.target_armature:
             self.report({'ERROR'}, "No armature assigned to scene.target_armature! Cancelling game.")
             return {'CANCELLED'}
+
+        # A) Clean out old audio temp (skip when audio-lock is ON)
+        if not context.scene.character_audio_lock:
+            clean_audio_temp()
+
+        # C) Now build audio
+        audio_result = bpy.ops.exploratory.build_audio('EXEC_DEFAULT')
 
         #---CUSTOM_UI---
         clear_all_text()
@@ -794,11 +798,10 @@ class ExpModal(bpy.types.Operator):
         # ====================================
 
         # ========== AUDIO CLEANUP ==========
-        from ..audio.exp_audio import reset_audio_managers, clean_audio_temp
+        from ..audio.exp_audio import reset_audio_managers
         from ..audio.exp_globals import clear_modal_reference
         reset_audio_managers()
         clear_modal_reference()  # Clear ACTIVE_MODAL_OP only on game END (not reset)
-        clean_audio_temp()
         # ====================================
 
         # ========== FONT CACHE CLEANUP ==========

@@ -95,10 +95,7 @@ def init_aabb_cache(scene) -> int:
             continue
 
         # Object A
-        if inter.use_character:
-            if char:
-                collision_objects.add(char.name)
-        elif inter.collision_object_a:
+        if inter.collision_object_a:
             collision_objects.add(inter.collision_object_a.name)
 
         # Object B
@@ -753,11 +750,7 @@ def _submit_interaction_worker_jobs(context):
         t = inter.trigger_type
 
         if t == "PROXIMITY":
-            # pick A: either character or chosen object
-            if inter.use_character:
-                obj_a = scene.target_armature
-            else:
-                obj_a = inter.proximity_object_a
+            obj_a = inter.proximity_object_a
             obj_b = inter.proximity_object_b
 
             if obj_a and obj_b:
@@ -777,11 +770,7 @@ def _submit_interaction_worker_jobs(context):
                 interaction_map.append(inter)
 
         elif t == "COLLISION":
-            # pick A: either character or chosen object
-            if inter.use_character:
-                obj_a = scene.target_armature
-            else:
-                obj_a = inter.collision_object_a
+            obj_a = inter.collision_object_a
             obj_b = inter.collision_object_b
 
             if obj_a and obj_b:

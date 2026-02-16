@@ -239,10 +239,7 @@ def execute_parenting_reaction(r) -> None:
     scn = bpy.context.scene
 
     # Resolve child
-    if getattr(r, "parenting_target_use_character", False):
-        child = scn.target_armature
-    else:
-        child = getattr(r, "parenting_target_object", None)
+    child = getattr(r, "parenting_target_object", None)
 
     if not child:
         return
@@ -262,12 +259,8 @@ def execute_parenting_reaction(r) -> None:
         return
 
     # PARENT_TO - schedule with delay
-    if getattr(r, "parenting_parent_use_armature", False):
-        parent = scn.target_armature
-        bone_name = (getattr(r, "parenting_bone_name", "") or "").strip()
-    else:
-        parent = getattr(r, "parenting_parent_object", None)
-        bone_name = ""
+    parent = getattr(r, "parenting_parent_object", None)
+    bone_name = (getattr(r, "parenting_bone_name", "") or "").strip()
 
     if not parent:
         return

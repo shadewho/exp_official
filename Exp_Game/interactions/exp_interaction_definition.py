@@ -64,13 +64,6 @@ class InteractionDefinition(bpy.types.PropertyGroup):
         default=0,                  # ⟵ must be an integer index into whatever trigger_mode_items() returns
     )
     
-    #use character allows users to assign the scene's target_armature as Object A
-    use_character: bpy.props.BoolProperty(
-        name="Use Character",
-        default=False,
-        description="If enabled, Object A is the game characters target_armature"
-    )
-
     # Proximity Trigger
     proximity_object_a: bpy.props.PointerProperty(
         name="Object A",

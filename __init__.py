@@ -53,8 +53,12 @@ if not _IS_WORKER_PROCESS:
 
     # your prefs + operators
     from .exp_preferences import (
-        ExploratoryAddonPreferences,
+        AssetPackEntry,
+        EXPLORATORY_UL_AssetPackList,
+        EXPLORATORY_OT_AddAssetPack,
+        EXPLORATORY_OT_RemoveAssetPack,
         EXPLORATORY_OT_SetKeybind,
+        ExploratoryAddonPreferences,
     )
     from .build_character import EXPLORATORY_OT_BuildCharacter, EXPLORATORY_OT_BuildArmature
 
@@ -62,8 +66,13 @@ if not _IS_WORKER_PROCESS:
     from . import Exp_Game, Exp_Nodes, dev_refresh
 
     def register():
-        # 1) register core classes
+        # 1) register core classes (AssetPackEntry must come before
+        #    ExploratoryAddonPreferences because it's used as a CollectionProperty type)
         for cls in (
+            AssetPackEntry,
+            EXPLORATORY_UL_AssetPackList,
+            EXPLORATORY_OT_AddAssetPack,
+            EXPLORATORY_OT_RemoveAssetPack,
             EXPLORATORY_OT_SetKeybind,
             ExploratoryAddonPreferences,
             EXPLORATORY_OT_BuildCharacter,
@@ -103,10 +112,14 @@ if not _IS_WORKER_PROCESS:
 
         # 3) unregister core classes (reverse order)
         for cls in reversed((
-            EXPLORATORY_OT_BuildArmature,
-            EXPLORATORY_OT_BuildCharacter,
+            AssetPackEntry,
+            EXPLORATORY_UL_AssetPackList,
+            EXPLORATORY_OT_AddAssetPack,
+            EXPLORATORY_OT_RemoveAssetPack,
             EXPLORATORY_OT_SetKeybind,
             ExploratoryAddonPreferences,
+            EXPLORATORY_OT_BuildCharacter,
+            EXPLORATORY_OT_BuildArmature,
         )):
             bpy.utils.unregister_class(cls)
 

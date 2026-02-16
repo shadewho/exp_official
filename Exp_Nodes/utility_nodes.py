@@ -532,6 +532,7 @@ class ExpVectorSocket(bpy.types.NodeSocket):
                 r = _get_reaction_for_socket(node)
                 if r and hasattr(r, self.reaction_prop):
                     col = layout.column(align=True)
+                    col.label(text=text)
                     col.prop(r, self.reaction_prop, index=0, text="X")
                     col.prop(r, self.reaction_prop, index=1, text="Y")
                     col.prop(r, self.reaction_prop, index=2, text="Z")
@@ -540,6 +541,7 @@ class ExpVectorSocket(bpy.types.NodeSocket):
                 inter = _get_interaction_for_socket(node)
                 if inter and hasattr(inter, self.interaction_prop):
                     col = layout.column(align=True)
+                    col.label(text=text)
                     col.prop(inter, self.interaction_prop, index=0, text="X")
                     col.prop(inter, self.interaction_prop, index=1, text="Y")
                     col.prop(inter, self.interaction_prop, index=2, text="Z")
@@ -548,6 +550,7 @@ class ExpVectorSocket(bpy.types.NodeSocket):
                 c = _get_counter_for_socket(node)
                 if c and hasattr(c, self.counter_prop):
                     col = layout.column(align=True)
+                    col.label(text=text)
                     col.prop(c, self.counter_prop, index=0, text="X")
                     col.prop(c, self.counter_prop, index=1, text="Y")
                     col.prop(c, self.counter_prop, index=2, text="Z")
@@ -556,12 +559,14 @@ class ExpVectorSocket(bpy.types.NodeSocket):
                 t = _get_timer_for_socket(node)
                 if t and hasattr(t, self.timer_prop):
                     col = layout.column(align=True)
+                    col.label(text=text)
                     col.prop(t, self.timer_prop, index=0, text="X")
                     col.prop(t, self.timer_prop, index=1, text="Y")
                     col.prop(t, self.timer_prop, index=2, text="Z")
                     return
             if self.prop_name and hasattr(node, self.prop_name):
                 col = layout.column(align=True)
+                col.label(text=text)
                 col.prop(node, self.prop_name, index=0, text="X")
                 col.prop(node, self.prop_name, index=1, text="Y")
                 col.prop(node, self.prop_name, index=2, text="Z")

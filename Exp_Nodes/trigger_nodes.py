@@ -372,14 +372,10 @@ class _TriggerNodeKind(TriggerNodeBase):
 
     # ── Per-kind drawers (edit the backed Interaction by index) ──
     def _draw_proximity(self, layout, scn, inter):
-        if getattr(inter, "use_character", False):
-            char = getattr(scn, "target_armature", None)
-            layout.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
+        pass
 
     def _draw_collision(self, layout, scn, inter):
-        if getattr(inter, "use_character", False):
-            char = getattr(scn, "target_armature", None)
-            layout.label(text=f"Character: {char.name if char else '—'}", icon='ARMATURE_DATA')
+        pass
 
     def _draw_interact(self, layout, _scn, inter):
         pass
@@ -442,8 +438,6 @@ class ProximityTriggerNode(_TriggerNodeKind):
 
     def init(self, context):
         super().init(context)
-        s = self.inputs.new('ExpBoolSocketType', "Use Character")
-        s.interaction_prop = "use_character"
         s = self.inputs.new('ExpObjectSocketType', "Object A")
         s.interaction_prop = "proximity_object_a"
         s = self.inputs.new('ExpObjectSocketType', "Object B")
@@ -458,8 +452,6 @@ class CollisionTriggerNode(_TriggerNodeKind):
 
     def init(self, context):
         super().init(context)
-        s = self.inputs.new('ExpBoolSocketType', "Use Character")
-        s.interaction_prop = "use_character"
         s = self.inputs.new('ExpObjectSocketType', "Object A")
         s.interaction_prop = "collision_object_a"
         s = self.inputs.new('ExpObjectSocketType', "Object B")

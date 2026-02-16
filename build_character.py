@@ -2,16 +2,18 @@
 from .exp_preferences import get_addon_path
 import bpy
 import os
+import random
 
 # ------------------------------------------------------------------------
-# 4) The operator that appends skin + actions
+# The operator that appends skin + actions via asset pack scanning
 # ------------------------------------------------------------------------
 class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
     """
     One operator that:
-      1) Appends the skin (default or custom)
-      2) Appends each action (default or custom)
-      3) Assigns appended actions to scene.character_actions pointers
+      1) Scans enabled asset packs for SKIN-marked objects
+      2) Scans enabled asset packs for action-role-marked actions
+      3) Falls back to defaults when no candidates are found
+      4) Respects spawn / actions locks
     """
     bl_idname = "exploratory.build_character"
     bl_label = "Build Character (Skin + Actions)"
@@ -25,129 +27,105 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         "Exp_Game", "exp_assets", "Skins", "exp_default_char.blend"
     )
 
-    DEFAULT_IDLE_NAME = "exp_idle"
-    DEFAULT_WALK_NAME = "exp_walk"
-    DEFAULT_RUN_NAME  = "exp_run"
-    DEFAULT_JUMP_NAME = "exp_jump"
-    DEFAULT_FALL_NAME = "exp_fall"
-    DEFAULT_LAND_NAME = "exp_land"
+    DEFAULT_ACTION_NAMES = {
+        "IDLE": "exp_idle",
+        "WALK": "exp_walk",
+        "RUN":  "exp_run",
+        "JUMP": "exp_jump",
+        "FALL": "exp_fall",
+        "LAND": "exp_land",
+    }
+
+    ROLE_TO_ATTR = {
+        "IDLE": "idle_action",
+        "WALK": "walk_action",
+        "RUN":  "run_action",
+        "JUMP": "jump_action",
+        "FALL": "fall_action",
+        "LAND": "land_action",
+    }
 
     def execute(self, context):
+        from .Exp_Game.props_and_utils.exp_asset_marking import (
+            scan_packs_for_roles, resolve_candidates, _scan_packs_for_skin,
+            ACTION_ROLES,
+        )
+
         prefs = context.preferences.addons["Exploratory"].preferences
         scene = context.scene
 
+        pack_paths = [
+            e.filepath for e in prefs.asset_packs
+            if e.enabled and os.path.isfile(e.filepath)
+        ]
+
         # ─── 1) Skin ───────────────────────────────────────────────────────────
-        skin_blend = (
-            self.DEFAULT_SKIN_BLEND
-            if prefs.skin_use_default
-            else prefs.skin_custom_blend
-        )
         if scene.character_spawn_lock:
             self.report(
                 {'INFO'},
                 "Character spawn is locked; skipping skin append."
             )
         else:
-            # If the armature already exists in that blend, remove it first
-            try:
-                with bpy.data.libraries.load(skin_blend, link=False) as (df, _):
-                    lib_names = set(df.objects)
-            except Exception as e:
-                self.report({'WARNING'}, f"Could not read {skin_blend}: {e}")
-                lib_names = set()
-
-            existing_arm = scene.target_armature
-            if existing_arm and existing_arm.name in lib_names:
+            # Remove existing character if present
+            if scene.target_armature:
                 bpy.ops.exploratory.remove_character('EXEC_DEFAULT')
 
-            # Append skin objects
-            self.append_all_skin_objects(
-                use_default  = prefs.skin_use_default,
-                custom_blend = prefs.skin_custom_blend
-            )
+            skin_candidates = _scan_packs_for_skin(pack_paths)
+
+            if skin_candidates:
+                # Pick one candidate (random if multiple)
+                if len(skin_candidates) > 1:
+                    chosen_idx = random.randrange(len(skin_candidates))
+                else:
+                    chosen_idx = 0
+
+                chosen_skin, chosen_hierarchy = skin_candidates[chosen_idx]
+
+                # Link chosen skin + hierarchy to scene
+                for obj in [chosen_skin] + chosen_hierarchy:
+                    if obj.name not in scene.collection.objects:
+                        scene.collection.objects.link(obj)
+
+                # Set target_armature
+                if chosen_skin.type == 'ARMATURE':
+                    scene.target_armature = chosen_skin
+                else:
+                    for obj in chosen_hierarchy:
+                        if obj.type == 'ARMATURE':
+                            scene.target_armature = obj
+                            break
+
+                # Remove unchosen candidates + their hierarchies
+                for i, (skin, hier) in enumerate(skin_candidates):
+                    if i == chosen_idx:
+                        continue
+                    for obj in hier + [skin]:
+                        bpy.data.objects.remove(obj)
+            else:
+                # No pack skins found — use default
+                self.append_all_skin_objects(use_default=True, custom_blend="")
 
         # ─── 2) Actions ───────────────────────────────────────────────────────
         if scene.character_actions_lock:
             self.report({'INFO'}, "Character actions lock is ON; skipping action assignment.")
         else:
+            action_candidates = scan_packs_for_roles(
+                pack_paths, ACTION_ROLES, "actions"
+            )
+            action_result = resolve_candidates(
+                action_candidates,
+                self.DEFAULT_ANIMS_BLEND,
+                self.DEFAULT_ACTION_NAMES,
+                "actions",
+            )
+
             char_actions = scene.character_actions
+            for role, act in action_result.items():
+                attr = self.ROLE_TO_ATTR.get(role)
+                if attr and act:
+                    setattr(char_actions, attr, act)
 
-            def process_action(state_label, use_default, custom_blend,
-                               enum_prop_name, default_name, target_attr):
-                # 1) pick the .blend file
-                blend = self.DEFAULT_ANIMS_BLEND if use_default else custom_blend
-                # 2) defer reading the enum until we know we need it
-                if use_default:
-                    action_name = default_name
-                else:
-                    action_name = getattr(prefs, enum_prop_name)
-                if not action_name:
-                    return
-
-                # 3) load it if it isn’t already present
-                if not bpy.data.actions.get(action_name) and os.path.isfile(blend):
-                    with bpy.data.libraries.load(blend, link=False) as (df, dt):
-                        if action_name in df.actions:
-                            dt.actions = [action_name]
-
-                # 4) assign it to your scene pointers
-                act = bpy.data.actions.get(action_name)
-                if act:
-                    setattr(char_actions, target_attr, act)
-                else:
-                    print(f"[{state_label}] not found in {blend!r}")
-
-            # call it, passing the *name* of the enum prop (string), not its value
-            process_action(
-                "Idle",
-                prefs.idle_use_default_action,
-                prefs.idle_custom_blend_action,
-                "idle_action_enum_prop",
-                self.DEFAULT_IDLE_NAME,
-                "idle_action"
-            )
-            process_action(
-                "Walk",
-                prefs.walk_use_default_action,
-                prefs.walk_custom_blend_action,
-                "walk_action_enum_prop",
-                self.DEFAULT_WALK_NAME,
-                "walk_action"
-            )
-            process_action(
-                "Run",
-                prefs.run_use_default_action,
-                prefs.run_custom_blend_action,
-                "run_action_enum_prop",
-                self.DEFAULT_RUN_NAME,
-                "run_action"
-            )
-            process_action(
-                "Jump",
-                prefs.jump_use_default_action,
-                prefs.jump_custom_blend_action,
-                "jump_action_enum_prop",
-                self.DEFAULT_JUMP_NAME,
-                "jump_action"
-            )
-            process_action(
-                "Fall",
-                prefs.fall_use_default_action,
-                prefs.fall_custom_blend_action,
-                "fall_action_enum_prop",
-                self.DEFAULT_FALL_NAME,
-                "fall_action"
-            )
-            process_action(
-                "Land",
-                prefs.land_use_default_action,
-                prefs.land_custom_blend_action,
-                "land_action_enum_prop",
-                self.DEFAULT_LAND_NAME,
-                "land_action"
-            )
         # ─── Deselect everything so the character has no outline ────────────────
-        # (clears both the selection and the active object)
         for obj in context.view_layer.objects:
             obj.select_set(False)
         context.view_layer.objects.active = None
@@ -156,10 +134,10 @@ class EXPLORATORY_OT_BuildCharacter(bpy.types.Operator):
         return {'FINISHED'}
 
     # ----------------------------------------------------------------
-    # Exactly the same method for skin
+    # Skin helper (fallback for defaults)
     # ----------------------------------------------------------------
     def append_all_skin_objects(self, use_default, custom_blend):
-        
+
         scene = bpy.context.scene
 
         # Decide .blend file
@@ -246,12 +224,12 @@ class EXPLORATORY_OT_BuildArmature(bpy.types.Operator):
     bl_idname = "exploratory.build_armature"
     bl_label = "Build Armature"
     bl_description = (
-        "• Append the default armature\n"
-        "• Compatible with all default actions\n"
-        "• Useful for parenting a character mesh without creating or mapping new actions\n"
-        "• If you want to use your own armature, you must also map or create new actions\n"
-        "• You can adjust armature bone loc/rot/scale in any way (A-pose, different character size/shape etc.)\n" 
-        "• Adding/removing/renaming bones may cause errors. That data is what default actions depend on."
+        "\u2022 Append the default armature\n"
+        "\u2022 Compatible with all default actions\n"
+        "\u2022 Useful for parenting a character mesh without creating or mapping new actions\n"
+        "\u2022 If you want to use your own armature, you must also map or create new actions\n"
+        "\u2022 You can adjust armature bone loc/rot/scale in any way (A-pose, different character size/shape etc.)\n"
+        "\u2022 Adding/removing/renaming bones may cause errors. That data is what default actions depend on."
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -315,7 +293,7 @@ class EXPLORATORY_OT_BuildArmature(bpy.types.Operator):
             self.report({'ERROR'}, "No armature found in the library.")
             return {'CANCELLED'}
 
-        # Point the panel’s Target Armature to the appended armature
+        # Point the panel's Target Armature to the appended armature
         try:
             scene.target_armature = chosen
         except Exception:
@@ -323,4 +301,3 @@ class EXPLORATORY_OT_BuildArmature(bpy.types.Operator):
 
         self.report({'INFO'}, f"Armature appended: {chosen.name}")
         return {'FINISHED'}
-    

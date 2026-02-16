@@ -594,7 +594,7 @@ def _resolve_origin(r):
     Spawn origin in WORLD space. Offset is applied in the origin object's LOCAL space.
     """
     scn = bpy.context.scene
-    base_obj = scn.target_armature if getattr(r, "proj_use_character_origin", True) else getattr(r, "proj_origin_object", None)
+    base_obj = getattr(r, "proj_origin_object", None)
     off_local = Vector(getattr(r, "proj_origin_offset", (0.0, 0.2, 1.4)))
 
     if base_obj:

@@ -204,9 +204,35 @@ class EXPLORATORY_OT_DuplicateGlobalReaction(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _update_transform_mode(self, context):
+    """Update socket visibility on the Transform node when mode changes."""
+    scn = context.scene
+    # Find index of this reaction in the collection
+    idx = -1
+    for i, r in enumerate(scn.reactions):
+        if r == self:
+            idx = i
+            break
+    if idx < 0:
+        return
+
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", "") != "ExploratoryNodesTreeType":
+            continue
+        for node in ng.nodes:
+            if getattr(node, "reaction_index", -1) == idx:
+                to_obj = node.inputs.get("To Object")
+                arm = node.inputs.get("Armature")
+                if to_obj:
+                    to_obj.hide = (self.transform_mode != "TO_OBJECT")
+                if arm:
+                    arm.hide = (self.transform_mode != "TO_BONE")
+                return
+
+
 class ReactionDefinition(bpy.types.PropertyGroup):
     """
-    Represents one 'Reaction' item, but stored in an Interaction’s
+    Represents one 'Reaction' item, but stored in an Interaction's
     sub-collection. We do not store these at the Scene level.
     """
     name: bpy.props.StringProperty(
@@ -351,11 +377,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     # 1) TRANSFORM REACTION FIELDS
     # --------------------------------------------------
     # Which object will be transformed (target to move)?
-    use_character: bpy.props.BoolProperty(
-        name="Use Character",
-        default=False,
-        description="If True, transform the scene’s target_armature instead of the chosen object"
-    )
     transform_object: bpy.props.PointerProperty(
         name="Transform Object",
         type=bpy.types.Object,
@@ -373,19 +394,15 @@ class ReactionDefinition(bpy.types.PropertyGroup):
             ("TO_OBJECT",    "To Object",     "Copy transforms from another object"),
             ("TO_BONE",      "To Bone",       "Copy transforms from a specific bone on an armature"),
         ],
-        default="OFFSET"
+        default="OFFSET",
+        update=_update_transform_mode,
     )
 
     # ----- TO_OBJECT source -----
     transform_to_object: bpy.props.PointerProperty(
         name="Target Object (To Object)",
         type=bpy.types.Object,
-        description="If Transform Mode = 'TO_OBJECT' and the toggle below is OFF, copy from this object"
-    )
-    transform_to_use_character: bpy.props.BoolProperty(
-        name="Use Character as 'To Object'",
-        default=False,
-        description="If True in TO_OBJECT mode, copy transforms from scene.target_armature instead of a picked object"
+        description="If Transform Mode = 'TO_OBJECT', copy from this object"
     )
 
     # Per-channel toggles for TO_OBJECT/TO_BONE
@@ -406,11 +423,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     )
 
     # ----- TO_BONE source -----
-    transform_to_bone_use_character: bpy.props.BoolProperty(
-        name="Use Character Armature",
-        default=True,
-        description="If True in TO_BONE mode, read the bone from scene.target_armature"
-    )
     transform_to_armature: bpy.props.PointerProperty(
         name="Armature",
         type=bpy.types.Object,
@@ -780,11 +792,6 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     # --------------------------------------------------
 
     # Where the shot starts
-    proj_use_character_origin: bpy.props.BoolProperty(
-        name="Use Character as Origin",
-        default=True,
-        description="If True, start from scene.target_armature + offset; else from the chosen origin object"
-    )
     proj_origin_object: bpy.props.PointerProperty(
         name="Origin Object",
         type=bpy.types.Object,
@@ -915,23 +922,13 @@ class ReactionDefinition(bpy.types.PropertyGroup):
     )
 
     # Child (the object being parented/unparented)
-    parenting_target_use_character: bpy.props.BoolProperty(
-        name="Use Character as Target",
-        default=False,
-        description="If True, the child to (un)parent is the scene.target_armature"
-    )
     parenting_target_object: bpy.props.PointerProperty(
         name="Target Object",
         type=bpy.types.Object,
         description="Object to (un)parent if not using the character"
     )
 
-    # Parent side: either armature (optionally specific bone) or any object
-    parenting_parent_use_armature: bpy.props.BoolProperty(
-        name="Parent to Character Armature",
-        default=True,
-        description="If True, parent to scene.target_armature (optionally a specific bone by name)"
-    )
+    # Parent side
     parenting_parent_object: bpy.props.PointerProperty(
         name="Parent Object",
         type=bpy.types.Object,

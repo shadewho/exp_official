@@ -34,6 +34,7 @@ if not _IS_WORKER_PROCESS:
         ExploratoryProxyMeshPanel,
         VIEW3D_PT_Exploratory_PhysicsTuning,
         VIEW3D_PT_Exploratory_View,
+        VIEW3D_PT_Exploratory_Assets,
         EXP_OT_FilterCreatePanels,
     )
 
@@ -50,7 +51,7 @@ if not _IS_WORKER_PROCESS:
     from .props_and_utils.exp_properties import (
         remove_scene_properties,
         add_scene_properties,
-        CharacterAnimSlotPG,
+        CharacterActionsPG,
         ProxyMeshEntry,
         EXPLORATORY_OT_AddProxyMesh,
         EXPLORATORY_OT_RemoveProxyMesh,
@@ -58,11 +59,17 @@ if not _IS_WORKER_PROCESS:
         CharacterPhysicsConfigPG
     )
 
+    from .props_and_utils.exp_asset_marking import (
+        AssetMarkingPG,
+        EXPLORATORY_OT_MarkAsset,
+        EXPLORATORY_OT_UnmarkAsset,
+    )
+
     from .reactions.exp_custom_ui import EXPLORE_OT_PreviewCustomText
     from .props_and_utils.exp_utilities import EXPLORATORY_OT_SetGameWorld
     from .props_and_utils import exp_demo_scene
     from .startup_and_reset.exp_startup import EXP_GAME_OT_StartGame
-    from .audio.exp_audio import (AUDIO_OT_TestSoundPointer,
+    from .audio.exp_audio import (AUDIO_OT_TestSoundPointer, CharacterAudioPG, EXPLORATORY_OT_BuildAudio,
                             EXP_AUDIO_OT_LoadAudioFile, EXP_AUDIO_OT_TestReactionSound, EXP_AUDIO_OT_PackAllSounds,
                             EXP_AUDIO_OT_LoadCharacterAudioFile
     )
@@ -183,6 +190,12 @@ if not _IS_WORKER_PROCESS:
         register_interaction_properties()
 
 
+        # --- Asset Marking ---
+        bpy.utils.register_class(AssetMarkingPG)
+        bpy.utils.register_class(EXPLORATORY_OT_MarkAsset)
+        bpy.utils.register_class(EXPLORATORY_OT_UnmarkAsset)
+        bpy.types.Scene.asset_marking = bpy.props.PointerProperty(type=AssetMarkingPG)
+
         # --- Panels & UILists (Ordered) ---
         bpy.utils.register_class(ExploratoryPanel)
 
@@ -195,6 +208,7 @@ if not _IS_WORKER_PROCESS:
 
         bpy.utils.register_class(VIEW3D_PT_Exploratory_PhysicsTuning)
         bpy.utils.register_class(VIEW3D_PT_Exploratory_View)
+        bpy.utils.register_class(VIEW3D_PT_Exploratory_Assets)
 
         bpy.utils.register_class(EXP_OT_FilterCreatePanels)
 
@@ -209,12 +223,15 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.register_class(ExpModal)
         bpy.utils.register_class(EXP_GAME_OT_StartGame)
 
-        # --- Audio Operators ---
+        # --- Audio Operators & Properties ---
         bpy.utils.register_class(AUDIO_OT_TestSoundPointer)
         bpy.utils.register_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
+        bpy.utils.register_class(CharacterAudioPG)
+        bpy.utils.register_class(EXPLORATORY_OT_BuildAudio)
         bpy.utils.register_class(EXP_AUDIO_OT_LoadAudioFile)
         bpy.utils.register_class(EXP_AUDIO_OT_TestReactionSound)
         bpy.utils.register_class(EXP_AUDIO_OT_PackAllSounds)
+        bpy.types.Scene.character_audio = bpy.props.PointerProperty(type=CharacterAudioPG)
 
         # --- Character Removal ---
         bpy.utils.register_class(EXPLORATORY_OT_RemoveCharacter)
@@ -222,14 +239,14 @@ if not _IS_WORKER_PROCESS:
         # --- Counter & Timer Properties & Operators ---
         register_counter_timer_properties()
 
-        # --- Animation Slots & Proxy Mesh Properties ---
-        bpy.utils.register_class(CharacterAnimSlotPG)
+        # --- Character Actions & Proxy Mesh Properties ---
+        bpy.utils.register_class(CharacterActionsPG)
         bpy.utils.register_class(ProxyMeshEntry)
         bpy.utils.register_class(EXPLORATORY_UL_ProxyMeshList)
         bpy.utils.register_class(CharacterPhysicsConfigPG)
         bpy.utils.register_class(EXPLORATORY_OT_AddProxyMesh)
         bpy.utils.register_class(EXPLORATORY_OT_RemoveProxyMesh)
-        bpy.types.Scene.character_anim_slots = bpy.props.CollectionProperty(type=CharacterAnimSlotPG)
+        bpy.types.Scene.character_actions = bpy.props.PointerProperty(type=CharacterActionsPG)
 
         # --- Scene Properties ---
         add_scene_properties()
@@ -279,11 +296,15 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(EXPLORATORY_OT_RemoveCharacter)
 
         # --- Audio ---
+        if hasattr(bpy.types.Scene, 'character_audio'):
+            del bpy.types.Scene.character_audio
         bpy.utils.unregister_class(EXP_AUDIO_OT_PackAllSounds)
         bpy.utils.unregister_class(EXP_AUDIO_OT_TestReactionSound)
         bpy.utils.unregister_class(EXP_AUDIO_OT_LoadAudioFile)
         bpy.utils.unregister_class(AUDIO_OT_TestSoundPointer)
         bpy.utils.unregister_class(EXP_AUDIO_OT_LoadCharacterAudioFile)
+        bpy.utils.unregister_class(CharacterAudioPG)
+        bpy.utils.unregister_class(EXPLORATORY_OT_BuildAudio)
 
 
         # --- Modal & Game Start ---
@@ -298,6 +319,7 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(ExploratoryProxyMeshPanel)
         bpy.utils.unregister_class(EXPLORE_OT_PreviewCustomText)
         bpy.utils.unregister_class(EXP_OT_FilterCreatePanels)
+        bpy.utils.unregister_class(VIEW3D_PT_Exploratory_Assets)
 
         # --- actions ---
         bpy.utils.unregister_class(ActionKeyItemPG)
@@ -318,11 +340,11 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(EXPLORATORY_OT_SetGameWorld)
 
 
-        # --- Animation Slots & Proxy Mesh ---
-        if hasattr(bpy.types.Scene, 'character_anim_slots'):
-            del bpy.types.Scene.character_anim_slots
+        # --- Character Actions & Proxy Mesh ---
+        if hasattr(bpy.types.Scene, 'character_actions'):
+            del bpy.types.Scene.character_actions
         bpy.utils.unregister_class(EXPLORATORY_OT_RemoveProxyMesh)
-        bpy.utils.unregister_class(CharacterAnimSlotPG)
+        bpy.utils.unregister_class(CharacterActionsPG)
         bpy.utils.unregister_class(CharacterPhysicsConfigPG)
         bpy.utils.unregister_class(ProxyMeshEntry)
         bpy.utils.unregister_class(EXPLORATORY_UL_ProxyMeshList)
@@ -330,6 +352,12 @@ if not _IS_WORKER_PROCESS:
         bpy.utils.unregister_class(VIEW3D_PT_Exploratory_View)
         bpy.utils.unregister_class(VIEW3D_PT_Exploratory_PhysicsTuning)
 
+        # --- Asset Marking ---
+        if hasattr(bpy.types.Scene, 'asset_marking'):
+            del bpy.types.Scene.asset_marking
+        bpy.utils.unregister_class(EXPLORATORY_OT_UnmarkAsset)
+        bpy.utils.unregister_class(EXPLORATORY_OT_MarkAsset)
+        bpy.utils.unregister_class(AssetMarkingPG)
 
         # ─── DEMO DEMO ──────────────────────────────────
         exp_demo_scene.unregister()

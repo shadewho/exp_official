@@ -1,5 +1,8 @@
 import bpy
-from bpy.props import BoolProperty
+from bpy.props import (
+    BoolProperty, StringProperty, IntProperty,
+    FloatProperty, EnumProperty, CollectionProperty,
+)
 import os
 
 # ------------------------------------------------------------------------
@@ -11,55 +14,6 @@ def get_addon_path():
     """
     import inspect
     return os.path.dirname(inspect.getfile(get_addon_path))
-
-# ------------------------------------------------------------------------
-# Utility: ----- Enum sentinel to avoid empty enums -----
-# ------------------------------------------------------------------------
-_ENUM_SENTINEL = "__NONE__"      # stable identifier
-_ENUM_SENTINEL_LABEL = "— Using Default —"
-
-def _ensure_enum_valid(self, prop_name: str, items_fn):
-    try:
-        cur = getattr(self, prop_name)
-    except Exception:
-        cur = None
-    try:
-        items = items_fn(self, bpy.context)  # <-- pass self
-    except Exception:
-        items = []
-    valid_ids = {i[0] for i in items} if items else {_ENUM_SENTINEL}
-    if cur not in valid_ids:
-        try:
-            setattr(self, prop_name, _ENUM_SENTINEL)
-        except Exception:
-            pass
-
-
-# ------------------------------------------------------------------------
-# Utility: ===== 5.0-safe enum helpers (no IDProperties on AddonPreferences) =====
-# ------------------------------------------------------------------------
-_ENUM_CACHE = {}
-
-def _enum_from_blend(path: str, list_fn):
-    """Return [(identifier, name, desc), ...] from a .blend, mtime-cached."""
-    if not path or not os.path.isfile(path):
-        return []
-    try:
-        mtime = os.path.getmtime(path)
-    except Exception:
-        mtime = 0.0
-    key = (path, list_fn.__name__, mtime)
-    cached = _ENUM_CACHE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        raw = list_fn(path) or []   # your list_* already returns [(id,name,desc)]
-        items = [(t[0], t[1], (t[2] if len(t) > 2 else t[0])) for t in raw]
-    except Exception:
-        items = []
-    _ENUM_CACHE.clear()             # keep tiny; mtime invalidates anyway
-    _ENUM_CACHE[key] = items
-    return items
 
 def _tag_prefs_redraw(context):
     """Ping UI to refresh enum lists after a path toggle."""
@@ -74,105 +28,65 @@ def _tag_prefs_redraw(context):
     except Exception:
         pass
 
-
 # ------------------------------------------------------------------------
-# Utility: List actions from a .blend
+# Update Callback: Start Game Keymap
 # ------------------------------------------------------------------------
-def list_actions_in_blend(blend_path):
+def _update_start_game_keymap(self, context):
     """
-    Returns a list of (identifier, name, description) for all actions in `blend_path`.
-    If file is invalid or no actions exist, return [].
+    Called when the user changes the Start Game keybind in preferences.
+    Updates the VIEW_3D keymap to use the new key.
     """
-    if not blend_path or not os.path.isfile(blend_path):
-        return []
     try:
-        with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
-            action_names = data_from.actions
-    except:
-        action_names = []
-
-    items = []
-    for a_name in action_names:
-        items.append((a_name, a_name, f"Action: {a_name}"))
-    return items
+        from .Exp_Game import update_start_game_keymap
+        update_start_game_keymap()
+    except Exception as e:
+        print(f"[Exploratory] Failed to update start game keymap: {e}")
 
 # ------------------------------------------------------------------------
-# Utility: List sounds from a .blend
+# Asset Pack Entry PropertyGroup
 # ------------------------------------------------------------------------
-def list_sounds_in_blend(blend_path: str):
-    """
-    If file is invalid or no sounds exist, return [].
-    """
-    if not blend_path or not os.path.isfile(blend_path):
-        return []
-    try:
-        with bpy.data.libraries.load(blend_path, link=False) as (data_from, _):
-            sound_names = data_from.sounds
-    except:
-        sound_names = []
-
-    items = []
-    for s_name in sound_names:
-        items.append((s_name, s_name, f"Sound: {s_name}"))
-    return items
+class AssetPackEntry(bpy.types.PropertyGroup):
+    filepath: StringProperty(subtype='FILE_PATH')
+    enabled: BoolProperty(default=True)
 
 # ------------------------------------------------------------------------
-# A row-drawing helper for Action + Sound
+# Asset Pack UIList
 # ------------------------------------------------------------------------
-def draw_action_sound_row(
-    prefs, layout,
-    label: str,
-
-    # Action props
-    act_use_def: str,
-    act_blend:   str,
-    act_enum:    str,
-
-    # Sound props
-    snd_use_def: str = None,
-    snd_blend:   str = None,
-    snd_enum:    str = None
-):
-    """
-    Draw a single "row" inside its own box, with:
-      - A left label for the name (Idle, Walk, Run, etc.)
-      - A split: left column for action, right column for sound
-      - If snd_* is None => we show “(No Sound)”.
-    """
-    # Put this entire row in its own box:
-    box = layout.box()
-
-    # Top row for the label
-    row_top = box.row(align=True)
-    row_top.label(text=label)
-
-    # Now split the rest of the box horizontally
-    split = box.split(factor=0.5, align=True)
-
-    # Left column => Action
-    colA = split.column(align=True)
-    # Force left alignment so it doesn't jump around
-    colA.alignment = 'LEFT'
-    colA.prop(prefs, act_use_def, text="Use Default Action?")
-    if not getattr(prefs, act_use_def):
-        colA.prop(prefs, act_blend, text="Action Blend")
-        colA.prop(prefs, act_enum,  text="Action")
-
-    # Right column => Sound or N/A
-    colB = split.column(align=True)
-    colB.alignment = 'LEFT'
-    if snd_use_def is None:
-        # e.g. Idle has no sound
-        colB.label(text="(No Sound)")
-    else:
-        colB.prop(prefs, snd_use_def, text="Use Default Sound?")
-        if not getattr(prefs, snd_use_def):
-            colB.prop(prefs, snd_blend, text="Sound Blend")
-            colB.prop(prefs, snd_enum,  text="Sound")
-
+class EXPLORATORY_UL_AssetPackList(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_property, index):
+        row = layout.row(align=True)
+        row.prop(item, "enabled", text="")
+        row.prop(item, "filepath", text="")
 
 # ------------------------------------------------------------------------
-# 1) Keybind Operator
+# Add / Remove operators
+# ------------------------------------------------------------------------
+class EXPLORATORY_OT_AddAssetPack(bpy.types.Operator):
+    bl_idname = "exploratory.add_asset_pack"
+    bl_label = "Add Asset Pack"
+    bl_description = "Add a new .blend file entry to the asset pack list"
+
+    def execute(self, context):
+        prefs = context.preferences.addons["Exploratory"].preferences
+        prefs.asset_packs.add()
+        prefs.asset_packs_index = len(prefs.asset_packs) - 1
+        return {'FINISHED'}
+
+class EXPLORATORY_OT_RemoveAssetPack(bpy.types.Operator):
+    bl_idname = "exploratory.remove_asset_pack"
+    bl_label = "Remove Asset Pack"
+    bl_description = "Remove the selected entry from the asset pack list"
+
+    def execute(self, context):
+        prefs = context.preferences.addons["Exploratory"].preferences
+        idx = prefs.asset_packs_index
+        if 0 <= idx < len(prefs.asset_packs):
+            prefs.asset_packs.remove(idx)
+            prefs.asset_packs_index = min(idx, len(prefs.asset_packs) - 1)
+        return {'FINISHED'}
+
+# ------------------------------------------------------------------------
+# Keybind Operator
 # ------------------------------------------------------------------------
 class EXPLORATORY_OT_SetKeybind(bpy.types.Operator):
     """Operator that temporarily listens for the next pressed key and updates the add-on preference property."""
@@ -180,7 +94,7 @@ class EXPLORATORY_OT_SetKeybind(bpy.types.Operator):
     bl_label = "Set Keybind"
     bl_description = "Click then press the key you want to assign."
 
-    target_prop: bpy.props.StringProperty(default="")
+    target_prop: StringProperty(default="")
 
     def invoke(self, context, event):
         context.window_manager.modal_handler_add(self)
@@ -206,59 +120,7 @@ class EXPLORATORY_OT_SetKeybind(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
 # ------------------------------------------------------------------------
-# 2) Update Callbacks (Actions)
-# ------------------------------------------------------------------------
-def update_idle_action_settings(self, context): _tag_prefs_redraw(context)
-
-def update_walk_action_settings(self, context): _tag_prefs_redraw(context)
-
-def update_run_action_settings(self, context):  _tag_prefs_redraw(context)
-
-def update_jump_action_settings(self, context): _tag_prefs_redraw(context)
-
-def update_fall_action_settings(self, context): _tag_prefs_redraw(context)
-
-def update_land_action_settings(self, context): _tag_prefs_redraw(context)
-
-# ------------------------------------------------------------------------
-# 2b) Update Callbacks (Sounds)
-# ------------------------------------------------------------------------
-def update_walk_sound_settings(self, context):
-    _tag_prefs_redraw(context)
-    _ensure_enum_valid(self, "walk_sound_enum_prop", self.walk_sound_items)
-
-def update_run_sound_settings(self, context):
-    _tag_prefs_redraw(context)
-    _ensure_enum_valid(self, "run_sound_enum_prop", self.run_sound_items)
-
-def update_jump_sound_settings(self, context):
-    _tag_prefs_redraw(context)
-    _ensure_enum_valid(self, "jump_sound_enum_prop", self.jump_sound_items)
-
-def update_fall_sound_settings(self, context):
-    _tag_prefs_redraw(context)
-    _ensure_enum_valid(self, "fall_sound_enum_prop", self.fall_sound_items)
-
-def update_land_sound_settings(self, context):
-    _tag_prefs_redraw(context)
-    _ensure_enum_valid(self, "land_sound_enum_prop", self.land_sound_items)
-
-# ------------------------------------------------------------------------
-# Update Callback: Start Game Keymap
-# ------------------------------------------------------------------------
-def _update_start_game_keymap(self, context):
-    """
-    Called when the user changes the Start Game keybind in preferences.
-    Updates the VIEW_3D keymap to use the new key.
-    """
-    try:
-        from .Exp_Game import update_start_game_keymap
-        update_start_game_keymap()
-    except Exception as e:
-        print(f"[Exploratory] Failed to update start game keymap: {e}")
-
-# ------------------------------------------------------------------------
-# 3) The actual Addon Preferences
+# Addon Preferences
 # ------------------------------------------------------------------------
 class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     bl_idname = "Exploratory"
@@ -271,297 +133,48 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
     # ----------------------------------------------------------------
     # (A) Keybinds + Performance
     # ----------------------------------------------------------------
-    key_forward:  bpy.props.StringProperty(default="W", name="Forward Key")
-    key_backward: bpy.props.StringProperty(default="S", name="Backward Key")
-    key_left:     bpy.props.StringProperty(default="A", name="Left Key")
-    key_right:    bpy.props.StringProperty(default="D", name="Right Key")
-    key_jump:     bpy.props.StringProperty(default="SPACE", name="Jump Key")
-    key_run:      bpy.props.StringProperty(default="LEFT_SHIFT", name="Run Modifier")
-    key_action:   bpy.props.StringProperty(default="LEFTMOUSE",  name="Action Key")
-    key_interact: bpy.props.StringProperty(default="E",          name="Interact Key")
-    key_end_game: bpy.props.StringProperty(default="ESC",         name="End Game Key")
-    key_reset:    bpy.props.StringProperty(default="R", name="Reset Key")
-    key_start_game: bpy.props.StringProperty(
+    key_forward:  StringProperty(default="W", name="Forward Key")
+    key_backward: StringProperty(default="S", name="Backward Key")
+    key_left:     StringProperty(default="A", name="Left Key")
+    key_right:    StringProperty(default="D", name="Right Key")
+    key_jump:     StringProperty(default="SPACE", name="Jump Key")
+    key_run:      StringProperty(default="LEFT_SHIFT", name="Run Modifier")
+    key_action:   StringProperty(default="LEFTMOUSE",  name="Action Key")
+    key_interact: StringProperty(default="E",          name="Interact Key")
+    key_end_game: StringProperty(default="ESC",         name="End Game Key")
+    key_reset:    StringProperty(default="R", name="Reset Key")
+    key_start_game: StringProperty(
         default="P",
         name="Start Game Key (3D Viewport)",
         description="Key to start the game in the 3D Viewport",
         update=lambda self, ctx: _update_start_game_keymap(self, ctx)
     )
 
-    mouse_sensitivity: bpy.props.FloatProperty(
+    mouse_sensitivity: FloatProperty(
         name="Mouse Sensitivity", default=2.0, min=0.0, max=10.0
     )
-    performance_mode: bpy.props.BoolProperty(name="Performance Mode", default=False)
+    performance_mode: BoolProperty(name="Performance Mode", default=False)
 
     # ----------------------------------------------------------------
-    # (B) Skin
+    # Audio Master
     # ----------------------------------------------------------------
-    skin_use_default: bpy.props.BoolProperty(name="Use Default Skin", default=True)
-    skin_custom_blend: bpy.props.StringProperty(subtype='FILE_PATH', default="")
-
-    # ----------------------------------------------------------------
-    # (C) Idle (action only, no sound)
-    # ----------------------------------------------------------------
-    idle_use_default_action: bpy.props.BoolProperty(
-        name="Use Default Idle Action",
-        default=True,
-        update=update_idle_action_settings
-    )
-    idle_custom_blend_action: bpy.props.StringProperty(
-        subtype='FILE_PATH',
-        default="",
-        update=update_idle_action_settings
-    )
-    def idle_action_items(self, context):
-        return [] if self.idle_use_default_action else _enum_from_blend(self.idle_custom_blend_action, list_actions_in_blend)
-    idle_action_enum_prop: bpy.props.EnumProperty(
-        name="Idle Action",
-        items=idle_action_items
-    )
-
-    # ----------------------------------------------------------------
-    # (D 1) AUDIO MASTER PROPERTIES
-    # ----------------------------------------------------------------
-    enable_audio: bpy.props.BoolProperty(
+    enable_audio: BoolProperty(
         name="Enable Audio",
         description="Global master audio mute/unmute",
         default=True
     )
-    audio_level: bpy.props.FloatProperty(
+    audio_level: FloatProperty(
         name="Audio Volume",
-        description="Global master volume (0.0–1.0)",
+        description="Global master volume (0.0\u20131.0)",
         default=0.5,
         min=0.0,
         max=1.0
     )
-    # ----------------------------------------------------------------
-    # (D 2) Walk => separate booleans for Action vs Sound
-    # ----------------------------------------------------------------
-    # Action
-    walk_use_default_action: bpy.props.BoolProperty(
-        name="Use Default Walk Action",
-        default=True,
-        update=update_walk_action_settings
-    )
-    walk_custom_blend_action: bpy.props.StringProperty(
-        name="Custom Walk Action Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_walk_action_settings
-    )
-    def walk_action_items(self, context):
-        return [] if self.walk_use_default_action else _enum_from_blend(self.walk_custom_blend_action, list_actions_in_blend)
-    walk_action_enum_prop: bpy.props.EnumProperty(
-        name="Walk Action",
-        items=walk_action_items
-    )
-
-    # Sound
-    walk_use_default_sound: bpy.props.BoolProperty(
-        name="Use Default Walk Sound",
-        default=True,
-        update=update_walk_sound_settings
-    )
-    walk_custom_blend_sound: bpy.props.StringProperty(
-        name="Custom Walk Sound Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_walk_sound_settings
-    )
-    def walk_sound_items(self, context):
-        if self.walk_use_default_sound:
-            # Only sentinel when using default
-            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
-        # Prepend sentinel to actual items
-        items = _enum_from_blend(self.walk_custom_blend_sound, list_sounds_in_blend)
-        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
-
-    walk_sound_enum_prop: bpy.props.EnumProperty(
-        name="Walk Sound",
-        items=walk_sound_items,
-        default=0
-    )
 
     # ----------------------------------------------------------------
-    # (E) Run => separate booleans for Action vs Sound
+    # Performance
     # ----------------------------------------------------------------
-    run_use_default_action: bpy.props.BoolProperty(
-        name="Use Default Run Action",
-        default=True,
-        update=update_run_action_settings
-    )
-    run_custom_blend_action: bpy.props.StringProperty(
-        name="Custom Run Action Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_run_action_settings
-    )
-    def run_action_items(self, context):
-        return [] if self.run_use_default_action else _enum_from_blend(self.run_custom_blend_action, list_actions_in_blend)
-    run_action_enum_prop: bpy.props.EnumProperty(
-        name="Run Action",
-        items=run_action_items
-    )
-
-    run_use_default_sound: bpy.props.BoolProperty(
-        name="Use Default Run Sound",
-        default=True,
-        update=update_run_sound_settings
-    )
-    run_custom_blend_sound: bpy.props.StringProperty(
-        name="Custom Run Sound Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_run_sound_settings
-    )
-    def run_sound_items(self, context):
-        if self.run_use_default_sound:
-            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
-        items = _enum_from_blend(self.run_custom_blend_sound, list_sounds_in_blend)
-        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
-
-    run_sound_enum_prop: bpy.props.EnumProperty(
-        name="Run Sound",
-        items=run_sound_items,
-        default=0
-    )
-
-    # ----------------------------------------------------------------
-    # (F) Jump => separate booleans for Action vs Sound
-    # ----------------------------------------------------------------
-    jump_use_default_action: bpy.props.BoolProperty(
-        name="Use Default Jump Action",
-        default=True,
-        update=update_jump_action_settings
-    )
-    jump_custom_blend_action: bpy.props.StringProperty(
-        name="Custom Jump Action Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_jump_action_settings
-    )
-    def jump_action_items(self, context):
-        return [] if self.jump_use_default_action else _enum_from_blend(self.jump_custom_blend_action, list_actions_in_blend)
-    jump_action_enum_prop: bpy.props.EnumProperty(
-        name="Jump Action",
-        items=jump_action_items
-    )
-
-    jump_use_default_sound: bpy.props.BoolProperty(
-        name="Use Default Jump Sound",
-        default=True,
-        update=update_jump_sound_settings
-    )
-    jump_custom_blend_sound: bpy.props.StringProperty(
-        name="Custom Jump Sound Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_jump_sound_settings
-    )
-    def jump_sound_items(self, context):
-        if self.jump_use_default_sound:
-            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
-        items = _enum_from_blend(self.jump_custom_blend_sound, list_sounds_in_blend)
-        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
-
-    jump_sound_enum_prop: bpy.props.EnumProperty(
-        name="Jump Sound",
-        items=jump_sound_items,
-        default=0
-    )
-
-    # ----------------------------------------------------------------
-    # (G) Fall => separate booleans for Action vs Sound
-    # ----------------------------------------------------------------
-    fall_use_default_action: bpy.props.BoolProperty(
-        name="Use Default Fall Action",
-        default=True,
-        update=update_fall_action_settings
-    )
-    fall_custom_blend_action: bpy.props.StringProperty(
-        name="Custom Fall Action Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_fall_action_settings
-    )
-    def fall_action_items(self, context):
-        return [] if self.fall_use_default_action else _enum_from_blend(self.fall_custom_blend_action, list_actions_in_blend)
-    fall_action_enum_prop: bpy.props.EnumProperty(
-        name="Fall Action",
-        items=fall_action_items
-    )
-
-    fall_use_default_sound: bpy.props.BoolProperty(
-        name="Use Default Fall Sound",
-        default=True,
-        update=update_fall_sound_settings
-    )
-    fall_custom_blend_sound: bpy.props.StringProperty(
-        name="Custom Fall Sound Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_fall_sound_settings
-    )
-    def fall_sound_items(self, context):
-        if self.fall_use_default_sound:
-            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
-        items = _enum_from_blend(self.fall_custom_blend_sound, list_sounds_in_blend)
-        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
-
-    fall_sound_enum_prop: bpy.props.EnumProperty(
-        name="Fall Sound",
-        items=fall_sound_items,
-        default=0
-    )
-
-
-    # ----------------------------------------------------------------
-    # (H) Land => separate booleans for Action vs Sound
-    # ----------------------------------------------------------------
-    land_use_default_action: bpy.props.BoolProperty(
-        name="Use Default Land Action",
-        default=True,
-        update=update_land_action_settings
-    )
-    land_custom_blend_action: bpy.props.StringProperty(
-        name="Custom Land Action Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_land_action_settings
-    )
-    def land_action_items(self, context):
-        return [] if self.land_use_default_action else _enum_from_blend(self.land_custom_blend_action, list_actions_in_blend)
-    land_action_enum_prop: bpy.props.EnumProperty(
-        name="Land Action",
-        items=land_action_items
-    )
-
-    land_use_default_sound: bpy.props.BoolProperty(
-        name="Use Default Land Sound",
-        default=True,
-        update=update_land_sound_settings
-    )
-    land_custom_blend_sound: bpy.props.StringProperty(
-        name="Custom Land Sound Blend",
-        subtype='FILE_PATH',
-        default="",
-        update=update_land_sound_settings
-    )
-    def land_sound_items(self, context):
-        if self.land_use_default_sound:
-            return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")]
-        items = _enum_from_blend(self.land_custom_blend_sound, list_sounds_in_blend)
-        return [(_ENUM_SENTINEL, _ENUM_SENTINEL_LABEL, "")] + items
-
-    land_sound_enum_prop: bpy.props.EnumProperty(
-        name="Land Sound",
-        items=land_sound_items,
-        default=0
-    )
-    # ----------------------------------------------------------------
-    # (I) Performance
-    # ----------------------------------------------------------------
-    performance_level: bpy.props.EnumProperty(
+    performance_level: EnumProperty(
         name="Performance Level",
         description="Choose a performance preset",
         items=[
@@ -572,15 +185,13 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         default="MEDIUM"
     )
 
-    # --- Shadows toggle for gameplay ---
-    enable_shadows_in_game: bpy.props.BoolProperty(
+    enable_shadows_in_game: BoolProperty(
         name="Enable Shadows",
         description="Toggle Eevee Next shadows ON/OFF when the game starts",
         default=True
     )
 
-    # --- Viewport shading mode to use on game start ---
-    viewport_shading_mode: bpy.props.EnumProperty(
+    viewport_shading_mode: EnumProperty(
         name="Viewport Shading on Start",
         description="Shading mode to switch all 3D Viewports to when the game starts",
         items=[
@@ -592,9 +203,7 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         default="RENDERED",
     )
 
-    # --- Viewport Preview Pixel Size (Render) ---
-    # Mirrors Scene.render.preview_pixel_size; 'AUTO' is default.
-    preview_pixel_size: bpy.props.EnumProperty(
+    preview_pixel_size: EnumProperty(
         name="Preview Pixel Size",
         description="Pixel size used for preview renders in the viewport",
         items=[
@@ -606,6 +215,12 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
         ],
         default="AUTO",
     )
+
+    # ----------------------------------------------------------------
+    # Asset Packs
+    # ----------------------------------------------------------------
+    asset_packs: CollectionProperty(type=AssetPackEntry)
+    asset_packs_index: IntProperty(default=0)
 
     # ----------------------------------------------------------------
     # DRAW
@@ -678,90 +293,29 @@ class ExploratoryAddonPreferences(bpy.types.AddonPreferences):
             slider=True
         )
 
-        # 2) Skin
+        # ----------------------------------------------------------------
+        # Asset Packs
+        # ----------------------------------------------------------------
         layout.separator()
-        layout.label(text="Character Selection:")
-        b_s = layout.box()
-        b_s.prop(self, "skin_use_default", text="Use Default Character?")
-        if not self.skin_use_default:
-            b_s.prop(self, "skin_custom_blend", text="Custom Char .Blend")
+        box = layout.box()
+        box.label(text="Asset Packs", icon='PACKAGE')
 
-        # 3) Actions + Sounds (Single Table)
-        layout.separator()
-        layout.label(text="Character Actions + Sounds")
-
-        # IDLE => no sound
-        draw_action_sound_row(
-            prefs=self, layout=layout,
-            label="Idle",
-            act_use_def="idle_use_default_action",
-            act_blend="idle_custom_blend_action",
-            act_enum="idle_action_enum_prop",
-
-            snd_use_def=None
+        row = box.row()
+        row.template_list(
+            "EXPLORATORY_UL_AssetPackList", "",
+            self, "asset_packs",
+            self, "asset_packs_index",
+            rows=3,
         )
 
-        # Walk
-        draw_action_sound_row(
-            prefs=self, layout=layout,
-            label="Walk",
-            act_use_def="walk_use_default_action",
-            act_blend="walk_custom_blend_action",
-            act_enum="walk_action_enum_prop",
+        col = row.column(align=True)
+        col.operator("exploratory.add_asset_pack", icon='ADD', text="")
+        col.operator("exploratory.remove_asset_pack", icon='REMOVE', text="")
 
-            snd_use_def="walk_use_default_sound",
-            snd_blend="walk_custom_blend_sound",
-            snd_enum="walk_sound_enum_prop"
-        )
+        if self.asset_packs and 0 <= self.asset_packs_index < len(self.asset_packs):
+            entry = self.asset_packs[self.asset_packs_index]
+            sub = box.box()
+            sub.prop(entry, "filepath", text="Blend File")
+            sub.prop(entry, "enabled", text="Enabled")
 
-        # Run
-        draw_action_sound_row(
-            prefs=self, layout=layout,
-            label="Run",
-            act_use_def="run_use_default_action",
-            act_blend="run_custom_blend_action",
-            act_enum="run_action_enum_prop",
-
-            snd_use_def="run_use_default_sound",
-            snd_blend="run_custom_blend_sound",
-            snd_enum="run_sound_enum_prop"
-        )
-
-        # Jump
-        draw_action_sound_row(
-            prefs=self, layout=layout,
-            label="Jump",
-            act_use_def="jump_use_default_action",
-            act_blend="jump_custom_blend_action",
-            act_enum="jump_action_enum_prop",
-
-            snd_use_def="jump_use_default_sound",
-            snd_blend="jump_custom_blend_sound",
-            snd_enum="jump_sound_enum_prop"
-        )
-
-        # Fall
-        draw_action_sound_row(
-            prefs=self, layout=layout,
-            label="Fall",
-            act_use_def="fall_use_default_action",
-            act_blend="fall_custom_blend_action",
-            act_enum="fall_action_enum_prop",
-
-            snd_use_def="fall_use_default_sound",
-            snd_blend="fall_custom_blend_sound",
-            snd_enum="fall_sound_enum_prop"
-        )
-
-        # Land
-        draw_action_sound_row(
-            prefs=self, layout=layout,
-            label="Land",
-            act_use_def="land_use_default_action",
-            act_blend="land_custom_blend_action",
-            act_enum="land_action_enum_prop",
-
-            snd_use_def="land_use_default_sound",
-            snd_blend="land_custom_blend_sound",
-            snd_enum="land_sound_enum_prop"
-        )
+        box.label(text="Add .blend files with marked assets.", icon='INFO')

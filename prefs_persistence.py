@@ -4,6 +4,9 @@ import bpy, os, json
 ADDON_NAME = "Exploratory"
 _applying = False
 
+# Properties that need special (non-scalar) serialization
+_SKIP_PROPS = {"asset_packs"}
+
 def _prefs_file_path() -> str:
     cfg = bpy.utils.user_resource('CONFIG', path="addons", create=True)
     return os.path.join(cfg, f"{ADDON_NAME}_prefs.json")
@@ -26,12 +29,18 @@ def write_prefs():
     data = {}
     for prop in prefs.bl_rna.properties:
         ident = prop.identifier
-        if prop.is_readonly or ident == "rna_type":
+        if prop.is_readonly or ident == "rna_type" or ident in _SKIP_PROPS:
             continue
         try:
             data[ident] = getattr(prefs, ident)
         except Exception:
             pass
+
+    # Serialize asset_packs CollectionProperty
+    data["asset_packs"] = [
+        {"filepath": e.filepath, "enabled": e.enabled}
+        for e in prefs.asset_packs
+    ]
 
     with open(_prefs_file_path(), 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
@@ -59,8 +68,10 @@ def apply_prefs():
 
     _applying = True
     try:
-        # 1) restore file-paths so your update_… callbacks repopulate enums
+        # 1) restore file-paths so your update callbacks repopulate enums
         for key, val in data.items():
+            if key in _SKIP_PROPS:
+                continue
             prop = prefs.bl_rna.properties.get(key)
             if not prop:
                 continue
@@ -70,6 +81,8 @@ def apply_prefs():
 
         # 2) restore everything else (bools, floats, enums, etc.)
         for key, val in data.items():
+            if key in _SKIP_PROPS:
+                continue
             prop = prefs.bl_rna.properties.get(key)
             if not prop:
                 continue
@@ -77,6 +90,14 @@ def apply_prefs():
                 continue
             try: setattr(prefs, key, val)
             except Exception: pass
+
+        # 3) restore asset_packs collection
+        pack_data = data.get("asset_packs", [])
+        prefs.asset_packs.clear()
+        for item in pack_data:
+            entry = prefs.asset_packs.add()
+            entry.filepath = item.get("filepath", "")
+            entry.enabled = item.get("enabled", True)
 
     finally:
         _applying = False
