@@ -23,7 +23,7 @@ import bpy
 #   - Zero performance overhead
 #   - No dev UI visible to end users
 # ══════════════════════════════════════════════════════════════════════════════
-SHOW_DEV_PANEL = False
+SHOW_DEV_PANEL = True
 
 # DEV_MODE mirrors SHOW_DEV_PANEL — single source of truth.
 # Flip SHOW_DEV_PANEL to False before shipping; everything else follows.

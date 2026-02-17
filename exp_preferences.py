@@ -1,3 +1,4 @@
+# NOTE: See CLAUDE_PREFS.md before changing any preference properties.
 import bpy
 from bpy.props import (
     BoolProperty, StringProperty, IntProperty,

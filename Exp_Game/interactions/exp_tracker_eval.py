@@ -182,6 +182,42 @@ def _resolve_object_ref(node, socket_name: str, fallback_prop: str):
     return getattr(node, fallback_prop, None)
 
 
+def _resolve_float_value(node, socket_name: str, fallback_prop: str) -> float:
+    """Resolve float from linked upstream node or inline property.
+    Supports: FloatMath, RandomFloat, SplitVector, FloatData, HealthTracker, etc."""
+    socket = node.inputs.get(socket_name)
+    if socket and socket.is_linked:
+        link = socket.links[0]
+        src_node = link.from_node
+        if hasattr(src_node, 'export_float_by_socket'):
+            return src_node.export_float_by_socket(link.from_socket.name)
+        if hasattr(src_node, 'export_float'):
+            return src_node.export_float()
+    return getattr(node, fallback_prop, 0.0)
+
+
+def _resolve_int_value(node, socket_name: str, fallback_prop: str) -> int:
+    """Resolve int from linked upstream node or inline property.
+    Supports: IntMath, RandomInt, IntData, etc."""
+    socket = node.inputs.get(socket_name)
+    if socket and socket.is_linked:
+        src_node = socket.links[0].from_node
+        if hasattr(src_node, 'export_int'):
+            return src_node.export_int()
+    return getattr(node, fallback_prop, 10)
+
+
+def _resolve_bool_value(node, socket_name: str, fallback_prop: str) -> bool:
+    """Resolve bool from linked upstream node or inline property.
+    Supports: BoolData, CompareNode, etc."""
+    socket = node.inputs.get(socket_name)
+    if socket and socket.is_linked:
+        src_node = socket.links[0].from_node
+        if hasattr(src_node, 'export_bool'):
+            return src_node.export_bool()
+    return getattr(node, fallback_prop, False)
+
+
 def _serialize_node(node, visited: set) -> dict:
     """
     Recursively serialize a tracker/logic node for worker.
@@ -200,14 +236,14 @@ def _serialize_node(node, visited: set) -> dict:
         result['object_a'] = _resolve_object_name(node, "Object A", "object_a")
         result['object_b'] = _resolve_object_name(node, "Object B", "object_b")
         result['op'] = node.operator
-        result['value'] = node.distance
-        result['eval_hz'] = node.eval_hz
+        result['value'] = _resolve_float_value(node, "Distance", "distance")
+        result['eval_hz'] = _resolve_int_value(node, "Eval Rate", "eval_hz")
 
     # ─── State Tracker ───
     elif node_type == 'StateTrackerNodeType':
         result['state'] = node.state
-        result['equals'] = node.equals
-        result['eval_hz'] = node.eval_hz
+        result['equals'] = _resolve_bool_value(node, "Is Active", "equals")
+        result['eval_hz'] = _resolve_int_value(node, "Eval Rate", "eval_hz")
 
     # ─── Contact Tracker ───
     elif node_type == 'ContactTrackerNodeType':
@@ -222,9 +258,9 @@ def _serialize_node(node, visited: set) -> dict:
         result['target'] = _resolve_object_name(node, "Target", "contact_target")
 
         # Threshold with precomputed squared value for fast distance checks
-        threshold = getattr(node, 'contact_threshold', 0.5)
+        threshold = _resolve_float_value(node, "Threshold", "contact_threshold")
         result['threshold_sq'] = threshold * threshold
-        result['eval_hz'] = node.eval_hz
+        result['eval_hz'] = _resolve_int_value(node, "Eval Rate", "eval_hz")
 
         # Pre-compute target AABB for surface-distance contact detection
         # Transform local bound_box corners to world space, then compute AABB
@@ -253,15 +289,15 @@ def _serialize_node(node, visited: set) -> dict:
     # ─── Input Tracker ───
     elif node_type == 'InputTrackerNodeType':
         result['action'] = node.input_action
-        result['is_pressed'] = node.is_pressed
-        result['eval_hz'] = node.eval_hz
+        result['is_pressed'] = _resolve_bool_value(node, "Pressed", "is_pressed")
+        result['eval_hz'] = _resolve_int_value(node, "Eval Rate", "eval_hz")
 
     # ─── Game Time Tracker ───
     elif node_type == 'GameTimeTrackerNodeType':
-        result['compare_enabled'] = node.compare_enabled
+        result['compare_enabled'] = _resolve_bool_value(node, "Compare", "compare_enabled")
         result['op'] = node.operator
-        result['value'] = node.time_threshold
-        result['eval_hz'] = node.eval_hz
+        result['value'] = _resolve_float_value(node, "Time", "time_threshold")
+        result['eval_hz'] = _resolve_int_value(node, "Eval Rate", "eval_hz")
 
     # ─── Logic Gates ───
     elif node_type in ('LogicAndNodeType', 'LogicOrNodeType', 'LogicNotNodeType'):

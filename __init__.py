@@ -27,23 +27,29 @@ bl_info = {
 }
 
 # ============================================================================
-# CRITICAL: BPY IMPORT GUARD FOR MULTIPROCESSING
-# Worker processes spawn and may try to import this module, but bpy is not
-# available in worker processes. This guard prevents the import in workers.
+# BPY IMPORT GUARD — worker processes don't have bpy, so try/except is the
+# most reliable detection regardless of what else is in sys.modules.
 # ============================================================================
-import sys
-
-# Simple and robust worker detection:
-# Worker processes are spawned with __name__ != '__main__' and multiprocessing loaded
-# We just need to check if we're in a spawned process context
-_IS_WORKER_PROCESS = (
-    __name__ != '__main__' and
-    'multiprocessing' in sys.modules
-)
-
-if not _IS_WORKER_PROCESS:
-    # Safe to import bpy - we're in normal Blender context
+try:
     import bpy
+    _HAS_BPY = True
+except ImportError:
+    _HAS_BPY = False
+
+if _HAS_BPY:
+    # ── Blender hot-reload support ─────────────────────────────────────
+    # importlib.reload() on __init__.py does NOT reload submodules.
+    # Without this block, Python keeps the OLD cached submodules and
+    # imports from them — causing ImportError when names have changed.
+    if "exp_preferences" in locals():
+        import importlib
+        from . import prefs_persistence;   importlib.reload(prefs_persistence)
+        from . import exp_preferences;     importlib.reload(exp_preferences)
+        from . import build_character;     importlib.reload(build_character)
+        from . import Exp_Game;            importlib.reload(Exp_Game)
+        from . import Exp_Nodes;           importlib.reload(Exp_Nodes)
+        from . import dev_refresh;         importlib.reload(dev_refresh)
+
     # persistence handlers
     from .prefs_persistence import (
         apply_prefs,
@@ -51,7 +57,7 @@ if not _IS_WORKER_PROCESS:
         unregister_prefs_handlers,
     )
 
-    # your prefs + operators
+    # prefs + operators
     from .exp_preferences import (
         AssetPackEntry,
         EXPLORATORY_UL_AssetPackList,
@@ -124,8 +130,7 @@ if not _IS_WORKER_PROCESS:
             bpy.utils.unregister_class(cls)
 
 else:
-    # Worker process context - provide stub functions
-    # These won't be called, but need to exist for module consistency
+    # Worker process — bpy not available, provide stubs
     def register():
         pass
 
